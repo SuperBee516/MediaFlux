@@ -1,0 +1,9 @@
+Backup started: 2025-08-19 14:56:35
+Source: \\cw-host1\Development\C-Sharp\Encode
+Destination: \\cw-host1\Development\C-Sharp\Backups\Encode_backup_2025-08-19_14-56-35
+Mode: Filtered
+Patterns: *.cs
+Include subfolders: True
+Used VSS: True
+------------------------------------------------------------
+Updated information status.
