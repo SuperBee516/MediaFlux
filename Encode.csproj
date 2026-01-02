@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>compress.ico</ApplicationIcon>
+    <PackageIcon>compress128.png</PackageIcon>
+    <AssemblyVersion></AssemblyVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Services\DownloadService.old" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="compress.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="C:\Users\ghirschberg\Pictures\compress128.png">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="taglib-sharp-netstandard2.0" Version="2.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Helpers\" />
+    <Folder Include="images\" />
+  </ItemGroup>
+
+</Project>
