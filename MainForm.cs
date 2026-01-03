@@ -1069,7 +1069,7 @@ namespace Encode
                 return;
 
             // Parse timestamps, fps, bitrate using your existing logic:
-            UpdateEncodeProgressFromLine_ForRow(row, durationSec, line);
+            Ui(() => UpdateEncodeProgressFromLine_ForRow(row, durationSec, line));
 
             // You keep jobLog updated above.
         }
@@ -2089,4 +2089,3 @@ namespace Encode
 
     }
 }
-

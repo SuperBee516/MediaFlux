@@ -20,7 +20,18 @@ namespace Encode
         private T UiGet<T>(Func<T> f, T fallback = default!)
         {
             if (IsDisposed || !IsHandleCreated) return fallback;
-            if (InvokeRequired) { T result = fallback; Ui(() => result = f()); return result; }
+            if (InvokeRequired)
+            {
+                try
+                {
+                    return (T)Invoke(f);
+                }
+                catch
+                {
+                    return fallback;
+                }
+            }
+
             return f();
         }
         // Simple scope-based busy indicator for status + cursor
