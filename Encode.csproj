@@ -12,10 +12,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Services\DownloadService.old" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Content Include="compress.ico" />
   </ItemGroup>
 
