@@ -76,7 +76,7 @@ namespace Encode.Services
                     Task task;
                     try
                     {
-                        task = Task.Run(() => worker(item), cancellationToken).Unwrap();
+                        task = Task.Run(() => worker(item), cancellationToken);
                     }
                     catch (Exception ex)
                     {
