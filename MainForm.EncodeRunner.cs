@@ -319,7 +319,7 @@ namespace Encode
                     () => comboVideoFormat.SelectedItem?.ToString() ?? "H.265 / HEVC (x265)",
                     "H.265 / HEVC (x265)");
                 string videoCodec = ResolveVideoCodec(useGpu, formatChoice);
-                var scaleMode = UiGet(() => GetSelectedScaleMode(), EncodingService.ScaleMode.None);
+                var scaleMode = UiGet(() => GetSelectedScaleMode(), ScaleMode.None);
 
                 // Advanced options from UI
                 string nvencPreset = UiGet(() => GetSelectedNvencPreset(), string.Empty);
