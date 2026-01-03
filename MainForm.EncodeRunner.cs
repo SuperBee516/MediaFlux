@@ -242,17 +242,20 @@ namespace Encode
             int remaining = Math.Max(0, totalNow - _encodeProcessedCount);
 
             // Basic status + metrics wiring
-            lblEncodeStatus.Text =
-                $"Encoding: {Path.GetFileName(file)} ({_encodeProcessedCount}/{totalNow}) – Queued: {remaining}";
+            Ui(() =>
+            {
+                lblEncodeStatus.Text =
+                    $"Encoding: {Path.GetFileName(file)} ({_encodeProcessedCount}/{totalNow}) – Queued: {remaining}";
 
-            _currentEncodeDuration = TimeSpan.Zero;
-            _currentEncodeTotalDuration = TimeSpan.FromSeconds(durationSec > 0 ? durationSec : 0);
-            ResetEncodeMetrics();
-            StartJobTimer();
+                _currentEncodeDuration = TimeSpan.Zero;
+                _currentEncodeTotalDuration = TimeSpan.FromSeconds(durationSec > 0 ? durationSec : 0);
+                ResetEncodeMetrics();
+                StartJobTimer();
 
-            _activeEncodeRow = row;
-            row.Cells["colProgress"].Value = "0%";
-            row.Cells["colETA"].Value = "--:--:--";
+                _activeEncodeRow = row;
+                row.Cells["colProgress"].Value = "0%";
+                row.Cells["colETA"].Value = "--:--:--";
+            });
 
             // Start per-job log capture
             _activeJobLogSb = new StringBuilder();
@@ -260,14 +263,16 @@ namespace Encode
             var jobStartUtc = DateTime.UtcNow;
 
             // Encoder mode (GPU/CPU)
-            string encoderText = comboEncoderMode.SelectedItem?.ToString() ?? string.Empty;
+            string encoderText = UiGet(() => comboEncoderMode.SelectedItem?.ToString() ?? string.Empty, string.Empty);
             bool useGpu = encoderText.StartsWith("GPU", StringComparison.OrdinalIgnoreCase);
 
             // ==== TARGET SIZE (MB) ====
             double? targetMb = null;
-            string profileText = comboCompressionProfile!.SelectedItem?.ToString()
-                                 ?? comboCompressionProfile.Text
-                                 ?? string.Empty;
+            string profileText = UiGet(
+                () => comboCompressionProfile!.SelectedItem?.ToString()
+                      ?? comboCompressionProfile.Text
+                      ?? string.Empty,
+                string.Empty);
 
             if (profileText.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
             {
@@ -283,7 +288,8 @@ namespace Encode
             else
             {
                 // Manual override from UI?
-                if (double.TryParse(txtTargetSize.Text, out var manualMb) && manualMb > 0)
+                var targetText = UiGet(() => txtTargetSize.Text, string.Empty);
+                if (double.TryParse(targetText, out var manualMb) && manualMb > 0)
                 {
                     targetMb = manualMb;
                 }
@@ -309,14 +315,17 @@ namespace Encode
             try
             {
                 // ==== CALL THE SERVICE ====
-                string formatChoice = comboVideoFormat.SelectedItem?.ToString() ?? "H.265 / HEVC (x265)";
+                string formatChoice = UiGet(
+                    () => comboVideoFormat.SelectedItem?.ToString() ?? "H.265 / HEVC (x265)",
+                    "H.265 / HEVC (x265)");
                 string videoCodec = ResolveVideoCodec(useGpu, formatChoice);
-                var scaleMode = GetSelectedScaleMode();
+                var scaleMode = UiGet(() => GetSelectedScaleMode(), ScaleMode.None);
 
                 // Advanced options from UI
-                string nvencPreset = GetSelectedNvencPreset();
-                bool tenBit = GetTenBitRequested();
-                int? audioChannels = GetSelectedAudioChannels();
+                string nvencPreset = UiGet(() => GetSelectedNvencPreset(), string.Empty);
+                bool tenBit = UiGet(() => GetTenBitRequested(), false);
+                int? audioChannels = UiGet(() => GetSelectedAudioChannels(), null);
+                string outputFolder = UiGet(() => cmbEncodeOutput.Text, string.Empty);
 
                 // Per-job ffmpeg output callback
                 Action<string> jobCallback = line =>
@@ -328,7 +337,7 @@ namespace Encode
 
                 bool ok = await _encodingService.EncodeAsync(
                     file,
-                    cmbEncodeOutput.Text,
+                    outputFolder,
                     _config.OutputSuffix,
                     useGpu,
                     targetMb,
@@ -344,12 +353,15 @@ namespace Encode
                     throw new InvalidOperationException("Encoding returned failure.");
 
                 // On success, mark 100% and clear ETA
-                row.Cells["colProgress"].Value = "100%";
-                row.Cells["colETA"].Value = "00:00:00";
+                Ui(() =>
+                {
+                    row.Cells["colProgress"].Value = "100%";
+                    row.Cells["colETA"].Value = "00:00:00";
+                });
 
                 // Guess the output path the same way the service names it
                 var guessedOut = Path.Combine(
-                    cmbEncodeOutput.Text,
+                    outputFolder,
                     Path.GetFileNameWithoutExtension(file) + _config.OutputSuffix + Path.GetExtension(file)
                 );
 
@@ -382,7 +394,7 @@ namespace Encode
 
                 try
                 {
-                    bool deleteSource = chkDeleteSource.Checked;
+                    bool deleteSource = UiGet(() => chkDeleteSource.Checked, false);
                     if (deleteSource)
                         TryDelete(file);
                 }
@@ -394,15 +406,18 @@ namespace Encode
 
                 try
                 {
-                    RemoveRowAndCleanup(row);
+                    Ui(() =>
+                    {
+                        RemoveRowAndCleanup(row);
 
-                    // Re-scan the current input folder and merge any changes
-                    RescanInputFolderAndMerge(recomputeEstimates: false);
+                        // Re-scan the current input folder and merge any changes
+                        RescanInputFolderAndMerge(recomputeEstimates: false);
 
-                    // Recompute estimates for whatever is now in the grid
-                    SafeRefreshEstimates();
-                    UpdateSizeTotals();
-                    UpdateSelectionSizeTotals();
+                        // Recompute estimates for whatever is now in the grid
+                        SafeRefreshEstimates();
+                        UpdateSizeTotals();
+                        UpdateSelectionSizeTotals();
+                    });
                 }
                 catch (Exception cleanupEx)
                 {
@@ -461,8 +476,11 @@ namespace Encode
             finally
             {
                 _activeJobLogSb = null; // stop log capture for this job
-                _activeEncodeRow = null;
-                StopJobTimer();
+                Ui(() =>
+                {
+                    _activeEncodeRow = null;
+                    StopJobTimer();
+                });
             }
         }
 
