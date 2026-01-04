@@ -455,7 +455,7 @@ namespace Encode
             btnBrowseOutputEncode.Click += btnBrowseOutputEncode_Click;
             tlEncode.Controls.Add(btnBrowseOutputEncode, 3, 1);
 
-            // Row 2: Encoder
+            // Row 2: Encoder + Video Format (paired)
             lblEncoderMode.Text = "Encoder:";
             lblEncoderMode.Anchor = AnchorStyles.Right;
             tlEncode.Controls.Add(lblEncoderMode, 0, 2);
@@ -464,8 +464,23 @@ namespace Encode
             comboEncoderMode.DropDownStyle = ComboBoxStyle.DropDownList;
             comboEncoderMode.SelectedIndex = 0;
             comboEncoderMode.Dock = DockStyle.Fill;
-            tlEncode.SetColumnSpan(comboEncoderMode, 3);
             tlEncode.Controls.Add(comboEncoderMode, 1, 2);
+
+            lblVideoFormat = new Label();
+            lblVideoFormat.Text = "Video Format:";
+            lblVideoFormat.Anchor = AnchorStyles.Right;
+            tlEncode.Controls.Add(lblVideoFormat, 2, 2);
+
+            comboVideoFormat = new ComboBox();
+            comboVideoFormat.DropDownStyle = ComboBoxStyle.DropDownList;
+            comboVideoFormat.Items.AddRange(new object[] {
+                "H.265 / HEVC (x265)",
+                "H.264 (x264)",
+                "AV1"
+            });
+            comboVideoFormat.SelectedIndex = 0; // default to H.265
+            comboVideoFormat.Dock = DockStyle.Fill;
+            tlEncode.Controls.Add(comboVideoFormat, 3, 2);
 
             // Row 3: Extensions
             lblExtensions.Text = "Extensions:";
