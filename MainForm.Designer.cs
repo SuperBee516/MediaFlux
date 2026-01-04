@@ -588,25 +588,12 @@ namespace Encode
                 AutoSize = true,
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 0
+                RowCount = 2
             };
             tlOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             tlOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-
-            lblVideoFormat = new Label();
-            lblVideoFormat.Text = "Video Format:";
-            lblVideoFormat.Anchor = AnchorStyles.Right;
-            lblVideoFormat.AutoSize = true;
-
-            comboVideoFormat = new ComboBox();
-            comboVideoFormat.DropDownStyle = ComboBoxStyle.DropDownList;
-            comboVideoFormat.Items.AddRange(new object[] {
-                "H.265 / HEVC (x265)",
-                "H.264 (x264)",
-                "AV1"
-            });
-            comboVideoFormat.SelectedIndex = 0; // default to H.265
-            comboVideoFormat.Dock = DockStyle.Fill;
+            tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             // ensure texts + margins are consistent
             if (chkProcessAll == null) chkProcessAll = new CheckBox();
@@ -624,11 +611,9 @@ namespace Encode
             chkFilterX265.Margin = new Padding(4, 2, 12, 2);
 
             // add controls row-major for alignment
-            tlOptions.Controls.Add(lblVideoFormat, 0, 0);
-            tlOptions.Controls.Add(comboVideoFormat, 1, 0);
-            tlOptions.Controls.Add(chkProcessAll, 0, 1);
-            tlOptions.Controls.Add(chkFilterX264, 1, 1);
-            tlOptions.Controls.Add(chkFilterX265, 0, 2);
+            tlOptions.Controls.Add(chkProcessAll, 0, 0);
+            tlOptions.Controls.Add(chkFilterX264, 1, 0);
+            tlOptions.Controls.Add(chkFilterX265, 0, 1);
 
             grpOptions.Controls.Add(tlOptions);
 
