@@ -404,7 +404,7 @@ namespace Encode
             panelEncode.Dock = DockStyle.Fill;
             tlEncode.Dock = DockStyle.Fill;
             tlEncode.ColumnCount = 4;
-            tlEncode.RowCount = 12;
+            tlEncode.RowCount = 14;
             tlEncode.Padding = new Padding(10, 30, 10, 10);
 
             // UPDATED column layout: label | main input | secondary label | secondary input
@@ -415,7 +415,7 @@ namespace Encode
             tlEncode.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));   // secondary inputs
 
             tlEncode.RowStyles.Clear();
-            for (int i = 0; i < 11; i++)
+            for (int i = 0; i < 13; i++)
                 tlEncode.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             tlEncode.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
@@ -455,7 +455,7 @@ namespace Encode
             btnBrowseOutputEncode.Click += btnBrowseOutputEncode_Click;
             tlEncode.Controls.Add(btnBrowseOutputEncode, 3, 1);
 
-            // Row 2: Encoder + Video Format (paired)
+            // Row 2: Encoder
             lblEncoderMode.Text = "Encoder:";
             lblEncoderMode.Anchor = AnchorStyles.Right;
             tlEncode.Controls.Add(lblEncoderMode, 0, 2);
@@ -465,11 +465,12 @@ namespace Encode
             comboEncoderMode.SelectedIndex = 0;
             comboEncoderMode.Dock = DockStyle.Fill;
             tlEncode.Controls.Add(comboEncoderMode, 1, 2);
+            tlEncode.SetColumnSpan(comboEncoderMode, 2);
 
             lblVideoFormat = new Label();
             lblVideoFormat.Text = "Video Format:";
             lblVideoFormat.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblVideoFormat, 2, 2);
+            tlEncode.Controls.Add(lblVideoFormat, 0, 3);
 
             comboVideoFormat = new ComboBox();
             comboVideoFormat.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -480,26 +481,27 @@ namespace Encode
             });
             comboVideoFormat.SelectedIndex = 0; // default to H.265
             comboVideoFormat.Dock = DockStyle.Fill;
-            tlEncode.Controls.Add(comboVideoFormat, 3, 2);
+            tlEncode.Controls.Add(comboVideoFormat, 1, 3);
+            tlEncode.SetColumnSpan(comboVideoFormat, 2);
 
-            // Row 3: Extensions
+            // Row 4: Extensions
             lblExtensions.Text = "Extensions:";
             lblExtensions.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblExtensions, 0, 3);
+            tlEncode.Controls.Add(lblExtensions, 0, 4);
 
             checkedListExt.Width = 200;
             checkedListExt.Height = 60;
-            tlEncode.Controls.Add(checkedListExt, 1, 3);
+            tlEncode.Controls.Add(checkedListExt, 1, 4);
             tlEncode.SetColumnSpan(checkedListExt, 3);         // give it room
 
-            // Row 4: Target size + Auto-target
+            // Row 5: Target size + Auto-target
             lblTargetSize.Text = "Target Size (MB):";
             lblTargetSize.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblTargetSize, 0, 4);
+            tlEncode.Controls.Add(lblTargetSize, 0, 5);
 
             txtTargetSize.Width = 80;
             txtTargetSize.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-            tlEncode.Controls.Add(txtTargetSize, 1, 4);
+            tlEncode.Controls.Add(txtTargetSize, 1, 5);
 
             chkAutoTargetSize.Text = "Auto-determine best target size";
             chkAutoTargetSize.AutoSize = true;
@@ -509,14 +511,14 @@ namespace Encode
                 txtTargetSize.Enabled = !chkAutoTargetSize.Checked;
             };
             txtTargetSize.Enabled = !chkAutoTargetSize.Checked;
-            tlEncode.Controls.Add(chkAutoTargetSize, 2, 4);
+            tlEncode.Controls.Add(chkAutoTargetSize, 2, 5);
             tlEncode.SetColumnSpan(chkAutoTargetSize, 2);
 
-            // Row 5: Compression profile
+            // Row 6: Compression profile
             lblCompressionProfile = new Label();
             lblCompressionProfile.Text = "Quality / File Size:";
             lblCompressionProfile.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblCompressionProfile, 0, 5);
+            tlEncode.Controls.Add(lblCompressionProfile, 0, 6);
 
             comboCompressionProfile = new ComboBox();
             comboCompressionProfile.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -530,51 +532,51 @@ namespace Encode
             });
             comboCompressionProfile.SelectedItem = "Medium Quality (Default)";
             comboCompressionProfile.Width = 180;            
-            tlEncode.Controls.Add(comboCompressionProfile, 1, 5);
+            tlEncode.Controls.Add(comboCompressionProfile, 1, 6);
             tlEncode.SetColumnSpan(comboCompressionProfile, 3);
 
-            // Row 6: Delete Source + Include Subfolders
+            // Row 8: Delete Source + Include Subfolders
             chkDeleteSource.Text = "Delete source file after compression";
             chkDeleteSource.AutoSize = true;
             chkDeleteSource.Checked = true;
             tlEncode.SetColumnSpan(chkDeleteSource, 2);
-            tlEncode.Controls.Add(chkDeleteSource, 0, 6);
+            tlEncode.Controls.Add(chkDeleteSource, 0, 8);
 
             chkIncludeSubfolders = new CheckBox();
             chkIncludeSubfolders.Text = "Include subfolders";
             chkIncludeSubfolders.AutoSize = true;
             chkIncludeSubfolders.Checked = true; // default on, matches prior behavior
             tlEncode.SetColumnSpan(chkIncludeSubfolders, 2);
-            tlEncode.Controls.Add(chkIncludeSubfolders, 2, 6);
+            tlEncode.Controls.Add(chkIncludeSubfolders, 2, 8);
 
-            // Row 7: Buttons
+            // Row 9: Buttons
             this.btnPauseQueue = new System.Windows.Forms.Button();
             this.btnPauseQueue.Name = "btnPauseQueue";
             this.btnPauseQueue.Text = "Pause Queue";
             this.btnPauseQueue.Click += new System.EventHandler(this.btnPauseQueue_Click);
-            tlEncode.Controls.Add(this.btnPauseQueue, 0, 7); // column 0, row 7
+            tlEncode.Controls.Add(this.btnPauseQueue, 0, 9); // column 0, row 9
 
             btnStartEncode.Text = "Start Encoding";
             btnStartEncode.Click += btnStartEncode_Click;
-            tlEncode.Controls.Add(btnStartEncode, 1, 7);
+            tlEncode.Controls.Add(btnStartEncode, 1, 9);
 
             btnStopEncode.Text = "Stop Encoding";
             btnStopEncode.Enabled = false;
             btnStopEncode.Click += btnStopEncode_Click;
-            tlEncode.Controls.Add(btnStopEncode, 2, 7);
+            tlEncode.Controls.Add(btnStopEncode, 2, 9);
 
             btnRefreshEncode.Text = "Refresh";
             btnRefreshEncode.Click += btnRefreshEncode_Click;
-            tlEncode.Controls.Add(btnRefreshEncode, 3, 7);
+            tlEncode.Controls.Add(btnRefreshEncode, 3, 9);
 
-            // Row 8: Status (full width again)
+            // Row 10: Status (full width again)
             lblEncodeStatus.Text = "";
             lblEncodeStatus.AutoSize = true;
             lblEncodeStatus.Anchor = AnchorStyles.Left;
             tlEncode.SetColumnSpan(lblEncodeStatus, 4);
-            tlEncode.Controls.Add(lblEncodeStatus, 0, 8);
+            tlEncode.Controls.Add(lblEncodeStatus, 0, 10);
 
-            // Row 9: Options group (process-all + filters), neat 2-column layout
+            // Row 11: Options group (process-all + filters), neat 2-column layout
             this.grpOptions = new GroupBox
             {
                 Text = "Options",
@@ -613,19 +615,19 @@ namespace Encode
             // add controls row-major for alignment
             tlOptions.Controls.Add(chkProcessAll, 0, 0);
             tlOptions.Controls.Add(chkFilterX264, 1, 0);
-            tlOptions.Controls.Add(chkFilterX265, 0, 1);
+            tlOptions.Controls.Add(chkFilterX265, 1, 1);
 
             grpOptions.Controls.Add(tlOptions);
 
-            // place the group across all 4 columns on row 9
-            tlEncode.Controls.Add(grpOptions, 0, 9);
+            // place the group across all 4 columns on row 11
+            tlEncode.Controls.Add(grpOptions, 0, 11);
             tlEncode.SetColumnSpan(grpOptions, 4);
 
-            // Row 10: Progress Panel
+            // Row 12: Progress Panel
             tlEncode.SetColumnSpan(progressPanel, 4);
-            tlEncode.Controls.Add(progressPanel, 0, 10);
+            tlEncode.Controls.Add(progressPanel, 0, 12);
 
-            // Row 11: Encode Queue Grid
+            // Row 13: Encode Queue Grid
             dgvEncodeQueue = new DataGridView();
             dgvEncodeQueue.Dock = DockStyle.Fill;
             dgvEncodeQueue.MinimumSize = new Size(0, 300);
@@ -791,7 +793,7 @@ namespace Encode
             dgvEncodeQueue.ContextMenuStrip = cms;
 
             tlEncode.SetColumnSpan(dgvEncodeQueue, 4);
-            tlEncode.Controls.Add(dgvEncodeQueue, 0, 11);
+            tlEncode.Controls.Add(dgvEncodeQueue, 0, 13);
 
             panelEncode.Controls.Add(tlEncode);
 
