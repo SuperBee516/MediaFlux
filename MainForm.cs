@@ -549,21 +549,20 @@ namespace Encode
 
             // --- Create controls ---
 
-            // NVENC preset label + combo
+            // NVENC preset label + combo (placed under Quality / File Size)
             var lblPreset = new Label
             {
                 Text = "Encoding Speed:",
                 AutoSize = true,
                 Margin = new Padding(4, 2, 4, 2),
-                Anchor = AnchorStyles.Left
+                Anchor = AnchorStyles.Right
             };
 
             comboNvencPreset = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Width = 180,
                 Margin = new Padding(4, 2, 4, 2),
-                Anchor = AnchorStyles.Left
+                Dock = DockStyle.Fill
             };
             comboNvencPreset.Items.AddRange(new object[]
             {
@@ -574,6 +573,14 @@ namespace Encode
                 "Max Quality (Slowest)"       // p7
             });
             comboNvencPreset.SelectedItem = "Balanced (Recommended)";
+
+            if (tlEncode != null)
+            {
+                const int encodingSpeedRow = 7;
+                tlEncode.Controls.Add(lblPreset, 0, encodingSpeedRow);
+                tlEncode.Controls.Add(comboNvencPreset, 1, encodingSpeedRow);
+                tlEncode.SetColumnSpan(comboNvencPreset, 3);
+            }
 
             // 10-bit toggle
             chkTenBit = new CheckBox
@@ -612,20 +619,16 @@ namespace Encode
 
             int startRow = tlOptions.RowCount;
             tlOptions.RowCount = startRow + 3;
-            tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // preset row
             tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // 10-bit + label row
             tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // audio combo row
-
-            // Row: NVENC preset
-            tlOptions.Controls.Add(lblPreset, 0, startRow);
-            tlOptions.Controls.Add(comboNvencPreset, 1, startRow);
+            tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // dual nvenc row
 
             // Row: 10-bit + "Audio channels" label
-            tlOptions.Controls.Add(chkTenBit, 0, startRow + 1);
-            tlOptions.Controls.Add(lblChannels, 1, startRow + 1);
+            tlOptions.Controls.Add(chkTenBit, 0, startRow);
+            tlOptions.Controls.Add(lblChannels, 1, startRow);
 
             // Row: audio channels combo spanning full width
-            tlOptions.Controls.Add(comboAudioChannels, 0, startRow + 2);
+            tlOptions.Controls.Add(comboAudioChannels, 0, startRow + 1);
             tlOptions.SetColumnSpan(comboAudioChannels, 2);
 
             // NEW: Dual NVENC / parallel encodes checkbox
@@ -636,7 +639,7 @@ namespace Encode
                 AutoSize = true,
                 Margin = new Padding(3, 6, 3, 3)
             };
-            tlOptions.Controls.Add(chkDualNvenc, 0, startRow + 3);
+            tlOptions.Controls.Add(chkDualNvenc, 0, startRow + 2);
             tlOptions.SetColumnSpan(chkDualNvenc, 2);
 
             // Make sure tlOptions is in the group (in case something changed)
