@@ -660,10 +660,12 @@ namespace Encode.Services
 
                 if (wantsTenBit)
                 {
+                    string tenBitPixFmt = isNvenc ? "p010le" : "yuv420p10le";
+
                     if (videoCodec.Contains("hevc") || videoCodec.Contains("265"))
-                        sb.Append("-profile:v main10 -pix_fmt p010le ");
+                        sb.Append($"-profile:v main10 -pix_fmt {tenBitPixFmt} ");
                     else if (videoCodec.Contains("av1"))
-                        sb.Append("-profile:v main10 -pix_fmt p010le ");
+                        sb.Append($"-pix_fmt {tenBitPixFmt} ");
                 }
 
                 if (isNvenc)
@@ -691,10 +693,12 @@ namespace Encode.Services
 
                 if (wantsTenBit)
                 {
+                    string tenBitPixFmt = isNvenc ? "p010le" : "yuv420p10le";
+
                     if (videoCodec.Contains("hevc") || videoCodec.Contains("265"))
-                        sb.Append("-profile:v main10 -pix_fmt p010le ");
+                        sb.Append($"-profile:v main10 -pix_fmt {tenBitPixFmt} ");
                     else if (videoCodec.Contains("av1"))
-                        sb.Append("-profile:v main10 -pix_fmt p010le ");
+                        sb.Append($"-pix_fmt {tenBitPixFmt} ");
                 }
 
                 if (isNvenc)
