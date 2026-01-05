@@ -94,18 +94,19 @@ namespace Encode.Services
         // PUBLIC ENCODE WRAPPER (with callback)
         // -------------------------------------------------------
         public Task<bool> EncodeAsync(
-    string input,
-    string outputFolder,
-    string suffix,
-    bool useGpu,
-    double? targetMb,
-    string videoCodec,
-    ScaleMode scaleMode,
-    string? nvencPreset,
-    bool tenBit,
-    int? audioChannels)
+            string input,
+            string outputFolder,
+            string suffix,
+            bool useGpu,
+            double? targetMb,
+            string videoCodec,
+            ScaleMode scaleMode,
+            string? nvencPreset,
+            bool tenBit,
+            int? audioChannels,
+            Action<string>? progressCallback)
         {
-            return EncodeInternalAsync(
+            return EncodeAsync(
                 input,
                 outputFolder,
                 suffix,
@@ -116,9 +117,8 @@ namespace Encode.Services
                 nvencPreset,
                 tenBit,
                 audioChannels,
-                _progressCallback,
-                CancellationToken.None
-            );
+                progressCallback,
+                CancellationToken.None);
         }
 
         public Task<bool> EncodeAsync(
@@ -132,7 +132,8 @@ namespace Encode.Services
             string? nvencPreset,
             bool tenBit,
             int? audioChannels,
-            Action<string> progressCallback)
+            Action<string>? progressCallback,
+            CancellationToken cancellationToken)
         {
             return EncodeInternalAsync(
                 input,
@@ -145,11 +146,10 @@ namespace Encode.Services
                 nvencPreset,
                 tenBit,
                 audioChannels,
-                progressCallback,
-                CancellationToken.None
+                progressCallback ?? _progressCallback,
+                cancellationToken
             );
         }
-
 
         // -------------------------------------------------------
         // BACKWARDS COMPATIBLE WRAPPERS (used earlier in project)
@@ -687,8 +687,13 @@ namespace Encode.Services
                         $"-preset {presetForNvenc} "
                     );
 
+
+
                     if (isNvencAv1)
                         sb.Append("-cq 28 ");
+
+                    // Phase B: NVENC quality knobs (better quality per bit; minimal perf impact on modern GPUs)
+                    sb.Append("-rc-lookahead 20 -spatial_aq 1 -temporal_aq 1 -aq-strength 8 ");
                 }
                 else
                 {
@@ -700,7 +705,7 @@ namespace Encode.Services
                 sb.Append($"-c:v {videoCodec} ");
 
                 if (wantsTenBit && !string.IsNullOrEmpty(tenBitPixFmt))
-                {                    
+                {
                     if (videoCodec.Contains("hevc") || videoCodec.Contains("265"))
                         sb.Append($"-profile:v main10 -pix_fmt {tenBitPixFmt} ");
                     else if (videoCodec.Contains("av1"))
@@ -715,6 +720,9 @@ namespace Encode.Services
                         sb.Append($"-rc vbr_hq -cq 24 -preset {presetForNvenc} ");
                     else
                         sb.Append($"-rc vbr -cq 28 -preset {presetForNvenc} ");
+
+                    // Phase B: NVENC quality knobs (better quality per bit; minimal perf impact on modern GPUs)
+                    sb.Append("-rc-lookahead 20 -spatial_aq 1 -temporal_aq 1 -aq-strength 8 ");
                 }
                 else
                 {
@@ -727,9 +735,18 @@ namespace Encode.Services
                 }
             }
 
-            sb.Append("-c:a libfdk_aac -vbr 5 ");
+            // Audio handling (Phase A):
+            // Default behavior is to COPY audio to avoid unnecessary re-encoding.
+            // If the caller requests a specific channel count, we must re-encode (downmix/upmix).
             if (audioChannels.HasValue && audioChannels.Value > 0)
+            {
+                sb.Append("-c:a libfdk_aac -vbr 5 ");
                 sb.Append($"-ac {audioChannels.Value} ");
+            }
+            else
+            {
+                sb.Append("-c:a copy ");
+            }
 
             sb.Append("-movflags +faststart ");
 
