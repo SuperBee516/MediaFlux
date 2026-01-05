@@ -1,97 +1,111 @@
 # 🎬 GoEncode
 
-**GoEncode** is a Windows-based C# application designed to manage and automate **FFmpeg-driven video encoding workflows**.  
-It is built for **reliability, repeatability, and transparency**, with a strong emphasis on batch processing, hardware acceleration, and controlled execution of encoding jobs for large media libraries.
+**GoEncode** is a Windows-based C# application designed to manage and automate **FFmpeg-driven video encoding workflows**.
 
-This is not a one-click consumer encoder — it is a **tool for power users** who want predictable behavior and full visibility into the encoding process.
+It is built for **reliability, repeatability, and transparency**, with a strong emphasis on **batch processing, hardware acceleration, deterministic encoding behavior, and explicit control** over how media is processed.
+
+This is not a one-click consumer encoder — it is a **power-user orchestration tool** for predictable, large-scale media processing.
 
 ---
 
 ## 🎯 Primary Goals
 
-- Orchestrate FFmpeg encoding jobs in a **structured and repeatable** manner  
-- Support **GPU and CPU-based** encoding workflows  
-- Provide **clear progress tracking** and job visibility  
-- Remain **maintainable, extensible, and refactor-friendly** as the project evolves  
+- Orchestrate FFmpeg encoding jobs in a **structured, repeatable, and auditable** manner
+- Support **GPU and CPU-based** encoding pipelines
+- Provide **accurate progress tracking and job introspection**
+- Ensure **encoding output is deterministic** (no silent FFmpeg defaults)
+- Remain **maintainable and refactor-friendly** as the project evolves
 
 ---
 
 ## 🧱 Technology Stack
 
-- **Language:** C#  
-- **Framework:** .NET (Windows)  
-- **UI:** Windows Forms (WinForms)  
-- **Encoding Backend:** FFmpeg  
-- **Execution Model:** External process execution with managed job orchestration  
+- **Language:** C#
+- **Framework:** .NET (Windows)
+- **UI:** Windows Forms (WinForms)
+- **Encoding Backend:** FFmpeg / FFprobe
+- **Execution Model:** External process execution with managed orchestration
 
 ---
 
 ## ⚙️ Core Capabilities
 
 - 📦 **Batch encoding queue**
-- 🎥 **FFmpeg-based video and audio processing**
-- 🚀 **Hardware acceleration support** (when available via FFmpeg)
-- 🔍 **Audio stream inspection and selection**
-- 📊 **Real-time job progress and status tracking**
+- 🎥 **Explicit FFmpeg video pipeline construction**
+- 🚀 **Hardware acceleration support** (NVENC / QSV / AMF when available)
+- 🎚️ **8-bit and 10-bit encoding support**
+- 🔊 **Smart audio handling**
+  - Audio copy by default (no unnecessary re-encoding)
+  - Optional channel reconfiguration when requested
+- 📊 **Accurate target-size encoding**
+  - Video bitrate budgeted after audio + container overhead
+- 🧾 **Explicit stream mapping**
+  - Preserve or limit audio/subtitle streams by design
+- 📈 **Real-time job progress and structured logging**
 - 🔁 **Job history and re-queue support**
-- 🧩 **Modular internal architecture**
+- 🧩 **Modular, service-based internal architecture**
 
 ---
 
 ## 🖥️ Platform Support
 
-- **Operating System:** Windows 10 / Windows 11  
-- **Architecture:** x64  
+- **Operating System:** Windows 10 / Windows 11
+- **Architecture:** x64
 
-> FFmpeg binaries are **not bundled** and must be supplied separately.
+> FFmpeg and FFprobe binaries are **not bundled** and must be supplied separately.
 
 ---
 
 ## 🔌 Hardware Acceleration
 
-GoEncode supports hardware-accelerated encoding **when the FFmpeg build provides it**, including:
+GoEncode supports hardware-accelerated encoding **when supported by the installed FFmpeg build**, including:
 
 - NVIDIA **NVENC**
 - Intel **Quick Sync (QSV)**
-- AMD **AMF** (where supported)
+- AMD **AMF**
 
-⚠️ Hardware acceleration availability is entirely dependent on:
-- GPU capability
+⚠️ Availability depends entirely on:
+- GPU capabilities
 - Installed drivers
 - FFmpeg build configuration
+
+GoEncode performs **no silent fallbacks** — behavior is explicit and logged.
 
 ---
 
 ## 🧠 Design Philosophy
 
-- Predictable execution over maximum throughput  
-- Explicit configuration over hidden automation  
-- Sequential job execution to avoid:
+- **Predictable execution over maximum throughput**
+- **Explicit configuration over hidden automation**
+- **One job at a time by design** to avoid:
   - GPU saturation
   - Disk I/O contention
-  - Process collisions  
+  - Process collisions
 
-GoEncode intentionally avoids background services, cloud dependencies, or opaque behavior.
+GoEncode intentionally avoids:
+- Background services
+- Cloud dependencies
+- Implicit or opaque FFmpeg behavior
 
 ---
 
 ## 🚧 Project Status
 
-🟡 **Active Development**
+🟢 **Stable / Active Development**
 
-- Core functionality is implemented  
-- Ongoing refactoring and feature expansion  
-- Architecture is stabilizing while remaining flexible  
+- Core encoding pipeline is complete and validated
+- Architecture stabilized after major refactor
+- Future work focuses on UX improvements and optional features
 
-Breaking changes may occur during development.
+Breaking changes are now expected to be **intentional and documented**.
 
 ---
 
 ## 📝 Notes
 
 - This repository is currently **private**
-- Intended for **personal development and experimentation**
-- Not licensed for public redistribution at this time  
+- Intended for **personal development and controlled environments**
+- Not licensed for public redistribution at this time
 
 ---
 
@@ -109,11 +123,12 @@ Breaking changes may occur during development.
 
 ## 🧭 Roadmap (High-Level)
 
-- Expanded encoding profiles
-- Improved diagnostics and job introspection
-- Additional queue and scheduling controls
-- Documentation and architectural diagrams
+- Encoding profile presets
+- Improved diagnostics and per-job breakdowns
+- Enhanced queue controls and scheduling
+- Additional media inspection tools
+- Architectural documentation
 
 ---
 
-_If you built media pipelines before, this tool is for you._
+_If you’ve built media pipelines before, GoEncode will feel familiar — and predictable._
