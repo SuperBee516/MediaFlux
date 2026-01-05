@@ -641,6 +641,13 @@ namespace Encode
             dgvEncodeQueue.MultiSelect = true;
             dgvEncodeQueue.AutoGenerateColumns = false;
 
+            // FORCE grid scrollbars (fix missing vertical scrollbar)
+            dgvEncodeQueue.ScrollBars = ScrollBars.Both;
+            dgvEncodeQueue.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
+            dgvEncodeQueue.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
+            dgvEncodeQueue.RowHeadersVisible = false;
+            dgvEncodeQueue.AllowUserToResizeRows = false;
+
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "colName",
