@@ -19,6 +19,8 @@ namespace Encode.Services
         private readonly Action<string> _progressCallback;
         private readonly Action<string>? _log;
 
+
+        private readonly SynchronizationContext? _syncContext;
         // Cache primary audio bitrate per input file (kbps) to avoid repeated ffprobe calls
         private readonly Dictionary<string, double> _audioBitrateKbpsCache =
             new(StringComparer.OrdinalIgnoreCase);
@@ -96,6 +98,9 @@ namespace Encode.Services
             _appPath = applicationDirectory;
             _progressCallback = progressCallback ?? (_ => { });
             _log = logCallback;
+
+            // Capture the current SynchronizationContext (WinForms UI thread) to marshal progress callbacks safely.
+            _syncContext = SynchronizationContext.Current;
         }
 
         // --------------------------------------------------------------------
@@ -419,20 +424,37 @@ namespace Encode.Services
         // --------------------------------------------------------------------
         private void HandleProgressLine(string line, Action<string> callback, TimeSpan totalDuration)
         {
-            // Preserve existing behavior
-            callback(line);
-
-            // Optional logging
-            _log?.Invoke($"[ffmpeg] {line}");
-
-            // Structured progress (optional)
-            if (StructuredProgress == null)
-                return;
-
-            if (TryParseProgress(line, totalDuration, out var progress))
+            // NOTE: FFmpeg stdout/stderr callbacks are raised on background threads.
+            // When running concurrent jobs, invoking UI-bound callbacks from those threads can
+            // crash WinForms with cross-thread exceptions. Marshal progress notifications onto
+            // the captured SynchronizationContext (typically the UI thread).
+            void Publish()
             {
-                try { StructuredProgress?.Invoke(progress); }
-                catch { /* don't let subscribers break encoding */ }
+                // Preserve existing behavior
+                callback(line);
+
+                // Optional logging
+                _log?.Invoke($"[ffmpeg] {line}");
+
+                // Structured progress (optional)
+                if (StructuredProgress == null)
+                    return;
+
+                if (TryParseProgress(line, totalDuration, out var progress))
+                {
+                    try { StructuredProgress?.Invoke(progress); }
+                    catch { /* don't let subscribers break encoding */ }
+                }
+            }
+
+            if (_syncContext != null)
+            {
+                _syncContext.Post(_ => Publish(), null);
+            }
+            else
+            {
+                // Fallback for non-UI hosts (tests/CLI) where SynchronizationContext may be null.
+                Publish();
             }
         }
 

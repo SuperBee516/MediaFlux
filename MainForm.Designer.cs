@@ -1121,7 +1121,7 @@ namespace Encode
 
             MainMenuStrip = menuStrip1;
 
-            Text = "GoEncode v0.5.2";
+            Text = "GoEncode v0.5.4";
             ClientSize = new Size(800, 760);
         }       
     }
