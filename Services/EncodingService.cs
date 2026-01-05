@@ -94,19 +94,18 @@ namespace Encode.Services
         // PUBLIC ENCODE WRAPPER (with callback)
         // -------------------------------------------------------
         public Task<bool> EncodeAsync(
-            string input,
-            string outputFolder,
-            string suffix,
-            bool useGpu,
-            double? targetMb,
-            string videoCodec,
-            ScaleMode scaleMode,
-            string? nvencPreset,
-            bool tenBit,
-            int? audioChannels,
-            Action<string>? progressCallback)
+    string input,
+    string outputFolder,
+    string suffix,
+    bool useGpu,
+    double? targetMb,
+    string videoCodec,
+    ScaleMode scaleMode,
+    string? nvencPreset,
+    bool tenBit,
+    int? audioChannels)
         {
-            return EncodeAsync(
+            return EncodeInternalAsync(
                 input,
                 outputFolder,
                 suffix,
@@ -117,8 +116,9 @@ namespace Encode.Services
                 nvencPreset,
                 tenBit,
                 audioChannels,
-                progressCallback,
-                CancellationToken.None);
+                _progressCallback,
+                CancellationToken.None
+            );
         }
 
         public Task<bool> EncodeAsync(
@@ -132,8 +132,7 @@ namespace Encode.Services
             string? nvencPreset,
             bool tenBit,
             int? audioChannels,
-            Action<string>? progressCallback,
-            CancellationToken cancellationToken)
+            Action<string> progressCallback)
         {
             return EncodeInternalAsync(
                 input,
@@ -146,10 +145,11 @@ namespace Encode.Services
                 nvencPreset,
                 tenBit,
                 audioChannels,
-                progressCallback ?? _progressCallback,
-                cancellationToken
+                progressCallback,
+                CancellationToken.None
             );
         }
+
 
         // -------------------------------------------------------
         // BACKWARDS COMPATIBLE WRAPPERS (used earlier in project)
@@ -670,8 +670,6 @@ namespace Encode.Services
 
                 if (wantsTenBit && !string.IsNullOrEmpty(tenBitPixFmt))
                 {
-                    string tenBitPixFmt = isNvenc ? "p010le" : "yuv420p10le";
-
                     if (videoCodec.Contains("hevc") || videoCodec.Contains("265"))
                         sb.Append($"-profile:v main10 -pix_fmt {tenBitPixFmt} ");
                     else if (videoCodec.Contains("av1"))
@@ -702,9 +700,7 @@ namespace Encode.Services
                 sb.Append($"-c:v {videoCodec} ");
 
                 if (wantsTenBit && !string.IsNullOrEmpty(tenBitPixFmt))
-                {
-                    string tenBitPixFmt = isNvenc ? "p010le" : "yuv420p10le";
-
+                {                    
                     if (videoCodec.Contains("hevc") || videoCodec.Contains("265"))
                         sb.Append($"-profile:v main10 -pix_fmt {tenBitPixFmt} ");
                     else if (videoCodec.Contains("av1"))
