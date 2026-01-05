@@ -504,7 +504,7 @@ namespace Encode
             var lbl = new Label
             {
                 AutoSize = true,
-                Text = "Auto Quality (CRF/CQ):",
+                Text = "(CRF/CQ):",
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
@@ -579,7 +579,7 @@ namespace Encode
                 const int encodingSpeedRow = 7;
                 tlEncode.Controls.Add(lblPreset, 0, encodingSpeedRow);
                 tlEncode.Controls.Add(comboNvencPreset, 1, encodingSpeedRow);
-                tlEncode.SetColumnSpan(comboNvencPreset, 3);
+                tlEncode.SetColumnSpan(comboNvencPreset, 1);
             }
 
             // 10-bit toggle
@@ -592,13 +592,13 @@ namespace Encode
             };
 
             // Audio channels label + combo
-            var lblChannels = new Label
-            {
-                Text = "Audio channels:",
-                AutoSize = true,
-                Margin = new Padding(4, 2, 4, 2),
-                Anchor = AnchorStyles.Left
-            };
+            //var lblChannels = new Label
+            //{
+              //  Text = "Audio channels:",
+                //AutoSize = true,
+                //Margin = new Padding(4, 2, 4, 2),
+                //Anchor = AnchorStyles.Left
+            //};
 
             comboAudioChannels = new ComboBox
             {
@@ -625,7 +625,7 @@ namespace Encode
 
             // Row: 10-bit + "Audio channels" label
             tlOptions.Controls.Add(chkTenBit, 0, startRow);
-            tlOptions.Controls.Add(lblChannels, 1, startRow);
+            // tlOptions.Controls.Add(lblChannels, 1, startRow);
 
             // Row: audio channels combo spanning full width
             tlOptions.Controls.Add(comboAudioChannels, 0, startRow + 1);
