@@ -579,6 +579,9 @@ namespace Encode.Services
                 (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
                  videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase) ||
                  videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase));
+            string? tenBitPixFmt = wantsTenBit
+                ? (isNvenc ? "p010le" : "yuv420p10le")
+                : null;
 
             string presetForNvenc = "p5";
             if (!string.IsNullOrWhiteSpace(nvencPreset))
@@ -643,8 +646,15 @@ namespace Encode.Services
                 else
                 {
                     // CPU scaling for 10-bit or non-NVENC paths
-                    sb.Append($"-vf scale={scaleExpr}:flags=lanczos ");
+                    if (wantsTenBit && !string.IsNullOrEmpty(tenBitPixFmt))
+                        sb.Append($"-vf scale={scaleExpr}:flags=lanczos,format={tenBitPixFmt} ");
+                    else
+                        sb.Append($"-vf scale={scaleExpr}:flags=lanczos ");
                 }
+            }
+            else if (wantsTenBit && !string.IsNullOrEmpty(tenBitPixFmt))
+            {
+                sb.Append($"-vf format={tenBitPixFmt} ");
             }
 
             if (targetMb.HasValue && targetMb > 0)
@@ -658,12 +668,12 @@ namespace Encode.Services
 
                 sb.Append($"-c:v {videoCodec} ");
 
-                if (wantsTenBit)
+                if (wantsTenBit && !string.IsNullOrEmpty(tenBitPixFmt))
                 {
                     if (videoCodec.Contains("hevc") || videoCodec.Contains("265"))
-                        sb.Append("-profile:v main10 -pix_fmt p010le ");
+                        sb.Append($"-profile:v main10 -pix_fmt {tenBitPixFmt} ");
                     else if (videoCodec.Contains("av1"))
-                        sb.Append("-profile:v main10 -pix_fmt p010le ");
+                        sb.Append($"-pix_fmt {tenBitPixFmt} ");
                 }
 
                 if (isNvenc)
@@ -689,12 +699,12 @@ namespace Encode.Services
             {
                 sb.Append($"-c:v {videoCodec} ");
 
-                if (wantsTenBit)
+                if (wantsTenBit && !string.IsNullOrEmpty(tenBitPixFmt))
                 {
                     if (videoCodec.Contains("hevc") || videoCodec.Contains("265"))
-                        sb.Append("-profile:v main10 -pix_fmt p010le ");
+                        sb.Append($"-profile:v main10 -pix_fmt {tenBitPixFmt} ");
                     else if (videoCodec.Contains("av1"))
-                        sb.Append("-profile:v main10 -pix_fmt p010le ");
+                        sb.Append($"-pix_fmt {tenBitPixFmt} ");
                 }
 
                 if (isNvenc)
