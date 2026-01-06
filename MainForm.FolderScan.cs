@@ -36,8 +36,7 @@ namespace Encode
 
                         // Respect codec filters
                         var codec = GetVideoCodec(f);
-                        if ((codec == "h264" && !chkFilterX264.Checked) ||
-                            ((codec == "hevc" || codec == "h265") && !chkFilterX265.Checked))
+                        if (!PassesCodecFilter(codec))
                             continue;
 
                         if (AddEncodeItemIfNotPresent(f))
@@ -72,13 +71,9 @@ namespace Encode
                     if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext)) return false;
 
                     // Respect codec filters
-                    if (!chkFilterX264.Checked || !chkFilterX265.Checked)
-                    {
-                        var codec = GetVideoCodec(f);
-                        if ((codec == "h264" && !chkFilterX264.Checked) ||
-                            ((codec == "hevc" || codec == "h265") && !chkFilterX265.Checked))
-                            return false;
-                    }
+                    var codec = GetVideoCodec(f);
+                    if (!PassesCodecFilter(codec))
+                        return false;
                     return true;
                 }),
                 StringComparer.OrdinalIgnoreCase);
