@@ -200,11 +200,7 @@ namespace Encode
                     string codec = string.Empty;
                     try { codec = GetVideoCodec(path); } catch { /* ignore probe errors */ }
 
-                    bool isH264 = string.Equals(codec, "h264", StringComparison.OrdinalIgnoreCase);
-                    bool isHevc = string.Equals(codec, "hevc", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(codec, "h265", StringComparison.OrdinalIgnoreCase);
-
-                    if ((isH264 && !chkFilterX264.Checked) || (isHevc && !chkFilterX265.Checked))
+                    if (!PassesCodecFilter(codec))
                         continue;
                 }
 
@@ -366,11 +362,7 @@ namespace Encode
                         string codec = string.Empty;
                         try { codec = GetVideoCodec(path); } catch { /* ignore probe errors */ }
 
-                        bool isH264 = string.Equals(codec, "h264", StringComparison.OrdinalIgnoreCase);
-                        bool isHevc = string.Equals(codec, "hevc", StringComparison.OrdinalIgnoreCase) ||
-                                      string.Equals(codec, "h265", StringComparison.OrdinalIgnoreCase);
-
-                        if ((isH264 && !chkFilterX264.Checked) || (isHevc && !chkFilterX265.Checked))
+                        if (!PassesCodecFilter(codec))
                         {
                             _monSeen.Add(path); // don’t keep re-checking filtered out files
                             continue;
@@ -451,6 +443,21 @@ namespace Encode
         private string GetVideoCodec(string path)
         {
             return _mediaInfoService.GetVideoCodec(path);
+        }
+
+        private bool PassesCodecFilter(string codec)
+        {
+            bool allowH264 = chkFilterX264.Checked;
+            bool allowHevc = chkFilterX265.Checked;
+
+            if (!allowH264 && !allowHevc)
+                return true;
+
+            bool isH264 = string.Equals(codec, "h264", StringComparison.OrdinalIgnoreCase);
+            bool isHevc = string.Equals(codec, "hevc", StringComparison.OrdinalIgnoreCase) ||
+                          string.Equals(codec, "h265", StringComparison.OrdinalIgnoreCase);
+
+            return (isH264 && allowH264) || (isHevc && allowHevc);
         }
     }
 }
