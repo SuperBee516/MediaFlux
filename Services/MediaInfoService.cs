@@ -19,7 +19,25 @@ namespace Encode.Services
                 ? AppDomain.CurrentDomain.BaseDirectory
                 : baseDirectory;
 
-            _ffprobePath = Path.Combine(root, "ffprobe.exe");
+            _ffprobePath = ResolveFfprobePath(root);
+        }
+
+        private static string ResolveFfprobePath(string root)
+        {
+            var candidates = new[]
+            {
+                Path.Combine(root, "ffprobe.exe"),
+                Path.Combine(root, "programs", "ffprobe.exe"),
+                Path.Combine(root, "Programs", "ffprobe.exe")
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+
+            return candidates[0];
         }
 
         public MediaInfo GetInfo(string path)
