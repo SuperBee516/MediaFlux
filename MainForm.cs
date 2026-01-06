@@ -1186,14 +1186,9 @@ namespace Encode
                             if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext))
                                 return false;
 
-                            // Respect codec filters (if either is off)
-                            if (!chkFilterX264.Checked || !chkFilterX265.Checked)
-                            {
-                                var codec = GetVideoCodec(f);
-                                if ((codec == "h264" && !chkFilterX264.Checked) ||
-                                    ((codec == "hevc" || codec == "h265") && !chkFilterX265.Checked))
-                                    return false;
-                            }
+                            var codec = GetVideoCodec(f);
+                            if (!PassesCodecFilter(codec))
+                                return false;
 
                             return true;
                         }),
@@ -1334,8 +1329,7 @@ namespace Encode
                     continue;
 
                 var codec = GetVideoCodec(f);
-                if ((codec == "h264" && !chkFilterX264.Checked) ||
-                    ((codec == "hevc" || codec == "h265") && !chkFilterX265.Checked))
+                if (!PassesCodecFilter(codec))
                     continue;
 
                 AddFileToGrid(f);
