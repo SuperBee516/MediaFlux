@@ -291,6 +291,13 @@ namespace Encode.Services
             // Collision-safe output naming so we don't overwrite existing files
             string output = GetUniqueOutputPath(outFolder, name, actualSuffix, ".mp4");
 
+            bool allowSubtitleCopy = copySubtitles;
+            if (copySubtitles && string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase))
+            {
+                allowSubtitleCopy = false;
+                _log?.Invoke("[EncodingService] MP4 output does not support PGS subtitles; disabling subtitle copy.");
+            }
+
             // Total duration once for progress and target bitrate math
             TimeSpan totalDuration = GetVideoDuration(input);
             if (totalDuration <= TimeSpan.Zero)
@@ -307,7 +314,7 @@ namespace Encode.Services
                 tenBit,
                 audioChannels,
                 mapMode,
-                copySubtitles);
+                allowSubtitleCopy);
 
             _log?.Invoke($"[EncodingService] Starting ffmpeg for '{input}' -> '{output}'");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
