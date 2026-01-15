@@ -298,6 +298,16 @@ namespace Encode.Services
                 _log?.Invoke("[EncodingService] MP4 output does not support PGS subtitles; disabling subtitle copy.");
             }
 
+            // MP4 cannot mux arbitrary "data" streams (e.g., GPAC hint tracks / RTP) and will fail with:
+            //   "Could not find tag for codec none ... codec not currently supported in container"
+            // Therefore, disable copying/mapping data streams when targeting MP4.
+            bool allowDataCopy = true;
+            if (string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase))
+            {
+                allowDataCopy = false;
+                _log?.Invoke("[EncodingService] MP4 output does not support generic data streams; disabling data stream copy.");
+            }
+
             // Total duration once for progress and target bitrate math
             TimeSpan totalDuration = GetVideoDuration(input);
             if (totalDuration <= TimeSpan.Zero)
@@ -314,7 +324,8 @@ namespace Encode.Services
                 tenBit,
                 audioChannels,
                 mapMode,
-                allowSubtitleCopy);
+                allowSubtitleCopy,
+                allowDataCopy);
 
             _log?.Invoke($"[EncodingService] Starting ffmpeg for '{input}' -> '{output}'");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
@@ -575,7 +586,8 @@ namespace Encode.Services
             bool tenBit,
             int? audioChannels,
             StreamMapMode mapMode = StreamMapMode.KeepAll,
-            bool copySubtitles = true)
+            bool copySubtitles = true,
+            bool copyDataStreams = true)
         {
             bool isNvenc = videoCodec.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase);
             bool isNvencAv1 = videoCodec.Equals("av1_nvenc", StringComparison.OrdinalIgnoreCase);
@@ -629,7 +641,7 @@ namespace Encode.Services
 
             sb.Append($"-i \"{input}\" ");
 
-            AppendStreamMapping(sb, mapMode, copySubtitles);
+            AppendStreamMapping(sb, mapMode, copySubtitles, copyDataStreams);
 
             // Subtitle codec handling
             if (copySubtitles)
@@ -700,7 +712,7 @@ namespace Encode.Services
                 : presetForNvenc;
         }
 
-        private static void AppendStreamMapping(StringBuilder sb, StreamMapMode mapMode, bool copySubtitles)
+        private static void AppendStreamMapping(StringBuilder sb, StreamMapMode mapMode, bool copySubtitles, bool copyDataStreams)
         {
             sb.Append("-map 0:v:0 ");
 
@@ -709,14 +721,20 @@ namespace Encode.Services
                 sb.Append("-map 0:a? ");
                 if (copySubtitles)
                     sb.Append("-map 0:s? ");
-                sb.Append("-map 0:d? ");
+                if (copyDataStreams)
+                    sb.Append("-map 0:d? ");
+                else
+                    sb.Append("-dn ");
             }
             else
             {
                 sb.Append("-map 0:a:0? ");
                 if (copySubtitles)
                     sb.Append("-map 0:s? ");
-                sb.Append("-map 0:d? ");
+                if (copyDataStreams)
+                    sb.Append("-map 0:d? ");
+                else
+                    sb.Append("-dn ");
             }
         }
 
