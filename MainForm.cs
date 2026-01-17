@@ -118,7 +118,9 @@ namespace Encode
                 progressPanel.Parent.Controls.Remove(progressPanel);
                 progressPanel.Dock = DockStyle.Bottom;
                 Controls.Add(progressPanel);
-                progressPanel.BringToFront();
+                progressPanel.SendToBack();
+                menuStrip1.BringToFront();
+                statusStrip1.BringToFront();
             }
 
             InitializeEncodingSpinner();

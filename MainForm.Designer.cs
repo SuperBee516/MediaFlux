@@ -630,7 +630,7 @@ namespace Encode
             // Row 13: Encode Queue Grid
             dgvEncodeQueue = new DataGridView();
             dgvEncodeQueue.Dock = DockStyle.Fill;
-            dgvEncodeQueue.MinimumSize = new Size(0, 300);
+            dgvEncodeQueue.Margin = new Padding(0);
             dgvEncodeQueue.AllowDrop = true;
             dgvEncodeQueue.DragEnter += dgvEncodeQueue_DragEnter;
             dgvEncodeQueue.DragDrop += dgvEncodeQueue_DragDrop;
