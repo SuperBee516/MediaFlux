@@ -3,16 +3,30 @@
     partial class SettingsForm
     {
         private System.ComponentModel.IContainer components = null;
-        private Label lblUpdateFolder;
-        private TextBox txtUpdateFolder;
-        private Button btnBrowseUpdate;
-        private Label lblPattern;
-        private TextBox txtPattern;
-        private Label lblSuffix;
-        private TextBox txtSuffix;
-        private Button btnOK;
-        private Button btnCancel;
-        private CheckBox chkRememberCheckboxes;
+
+        private System.Windows.Forms.Label lblUpdateFolder;
+        private System.Windows.Forms.TextBox txtUpdateFolder;
+        private System.Windows.Forms.Button btnBrowseUpdate;
+
+        private System.Windows.Forms.Label lblPattern;
+        private System.Windows.Forms.TextBox txtPattern;
+
+        private System.Windows.Forms.Label lblSuffix;
+        private System.Windows.Forms.TextBox txtSuffix;
+
+        private System.Windows.Forms.GroupBox grpExtensions;
+        private System.Windows.Forms.ListBox lstSupportedExts;
+        private System.Windows.Forms.Label lblNewExt;
+        private System.Windows.Forms.TextBox txtNewExt;
+        private System.Windows.Forms.Button btnAddExt;
+        private System.Windows.Forms.Button btnRemoveExt;
+        private System.Windows.Forms.Button btnResetExts;
+        private System.Windows.Forms.Label lblExtHint;
+
+        private System.Windows.Forms.CheckBox chkRememberCheckboxes;
+
+        private System.Windows.Forms.Button btnOK;
+        private System.Windows.Forms.Button btnCancel;
 
         protected override void Dispose(bool disposing)
         {
@@ -30,8 +44,18 @@
             this.txtPattern = new System.Windows.Forms.TextBox();
             this.lblSuffix = new System.Windows.Forms.Label();
             this.txtSuffix = new System.Windows.Forms.TextBox();
+            this.grpExtensions = new System.Windows.Forms.GroupBox();
+            this.lstSupportedExts = new System.Windows.Forms.ListBox();
+            this.lblNewExt = new System.Windows.Forms.Label();
+            this.txtNewExt = new System.Windows.Forms.TextBox();
+            this.btnAddExt = new System.Windows.Forms.Button();
+            this.btnRemoveExt = new System.Windows.Forms.Button();
+            this.btnResetExts = new System.Windows.Forms.Button();
+            this.lblExtHint = new System.Windows.Forms.Label();
+            this.chkRememberCheckboxes = new System.Windows.Forms.CheckBox();
             this.btnOK = new System.Windows.Forms.Button();
             this.btnCancel = new System.Windows.Forms.Button();
+            this.grpExtensions.SuspendLayout();
             this.SuspendLayout();
             // 
             // lblUpdateFolder
@@ -42,23 +66,6 @@
             this.lblUpdateFolder.Size = new System.Drawing.Size(116, 15);
             this.lblUpdateFolder.TabIndex = 0;
             this.lblUpdateFolder.Text = "Update Folder Path:";
-            // 
-            // chkRememberCheckboxes
-            // 
-            this.chkRememberCheckboxes = new System.Windows.Forms.CheckBox();
-            this.chkRememberCheckboxes.AutoSize = true;
-            this.chkRememberCheckboxes.Location = new System.Drawing.Point(15, 180);
-            this.chkRememberCheckboxes.Name = "chkRememberCheckboxes";
-            this.chkRememberCheckboxes.Size = new System.Drawing.Size(288, 19);
-            this.chkRememberCheckboxes.TabIndex = 7;
-            this.chkRememberCheckboxes.Text = "Remember last-used settings for checkboxes";
-            this.chkRememberCheckboxes.UseVisualStyleBackColor = true;
-            this.Controls.Add(this.chkRememberCheckboxes);
-
-            // Bump buttons down a bit if needed:
-            this.btnOK.Location = new System.Drawing.Point(15, 210);
-            this.btnCancel.Location = new System.Drawing.Point(100, 210);
-            this.ClientSize = new System.Drawing.Size(420, 255);
             // 
             // txtUpdateFolder
             // 
@@ -109,24 +116,117 @@
             this.txtSuffix.Size = new System.Drawing.Size(100, 23);
             this.txtSuffix.TabIndex = 6;
             // 
+            // grpExtensions
+            // 
+            this.grpExtensions.Controls.Add(this.lstSupportedExts);
+            this.grpExtensions.Controls.Add(this.lblNewExt);
+            this.grpExtensions.Controls.Add(this.txtNewExt);
+            this.grpExtensions.Controls.Add(this.btnAddExt);
+            this.grpExtensions.Controls.Add(this.btnRemoveExt);
+            this.grpExtensions.Controls.Add(this.btnResetExts);
+            this.grpExtensions.Controls.Add(this.lblExtHint);
+            this.grpExtensions.Location = new System.Drawing.Point(15, 185);
+            this.grpExtensions.Name = "grpExtensions";
+            this.grpExtensions.Size = new System.Drawing.Size(380, 175);
+            this.grpExtensions.TabIndex = 7;
+            this.grpExtensions.TabStop = false;
+            this.grpExtensions.Text = "Supported Video File Extensions";
+            // 
+            // lstSupportedExts
+            // 
+            this.lstSupportedExts.FormattingEnabled = true;
+            this.lstSupportedExts.IntegralHeight = false;
+            this.lstSupportedExts.ItemHeight = 15;
+            this.lstSupportedExts.Location = new System.Drawing.Point(12, 22);
+            this.lstSupportedExts.Name = "lstSupportedExts";
+            this.lstSupportedExts.SelectionMode = System.Windows.Forms.SelectionMode.MultiExtended;
+            this.lstSupportedExts.Size = new System.Drawing.Size(150, 140);
+            this.lstSupportedExts.TabIndex = 0;
+            // 
+            // lblNewExt
+            // 
+            this.lblNewExt.AutoSize = true;
+            this.lblNewExt.Location = new System.Drawing.Point(175, 25);
+            this.lblNewExt.Name = "lblNewExt";
+            this.lblNewExt.Size = new System.Drawing.Size(86, 15);
+            this.lblNewExt.TabIndex = 1;
+            this.lblNewExt.Text = "Add extension:";
+            // 
+            // txtNewExt
+            // 
+            this.txtNewExt.Location = new System.Drawing.Point(175, 45);
+            this.txtNewExt.Name = "txtNewExt";
+            this.txtNewExt.Size = new System.Drawing.Size(90, 23);
+            this.txtNewExt.TabIndex = 2;
+            this.txtNewExt.KeyDown += new System.Windows.Forms.KeyEventHandler(this.txtNewExt_KeyDown);
+            // 
+            // btnAddExt
+            // 
+            this.btnAddExt.Location = new System.Drawing.Point(270, 43);
+            this.btnAddExt.Name = "btnAddExt";
+            this.btnAddExt.Size = new System.Drawing.Size(94, 26);
+            this.btnAddExt.TabIndex = 3;
+            this.btnAddExt.Text = "Add";
+            this.btnAddExt.UseVisualStyleBackColor = true;
+            this.btnAddExt.Click += new System.EventHandler(this.btnAddExt_Click);
+            // 
+            // btnRemoveExt
+            // 
+            this.btnRemoveExt.Location = new System.Drawing.Point(175, 80);
+            this.btnRemoveExt.Name = "btnRemoveExt";
+            this.btnRemoveExt.Size = new System.Drawing.Size(189, 26);
+            this.btnRemoveExt.TabIndex = 4;
+            this.btnRemoveExt.Text = "Remove selected";
+            this.btnRemoveExt.UseVisualStyleBackColor = true;
+            this.btnRemoveExt.Click += new System.EventHandler(this.btnRemoveExt_Click);
+            // 
+            // btnResetExts
+            // 
+            this.btnResetExts.Location = new System.Drawing.Point(175, 115);
+            this.btnResetExts.Name = "btnResetExts";
+            this.btnResetExts.Size = new System.Drawing.Size(189, 26);
+            this.btnResetExts.TabIndex = 5;
+            this.btnResetExts.Text = "Reset to defaults";
+            this.btnResetExts.UseVisualStyleBackColor = true;
+            this.btnResetExts.Click += new System.EventHandler(this.btnResetExts_Click);
+            // 
+            // lblExtHint
+            // 
+            this.lblExtHint.AutoSize = true;
+            this.lblExtHint.Location = new System.Drawing.Point(175, 147);
+            this.lblExtHint.Name = "lblExtHint";
+            this.lblExtHint.Size = new System.Drawing.Size(194, 15);
+            this.lblExtHint.TabIndex = 6;
+            this.lblExtHint.Text = "Examples: .mp4  mkv  m2ts";
+            // 
+            // chkRememberCheckboxes
+            // 
+            this.chkRememberCheckboxes.AutoSize = true;
+            this.chkRememberCheckboxes.Location = new System.Drawing.Point(15, 370);
+            this.chkRememberCheckboxes.Name = "chkRememberCheckboxes";
+            this.chkRememberCheckboxes.Size = new System.Drawing.Size(288, 19);
+            this.chkRememberCheckboxes.TabIndex = 8;
+            this.chkRememberCheckboxes.Text = "Remember last-used settings for checkboxes";
+            this.chkRememberCheckboxes.UseVisualStyleBackColor = true;
+            // 
             // btnOK
             // 
-            this.btnOK.Location = new System.Drawing.Point(15, 200);
+            this.btnOK.Location = new System.Drawing.Point(15, 405);
             this.btnOK.Name = "btnOK";
             this.btnOK.Size = new System.Drawing.Size(75, 25);
-            this.btnOK.TabIndex = 7;
+            this.btnOK.TabIndex = 9;
             this.btnOK.Text = "OK";
             this.btnOK.UseVisualStyleBackColor = true;
             this.btnOK.Click += new System.EventHandler(this.btnOK_Click);
             // 
             // btnCancel
             // 
-            this.btnCancel.Location = new System.Drawing.Point(100, 200);
+            this.btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel;
+            this.btnCancel.Location = new System.Drawing.Point(100, 405);
             this.btnCancel.Name = "btnCancel";
             this.btnCancel.Size = new System.Drawing.Size(75, 25);
-            this.btnCancel.TabIndex = 8;
+            this.btnCancel.TabIndex = 10;
             this.btnCancel.Text = "Cancel";
-            this.btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel;
             this.btnCancel.UseVisualStyleBackColor = true;
             // 
             // SettingsForm
@@ -135,21 +235,27 @@
             this.CancelButton = this.btnCancel;
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(420, 250);
-            this.Controls.Add(this.lblUpdateFolder);
-            this.Controls.Add(this.txtUpdateFolder);
-            this.Controls.Add(this.btnBrowseUpdate);
-            this.Controls.Add(this.lblPattern);
-            this.Controls.Add(this.txtPattern);
-            this.Controls.Add(this.lblSuffix);
-            this.Controls.Add(this.txtSuffix);
-            this.Controls.Add(this.btnOK);
+            this.ClientSize = new System.Drawing.Size(420, 445);
             this.Controls.Add(this.btnCancel);
+            this.Controls.Add(this.btnOK);
+            this.Controls.Add(this.chkRememberCheckboxes);
+            this.Controls.Add(this.grpExtensions);
+            this.Controls.Add(this.txtSuffix);
+            this.Controls.Add(this.lblSuffix);
+            this.Controls.Add(this.txtPattern);
+            this.Controls.Add(this.lblPattern);
+            this.Controls.Add(this.btnBrowseUpdate);
+            this.Controls.Add(this.txtUpdateFolder);
+            this.Controls.Add(this.lblUpdateFolder);
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
             this.Name = "SettingsForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
             this.Text = "Settings";
             this.Load += new System.EventHandler(this.SettingsForm_Load);
+            this.grpExtensions.ResumeLayout(false);
+            this.grpExtensions.PerformLayout();
             this.ResumeLayout(false);
             this.PerformLayout();
         }
