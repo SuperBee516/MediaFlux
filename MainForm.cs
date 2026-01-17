@@ -19,9 +19,11 @@ namespace Encode
     public partial class MainForm : Form
     {
         private readonly string _configPath;
-        private Config _config;        
+        private Config _config;
 
-        private bool _suppressRowEvents;        
+        private readonly string _supportedVideoExtsPath;
+
+        private bool _suppressRowEvents;
 
         private volatile bool _cancelEncode = false;
         private Encode.Services.HistoryService _historyService;
@@ -38,10 +40,10 @@ namespace Encode
         private readonly EncodeQueueRunner _encodeQueueRunner;
 
         private DateTime? _encodeScheduledUtc = null;
-        private CancellationTokenSource? _encodeScheduleCts = null;        
+        private CancellationTokenSource? _encodeScheduleCts = null;
         private StringBuilder? _activeJobLogSb;
         private NumericUpDown? nudAutoQuality;
-        private System.Windows.Forms.Timer? _estSmartUiTimer;        
+        private System.Windows.Forms.Timer? _estSmartUiTimer;
 
         private ToolStripStatusLabel? _statusTotalSize;
         private ToolStripStatusLabel? _statusTotalEstimated;
@@ -55,7 +57,7 @@ namespace Encode
         // Advanced video / GPU options
         private ComboBox? comboNvencPreset;
         private CheckBox? chkTenBit;
-        private ComboBox? comboAudioChannels;        
+        private ComboBox? comboAudioChannels;
 
         // UI pump to apply results in small batches
         private System.Windows.Forms.Timer? _estUiTimer;
@@ -64,9 +66,9 @@ namespace Encode
         private readonly ConcurrentDictionary<string, DataGridViewRow> _rowsByPath = new();
 
         private static readonly Regex _ffmpegTimeRegex =
-            new Regex(@"time=(\d+:\d+:\d+\.\d+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);       
+            new Regex(@"time=(\d+:\d+:\d+\.\d+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-        
+
 
         // ───────── Encode grid reparenting ─────────
         private Control? _encodeGridOriginalParent;
@@ -96,9 +98,9 @@ namespace Encode
             dgvEncodeQueue.Parent = _encodeGridOriginalParent;
             _encodeGridOriginalParent.Controls.SetChildIndex(dgvEncodeQueue, _encodeGridOriginalIndex);
             dgvEncodeQueue.Dock = DockStyle.Fill;
-        }        
+        }
 
-        
+
 
         // JOB TIMER FIELDS
         private System.Windows.Forms.Timer jobTimer = new System.Windows.Forms.Timer();
@@ -108,7 +110,7 @@ namespace Encode
         {
             InitializeComponent();
 
-            
+
             // Promote progressPanel to a global, bottom-docked panel shared by all modes
             if (progressPanel != null && progressPanel.Parent != null)
             {
@@ -225,9 +227,9 @@ namespace Encode
                 Application.StartupPath,
                 HandleFfmpegProgressLine
             );
-            
+
             _mediaInfoService = new MediaInfoService(AppDomain.CurrentDomain.BaseDirectory);
-            _sizeEstimateService = new SizeEstimateService(_mediaInfoService);            
+            _sizeEstimateService = new SizeEstimateService(_mediaInfoService);
             _estimateService = new EstimateBackgroundService(_sizeEstimateService, _mediaInfoService);
 
             _encodeQueueRunner = new EncodeQueueRunner();
@@ -252,16 +254,17 @@ namespace Encode
             _configPath = Path.Combine(Application.StartupPath, "config.json");
             _config = Config.Load(_configPath);
 
+            // supported extension list storage (managed via Settings)
+            _supportedVideoExtsPath = Path.Combine(Application.StartupPath, "data", "supported_video_extensions.json");
+
             WireCheckboxPersistence();
             ApplyRememberedCheckboxStates();
 
             // Encode defaults
             comboEncoderMode.SelectedItem = "GPU (NVENC)";
 
-            // extensions checklist
-            checkedListExt.Items.AddRange(new object[] { ".mp4", ".mkv", ".mov", ".avi", ".webm" });
-            for (int i = 0; i < checkedListExt.Items.Count; i++)
-                checkedListExt.SetItemChecked(i, true);
+            // extensions checklist (loaded from supported extensions store)
+            PopulateSupportedExtensionsChecklist(preserveChecked: false);
 
             // persist column‐width changes
             dgvEncodeQueue.ColumnWidthChanged += DgvEncodeQueue_ColumnWidthChanged;
@@ -437,7 +440,7 @@ namespace Encode
 
                 _activityLabel.Location = new Point(x, y);
             }
-        }        
+        }
 
         // Pause flag for encode queue
         private bool _encodeQueuePaused = false;
@@ -461,7 +464,7 @@ namespace Encode
             public double SrcMb = 0; // Initialized to suppress warning
         }
 
-        
+
 
         private bool TryGetRowPathAndDuration(DataGridViewRow row, out string path, out double durationSec)
         {
@@ -485,7 +488,7 @@ namespace Encode
             }
 
             return false;
-        }              
+        }
 
         private void CreateAutoQualityControl()
         {
@@ -594,10 +597,10 @@ namespace Encode
             // Audio channels label + combo
             //var lblChannels = new Label
             //{
-              //  Text = "Audio channels:",
-                //AutoSize = true,
-                //Margin = new Padding(4, 2, 4, 2),
-                //Anchor = AnchorStyles.Left
+            //  Text = "Audio channels:",
+            //AutoSize = true,
+            //Margin = new Padding(4, 2, 4, 2),
+            //Anchor = AnchorStyles.Left
             //};
 
             comboAudioChannels = new ComboBox
@@ -760,7 +763,7 @@ namespace Encode
             double ss = double.TryParse(parts[2], System.Globalization.NumberStyles.Float,
                                         System.Globalization.CultureInfo.InvariantCulture, out var s) ? s : 0;
             return hh * 3600 + mm * 60 + ss;
-        }        
+        }
 
         private void MainForm_Load(object? sender, EventArgs e)
         {
@@ -802,7 +805,7 @@ namespace Encode
                     toolStripStatusLabel1.Text = $"Scanned \"{path}\" for audio";
                 }
             };
-            
+
             // when the user picks a previous folder, scan it immediately:
             cmbInputFolder.SelectedIndexChanged += (s, e) =>
             {
@@ -863,7 +866,7 @@ namespace Encode
 
         }
 
-        
+
 
         private void ApplyRememberedCheckboxStates()
         {
@@ -902,7 +905,7 @@ namespace Encode
             _config.LastChkProcessAll = chkProcessAll.Checked;
 
             _config.Save(_configPath);
-        }        
+        }
 
         private void DgvEncodeQueue_SortCompare(object? sender, DataGridViewSortCompareEventArgs e)
         {
@@ -914,8 +917,8 @@ namespace Encode
                 e.SortResult = val1.CompareTo(val2);
                 e.Handled = true; // we handled sorting
             }
-        }      
-        
+        }
+
         #region Download Tab
 
         private void exitToolStripMenuItem_Click(object? sender, EventArgs e)
@@ -942,7 +945,7 @@ namespace Encode
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information
             );
-        }        
+        }
 
         private void SwitchToEncodeTab()
         {
@@ -1014,7 +1017,7 @@ namespace Encode
             e.Paint(e.CellBounds, DataGridViewPaintParts.Focus);
         }
 
-        
+
 
         #endregion
 
@@ -1060,7 +1063,7 @@ namespace Encode
                 RefreshHistoryCombo(cmbEncodeOutput, _config.LastOutputFolders);
                 _config.Save(_configPath);
             }
-        }        
+        }
 
         private void HandleFfmpegProgressLineForRow(
             DataGridViewRow row,
@@ -1133,7 +1136,7 @@ namespace Encode
             combo.Items.Clear();
             combo.Items.AddRange(history.ToArray());
         }
-        
+
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
@@ -1172,7 +1175,7 @@ namespace Encode
             _activityIndicator?.StartActivity(UiActivity.FolderScan);
             try
             {
-                var allowedExts = GetAllowedExtensionsFromUi();
+                var allowedExts = GetAllowedExts();
                 var searchOpt = chkIncludeSubfolders.Checked
                     ? SearchOption.AllDirectories
                     : SearchOption.TopDirectoryOnly;
@@ -1350,7 +1353,7 @@ namespace Encode
         {
             RescanInputFolderAndMerge();  // never calls estimates
             RunEstimatePass();            // never adds/removes rows
-        }        
+        }
 
         // Map NVENC preset combo → "p1" .. "p7"
         private string GetSelectedNvencPreset()
@@ -1403,7 +1406,7 @@ namespace Encode
         private bool GetTenBitRequested()
         {
             return chkTenBit?.Checked == true;
-        }               
+        }
 
         private void TryDelete(string file)
         {
@@ -1442,7 +1445,7 @@ namespace Encode
             }
         }
 
-        
+
         private void UpdateEncodeProgressFromLine(string line)
         {
             if (_activeEncodeRow == null) return;
@@ -1470,7 +1473,7 @@ namespace Encode
             _activeEncodeRow.Cells["colProgress"].Value = $"{pct * 100:0}%";
             _activeEncodeRow.Cells["colETA"].Value = eta.ToString("hh\\:mm\\:ss");
             SetEtaCellColor(_activeEncodeRow, speedX);
-        }        
+        }
 
         // Thread-safe label update
         private void SetLabel(Label label, string text)
@@ -1535,11 +1538,14 @@ namespace Encode
 
         private void SettingsToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            using var dlg = new SettingsForm(_config);
+            using var dlg = new SettingsForm(_config, _supportedVideoExtsPath, DefaultVideoExts);
             if (dlg.ShowDialog() == DialogResult.OK)
             {
                 _config = dlg.Config;
                 _config.Save(_configPath);
+
+                // Extensions list may have changed; refresh the checklist while preserving checked state.
+                PopulateSupportedExtensionsChecklist(preserveChecked: true);
             }
         }
 
@@ -1547,15 +1553,15 @@ namespace Encode
         {
             if (UpdateManager.CheckAndPrompt(this, _config.UpdateFolderPath))
                 return; // updater launched; app will exit from UpdateManager
-        }       
-        
+        }
+
         // If other code only needs the full path:
         private string? GetFullPathFromRow(DataGridViewRow row)
         {
             if (row.Tag is RowMeta rm) return rm.Path;
             if (row.Tag is string s) return s;
             return null;
-        }        
+        }
 
         #endregion
 
@@ -1697,7 +1703,7 @@ namespace Encode
                 RemoveSelectedRows_Click(null, EventArgs.Empty);
                 e.Handled = true;
             }
-        }        
+        }
 
         private void scheduleEncodeStartToolStripMenuItem_Click(object? sender, EventArgs e)
         {
@@ -1725,13 +1731,52 @@ namespace Encode
             ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".m2ts"
         };
 
+        private void PopulateSupportedExtensionsChecklist(bool preserveChecked)
+        {
+            if (checkedListExt == null) return;
+
+            var previousChecked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (preserveChecked && checkedListExt.Items.Count > 0)
+            {
+                for (int i = 0; i < checkedListExt.Items.Count; i++)
+                {
+                    if (!checkedListExt.GetItemChecked(i)) continue;
+                    var s = checkedListExt.Items[i]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(s))
+                        previousChecked.Add(s.Trim());
+                }
+            }
+
+            var supported = SupportedExtensionsStore.Load(_supportedVideoExtsPath, DefaultVideoExts);
+
+            checkedListExt.BeginUpdate();
+            try
+            {
+                checkedListExt.Items.Clear();
+                foreach (var ext in supported)
+                    checkedListExt.Items.Add(ext);
+
+                // Default behavior: everything is enabled unless the user already has a selection.
+                for (int i = 0; i < checkedListExt.Items.Count; i++)
+                {
+                    var ext = checkedListExt.Items[i]?.ToString() ?? string.Empty;
+                    bool check = previousChecked.Count == 0 || previousChecked.Contains(ext);
+                    checkedListExt.SetItemChecked(i, check);
+                }
+            }
+            finally
+            {
+                checkedListExt.EndUpdate();
+            }
+        }
+
         // Which extensions count as "audio-capable" for the Audio panel (drag/drop + scan)
         private static readonly string[] DefaultAudioExts =
         {
             ".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus", ".wma",
             ".ac3", ".eac3", ".dts", ".thd",
             ".mkv", ".mp4", ".m4v", ".mov", ".ts", ".m2ts", ".mka"
-        };                
+        };
 
         private void dgvEncodeQueue_DragEnter(object? sender, DragEventArgs e)
         {
@@ -1759,7 +1804,7 @@ namespace Encode
                 {
                     if (AddEncodeItemIfNotPresent(f))
                         added++;
-                }                
+                }
             }
             SafeRefreshEstimates();
         }
@@ -1810,7 +1855,7 @@ namespace Encode
                 _activityIndicator.StopActivity(UiActivity.Encoding);
                 _activityIndicator.StopActivity(UiActivity.Upscaling);
             }
-        }                
+        }
 
         // Recursively expand dropped items into a flat list of files
         private List<string> ExpandFilesAndFolders(IEnumerable<string> paths)
@@ -1875,7 +1920,7 @@ namespace Encode
             }
             return list;
         }
-        
+
         private bool AddEncodeItemIfNotPresent(string path)
         {
             // Skip if already present (by Tag.Path or Tag string)
@@ -1922,7 +1967,7 @@ namespace Encode
             RunEstimatePass();
 
             return true;
-        }        
+        }
 
         // Map UI choice to ffmpeg encoder
         private string ResolveVideoCodec(bool useGpu, string formatChoice)
@@ -1954,7 +1999,7 @@ namespace Encode
                 4 => EncodingService.ScaleMode.To4K,
                 _ => EncodingService.ScaleMode.None
             };
-        }        
+        }
 
         // Apply saved settings (soft-apply; won’t break if values are absent)
         private void ApplySnapshotSettingsToUi(QueueSettings s)

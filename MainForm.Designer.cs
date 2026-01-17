@@ -9,7 +9,7 @@ namespace Encode
     {
         private System.ComponentModel.IContainer components = null;
         private Label lblCompressionProfile;
-        private ComboBox comboCompressionProfile;        
+        private ComboBox comboCompressionProfile;
 
         // Menu & Status
         private MenuStrip menuStrip1;
@@ -531,7 +531,7 @@ namespace Encode
                 "Very Low Quality (Smallest File)"
             });
             comboCompressionProfile.SelectedItem = "Medium Quality (Default)";
-            comboCompressionProfile.Width = 180;            
+            comboCompressionProfile.Width = 180;
             tlEncode.Controls.Add(comboCompressionProfile, 1, 6);
             tlEncode.SetColumnSpan(comboCompressionProfile, 3);
 
@@ -1121,8 +1121,8 @@ namespace Encode
 
             MainMenuStrip = menuStrip1;
 
-            Text = "GoEncode v0.5.6";
+            Text = "GoEncode v0.5.7";
             ClientSize = new Size(800, 760);
-        }       
+        }
     }
 }
