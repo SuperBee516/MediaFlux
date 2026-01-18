@@ -105,6 +105,9 @@ namespace Encode
         private TextBox txtAudioDenoiseModel;
         private Button btnBrowseAudioDenoiseModel;
 
+        // Audio activity indicator gutter (prevents overlay-clipping)
+        private Panel panelAudioRightGutter;
+
         private Button btnStartAudio;
         private Label lblAudioStatus;
         private DataGridView dgvAudioQueue;
@@ -808,7 +811,10 @@ namespace Encode
             panelAudio.Dock = DockStyle.Fill;
 
             tlAudio.Dock = DockStyle.Fill;
-            tlAudio.ColumnCount = 3;
+            // NOTE: The activity indicator (gear) is positioned top-right and can overlay
+            // the audio layout. We reserve a fixed-width gutter column on the right so
+            // Browse buttons and drop-down arrows are never obscured.
+            tlAudio.ColumnCount = 4;
             tlAudio.RowCount = 11;
             tlAudio.Padding = new Padding(10, 30, 10, 10);
             tlAudio.GrowStyle = TableLayoutPanelGrowStyle.AddRows;
@@ -816,9 +822,19 @@ namespace Encode
             tlAudio.ColumnStyles.Clear();
             tlAudio.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140F));
             tlAudio.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            tlAudio.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160F));
+            tlAudio.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130F));
+            tlAudio.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170F)); // right gutter for activity indicator
 
-            // Row 0: Input folder
+            panelAudioRightGutter = new Panel
+            {
+                Name = "panelAudioRightGutter",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0)
+            };
+            tlAudio.Controls.Add(panelAudioRightGutter, 3, 0);
+            tlAudio.SetRowSpan(panelAudioRightGutter, 3);            
+
+            // Row 0: Input folder            
             lblAudioInputFolder.Text = "Input Folder:";
             lblAudioInputFolder.Anchor = AnchorStyles.Right;
             tlAudio.Controls.Add(lblAudioInputFolder, 0, 0);
@@ -829,18 +845,20 @@ namespace Encode
             tlAudio.Controls.Add(cmbAudioInputFolder, 1, 0);
 
             btnBrowseAudioInput.Text = "Browse…";
-            btnBrowseAudioInput.AutoSize = true;
+            btnBrowseAudioInput.AutoSize = false;
+            btnBrowseAudioInput.Dock = DockStyle.Fill;
+            btnBrowseAudioInput.Margin = new Padding(6, 3, 0, 3);
             btnBrowseAudioInput.Click += btnBrowseAudioInput_Click;
             tlAudio.Controls.Add(btnBrowseAudioInput, 2, 0);
 
-            // Row 1: Include subfolders
+            // Row 1: Include subfolders            
             chkAudioIncludeSubfolders.Text = "Include subfolders";
             chkAudioIncludeSubfolders.AutoSize = true;
             chkAudioIncludeSubfolders.Checked = true;
             tlAudio.Controls.Add(chkAudioIncludeSubfolders, 1, 1);
             tlAudio.SetColumnSpan(chkAudioIncludeSubfolders, 2);
 
-            // Row 2: Output folder
+            // Row 2: Output folder            
             lblAudioOutputFolder.Text = "Output Folder:";
             lblAudioOutputFolder.Anchor = AnchorStyles.Right;
             tlAudio.Controls.Add(lblAudioOutputFolder, 0, 2);
@@ -850,7 +868,9 @@ namespace Encode
             tlAudio.Controls.Add(cmbAudioOutputFolder, 1, 2);
 
             btnBrowseAudioOutput.Text = "Browse…";
-            btnBrowseAudioOutput.AutoSize = true;
+            btnBrowseAudioOutput.AutoSize = false;
+            btnBrowseAudioOutput.Dock = DockStyle.Fill;
+            btnBrowseAudioOutput.Margin = new Padding(6, 3, 0, 3);
             btnBrowseAudioOutput.Click += btnBrowseAudioOutput_Click;
             tlAudio.Controls.Add(btnBrowseAudioOutput, 2, 2);
 
@@ -860,6 +880,7 @@ namespace Encode
             tlAudio.Controls.Add(lblAudioOperation, 0, 3);
 
             comboAudioOperation.DropDownStyle = ComboBoxStyle.DropDownList;
+            comboAudioOperation.Dock = DockStyle.Fill;
             comboAudioOperation.Items.AddRange(new object[]
             {
                 "Extract (no re-encode)",
@@ -867,7 +888,7 @@ namespace Encode
             });
             comboAudioOperation.SelectedIndex = 0;
             tlAudio.Controls.Add(comboAudioOperation, 1, 3);
-            tlAudio.SetColumnSpan(comboAudioOperation, 2);
+            tlAudio.SetColumnSpan(comboAudioOperation, 3);
             comboAudioOperation.SelectedIndexChanged += comboAudioOperation_SelectedIndexChanged;
 
             // Row 4: Format
@@ -876,6 +897,7 @@ namespace Encode
             tlAudio.Controls.Add(lblAudioFormat, 0, 4);
 
             comboAudioFormat.DropDownStyle = ComboBoxStyle.DropDownList;
+            comboAudioFormat.Dock = DockStyle.Fill;
             comboAudioFormat.Items.AddRange(new object[]
             {
                 "Same as source (extract only)",
@@ -889,7 +911,7 @@ namespace Encode
             });
             comboAudioFormat.SelectedIndex = 0;
             tlAudio.Controls.Add(comboAudioFormat, 1, 4);
-            tlAudio.SetColumnSpan(comboAudioFormat, 2);
+            tlAudio.SetColumnSpan(comboAudioFormat, 3);
 
             // NEW Row 5: Quality
             lblAudioQuality.Text = "Quality:";
@@ -897,6 +919,7 @@ namespace Encode
             tlAudio.Controls.Add(lblAudioQuality, 0, 5);
 
             comboAudioQuality.DropDownStyle = ComboBoxStyle.DropDownList;
+            comboAudioQuality.Dock = DockStyle.Fill;
             comboAudioQuality.Items.AddRange(new object[]
             {
                 "Auto",
@@ -909,7 +932,7 @@ namespace Encode
             // Default to Medium
             comboAudioQuality.SelectedIndex = 3;
             tlAudio.Controls.Add(comboAudioQuality, 1, 5);
-            tlAudio.SetColumnSpan(comboAudioQuality, 2);
+            tlAudio.SetColumnSpan(comboAudioQuality, 3);
 
             // Row 6: Normalize (checkbox + mode)
             chkAudioNormalize.Text = "Normalize loudness";
@@ -919,6 +942,7 @@ namespace Encode
             tlAudio.Controls.Add(chkAudioNormalize, 1, 6);
 
             comboAudioNormalizeMode.DropDownStyle = ComboBoxStyle.DropDownList;
+            comboAudioNormalizeMode.Dock = DockStyle.Fill;
             comboAudioNormalizeMode.Items.AddRange(new object[]
             {
                 "Single-pass (fast)",
@@ -926,6 +950,7 @@ namespace Encode
             });
             comboAudioNormalizeMode.SelectedIndex = 0;
             tlAudio.Controls.Add(comboAudioNormalizeMode, 2, 6);
+            tlAudio.SetColumnSpan(comboAudioNormalizeMode, 2);
 
             // Row 7: RNNoise denoise
             chkAudioDenoise.Text = "Apply RNNoise denoising";
@@ -933,7 +958,7 @@ namespace Encode
             chkAudioDenoise.Checked = false;
             chkAudioDenoise.CheckedChanged += chkAudioDenoise_CheckedChanged;
             tlAudio.Controls.Add(chkAudioDenoise, 1, 7);
-            tlAudio.SetColumnSpan(chkAudioDenoise, 2);
+            tlAudio.SetColumnSpan(chkAudioDenoise, 3);
 
             var lblAudioDenoiseModel = new Label();
             lblAudioDenoiseModel.Text = "RNNoise model file:";
@@ -942,21 +967,26 @@ namespace Encode
 
             txtAudioDenoiseModel.Dock = DockStyle.Fill;
             tlAudio.Controls.Add(txtAudioDenoiseModel, 1, 8);
+            tlAudio.SetColumnSpan(txtAudioDenoiseModel, 2);
 
             btnBrowseAudioDenoiseModel.Text = "Browse…";
-            btnBrowseAudioDenoiseModel.AutoSize = true;
+            btnBrowseAudioDenoiseModel.AutoSize = false;
+            btnBrowseAudioDenoiseModel.Dock = DockStyle.Fill;
+            btnBrowseAudioDenoiseModel.Margin = new Padding(6, 3, 0, 3);
             btnBrowseAudioDenoiseModel.Click += btnBrowseAudioDenoiseModel_Click;
-            tlAudio.Controls.Add(btnBrowseAudioDenoiseModel, 2, 8);
+            tlAudio.Controls.Add(btnBrowseAudioDenoiseModel, 3, 8);
 
             // Row 9: Start + status
             btnStartAudio.Text = "Start Audio Jobs";
-            btnStartAudio.Width = 140;
+            btnStartAudio.Width = 160;
+            btnStartAudio.Anchor = AnchorStyles.Left;
             btnStartAudio.Click += btnStartAudio_Click;
-            tlAudio.Controls.Add(btnStartAudio, 0, 9);
+            // Align primary action with the inputs column for a more professional layout.
+            tlAudio.Controls.Add(btnStartAudio, 1, 9);
 
             lblAudioStatus.AutoSize = true;
             lblAudioStatus.Anchor = AnchorStyles.Left;
-            tlAudio.Controls.Add(lblAudioStatus, 1, 9);
+            tlAudio.Controls.Add(lblAudioStatus, 2, 9);
             tlAudio.SetColumnSpan(lblAudioStatus, 2);
 
             // Row 8: Audio queue grid
@@ -1001,7 +1031,7 @@ namespace Encode
             tlAudio.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); // 10 (grid grows)
 
             tlAudio.Controls.Add(dgvAudioQueue, 0, 10);
-            tlAudio.SetColumnSpan(dgvAudioQueue, 3);
+            tlAudio.SetColumnSpan(dgvAudioQueue, 4);
 
             panelAudio.Controls.Add(tlAudio);
 
