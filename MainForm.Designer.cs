@@ -305,6 +305,8 @@ namespace Encode
             // Add "Monitor"
             modeComboBox.Items.AddRange(new object[] { "Encode", "Audio", "Monitor" });
             modeComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            modeComboBox.SelectedIndex = 0;            
+            modeComboBox.Enabled = false;   // TEMP: Disable mode switching until Audio/Monitor are production-ready // temporarily disable until implemented
             modeComboBox.SelectedIndexChanged += ModeComboBox_SelectedIndexChanged;
 
             toolsToolStripMenuItem.DropDownItems.Add(settingsToolStripMenuItem);
@@ -1151,7 +1153,7 @@ namespace Encode
 
             MainMenuStrip = menuStrip1;
 
-            Text = "GoEncode v0.5.8";
+            Text = "GoEncode v0.5.9";
             ClientSize = new Size(800, 760);
         }
     }
