@@ -25,6 +25,7 @@ namespace Encode
             txtPattern.Text = cfg.AutoNamingPattern;
             txtSuffix.Text = cfg.OutputSuffix;
             chkEnableSuffix.Checked = cfg.EnableOutputSuffix;
+            chkEnableCodecSuffix.Checked = cfg.EnableCodecSuffix;
             chkRememberCheckboxes.Checked = cfg.RememberCheckboxStates;
             ToggleSuffixInputs();
 
@@ -45,6 +46,7 @@ namespace Encode
             Config.AutoNamingPattern = txtPattern.Text.Trim();
             Config.OutputSuffix = txtSuffix.Text.Trim();  // <-- NEW
             Config.EnableOutputSuffix = chkEnableSuffix.Checked;
+            Config.EnableCodecSuffix = chkEnableCodecSuffix.Checked;
             Config.RememberCheckboxStates = chkRememberCheckboxes.Checked;
 
             // Persist supported video extensions list

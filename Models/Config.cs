@@ -10,6 +10,7 @@ namespace Encode.Models
         // Filename suffixes
         public string OutputSuffix { get; set; } = "_2";
         public bool EnableOutputSuffix { get; set; } = false;
+        public bool EnableCodecSuffix { get; set; } = false;
 
         // Persist column visibility
         public bool ShowSizeColumn { get; set; } = true;

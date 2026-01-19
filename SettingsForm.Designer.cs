@@ -14,6 +14,7 @@
         private System.Windows.Forms.Label lblSuffix;
         private System.Windows.Forms.TextBox txtSuffix;
         private System.Windows.Forms.CheckBox chkEnableSuffix;
+        private System.Windows.Forms.CheckBox chkEnableCodecSuffix;
 
         private System.Windows.Forms.GroupBox grpExtensions;
         private System.Windows.Forms.ListBox lstSupportedExts;
@@ -46,6 +47,7 @@
             this.lblSuffix = new System.Windows.Forms.Label();
             this.txtSuffix = new System.Windows.Forms.TextBox();
             this.chkEnableSuffix = new System.Windows.Forms.CheckBox();
+            this.chkEnableCodecSuffix = new System.Windows.Forms.CheckBox();
             this.grpExtensions = new System.Windows.Forms.GroupBox();
             this.lstSupportedExts = new System.Windows.Forms.ListBox();
             this.lblNewExt = new System.Windows.Forms.Label();
@@ -105,7 +107,7 @@
             // lblSuffix
             // 
             this.lblSuffix.AutoSize = true;
-            this.lblSuffix.Location = new System.Drawing.Point(12, 155);
+            this.lblSuffix.Location = new System.Drawing.Point(12, 175);
             this.lblSuffix.Name = "lblSuffix";
             this.lblSuffix.Size = new System.Drawing.Size(137, 15);
             this.lblSuffix.TabIndex = 6;
@@ -113,7 +115,7 @@
             // 
             // txtSuffix
             // 
-            this.txtSuffix.Location = new System.Drawing.Point(15, 175);
+            this.txtSuffix.Location = new System.Drawing.Point(15, 195);
             this.txtSuffix.Name = "txtSuffix";
             this.txtSuffix.Size = new System.Drawing.Size(100, 23);
             this.txtSuffix.TabIndex = 7;
@@ -128,6 +130,16 @@
             this.chkEnableSuffix.Text = "Enable output filename suffix";
             this.chkEnableSuffix.UseVisualStyleBackColor = true;
             this.chkEnableSuffix.CheckedChanged += new System.EventHandler(this.chkEnableSuffix_CheckedChanged);
+            // chkEnableCodecSuffix
+            // 
+            this.chkEnableCodecSuffix.AutoSize = true;
+            this.chkEnableCodecSuffix.Location = new System.Drawing.Point(15, 150);
+            this.chkEnableCodecSuffix.Name = "chkEnableCodecSuffix";
+            this.chkEnableCodecSuffix.Size = new System.Drawing.Size(231, 19);
+            this.chkEnableCodecSuffix.TabIndex = 6;
+            this.chkEnableCodecSuffix.Text = "Enable codec suffix on output files";
+            this.chkEnableCodecSuffix.UseVisualStyleBackColor = true;
+            // 
             // 
             // grpExtensions
             // 
@@ -138,10 +150,10 @@
             this.grpExtensions.Controls.Add(this.btnRemoveExt);
             this.grpExtensions.Controls.Add(this.btnResetExts);
             this.grpExtensions.Controls.Add(this.lblExtHint);
-            this.grpExtensions.Location = new System.Drawing.Point(15, 210);
+            this.grpExtensions.Location = new System.Drawing.Point(15, 230);
             this.grpExtensions.Name = "grpExtensions";
             this.grpExtensions.Size = new System.Drawing.Size(380, 175);
-            this.grpExtensions.TabIndex = 8;
+            this.grpExtensions.TabIndex = 9;
             this.grpExtensions.TabStop = false;
             this.grpExtensions.Text = "Supported Video File Extensions";
             // 
@@ -215,19 +227,19 @@
             // chkRememberCheckboxes
             // 
             this.chkRememberCheckboxes.AutoSize = true;
-            this.chkRememberCheckboxes.Location = new System.Drawing.Point(15, 395);
+            this.chkRememberCheckboxes.Location = new System.Drawing.Point(15, 415);
             this.chkRememberCheckboxes.Name = "chkRememberCheckboxes";
             this.chkRememberCheckboxes.Size = new System.Drawing.Size(288, 19);
-            this.chkRememberCheckboxes.TabIndex = 9;
+            this.chkRememberCheckboxes.TabIndex = 10;
             this.chkRememberCheckboxes.Text = "Remember last-used settings for checkboxes";
             this.chkRememberCheckboxes.UseVisualStyleBackColor = true;
             // 
             // btnOK
             // 
-            this.btnOK.Location = new System.Drawing.Point(15, 430);
+            this.btnOK.Location = new System.Drawing.Point(15, 450);
             this.btnOK.Name = "btnOK";
             this.btnOK.Size = new System.Drawing.Size(75, 25);
-            this.btnOK.TabIndex = 10;
+            this.btnOK.TabIndex = 11;
             this.btnOK.Text = "OK";
             this.btnOK.UseVisualStyleBackColor = true;
             this.btnOK.Click += new System.EventHandler(this.btnOK_Click);
@@ -235,10 +247,10 @@
             // btnCancel
             // 
             this.btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel;
-            this.btnCancel.Location = new System.Drawing.Point(100, 430);
+            this.btnCancel.Location = new System.Drawing.Point(100, 450);
             this.btnCancel.Name = "btnCancel";
             this.btnCancel.Size = new System.Drawing.Size(75, 25);
-            this.btnCancel.TabIndex = 11;
+            this.btnCancel.TabIndex = 12;
             this.btnCancel.Text = "Cancel";
             this.btnCancel.UseVisualStyleBackColor = true;
             // 
@@ -248,13 +260,14 @@
             this.CancelButton = this.btnCancel;
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(420, 470);
+            this.ClientSize = new System.Drawing.Size(420, 490);
             this.Controls.Add(this.btnCancel);
             this.Controls.Add(this.btnOK);
             this.Controls.Add(this.chkRememberCheckboxes);
             this.Controls.Add(this.grpExtensions);
             this.Controls.Add(this.txtSuffix);
             this.Controls.Add(this.lblSuffix);
+            this.Controls.Add(this.chkEnableCodecSuffix);
             this.Controls.Add(this.chkEnableSuffix);
             this.Controls.Add(this.txtPattern);
             this.Controls.Add(this.lblPattern);

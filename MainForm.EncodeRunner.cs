@@ -327,7 +327,7 @@ namespace Encode
                 bool tenBit = UiGet(() => GetTenBitRequested(), false);
                 int? audioChannels = UiGet(() => GetSelectedAudioChannels(), null);
                 string outputFolder = UiGet(() => cmbEncodeOutput.Text, string.Empty);
-                string suffix = _config.EnableOutputSuffix ? _config.OutputSuffix : string.Empty;
+                string suffix = BuildOutputSuffix(formatChoice);
 
                 // Per-job ffmpeg output callback
                 Action<string> jobCallback = line =>
