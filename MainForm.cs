@@ -1987,6 +1987,44 @@ namespace Encode
             return useGpu ? "hevc_nvenc" : "libx265"; // safe fallback
         }
 
+        private string BuildOutputSuffix(string formatChoice)
+        {
+            var parts = new List<string>();
+
+            if (_config.EnableCodecSuffix)
+            {
+                string codecLabel = GetCodecSuffixLabel(formatChoice);
+                if (!string.IsNullOrWhiteSpace(codecLabel))
+                    parts.Add($"[{codecLabel}]");
+            }
+
+            if (_config.EnableOutputSuffix)
+            {
+                string outputSuffix = _config.OutputSuffix?.Trim() ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(outputSuffix))
+                {
+                    if (_config.EnableCodecSuffix)
+                        parts.Add($"[{outputSuffix}]");
+                    else
+                        parts.Add(outputSuffix);
+                }
+            }
+
+            if (parts.Count == 0)
+                return string.Empty;
+
+            return $" {string.Join(" ", parts)}";
+        }
+
+        private static string GetCodecSuffixLabel(string formatChoice)
+        {
+            if (formatChoice.StartsWith("H.264")) return "x264";
+            if (formatChoice.StartsWith("H.265") || formatChoice.StartsWith("H.265 / HEVC")) return "HEVC";
+            if (formatChoice.StartsWith("AV1")) return "AV1";
+
+            return formatChoice.Trim();
+        }
+
         // Map UI Resolution combo to EncodingService.ScaleMode
         private EncodingService.ScaleMode GetSelectedScaleMode()
         {
