@@ -286,7 +286,7 @@ namespace Encode.Services
             Directory.CreateDirectory(outFolder);
 
             string name = Path.GetFileNameWithoutExtension(input);
-            string actualSuffix = string.IsNullOrWhiteSpace(suffix) ? "_2" : suffix;
+            string actualSuffix = string.IsNullOrWhiteSpace(suffix) ? string.Empty : suffix;
 
             // Collision-safe output naming so we don't overwrite existing files
             string output = GetUniqueOutputPath(outFolder, name, actualSuffix, ".mp4");

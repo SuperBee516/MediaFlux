@@ -24,7 +24,9 @@ namespace Encode
             txtUpdateFolder.Text = cfg.UpdateFolderPath;
             txtPattern.Text = cfg.AutoNamingPattern;
             txtSuffix.Text = cfg.OutputSuffix;
+            chkEnableSuffix.Checked = cfg.EnableOutputSuffix;
             chkRememberCheckboxes.Checked = cfg.RememberCheckboxStates;
+            ToggleSuffixInputs();
 
             LoadSupportedExtensionsIntoUi();
         }
@@ -42,6 +44,7 @@ namespace Encode
             Config.UpdateFolderPath = txtUpdateFolder.Text.Trim();
             Config.AutoNamingPattern = txtPattern.Text.Trim();
             Config.OutputSuffix = txtSuffix.Text.Trim();  // <-- NEW
+            Config.EnableOutputSuffix = chkEnableSuffix.Checked;
             Config.RememberCheckboxStates = chkRememberCheckboxes.Checked;
 
             // Persist supported video extensions list
@@ -65,6 +68,18 @@ namespace Encode
         private void SettingsForm_Load(object sender, EventArgs e)
         {
 
+        }
+
+        private void chkEnableSuffix_CheckedChanged(object sender, EventArgs e)
+        {
+            ToggleSuffixInputs();
+        }
+
+        private void ToggleSuffixInputs()
+        {
+            bool enabled = chkEnableSuffix.Checked;
+            txtSuffix.Enabled = enabled;
+            lblSuffix.Enabled = enabled;
         }
 
         private void LoadSupportedExtensionsIntoUi()

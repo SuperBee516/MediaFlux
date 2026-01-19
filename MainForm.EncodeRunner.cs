@@ -327,6 +327,7 @@ namespace Encode
                 bool tenBit = UiGet(() => GetTenBitRequested(), false);
                 int? audioChannels = UiGet(() => GetSelectedAudioChannels(), null);
                 string outputFolder = UiGet(() => cmbEncodeOutput.Text, string.Empty);
+                string suffix = _config.EnableOutputSuffix ? _config.OutputSuffix : string.Empty;
 
                 // Per-job ffmpeg output callback
                 Action<string> jobCallback = line =>
@@ -339,7 +340,7 @@ namespace Encode
                 bool ok = await _encodingService.EncodeAsync(
                     file,
                     outputFolder,
-                    _config.OutputSuffix,
+                    suffix,
                     useGpu,
                     targetMb,
                     videoCodec,
@@ -363,7 +364,7 @@ namespace Encode
                 // Guess the output path the same way the service names it
                 var guessedOut = Path.Combine(
                     outputFolder,
-                    Path.GetFileNameWithoutExtension(file) + _config.OutputSuffix + Path.GetExtension(file)
+                    Path.GetFileNameWithoutExtension(file) + suffix + Path.GetExtension(file)
                 );
 
                 // append success to history – never let this kill the job
