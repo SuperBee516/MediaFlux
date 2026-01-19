@@ -13,6 +13,7 @@
 
         private System.Windows.Forms.Label lblSuffix;
         private System.Windows.Forms.TextBox txtSuffix;
+        private System.Windows.Forms.CheckBox chkEnableSuffix;
 
         private System.Windows.Forms.GroupBox grpExtensions;
         private System.Windows.Forms.ListBox lstSupportedExts;
@@ -44,6 +45,7 @@
             this.txtPattern = new System.Windows.Forms.TextBox();
             this.lblSuffix = new System.Windows.Forms.Label();
             this.txtSuffix = new System.Windows.Forms.TextBox();
+            this.chkEnableSuffix = new System.Windows.Forms.CheckBox();
             this.grpExtensions = new System.Windows.Forms.GroupBox();
             this.lstSupportedExts = new System.Windows.Forms.ListBox();
             this.lblNewExt = new System.Windows.Forms.Label();
@@ -103,18 +105,29 @@
             // lblSuffix
             // 
             this.lblSuffix.AutoSize = true;
-            this.lblSuffix.Location = new System.Drawing.Point(12, 130);
+            this.lblSuffix.Location = new System.Drawing.Point(12, 155);
             this.lblSuffix.Name = "lblSuffix";
             this.lblSuffix.Size = new System.Drawing.Size(137, 15);
-            this.lblSuffix.TabIndex = 5;
+            this.lblSuffix.TabIndex = 6;
             this.lblSuffix.Text = "Output Filename Suffix:";
             // 
             // txtSuffix
             // 
-            this.txtSuffix.Location = new System.Drawing.Point(15, 150);
+            this.txtSuffix.Location = new System.Drawing.Point(15, 175);
             this.txtSuffix.Name = "txtSuffix";
             this.txtSuffix.Size = new System.Drawing.Size(100, 23);
-            this.txtSuffix.TabIndex = 6;
+            this.txtSuffix.TabIndex = 7;
+            // 
+            // chkEnableSuffix
+            // 
+            this.chkEnableSuffix.AutoSize = true;
+            this.chkEnableSuffix.Location = new System.Drawing.Point(15, 130);
+            this.chkEnableSuffix.Name = "chkEnableSuffix";
+            this.chkEnableSuffix.Size = new System.Drawing.Size(187, 19);
+            this.chkEnableSuffix.TabIndex = 5;
+            this.chkEnableSuffix.Text = "Enable output filename suffix";
+            this.chkEnableSuffix.UseVisualStyleBackColor = true;
+            this.chkEnableSuffix.CheckedChanged += new System.EventHandler(this.chkEnableSuffix_CheckedChanged);
             // 
             // grpExtensions
             // 
@@ -125,10 +138,10 @@
             this.grpExtensions.Controls.Add(this.btnRemoveExt);
             this.grpExtensions.Controls.Add(this.btnResetExts);
             this.grpExtensions.Controls.Add(this.lblExtHint);
-            this.grpExtensions.Location = new System.Drawing.Point(15, 185);
+            this.grpExtensions.Location = new System.Drawing.Point(15, 210);
             this.grpExtensions.Name = "grpExtensions";
             this.grpExtensions.Size = new System.Drawing.Size(380, 175);
-            this.grpExtensions.TabIndex = 7;
+            this.grpExtensions.TabIndex = 8;
             this.grpExtensions.TabStop = false;
             this.grpExtensions.Text = "Supported Video File Extensions";
             // 
@@ -202,19 +215,19 @@
             // chkRememberCheckboxes
             // 
             this.chkRememberCheckboxes.AutoSize = true;
-            this.chkRememberCheckboxes.Location = new System.Drawing.Point(15, 370);
+            this.chkRememberCheckboxes.Location = new System.Drawing.Point(15, 395);
             this.chkRememberCheckboxes.Name = "chkRememberCheckboxes";
             this.chkRememberCheckboxes.Size = new System.Drawing.Size(288, 19);
-            this.chkRememberCheckboxes.TabIndex = 8;
+            this.chkRememberCheckboxes.TabIndex = 9;
             this.chkRememberCheckboxes.Text = "Remember last-used settings for checkboxes";
             this.chkRememberCheckboxes.UseVisualStyleBackColor = true;
             // 
             // btnOK
             // 
-            this.btnOK.Location = new System.Drawing.Point(15, 405);
+            this.btnOK.Location = new System.Drawing.Point(15, 430);
             this.btnOK.Name = "btnOK";
             this.btnOK.Size = new System.Drawing.Size(75, 25);
-            this.btnOK.TabIndex = 9;
+            this.btnOK.TabIndex = 10;
             this.btnOK.Text = "OK";
             this.btnOK.UseVisualStyleBackColor = true;
             this.btnOK.Click += new System.EventHandler(this.btnOK_Click);
@@ -222,10 +235,10 @@
             // btnCancel
             // 
             this.btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel;
-            this.btnCancel.Location = new System.Drawing.Point(100, 405);
+            this.btnCancel.Location = new System.Drawing.Point(100, 430);
             this.btnCancel.Name = "btnCancel";
             this.btnCancel.Size = new System.Drawing.Size(75, 25);
-            this.btnCancel.TabIndex = 10;
+            this.btnCancel.TabIndex = 11;
             this.btnCancel.Text = "Cancel";
             this.btnCancel.UseVisualStyleBackColor = true;
             // 
@@ -235,13 +248,14 @@
             this.CancelButton = this.btnCancel;
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(420, 445);
+            this.ClientSize = new System.Drawing.Size(420, 470);
             this.Controls.Add(this.btnCancel);
             this.Controls.Add(this.btnOK);
             this.Controls.Add(this.chkRememberCheckboxes);
             this.Controls.Add(this.grpExtensions);
             this.Controls.Add(this.txtSuffix);
             this.Controls.Add(this.lblSuffix);
+            this.Controls.Add(this.chkEnableSuffix);
             this.Controls.Add(this.txtPattern);
             this.Controls.Add(this.lblPattern);
             this.Controls.Add(this.btnBrowseUpdate);
