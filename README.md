@@ -111,10 +111,7 @@ Breaking changes are now expected to be **intentional and documented**.
 
 ## 📸 Screenshots
 
-<img width="802" height="792" alt="image" src="https://github.com/user-attachments/assets/1fea5d32-9d36-48f8-bea9-c74a1651f08f" />
-<img width="802" height="792" alt="image" src="https://github.com/user-attachments/assets/cc24d1df-18a0-4e0f-aae5-2dba2cddd2b6" />
-<img width="802" height="792" alt="image" src="https://github.com/user-attachments/assets/deeff9c1-d5a7-48ba-975d-dd3c59dffa14" />
-
+<img width="802" height="792" alt="image" src="https://github.com/user-attachments/assets/c6924814-d391-4d17-a7e1-ee6cddb8a4d8" />
 
 ---
 
