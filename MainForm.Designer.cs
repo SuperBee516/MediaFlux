@@ -689,6 +689,12 @@ namespace Encode
                 HeaderText = "ETA",
                 Width = 90
             });
+            dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "colCustom",
+                HeaderText = "Custom",
+                Width = 80
+            });
 
             //
             // ctxEncodeGrid
@@ -789,20 +795,7 @@ namespace Encode
             tabHistory.Controls.Add(splitHistory);
             var tabs = this.Controls.OfType<TabControl>().FirstOrDefault();
             if (tabs != null)
-                tabs.TabPages.Add(tabHistory);
-
-            var cms = new ContextMenuStrip();
-            cms.Items.Add("Start", null, StartEncodeFromContextMenu_Click);
-            cms.Items.Add("Add to Encoding Queue", null, AddToEncodeQueueFromContextMenu_Click);
-            cms.Items.Add(new ToolStripSeparator());
-            cms.Items.Add("Remove Selected", null, RemoveSelectedRows_Click);
-            cms.Items.Add("Clear Grid", null, ClearGrid_Click);
-            cms.Items.Add(new ToolStripSeparator());
-            cms.Items.Add("Rename File…", null, RenameFile_Click);
-            cms.Items.Add("Open Location", null, OpenLocationFromContextMenu_Click);
-            cms.Items.Add(new ToolStripSeparator());
-            cms.Items.Add("Schedule Start…", null, ScheduleEncode_Click);
-            dgvEncodeQueue.ContextMenuStrip = cms;
+                tabs.TabPages.Add(tabHistory);            
 
             tlEncode.SetColumnSpan(dgvEncodeQueue, 4);
             tlEncode.Controls.Add(dgvEncodeQueue, 0, 13);
@@ -1153,7 +1146,7 @@ namespace Encode
 
             MainMenuStrip = menuStrip1;
 
-            Text = "GoEncode v0.5.10";
+            Text = "GoEncode v0.6.0";
             ClientSize = new Size(800, 760);
         }
     }

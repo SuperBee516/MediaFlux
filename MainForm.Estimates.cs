@@ -118,6 +118,14 @@ namespace Encode
                 {
                     if (_rowsByPath.TryGetValue(item.Path, out var row) && row?.Cells != null)
                     {
+                        var meta = row.Tag as RowMeta;
+                        if (RowHasCustomSettings(meta))
+                        {
+                            ApplyCustomSettingsEstimate(row, meta!);
+                            applied++;
+                            continue;
+                        }
+
                         // Use the new property names
                         SetRowEstimateRange(row, item.MinKiB, item.MaxKiB);
                         applied++;
@@ -194,7 +202,16 @@ namespace Encode
                                 };
                             }
 
-                            applied++;
+                            var updatedMeta = row.Tag as RowMeta;
+                            if (RowHasCustomSettings(updatedMeta))
+                            {
+                                ApplyCustomSettingsEstimate(row, updatedMeta!);
+                                applied++;
+                            }
+                            else
+                            {
+                                applied++;
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -259,6 +276,12 @@ namespace Encode
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                 {
                     row.Cells["colEstimatedSize"].Value = "";
+                    continue;
+                }
+
+                if (RowHasCustomSettings(meta))
+                {
+                    ApplyCustomSettingsEstimate(row, meta!);
                     continue;
                 }
 

@@ -269,13 +269,23 @@ namespace Encode
 
             // ==== TARGET SIZE (MB) ====
             double? targetMb = null;
-            string profileText = UiGet(
-                () => comboCompressionProfile!.SelectedItem?.ToString()
-                      ?? comboCompressionProfile.Text
-                      ?? string.Empty,
-                string.Empty);
+            var meta = row.Tag as RowMeta;
+            bool hasCustomTarget = meta?.CustomTargetMb.HasValue == true;
+            bool hasCustomProfile = !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile);
 
-            if (profileText.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
+            string profileText = hasCustomProfile
+                ? meta!.CustomCompressionProfile!
+                : UiGet(
+                    () => comboCompressionProfile!.SelectedItem?.ToString()
+                          ?? comboCompressionProfile.Text
+                          ?? string.Empty,
+                    string.Empty);
+
+            if (hasCustomTarget)
+            {
+                targetMb = meta!.CustomTargetMb;
+            }
+            else if (profileText.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
             {
                 // Try to keep roughly the same bitrate (with a small safety bump)
                 int? srcKbps = ProbeSourceVideoBitrateKbps(file);
@@ -289,8 +299,12 @@ namespace Encode
             else
             {
                 // Manual override from UI?
-                var targetText = UiGet(() => txtTargetSize.Text, string.Empty);
-                if (double.TryParse(targetText, out var manualMb) && manualMb > 0)
+                var targetText = hasCustomProfile
+                    ? string.Empty
+                    : UiGet(() => txtTargetSize.Text, string.Empty);
+                if (!hasCustomProfile &&
+                    double.TryParse(targetText, out var manualMb) &&
+                    manualMb > 0)
                 {
                     targetMb = manualMb;
                 }

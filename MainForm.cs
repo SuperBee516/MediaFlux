@@ -237,6 +237,7 @@ namespace Encode
             _encodeQueueRunner = new EncodeQueueRunner();
 
             InitializeAudioQueueContextMenu();
+            InitializeEncodeQueueContextMenu();
 
             // ─── menu / toolbar handlers ───────────────────────────
             this.exitToolStripMenuItem.Click += exitToolStripMenuItem_Click;
@@ -464,9 +465,84 @@ namespace Encode
             public string Resolution = ""; // Changed to string; initialized
             public int Fps = 0; // Initialized to suppress warning
             public double SrcMb = 0; // Initialized to suppress warning
+            public string? CustomCompressionProfile = null;
+            public double? CustomTargetMb = null;
+
+            public bool HasCustomSettings =>
+                CustomTargetMb.HasValue || !string.IsNullOrWhiteSpace(CustomCompressionProfile);
         }
 
+        private RowMeta EnsureRowMeta(DataGridViewRow row)
+        {
+            if (row.Tag is RowMeta rm)
+                return rm;
 
+            var path = GetPathFromRow(row) ?? string.Empty;
+            rm = new RowMeta { Path = path };
+            row.Tag = rm;
+            return rm;
+        }
+
+        private bool RowHasCustomSettings(RowMeta? meta)
+        {
+            return meta != null && meta.HasCustomSettings;
+        }
+
+        private void UpdateRowCustomFlag(DataGridViewRow row)
+        {
+            if (!dgvEncodeQueue.Columns.Contains("colCustom"))
+                return;
+
+            var meta = row.Tag as RowMeta;
+            bool hasCustom = RowHasCustomSettings(meta);
+
+            row.Cells["colCustom"].Value = hasCustom ? "Custom" : "";
+            row.Cells["colCustom"].ToolTipText = hasCustom
+                ? BuildCustomSettingsTooltip(meta!)
+                : "";
+        }
+
+        private string BuildCustomSettingsTooltip(RowMeta meta)
+        {
+            var parts = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(meta.CustomCompressionProfile))
+                parts.Add($"Profile: {meta.CustomCompressionProfile}");
+
+            if (meta.CustomTargetMb.HasValue)
+                parts.Add($"Target: {meta.CustomTargetMb.Value:0.#} MB");
+
+            return string.Join(" | ", parts);
+        }
+
+        private void ApplyCustomSettingsEstimate(DataGridViewRow row, RowMeta meta)
+        {
+            var path = GetPathFromRow(row);
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            if (meta.CustomTargetMb.HasValue && meta.CustomTargetMb.Value > 0)
+            {
+                double customMb = meta.CustomTargetMb.Value;
+                _estimatedSizeMap[path] = customMb;
+                row.Cells["colEstimatedSize"].Value = $"{FormatSize(customMb)} (custom)";
+            }
+            else if (!string.IsNullOrWhiteSpace(meta.CustomCompressionProfile))
+            {
+                double estMb = EstimateAutoTargetMbSmart(path, meta.CustomCompressionProfile);
+                if (estMb > 0)
+                {
+                    _estimatedSizeMap[path] = estMb;
+                    row.Cells["colEstimatedSize"].Value = $"{FormatSize(estMb)} (custom)";
+                }
+                else
+                {
+                    row.Cells["colEstimatedSize"].Value = "Custom";
+                }
+            }
+
+            UpdateRowCustomFlag(row);
+        }
 
         private bool TryGetRowPathAndDuration(DataGridViewRow row, out string path, out double durationSec)
         {
@@ -1961,6 +2037,8 @@ namespace Encode
             r.Cells["colCreated"].Value = fi.CreationTime.ToString("yyyy-MM-dd HH:mm");
             r.Cells["colProgress"].Value = "";
             r.Cells["colETA"].Value = "";
+            if (dgvEncodeQueue.Columns.Contains("colCustom"))
+                r.Cells["colCustom"].Value = "";
 
             // Initially tag with just the path; RowMeta will be attached by the smart estimate UI pump
             r.Tag = path;
