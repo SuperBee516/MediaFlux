@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Encode.Services;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -18,6 +19,7 @@ namespace Encode
 
             int added = 0;
 
+            _activityIndicator?.StartActivity(UiActivity.FolderScan);
             try
             {
                 using (UiBusy("Scanning folder…"))
@@ -46,6 +48,8 @@ namespace Encode
             }
             finally
             {
+                _activityIndicator?.StopActivity(UiActivity.FolderScan);
+
                 // Useful feedback for sanity-checking
                 toolStripStatusLabel1.Text = added > 0
                     ? $"Scanned \"{folder}\" — {added} file(s) added."
@@ -58,46 +62,54 @@ namespace Encode
             var folder = cmbInputFolder.Text;
             if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return;
 
-            var allowedExts = GetAllowedExtensionsFromUi();
-            var searchOpt = chkIncludeSubfolders.Checked
-                ? SearchOption.AllDirectories
-                : SearchOption.TopDirectoryOnly;
-
-            var fs = new HashSet<string>(Directory
-                .EnumerateFiles(folder, "*.*", searchOpt)
-                .Where(f =>
-                {
-                    var ext = Path.GetExtension(f);
-                    if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext)) return false;
-
-                    // Respect codec filters
-                    var codec = GetVideoCodec(f);
-                    if (!PassesCodecFilter(codec))
-                        return false;
-                    return true;
-                }),
-                StringComparer.OrdinalIgnoreCase);
-
-            _suppressRowEvents = true;
+            _activityIndicator?.StartActivity(UiActivity.FolderScan);
             try
             {
-                // Add new files
-                foreach (var p in fs)
-                    AddEncodeItemIfNotPresent(p);
+                var allowedExts = GetAllowedExtensionsFromUi();
+                var searchOpt = chkIncludeSubfolders.Checked
+                    ? SearchOption.AllDirectories
+                    : SearchOption.TopDirectoryOnly;
 
-                // Remove missing/unmatched rows
-                foreach (DataGridViewRow row in dgvEncodeQueue.Rows.Cast<DataGridViewRow>().ToList())
+                var fs = new HashSet<string>(Directory
+                    .EnumerateFiles(folder, "*.*", searchOpt)
+                    .Where(f =>
+                    {
+                        var ext = Path.GetExtension(f);
+                        if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext)) return false;
+
+                        // Respect codec filters
+                        var codec = GetVideoCodec(f);
+                        if (!PassesCodecFilter(codec))
+                            return false;
+                        return true;
+                    }),
+                    StringComparer.OrdinalIgnoreCase);
+
+                _suppressRowEvents = true;
+                try
                 {
-                    var p = (row.Tag as RowMeta)?.Path ?? row.Tag as string;
-                    if (string.IsNullOrWhiteSpace(p) || !fs.Contains(p))
-                        dgvEncodeQueue.Rows.Remove(row);   // no estimate call here due to _suppressRowEvents
+                    // Add new files
+                    foreach (var p in fs)
+                        AddEncodeItemIfNotPresent(p);
+
+                    // Remove missing/unmatched rows
+                    foreach (DataGridViewRow row in dgvEncodeQueue.Rows.Cast<DataGridViewRow>().ToList())
+                    {
+                        var p = (row.Tag as RowMeta)?.Path ?? row.Tag as string;
+                        if (string.IsNullOrWhiteSpace(p) || !fs.Contains(p))
+                            dgvEncodeQueue.Rows.Remove(row);   // no estimate call here due to _suppressRowEvents
+                    }
                 }
+                finally
+                {
+                    _suppressRowEvents = false;
+                }
+                RunEstimatePass();
             }
             finally
             {
-                _suppressRowEvents = false;
-            }
-            RunEstimatePass();
+                _activityIndicator?.StopActivity(UiActivity.FolderScan);
+            }            
         }
     }
 }
