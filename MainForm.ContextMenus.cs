@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Windows.Forms;
+
 
 namespace Encode
 {
@@ -24,6 +27,61 @@ namespace Encode
             dgvAudioQueue.ContextMenuStrip = audioMenu;
             dgvAudioQueue.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             dgvAudioQueue.MultiSelect = true;
+        }
+
+        private void InitializeEncodeQueueContextMenu()
+        {
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Start", null, StartEncodeFromContextMenu_Click);
+            menu.Items.Add("Add to Encoding Queue", null, AddToEncodeQueueFromContextMenu_Click);
+
+            var customSettings = new ToolStripMenuItem("Custom Encode Settings");
+            var customProfileMenu = new ToolStripMenuItem("Quality / File Size");
+
+            IEnumerable<string> profileItems = comboCompressionProfile?.Items
+                .Cast<object>()
+                .Select(item => item.ToString() ?? string.Empty)
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                ?? Enumerable.Empty<string>();
+
+            if (!profileItems.Any())
+            {
+                profileItems = new[]
+                {
+                    "Very High Quality (Largest File)",
+                    "High Quality",
+                    "Medium Quality (Default)",
+                    "Low Quality (Smaller File)",
+                    "Very Low Quality (Smallest File)"
+                };
+            }
+
+            foreach (var profile in profileItems)
+            {
+                var item = new ToolStripMenuItem(profile)
+                {
+                    Tag = profile
+                };
+                item.Click += CustomProfileMenuItem_Click;
+                customProfileMenu.DropDownItems.Add(item);
+            }
+
+            customSettings.DropDownItems.Add(customProfileMenu);
+            customSettings.DropDownItems.Add("Set Target Size…", null, SetCustomTargetSize_Click);
+            customSettings.DropDownItems.Add(new ToolStripSeparator());
+            customSettings.DropDownItems.Add("Clear Custom Settings", null, ClearCustomSettings_Click);
+            menu.Items.Add(customSettings);
+
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Remove Selected", null, RemoveSelectedRows_Click);
+            menu.Items.Add("Clear Grid", null, ClearGrid_Click);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Rename File…", null, RenameFile_Click);
+            menu.Items.Add("Open Location", null, OpenLocationFromContextMenu_Click);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Schedule Start…", null, ScheduleEncode_Click);
+
+            dgvEncodeQueue.ContextMenuStrip = menu;
         }
 
         private void AddToEncodeQueueFromContextMenu_Click(object? sender, EventArgs e)
@@ -127,6 +185,204 @@ namespace Encode
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
+        }
+
+        private void CustomProfileMenuItem_Click(object? sender, EventArgs e)
+        {
+            if (sender is not ToolStripMenuItem item || item.Tag is not string profile)
+                return;
+
+            ApplyCustomProfile(profile);
+        }
+
+        private void SetCustomTargetSize_Click(object? sender, EventArgs e)
+        {
+            if (dgvEncodeQueue.SelectedRows.Count == 0)
+            {
+                MessageBox.Show("Select one or more files first.", "Custom Target Size",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            double initial = 0;
+            if (dgvEncodeQueue.SelectedRows.Count == 1 &&
+                dgvEncodeQueue.SelectedRows[0].Tag is RowMeta rm &&
+                rm.CustomTargetMb.HasValue)
+            {
+                initial = rm.CustomTargetMb.Value;
+            }
+            else if (double.TryParse(txtTargetSize.Text, out var globalMb) && globalMb > 0)
+            {
+                initial = globalMb;
+            }
+            else
+            {
+                initial = 1000;
+            }
+
+            if (!TryPromptTargetSize(initial, out var targetMb))
+                return;
+
+            ApplyCustomTarget(targetMb);
+        }
+
+        private void ClearCustomSettings_Click(object? sender, EventArgs e)
+        {
+            if (dgvEncodeQueue.SelectedRows.Count == 0)
+            {
+                MessageBox.Show("Select one or more files first.", "Clear Custom Settings",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            foreach (DataGridViewRow row in dgvEncodeQueue.SelectedRows)
+            {
+                if (row.IsNewRow || row.DataGridView == null)
+                    continue;
+
+                if (_activeEncodeRow == row)
+                    continue;
+
+                var meta = EnsureRowMeta(row);
+                meta.CustomCompressionProfile = null;
+                meta.CustomTargetMb = null;
+                var path = GetPathFromRow(row);
+                if (!string.IsNullOrWhiteSpace(path))
+                    _estimatedSizeMap.Remove(path);
+
+                UpdateRowCustomFlag(row);
+            }
+
+            RunEstimatePass();
+            UpdateSizeTotals();
+        }
+
+        private void ApplyCustomProfile(string profile)
+        {
+            if (dgvEncodeQueue.SelectedRows.Count == 0)
+            {
+                MessageBox.Show("Select one or more files first.", "Custom Profile",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            foreach (DataGridViewRow row in dgvEncodeQueue.SelectedRows)
+            {
+                if (row.IsNewRow || row.DataGridView == null)
+                    continue;
+
+                if (_activeEncodeRow == row)
+                    continue;
+
+                var meta = EnsureRowMeta(row);
+                meta.CustomCompressionProfile = profile;
+                meta.CustomTargetMb = null;
+                ApplyCustomSettingsEstimate(row, meta);
+            }
+
+            UpdateSizeTotals();
+        }
+
+        private void ApplyCustomTarget(double targetMb)
+        {
+            foreach (DataGridViewRow row in dgvEncodeQueue.SelectedRows)
+            {
+                if (row.IsNewRow || row.DataGridView == null)
+                    continue;
+
+                if (_activeEncodeRow == row)
+                    continue;
+
+                var meta = EnsureRowMeta(row);
+                meta.CustomTargetMb = targetMb;
+                meta.CustomCompressionProfile = null;
+                ApplyCustomSettingsEstimate(row, meta);
+            }
+
+            UpdateSizeTotals();
+        }
+
+        private bool TryPromptTargetSize(double initialMb, out double targetMb)
+        {
+            targetMb = 0;
+
+            using var dialog = new Form
+            {
+                Text = "Set Target Size",
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ClientSize = new Size(320, 140),
+                ShowInTaskbar = false
+            };
+
+            var lbl = new Label
+            {
+                Text = "Target size (MB):",
+                AutoSize = true,
+                Anchor = AnchorStyles.Left
+            };
+
+            var input = new NumericUpDown
+            {
+                Minimum = 1,
+                Maximum = 200000,
+                DecimalPlaces = 1,
+                Value = (decimal)Math.Min(200000, Math.Max(1, initialMb)),
+                Anchor = AnchorStyles.Left | AnchorStyles.Right
+            };
+
+            var btnOk = new Button
+            {
+                Text = "OK",
+                DialogResult = DialogResult.OK,
+                Anchor = AnchorStyles.Right
+            };
+
+            var btnCancel = new Button
+            {
+                Text = "Cancel",
+                DialogResult = DialogResult.Cancel,
+                Anchor = AnchorStyles.Right
+            };
+
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 3,
+                Padding = new Padding(12)
+            };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 12F));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            layout.Controls.Add(lbl, 0, 0);
+            layout.Controls.Add(input, 1, 0);
+
+            var buttonPanel = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.RightToLeft,
+                Dock = DockStyle.Fill
+            };
+            buttonPanel.Controls.Add(btnOk);
+            buttonPanel.Controls.Add(btnCancel);
+
+            layout.SetColumnSpan(buttonPanel, 2);
+            layout.Controls.Add(buttonPanel, 0, 2);
+
+            dialog.Controls.Add(layout);
+            dialog.AcceptButton = btnOk;
+            dialog.CancelButton = btnCancel;
+
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return false;
+
+            targetMb = (double)input.Value;
+            return targetMb > 0;
         }
     }
 }
