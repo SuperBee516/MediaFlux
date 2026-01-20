@@ -101,7 +101,7 @@ namespace Encode.Services
                     UiActivity.None,
                     new ActivityVisualConfig
                     {
-                        IdleImagePath = "gear-idle.png",    // static idle image
+                        IdleImagePath = Path.Combine("images", "gear-idle.png"),    // static idle image
                         Priority = 0,
                         StatusText = null                   // no text when idle
                     }
@@ -110,7 +110,7 @@ namespace Encode.Services
                     UiActivity.Encoding,
                     new ActivityVisualConfig
                     {
-                        AnimatedImagePath = "gear-wheel-animated.gif",
+                        AnimatedImagePath = Path.Combine("images", "gear-wheel-animated.gif"),
                         IdleImagePath = "gear-idle.png",
                         Priority = 100,
                         StatusText = null
@@ -120,7 +120,7 @@ namespace Encode.Services
                     UiActivity.FolderScan,
                     new ActivityVisualConfig
                     {
-                        AnimatedImagePath = "folder-scan-animated.gif",
+                        AnimatedImagePath = Path.Combine("images", "folder-scan-animated.gif"),
                         IdleImagePath = "gear-idle.png",
                         Priority = 90,
                         StatusText = null
@@ -130,7 +130,7 @@ namespace Encode.Services
                     UiActivity.Upscaling,
                     new ActivityVisualConfig
                     {
-                        AnimatedImagePath = "upscale-animated.gif",
+                        AnimatedImagePath = Path.Combine("images", "upscale-animated.gif"),
                         IdleImagePath = "gear-idle.png",
                         Priority = 95,
                         StatusText = null
