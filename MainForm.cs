@@ -1154,6 +1154,7 @@ namespace Encode
 
             // Parse timestamps, fps, bitrate using your existing logic:
             Ui(() => UpdateEncodeProgressFromLine_ForRow(row, durationSec, line));
+            HandleFfmpegProgressLineForRowMetrics(row, line);
 
             // You keep jobLog updated above.
         }
