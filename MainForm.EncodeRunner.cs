@@ -250,8 +250,9 @@ namespace Encode
 
                 _currentEncodeDuration = TimeSpan.Zero;
                 _currentEncodeTotalDuration = TimeSpan.FromSeconds(durationSec > 0 ? durationSec : 0);
-                ResetEncodeMetrics();
-                StartJobTimer();
+                bool firstActive = BeginEncodeMetricsForRow(row);
+                if (firstActive)
+                    StartJobTimer();
 
                 _activeEncodeRow = row;
                 row.Cells["colProgress"].Value = "0%";
@@ -348,7 +349,6 @@ namespace Encode
                 {
                     jobLog.AppendLine(line);
                     HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
-                    HandleFfmpegProgressLine(line);
                 };
 
                 bool ok = await _encodingService.EncodeAsync(
@@ -495,7 +495,7 @@ namespace Encode
                 Ui(() =>
                 {
                     _activeEncodeRow = null;
-                    StopJobTimer();
+                    EndEncodeMetricsForRow(row);
                 });
             }
         }
