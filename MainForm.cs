@@ -737,8 +737,8 @@ namespace Encode
 
         private void UpdateNvencUiState()
         {
-            bool isGpu = comboEncoderMode.SelectedItem?.ToString()?
-                .StartsWith("GPU", StringComparison.OrdinalIgnoreCase) == true;
+            bool isHardware = IsHardwareEncoderSelected();
+            bool isNvenc = IsNvencSelected();
 
             // NVENC preset combo
             var presetCombo = grpOptions.Controls
@@ -748,9 +748,9 @@ namespace Encode
 
             if (presetCombo != null)
             {
-                presetCombo.Enabled = isGpu;
-                if (!isGpu && presetCombo.Items.Count > 0)
-                    presetCombo.SelectedIndex = 0; // "Auto"
+                presetCombo.Enabled = isNvenc;
+                if (!isNvenc && presetCombo.Items.Count > 0)
+                    presetCombo.SelectedIndex = 0; // "Fastest"
             }
 
             // Ten-bit checkbox
@@ -760,8 +760,8 @@ namespace Encode
                 .FirstOrDefault();
             if (tenBitCheck != null)
             {
-                tenBitCheck.Enabled = isGpu;
-                if (!isGpu) tenBitCheck.Checked = false;
+                tenBitCheck.Enabled = isHardware;
+                if (!isHardware) tenBitCheck.Checked = false;
             }
 
             // Dual NVENC checkbox
@@ -771,8 +771,8 @@ namespace Encode
                 .FirstOrDefault();
             if (dualNvencCheck != null)
             {
-                dualNvencCheck.Enabled = isGpu;
-                if (!isGpu) dualNvencCheck.Checked = false;
+                dualNvencCheck.Enabled = isNvenc;
+                if (!isNvenc) dualNvencCheck.Checked = false;
             }
         }
 
@@ -782,8 +782,8 @@ namespace Encode
             // (It will be ignored by the No-Compression ffmpeg branch, but avoids nulls/edge cases.)
             if (IsNoCompressionSelected())
             {
-                var (_, isNvencNC) = GetSelectedCodecInfo();
-                return isNvencNC ? 19 : 22; // CQ 19 for NVENC, CRF 22 for CPU
+                var (_, isHardwareNC) = GetSelectedCodecInfo();
+                return isHardwareNC ? 19 : 22; // CQ 19 for HW encoders, CRF 22 for CPU
             }
 
             // If the numeric control is present, use it directly.
@@ -791,16 +791,16 @@ namespace Encode
                 return (int)nudAutoQuality.Value;
 
             // Fallback if nudAutoQuality isn’t there yet: infer from selection.
-            var (codec, isNvenc) = GetSelectedCodecInfo();
-            if (isNvenc) return 19;
+            var (codec, isHardware) = GetSelectedCodecInfo();
+            if (isHardware) return 19;
             return (codec.IndexOf("265", StringComparison.OrdinalIgnoreCase) >= 0
                     || codec.IndexOf("av1", StringComparison.OrdinalIgnoreCase) >= 0)
                    ? 24   // libx265/libaom-av1
                    : 22;  // libx264
         }
 
-        // Return selected ffmpeg video encoder name + isNvenc flag
-        private (string codec, bool isNvenc) GetSelectedCodecInfo()
+        // Return selected ffmpeg video encoder name + isHardware flag
+        private (string codec, bool isHardware) GetSelectedCodecInfo()
         {
             // Replace with your actual UI selectors.
             // Examples:
@@ -809,23 +809,33 @@ namespace Encode
             string fmt = GetSelectedFormatText();   // implement by reading your combo
             string enc = GetSelectedEncoderText();  // implement by reading your combo
 
-            bool nvenc = enc.IndexOf("nvenc", StringComparison.OrdinalIgnoreCase) >= 0
-                         || enc.IndexOf("NVENC", StringComparison.OrdinalIgnoreCase) >= 0
-                         || enc.IndexOf("GPU", StringComparison.OrdinalIgnoreCase) >= 0;
+            string codec = ResolveVideoCodec(enc, fmt);
+            bool isHardware = IsHardwareEncoderSelected(enc);
 
-            string codec = "libx264";
-            if (fmt.Contains("265") || fmt.Contains("HEVC", StringComparison.OrdinalIgnoreCase))
-                codec = nvenc ? "hevc_nvenc" : "libx265";
-            else if (fmt.Contains("AV1", StringComparison.OrdinalIgnoreCase))
-                codec = nvenc ? "av1_nvenc" : "libaom-av1";
-            else // H.264
-                codec = nvenc ? "h264_nvenc" : "libx264";
-
-            return (codec, nvenc);
+            return (codec, isHardware);
         }
 
         private string GetSelectedFormatText() => comboVideoFormat?.Text ?? "H.264";
         private string GetSelectedEncoderText() => comboEncoderMode?.Text ?? "CPU";
+
+        private bool IsHardwareEncoderSelected(string? encoderText = null)
+        {
+            encoderText ??= GetSelectedEncoderText();
+            return encoderText.StartsWith("GPU", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsNvencSelected(string? encoderText = null)
+        {
+            encoderText ??= GetSelectedEncoderText();
+            return encoderText.IndexOf("nvenc", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private bool IsQsvSelected(string? encoderText = null)
+        {
+            encoderText ??= GetSelectedEncoderText();
+            return encoderText.IndexOf("qsv", StringComparison.OrdinalIgnoreCase) >= 0
+                   || encoderText.IndexOf("intel", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
 
         private double ProbeDurationSeconds(string file)
         {
@@ -1474,9 +1484,9 @@ namespace Encode
         {
             // Only ever use >1 when GPU NVENC is active.
             string encoderText = comboEncoderMode.SelectedItem?.ToString() ?? string.Empty;
-            bool useGpu = encoderText.StartsWith("GPU", StringComparison.OrdinalIgnoreCase);
+            bool useNvenc = IsNvencSelected(encoderText);
 
-            if (!useGpu)
+            if (!useNvenc)
                 return 1;
 
             return IsDualNvencRequested() ? 2 : 1;
@@ -2051,19 +2061,30 @@ namespace Encode
         }
 
         // Map UI choice to ffmpeg encoder
-        private string ResolveVideoCodec(bool useGpu, string formatChoice)
+        private string ResolveVideoCodec(string encoderText, string formatChoice)
         {
-            if (useGpu)
+            bool useNvenc = IsNvencSelected(encoderText);
+            bool useQsv = IsQsvSelected(encoderText);
+
+            if (useNvenc)
             {
                 if (formatChoice.StartsWith("H.264")) return "h264_nvenc";
                 if (formatChoice.StartsWith("H.265") || formatChoice.StartsWith("H.265 / HEVC")) return "hevc_nvenc";
                 if (formatChoice.StartsWith("AV1")) return "av1_nvenc";
             }
+            if (useQsv)
+            {
+                if (formatChoice.StartsWith("H.264")) return "h264_qsv";
+                if (formatChoice.StartsWith("H.265") || formatChoice.StartsWith("H.265 / HEVC")) return "hevc_qsv";
+                if (formatChoice.StartsWith("AV1")) return "av1_qsv";
+            }
             if (formatChoice.StartsWith("H.264")) return "libx264";
             if (formatChoice.StartsWith("H.265") || formatChoice.StartsWith("H.265 / HEVC")) return "libx265";
             if (formatChoice.StartsWith("AV1")) return "libsvtav1";
 
-            return useGpu ? "hevc_nvenc" : "libx265"; // safe fallback
+            return useNvenc ? "hevc_nvenc"
+                 : useQsv ? "hevc_qsv"
+                 : "libx265"; // safe fallback
         }
 
         private string BuildOutputSuffix(string formatChoice)
