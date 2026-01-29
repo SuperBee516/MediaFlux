@@ -26,7 +26,7 @@ namespace Encode
             public bool AutoTargetSize { get; set; }
             public double? ManualTargetMb { get; set; }  // null when auto
             public string CompressionProfile { get; set; } = "";
-            public string EncoderMode { get; set; } = "";        // "GPU (NVENC)" or "CPU (libx264)"
+            public string EncoderMode { get; set; } = "";        // "GPU (NVENC)", "GPU (QSV)", or "CPU (libx264)"
             public string OutputFolder { get; set; } = "";       // cmbEncodeOutput.Text
         }
 
