@@ -591,6 +591,8 @@ namespace Encode.Services
         {
             bool isNvenc = videoCodec.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase);
             bool isNvencAv1 = videoCodec.Equals("av1_nvenc", StringComparison.OrdinalIgnoreCase);
+            bool isQsv = videoCodec.EndsWith("_qsv", StringComparison.OrdinalIgnoreCase);
+            bool isQsvAv1 = videoCodec.Equals("av1_qsv", StringComparison.OrdinalIgnoreCase);
 
             bool wantsTenBit =
                 tenBit &&
@@ -599,7 +601,7 @@ namespace Encode.Services
                  videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase));
 
             string? tenBitPixFmt = wantsTenBit
-                ? (isNvenc ? "p010le" : "yuv420p10le")
+                ? (isNvenc || isQsv ? "p010le" : "yuv420p10le")
                 : null;
 
             string presetForNvenc = ParseNvencPresetOrDefault(nvencPreset);
@@ -619,6 +621,7 @@ namespace Encode.Services
             // GPU decode logic:
             // - 8-bit NVENC: full GPU frames (cuda + hwaccel_output_format=cuda)
             // - 10-bit NVENC: no hwaccel_output_format, so software filters can safely convert
+            // - QSV: use qsv hwaccel when requested.
             // - Non-NVENC + GPU: plain hwaccel cuda.
             if (useGpu)
             {
@@ -632,6 +635,10 @@ namespace Encode.Services
                     {
                         sb.Append("-hwaccel cuda -hwaccel_output_format cuda ");
                     }
+                }
+                else if (isQsv)
+                {
+                    sb.Append("-hwaccel qsv ");
                 }
                 else
                 {
@@ -660,6 +667,8 @@ namespace Encode.Services
                     videoCodec,
                     isNvenc,
                     isNvencAv1,
+                    isQsv,
+                    isQsvAv1,
                     wantsTenBit,
                     tenBitPixFmt,
                     presetForNvenc,
@@ -672,6 +681,7 @@ namespace Encode.Services
                     sb,
                     videoCodec,
                     isNvenc,
+                    isQsv,
                     wantsTenBit,
                     tenBitPixFmt,
                     presetForNvenc);
@@ -775,6 +785,8 @@ namespace Encode.Services
             string videoCodec,
             bool isNvenc,
             bool isNvencAv1,
+            bool isQsv,
+            bool isQsvAv1,
             bool wantsTenBit,
             string? tenBitPixFmt,
             string presetForNvenc,
@@ -828,6 +840,15 @@ namespace Encode.Services
                 // Phase B: NVENC quality knobs
                 sb.Append("-rc-lookahead 20 -spatial_aq 1 -temporal_aq 1 -aq-strength 8 ");
             }
+            else if (isQsv)
+            {
+                string rcMode = isQsvAv1 ? "vbr" : "vbr";
+                sb.Append(
+                    $"-b:v {videoKbps:F0}k " +
+                    $"-maxrate {maxRate:F0}k " +
+                    $"-bufsize {bufSize:F0}k " +
+                    $"-rc_mode {rcMode} ");
+            }
             else
             {
                 // CPU VBR (predictable size)
@@ -839,6 +860,7 @@ namespace Encode.Services
             StringBuilder sb,
             string videoCodec,
             bool isNvenc,
+            bool isQsv,
             bool wantsTenBit,
             string? tenBitPixFmt,
             string presetForNvenc)
@@ -859,6 +881,17 @@ namespace Encode.Services
 
                 // Phase B: NVENC quality knobs
                 sb.Append("-rc-lookahead 20 -spatial_aq 1 -temporal_aq 1 -aq-strength 8 ");
+            }
+            else if (isQsv)
+            {
+                int quality = 23;
+                if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
+                    videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
+                    quality = 25;
+                else if (videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase))
+                    quality = 28;
+
+                sb.Append($"-rc_mode icq -global_quality {quality} ");
             }
             else
             {
