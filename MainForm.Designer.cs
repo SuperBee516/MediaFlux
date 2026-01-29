@@ -524,7 +524,7 @@ namespace Encode
             lblEncoderMode.Anchor = AnchorStyles.Right;
             tlEncode.Controls.Add(lblEncoderMode, 0, 2);
 
-            comboEncoderMode.Items.AddRange(new object[] { "GPU (NVENC)", "GPU (QSV)", "CPU (libx264)" });
+            comboEncoderMode.Items.AddRange(new object[] { "GPU (NVENC)", "GPU (QSV) Experimental", "CPU (libx264)" });
             comboEncoderMode.DropDownStyle = ComboBoxStyle.DropDownList;
             comboEncoderMode.SelectedIndex = 0;
             comboEncoderMode.Dock = DockStyle.Fill;
@@ -1205,7 +1205,7 @@ namespace Encode
 
             MainMenuStrip = menuStrip1;
 
-            Text = "GoEncode v0.6.2";
+            Text = "GoEncode v0.6.3";
             ClientSize = new Size(800, 760);
         }
     }

@@ -615,6 +615,16 @@ namespace Encode.Services
                 _ => string.Empty
             };
 
+            // QSV hwaccel decode (h264_qsv/hevc_qsv decoders) produces hardware frames.
+            // That breaks *CPU* filters like scale/format unless we explicitly hwdownload/vpp_qsv.
+            // For now, only enable QSV hwaccel decode when we are not inserting any video filters.
+            // (Encoding still uses *_qsv, so we still get hardware encode speed.)
+            bool qsvHwDecodeOk =
+                useGpu &&
+                isQsv &&
+                string.IsNullOrEmpty(scaleExpr) &&
+                !wantsTenBit;
+
             var sb = new StringBuilder();
             sb.Append("-y ");
 
@@ -638,7 +648,8 @@ namespace Encode.Services
                 }
                 else if (isQsv)
                 {
-                    sb.Append("-hwaccel qsv ");
+                    if (qsvHwDecodeOk)
+                        sb.Append("-hwaccel qsv ");
                 }
                 else
                 {
@@ -847,7 +858,15 @@ namespace Encode.Services
                     $"-b:v {videoKbps:F0}k " +
                     $"-maxrate {maxRate:F0}k " +
                     $"-bufsize {bufSize:F0}k " +
-                    $"-rc_mode {rcMode} ");
+                    $"-rc_mode {rcMode} " +
+                    "-preset slow ");
+
+                // Optional subjective quality improvement for HEVC QSV.
+                if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
+                    videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.Append("-mbbrc 1 ");
+                }
             }
             else
             {
@@ -884,14 +903,22 @@ namespace Encode.Services
             }
             else if (isQsv)
             {
-                int quality = 23;
+                // QSV: global_quality behaves like a CRF-ish knob; lower generally means higher quality.
+                // Empirically, values around ~18-22 are reasonable defaults for hevc_qsv.
+                int quality = 20;
                 if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
                     videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
-                    quality = 25;
+                    quality = 19;
                 else if (videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase))
                     quality = 28;
 
-                sb.Append($"-rc_mode icq -global_quality {quality} ");
+                // mbbrc can improve subjective quality on QSV at a small performance cost.
+                // (Only apply it to HEVC where it tends to be most noticeable.)
+                if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
+                    videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
+                    sb.Append($"-rc_mode icq -global_quality {quality} -preset slow -mbbrc 1 ");
+                else
+                    sb.Append($"-rc_mode icq -global_quality {quality} -preset slow ");
             }
             else
             {
