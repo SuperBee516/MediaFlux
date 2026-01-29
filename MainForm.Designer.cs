@@ -524,7 +524,7 @@ namespace Encode
             lblEncoderMode.Anchor = AnchorStyles.Right;
             tlEncode.Controls.Add(lblEncoderMode, 0, 2);
 
-            comboEncoderMode.Items.AddRange(new object[] { "GPU (NVENC)", "CPU (libx264)" });
+            comboEncoderMode.Items.AddRange(new object[] { "GPU (NVENC)", "GPU (QSV)", "CPU (libx264)" });
             comboEncoderMode.DropDownStyle = ComboBoxStyle.DropDownList;
             comboEncoderMode.SelectedIndex = 0;
             comboEncoderMode.Dock = DockStyle.Fill;
