@@ -2,42 +2,37 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace Encode.Services
 {
     public sealed class MediaInfoService
     {
         private readonly string _ffprobePath;
+        private readonly string? _cachePath;
+        private readonly bool _persistentCacheEnabled;
+        private readonly object _cacheSaveLock = new();
+        private DateTime _lastCacheSaveUtc = DateTime.MinValue;
+        private bool _cacheDirty;
 
-        private readonly ConcurrentDictionary<string, MediaInfo> _cache =
+        private readonly ConcurrentDictionary<string, CacheEntry> _cache =
             new(StringComparer.OrdinalIgnoreCase);
 
-        public MediaInfoService(string? baseDirectory = null)
+        public MediaInfoService(string? baseDirectory = null, string? ffprobePath = null, bool persistentCacheEnabled = true)
         {
             var root = string.IsNullOrWhiteSpace(baseDirectory)
                 ? AppDomain.CurrentDomain.BaseDirectory
                 : baseDirectory;
 
-            _ffprobePath = ResolveFfprobePath(root);
-        }
-
-        private static string ResolveFfprobePath(string root)
-        {
-            var candidates = new[]
+            _ffprobePath = FfmpegToolResolver.Resolve(root, configuredFfprobePath: ffprobePath).FfprobePath;
+            _persistentCacheEnabled = persistentCacheEnabled;
+            if (_persistentCacheEnabled)
             {
-                Path.Combine(root, "ffprobe.exe"),
-                Path.Combine(root, "programs", "ffprobe.exe"),
-                Path.Combine(root, "Programs", "ffprobe.exe")
-            };
-
-            foreach (var candidate in candidates)
-            {
-                if (File.Exists(candidate))
-                    return candidate;
+                _cachePath = Path.Combine(root, "data", "media-info-cache.json");
+                LoadPersistentCache();
             }
-
-            return candidates[0];
         }
 
         public MediaInfo GetInfo(string path)
@@ -45,12 +40,82 @@ namespace Encode.Services
             if (string.IsNullOrWhiteSpace(path))
                 throw new ArgumentException("Path must not be empty.", nameof(path));
 
-            if (_cache.TryGetValue(path, out var cached))
-                return cached;
+            if (!TryGetFileSignature(path, out var length, out var lastWriteUtc))
+                return new MediaInfo();
+
+            if (_cache.TryGetValue(path, out var cached) &&
+                cached.Length == length &&
+                cached.LastWriteUtc == lastWriteUtc)
+            {
+                return cached.Info;
+            }
 
             var info = Probe(path);
-            _cache[path] = info;
+
+            // A failed probe is often a file that another encode is still writing.
+            // Never preserve that failure, and tie successful results to the exact
+            // file state so a growing/replaced output is probed again automatically.
+            if (HasUsefulMetadata(info) &&
+                TryGetFileSignature(path, out length, out lastWriteUtc))
+            {
+                _cache[path] = new CacheEntry(info, length, lastWriteUtc);
+                SavePersistentCacheIfDue(force: false);
+            }
+            else
+            {
+                _cache.TryRemove(path, out _);
+            }
+
             return info;
+        }
+
+        public void Invalidate(string path)
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+                _cache.TryRemove(path, out _);
+        }
+
+        public void ClearCache()
+        {
+            _cache.Clear();
+            if (_persistentCacheEnabled)
+                LoadPersistentCache();
+        }
+
+        public void FlushCache()
+        {
+            SavePersistentCacheIfDue(force: true);
+        }
+
+        private static bool TryGetFileSignature(string path, out long length, out DateTime lastWriteUtc)
+        {
+            length = 0;
+            lastWriteUtc = default;
+
+            try
+            {
+                var file = new FileInfo(path);
+                if (!file.Exists)
+                    return false;
+
+                length = file.Length;
+                lastWriteUtc = file.LastWriteTimeUtc;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasUsefulMetadata(MediaInfo info)
+        {
+            return !string.IsNullOrWhiteSpace(info.VideoCodec) ||
+                   info.Width.HasValue ||
+                   info.Height.HasValue ||
+                   info.Fps.HasValue ||
+                   info.DurationSeconds.HasValue ||
+                   info.BitrateKbps.HasValue;
         }
 
         public (int width, int height) GetResolutionPixels(string path)
@@ -103,7 +168,10 @@ namespace Encode.Services
                 return info;
 
             if (!File.Exists(_ffprobePath))
+            {
+                Debug.WriteLine($"ffprobe not found at '{_ffprobePath}'. Media info will use fallbacks.");
                 return info; // silently fail; callers already have fallbacks
+            }
 
             try
             {
@@ -115,15 +183,16 @@ namespace Encode.Services
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
-                    CreateNoWindow = true
+                    CreateNoWindow = true,
+                    ErrorDialog = false,
+                    WindowStyle = ProcessWindowStyle.Hidden
                 };
 
                 using var proc = Process.Start(psi);
                 if (proc == null)
                     return info;
 
-                string output = proc.StandardOutput.ReadToEnd();
-                proc.WaitForExit(15000);
+                string output = ReadProcessOutputWithTimeout(proc, TimeSpan.FromSeconds(15));
 
                 if (string.IsNullOrWhiteSpace(output))
                     return info;
@@ -191,12 +260,38 @@ namespace Encode.Services
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.WriteLine($"ffprobe failed for '{path}': {ex.Message}");
                 // Swallow: probes are best-effort only. Callers have fallbacks.
             }
 
             return info;
+        }
+
+        private static string ReadProcessOutputWithTimeout(Process proc, TimeSpan timeout)
+        {
+            Task<string> outputTask = proc.StandardOutput.ReadToEndAsync();
+            Task<string> errorTask = proc.StandardError.ReadToEndAsync();
+
+            if (!proc.WaitForExit((int)timeout.TotalMilliseconds))
+            {
+                try
+                {
+                    proc.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // best-effort cleanup only
+                }
+
+                Debug.WriteLine("ffprobe timed out while reading media info.");
+                return string.Empty;
+            }
+
+            proc.WaitForExit();
+            _ = errorTask.GetAwaiter().GetResult();
+            return outputTask.GetAwaiter().GetResult();
         }
 
         private static bool TryParseFraction(string? text, out double value)
@@ -240,6 +335,88 @@ namespace Encode.Services
             public double? Fps { get; set; }
             public double? DurationSeconds { get; set; }
             public int? BitrateKbps { get; set; }
+        }
+
+        private void LoadPersistentCache()
+        {
+            if (string.IsNullOrWhiteSpace(_cachePath) || !File.Exists(_cachePath))
+                return;
+
+            try
+            {
+                var json = File.ReadAllText(_cachePath);
+                var entries = JsonSerializer.Deserialize<Dictionary<string, PersistentCacheEntry>>(json);
+                if (entries == null)
+                    return;
+
+                foreach (var item in entries)
+                {
+                    if (!string.IsNullOrWhiteSpace(item.Key) && item.Value.Info != null)
+                    {
+                        _cache[item.Key] = new CacheEntry(
+                            item.Value.Info,
+                            item.Value.Length,
+                            item.Value.LastWriteUtc);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to load media info cache: {ex.Message}");
+            }
+        }
+
+        private void SavePersistentCacheIfDue(bool force)
+        {
+            if (!_persistentCacheEnabled || string.IsNullOrWhiteSpace(_cachePath))
+                return;
+
+            _cacheDirty = true;
+            if (!force && (DateTime.UtcNow - _lastCacheSaveUtc).TotalSeconds < 5)
+                return;
+
+            lock (_cacheSaveLock)
+            {
+                if (!force && !_cacheDirty)
+                    return;
+
+                try
+                {
+                    var directory = Path.GetDirectoryName(_cachePath);
+                    if (!string.IsNullOrWhiteSpace(directory))
+                        Directory.CreateDirectory(directory);
+
+                    var snapshot = _cache
+                        .Take(10000)
+                        .ToDictionary(
+                            kvp => kvp.Key,
+                            kvp => new PersistentCacheEntry
+                            {
+                                Info = kvp.Value.Info,
+                                Length = kvp.Value.Length,
+                                LastWriteUtc = kvp.Value.LastWriteUtc
+                            },
+                            StringComparer.OrdinalIgnoreCase);
+
+                    var options = new JsonSerializerOptions { WriteIndented = false };
+                    File.WriteAllText(_cachePath, JsonSerializer.Serialize(snapshot, options));
+                    _lastCacheSaveUtc = DateTime.UtcNow;
+                    _cacheDirty = false;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Failed to save media info cache: {ex.Message}");
+                }
+            }
+        }
+
+        private sealed record CacheEntry(MediaInfo Info, long Length, DateTime LastWriteUtc);
+
+        private sealed class PersistentCacheEntry
+        {
+            public MediaInfo? Info { get; set; }
+            public long Length { get; set; }
+            public DateTime LastWriteUtc { get; set; }
         }
     }
 }

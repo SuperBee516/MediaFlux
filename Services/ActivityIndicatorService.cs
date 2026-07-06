@@ -222,17 +222,20 @@ namespace Encode.Services
             var cfg = GetConfig(toShow);
 
             bool isIdle = (toShow == UiActivity.None);
+            if (isIdle)
+            {
+                ApplyImage(null);
+                ApplyStatusText(null);
+                return;
+            }
 
             string? imagePath = null;
             string? statusText = null;
 
             if (cfg != null)
             {
-                imagePath = isIdle
-                    ? (cfg.IdleImagePath ?? cfg.AnimatedImagePath)
-                    : (cfg.AnimatedImagePath ?? cfg.IdleImagePath);
-
-                statusText = isIdle ? null : cfg.StatusText;
+                imagePath = cfg.AnimatedImagePath ?? cfg.IdleImagePath;
+                statusText = cfg.StatusText;
             }
 
             ApplyImage(imagePath);

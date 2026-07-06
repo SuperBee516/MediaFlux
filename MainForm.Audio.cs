@@ -257,37 +257,92 @@ namespace Encode
             lblAudioStatus.Text = $"Running {jobs.Count} audio job(s)…";
             toolStripStatusLabel1.Text = "Audio processing in progress…";
 
-            foreach (var job in jobs)
+            using (SleepPreventionService.Acquire(_config.PreventSleepDuringEncoding))
             {
-                try
+                foreach (var job in jobs)
                 {
-                    // --- NEW: initialise shared metrics for this audio file ---
-                    var dur = GetVideoDuration(job.InputPath); // works for audio too
-                    _currentEncodeDuration = TimeSpan.Zero;
-                    _currentEncodeTotalDuration = dur;
-                    ResetEncodeMetrics();
-                    StartJobTimer();
+                    var jobStartUtc = DateTime.UtcNow;
+                    var outputPath = GetExpectedAudioOutputPath(job);
+                    var operationLabel = job.Operation == "Extract" ? "Audio Extract" : "Audio Convert";
 
-                    bool ok = job.Operation == "Extract"
-                        ? await _audioService.ExtractAsync(job)
-                        : await _audioService.ConvertAsync(job);
-
-                    if (!ok)
+                    try
                     {
-                        lblAudioStatus.Text = $"Audio job failed for {Path.GetFileName(job.InputPath)}";
-                        // we keep going; you can change this if you prefer hard fail
+                        // --- NEW: initialise shared metrics for this audio file ---
+                        var dur = GetVideoDuration(job.InputPath); // works for audio too
+                        _currentEncodeDuration = TimeSpan.Zero;
+                        _currentEncodeTotalDuration = dur;
+                        ResetEncodeMetrics();
+                        StartJobTimer();
+
+                        bool ok = job.Operation == "Extract"
+                            ? await _audioService.ExtractAsync(job)
+                            : await _audioService.ConvertAsync(job);
+
+                        if (!ok)
+                        {
+                            lblAudioStatus.Text = $"Audio job failed for {Path.GetFileName(job.InputPath)}";
+                            AppendAudioHistory(job, outputPath, jobStartUtc, JobStatus.Failed, $"{operationLabel} returned failure.");
+                            // we keep going; you can change this if you prefer hard fail
+                        }
+                        else
+                        {
+                            AppendAudioHistory(job, outputPath, jobStartUtc, JobStatus.Success, operationLabel);
+                        }
                     }
-                }
-                catch (Exception ex)
-                {
-                    lblAudioStatus.Text = $"Error: {ex.Message}";
-                    // continue with remaining jobs
+                    catch (Exception ex)
+                    {
+                        lblAudioStatus.Text = $"Error: {ex.Message}";
+                        AppendAudioHistory(job, outputPath, jobStartUtc, JobStatus.Failed, ex.Message);
+                        // continue with remaining jobs
+                    }
                 }
             }
 
             ResetEncodeMetrics();
             lblAudioStatus.Text = "Audio jobs completed.";
             toolStripStatusLabel1.Text = "Audio processing complete.";
+            LoadHistoryGrid();
+        }
+
+        private void AppendAudioHistory(AudioJob job, string outputPath, DateTime startUtc, JobStatus status, string notes)
+        {
+            try
+            {
+                lock (_historyLock)
+                {
+                    _historyService.Append(new JobHistoryRecord
+                    {
+                        Type = JobType.Audio,
+                        Status = status,
+                        StartUtc = startUtc,
+                        EndUtc = DateTime.UtcNow,
+                        SourcePath = job.InputPath,
+                        OutputPath = status == JobStatus.Success ? outputPath : "",
+                        EncoderMode = job.Operation,
+                        DurationSec = ProbeDurationSeconds(job.InputPath),
+                        Notes = notes
+                    });
+                }
+            }
+            catch (Exception logEx)
+            {
+                Debug.WriteLine($"History append (audio) failed: {logEx}");
+            }
+        }
+
+        private static string GetExpectedAudioOutputPath(AudioJob job)
+        {
+            var outFolder = string.IsNullOrWhiteSpace(job.OutputFolder)
+                ? Path.GetDirectoryName(job.InputPath) ?? Environment.CurrentDirectory
+                : job.OutputFolder;
+
+            var extension = job.OutputExtension;
+            if (string.IsNullOrWhiteSpace(extension))
+                extension = Path.GetExtension(job.InputPath);
+            if (string.IsNullOrWhiteSpace(extension))
+                extension = ".mka";
+
+            return Path.Combine(outFolder, Path.GetFileNameWithoutExtension(job.InputPath) + extension);
         }
 
         private void BuildAudioJobSettingsFromUi(out string operation, out string? extension, out LoudnormMode loudnormMode)

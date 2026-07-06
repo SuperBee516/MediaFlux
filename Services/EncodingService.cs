@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -16,6 +16,8 @@ namespace Encode.Services
     public class EncodingService
     {
         private readonly string _appPath;
+        private readonly string _ffmpegPath;
+        private readonly string _ffprobePath;
         private readonly Action<string> _progressCallback;
         private readonly Action<string>? _log;
 
@@ -45,6 +47,18 @@ namespace Encode.Services
 
             // -map 0:v:0 -map 0:a:0? (subtitles/data depend on options)
             FirstAudioOnly
+        }
+
+        public sealed class EncodeResult
+        {
+            public bool Success { get; }
+            public string OutputPath { get; }
+
+            public EncodeResult(bool success, string outputPath)
+            {
+                Success = success;
+                OutputPath = outputPath;
+            }
         }
 
         /// <summary>
@@ -90,12 +104,17 @@ namespace Encode.Services
         public EncodingService(
             string applicationDirectory,
             Action<string> progressCallback,
-            Action<string>? logCallback)
+            Action<string>? logCallback,
+            string? ffmpegPath = null,
+            string? ffprobePath = null)
         {
             if (string.IsNullOrWhiteSpace(applicationDirectory))
                 throw new ArgumentException("Application directory must be provided.", nameof(applicationDirectory));
 
             _appPath = applicationDirectory;
+            var tools = FfmpegToolResolver.Resolve(applicationDirectory, ffmpegPath, ffprobePath);
+            _ffmpegPath = tools.FfmpegPath;
+            _ffprobePath = tools.FfprobePath;
             _progressCallback = progressCallback ?? (_ => { });
             _log = logCallback;
 
@@ -118,6 +137,42 @@ namespace Encode.Services
             bool tenBit,
             int? audioChannels,
             Action<string>? progressCallback,
+            bool concurrentNvenc = false,
+            StreamMapMode mapMode = StreamMapMode.KeepAll,
+            bool copySubtitles = true,
+            CancellationToken cancellationToken = default)
+        {
+            return EncodeSuccessAsync(EncodeInternalAsync(
+                input,
+                outputFolder,
+                suffix,
+                useGpu,
+                targetMb,
+                videoCodec,
+                scaleMode,
+                nvencPreset,
+                tenBit,
+                audioChannels,
+                progressCallback ?? _progressCallback,
+                concurrentNvenc,
+                mapMode,
+                copySubtitles,
+                cancellationToken));
+        }
+
+        public Task<EncodeResult> EncodeWithResultAsync(
+            string input,
+            string outputFolder,
+            string suffix,
+            bool useGpu,
+            double? targetMb,
+            string videoCodec,
+            ScaleMode scaleMode,
+            string? nvencPreset,
+            bool tenBit,
+            int? audioChannels,
+            Action<string>? progressCallback,
+            bool concurrentNvenc = false,
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
             CancellationToken cancellationToken = default)
@@ -134,6 +189,7 @@ namespace Encode.Services
                 tenBit,
                 audioChannels,
                 progressCallback ?? _progressCallback,
+                concurrentNvenc,
                 mapMode,
                 copySubtitles,
                 cancellationToken);
@@ -166,6 +222,7 @@ namespace Encode.Services
                 tenBit,
                 audioChannels,
                 progressCallback,
+                false,
                 StreamMapMode.KeepAll,
                 true,
                 cancellationToken);
@@ -194,7 +251,7 @@ namespace Encode.Services
         {
             string defaultCodec = useGpu ? "hevc_nvenc" : "libx265";
 
-            return EncodeInternalAsync(
+            return EncodeSuccessAsync(EncodeInternalAsync(
                 input,
                 outputFolder,
                 suffix,
@@ -206,9 +263,10 @@ namespace Encode.Services
                 false,
                 null,
                 _progressCallback,
+                false,
                 StreamMapMode.KeepAll,
                 true,
-                cancellationToken);
+                cancellationToken));
         }
 
         public Task<bool> EncodeAsync(
@@ -233,7 +291,7 @@ namespace Encode.Services
             ScaleMode scaleMode,
             CancellationToken cancellationToken)
         {
-            return EncodeInternalAsync(
+            return EncodeSuccessAsync(EncodeInternalAsync(
                 input,
                 outputFolder,
                 suffix,
@@ -245,15 +303,21 @@ namespace Encode.Services
                 false,
                 null,
                 _progressCallback,
+                false,
                 StreamMapMode.KeepAll,
                 true,
-                cancellationToken);
+                cancellationToken));
         }
 
         // --------------------------------------------------------------------
         // Internal encode implementation
         // --------------------------------------------------------------------
-        private async Task<bool> EncodeInternalAsync(
+        private static async Task<bool> EncodeSuccessAsync(Task<EncodeResult> task)
+        {
+            return (await task.ConfigureAwait(false)).Success;
+        }
+
+        private async Task<EncodeResult> EncodeInternalAsync(
             string input,
             string outputFolder,
             string suffix,
@@ -265,6 +329,7 @@ namespace Encode.Services
             bool tenBit,
             int? audioChannels,
             Action<string> callback,
+            bool concurrentNvenc,
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
             CancellationToken cancellationToken = default)
@@ -290,6 +355,7 @@ namespace Encode.Services
 
             // Collision-safe output naming so we don't overwrite existing files
             string output = GetUniqueOutputPath(outFolder, name, actualSuffix, ".mp4");
+            bool isAsfFamilyInput = IsAsfFamilyInput(input);
 
             bool allowSubtitleCopy = copySubtitles;
             if (copySubtitles && string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase))
@@ -308,6 +374,13 @@ namespace Encode.Services
                 _log?.Invoke("[EncodingService] MP4 output does not support generic data streams; disabling data stream copy.");
             }
 
+            bool forceMp4CompatibleAudio = isAsfFamilyInput &&
+                string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase);
+            if (forceMp4CompatibleAudio)
+            {
+                _log?.Invoke("[EncodingService] WMV/ASF input detected for MP4 output; transcoding audio to AAC.");
+            }
+
             // Total duration once for progress and target bitrate math
             TimeSpan totalDuration = GetVideoDuration(input);
             if (totalDuration <= TimeSpan.Zero)
@@ -323,9 +396,11 @@ namespace Encode.Services
                 nvencPreset,
                 tenBit,
                 audioChannels,
+                concurrentNvenc,
                 mapMode,
                 allowSubtitleCopy,
-                allowDataCopy);
+                allowDataCopy,
+                forceMp4CompatibleAudio);
 
             _log?.Invoke($"[EncodingService] Starting ffmpeg for '{input}' -> '{output}'");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
@@ -334,13 +409,15 @@ namespace Encode.Services
 
             var psi = new ProcessStartInfo
             {
-                FileName = Path.Combine(_appPath, "ffmpeg.exe"),
+                FileName = _ffmpegPath,
                 Arguments = ffArgs,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 RedirectStandardInput = true,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                ErrorDialog = false,
+                WindowStyle = ProcessWindowStyle.Hidden
             };
 
             using var proc = new Process { StartInfo = psi };
@@ -408,6 +485,7 @@ namespace Encode.Services
             catch (OperationCanceledException)
             {
                 _log?.Invoke("[EncodingService] Encode operation cancelled.");
+                await EnsureProcessExitedAfterCancellationAsync(proc).ConfigureAwait(false);
                 throw;
             }
             finally
@@ -417,24 +495,51 @@ namespace Encode.Services
 
             if (proc.ExitCode != 0)
             {
-                string logName = $"{name}_ffmpeg_error_{DateTime.Now:yyyyMMdd_HHmmss}.log";
-                string logPath = Path.Combine(outFolder, logName);
+                string logPath = ErrorLogService.Append(
+                    _appPath,
+                    "FFmpeg encode failed",
+                    input,
+                    details:
+                    $"Output     : {output}{Environment.NewLine}" +
+                    $"Exit Code  : {proc.ExitCode}{Environment.NewLine}" +
+                    $"Arguments  : {ffArgs}{Environment.NewLine}{Environment.NewLine}" +
+                    "FFmpeg Output:" + Environment.NewLine +
+                    stderrBuilder);
 
-                try
-                {
-                    File.WriteAllText(logPath, stderrBuilder.ToString());
-                }
-                catch (Exception writeEx)
-                {
-                    _log?.Invoke($"[EncodingService] Failed to write ffmpeg error log: {writeEx}");
-                }
-
-                _log?.Invoke($"[EncodingService] ffmpeg exited with code {proc.ExitCode}. See log: {logName}");
-                throw new InvalidOperationException($"ffmpeg exited with code {proc.ExitCode}. See log: {logName}");
+                _log?.Invoke($"[EncodingService] ffmpeg exited with code {proc.ExitCode}. See central log: {logPath}");
+                throw new InvalidOperationException($"ffmpeg exited with code {proc.ExitCode}. See central log: {logPath}");
             }
 
             _log?.Invoke("[EncodingService] ffmpeg completed successfully.");
-            return true;
+            return new EncodeResult(true, output);
+        }
+
+        private async Task EnsureProcessExitedAfterCancellationAsync(Process proc)
+        {
+            try
+            {
+                if (proc.HasExited)
+                    return;
+
+                var waitTask = proc.WaitForExitAsync();
+                var completed = await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+                if (completed == waitTask)
+                {
+                    await waitTask.ConfigureAwait(false);
+                    return;
+                }
+
+                if (!proc.HasExited)
+                {
+                    _log?.Invoke("[EncodingService] FFmpeg did not exit after graceful cancel; killing launched process.");
+                    proc.Kill(entireProcessTree: true);
+                    await proc.WaitForExitAsync().ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"[EncodingService] Failed while finalizing cancelled FFmpeg process: {ex}");
+            }
         }
 
         // --------------------------------------------------------------------
@@ -585,14 +690,17 @@ namespace Encode.Services
             string? nvencPreset,
             bool tenBit,
             int? audioChannels,
+            bool concurrentNvenc,
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
-            bool copyDataStreams = true)
+            bool copyDataStreams = true,
+            bool forceMp4CompatibleAudio = false)
         {
             bool isNvenc = videoCodec.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase);
             bool isNvencAv1 = videoCodec.Equals("av1_nvenc", StringComparison.OrdinalIgnoreCase);
             bool isQsv = videoCodec.EndsWith("_qsv", StringComparison.OrdinalIgnoreCase);
             bool isQsvAv1 = videoCodec.Equals("av1_qsv", StringComparison.OrdinalIgnoreCase);
+            bool isAsfFamilyInput = IsAsfFamilyInput(input);
 
             bool wantsTenBit =
                 tenBit &&
@@ -633,7 +741,7 @@ namespace Encode.Services
             // - 10-bit NVENC: no hwaccel_output_format, so software filters can safely convert
             // - QSV: use qsv hwaccel when requested.
             // - Non-NVENC + GPU: plain hwaccel cuda.
-            if (useGpu)
+            if (useGpu && !isAsfFamilyInput)
             {
                 if (isNvenc)
                 {
@@ -655,6 +763,10 @@ namespace Encode.Services
                 {
                     sb.Append("-hwaccel cuda ");
                 }
+            }
+            else if (useGpu && isAsfFamilyInput)
+            {
+                _log?.Invoke("[EncodingService] WMV/ASF input detected; using software decode before selected hardware encode.");
             }
 
             sb.Append($"-i \"{input}\" ");
@@ -684,7 +796,9 @@ namespace Encode.Services
                     tenBitPixFmt,
                     presetForNvenc,
                     targetMb.Value,
-                    audioChannels);
+                    audioChannels,
+                    concurrentNvenc,
+                    forceMp4CompatibleAudio);
             }
             else
             {
@@ -695,7 +809,8 @@ namespace Encode.Services
                     isQsv,
                     wantsTenBit,
                     tenBitPixFmt,
-                    presetForNvenc);
+                    presetForNvenc,
+                    concurrentNvenc);
             }
 
             // Audio handling (Phase A):
@@ -703,8 +818,12 @@ namespace Encode.Services
             // If the caller requests a specific channel count, we must re-encode (downmix/upmix).
             if (audioChannels.HasValue && audioChannels.Value > 0)
             {
-                sb.Append("-c:a libfdk_aac -vbr 5 ");
+                sb.Append("-c:a aac -b:a 192k ");
                 sb.Append($"-ac {audioChannels.Value} ");
+            }
+            else if (forceMp4CompatibleAudio)
+            {
+                sb.Append("-c:a aac -b:a 192k ");
             }
             else
             {
@@ -802,10 +921,27 @@ namespace Encode.Services
             string? tenBitPixFmt,
             string presetForNvenc,
             double targetMb,
-            int? audioChannels)
+            int? audioChannels,
+            bool concurrentNvenc,
+            bool forceMp4CompatibleAudio)
         {
             TimeSpan duration = GetVideoDuration(input);
-            double seconds = duration.TotalSeconds <= 0 ? 1 : duration.TotalSeconds;
+            if (duration <= TimeSpan.Zero)
+            {
+                _log?.Invoke("[EncodingService] Target-size bitrate budgeting skipped because input duration could not be determined; using quality-based encoding instead.");
+                AppendVideoEncodeQualityDefault(
+                    sb,
+                    videoCodec,
+                    isNvenc,
+                    isQsv,
+                    wantsTenBit,
+                    tenBitPixFmt,
+                    presetForNvenc,
+                    concurrentNvenc);
+                return;
+            }
+
+            double seconds = duration.TotalSeconds;
 
             // Phase D: budget bitrate for audio + container overhead so target size is more accurate.
             double totalKbps = (targetMb * 8192d) / seconds;
@@ -813,8 +949,11 @@ namespace Encode.Services
             double plannedAudioKbps;
             if (audioChannels.HasValue && audioChannels.Value > 0)
             {
-                // AAC VBR5 planning budget (conservative)
-                plannedAudioKbps = audioChannels.Value >= 6 ? 256 : 192;
+                plannedAudioKbps = audioChannels.Value >= 6 ? 384 : 192;
+            }
+            else if (forceMp4CompatibleAudio)
+            {
+                plannedAudioKbps = 192;
             }
             else
             {
@@ -831,13 +970,17 @@ namespace Encode.Services
             double maxRate = Math.Round(videoKbps * 1.08);
             double bufSize = Math.Round(videoKbps * 1.4);
 
+            _log?.Invoke(
+                $"[EncodingService] Target bitrate plan: target={targetMb:0.##} MB, duration={seconds:0.##} sec, " +
+                $"total={totalKbps:0} kbps, audio={plannedAudioKbps:0} kbps, video={videoKbps:0} kbps.");
+
             sb.Append($"-c:v {videoCodec} ");
 
             AppendTenBitFlags(sb, videoCodec, wantsTenBit, tenBitPixFmt);
 
             if (isNvenc)
             {
-                string rcMode = isNvencAv1 ? "vbr" : "vbr_hq";
+                const string rcMode = "vbr";
                 sb.Append(
                     $"-b:v {videoKbps:F0}k " +
                     $"-maxrate {maxRate:F0}k " +
@@ -848,8 +991,7 @@ namespace Encode.Services
                 if (isNvencAv1)
                     sb.Append("-cq 28 ");
 
-                // Phase B: NVENC quality knobs
-                sb.Append("-rc-lookahead 20 -spatial_aq 1 -temporal_aq 1 -aq-strength 8 ");
+                AppendNvencTuningOptions(sb, videoCodec, videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase), concurrentNvenc);
             }
             else if (isQsv)
             {
@@ -882,7 +1024,8 @@ namespace Encode.Services
             bool isQsv,
             bool wantsTenBit,
             string? tenBitPixFmt,
-            string presetForNvenc)
+            string presetForNvenc,
+            bool concurrentNvenc)
         {
             sb.Append($"-c:v {videoCodec} ");
 
@@ -891,15 +1034,14 @@ namespace Encode.Services
             if (isNvenc)
             {
                 if (videoCodec.Contains("h264", StringComparison.OrdinalIgnoreCase))
-                    sb.Append($"-rc vbr_hq -cq 22 -preset {presetForNvenc} ");
+                    sb.Append($"-rc vbr -cq 22 -preset {presetForNvenc} ");
                 else if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
                          videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
-                    sb.Append($"-rc vbr_hq -cq 24 -preset {presetForNvenc} ");
+                    sb.Append($"-rc vbr -cq 24 -preset {presetForNvenc} ");
                 else
                     sb.Append($"-rc vbr -cq 28 -preset {presetForNvenc} ");
 
-                // Phase B: NVENC quality knobs
-                sb.Append("-rc-lookahead 20 -spatial_aq 1 -temporal_aq 1 -aq-strength 8 ");
+                AppendNvencTuningOptions(sb, videoCodec, videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase), concurrentNvenc);
             }
             else if (isQsv)
             {
@@ -931,6 +1073,36 @@ namespace Encode.Services
             }
         }
 
+        private static void AppendNvencTuningOptions(StringBuilder sb, string videoCodec, bool isAv1Nvenc, bool concurrentNvenc)
+        {
+            sb.Append("-tune hq ");
+
+            if (concurrentNvenc)
+            {
+                // Dual-session mode needs a lighter frame buffer footprint to avoid NVENC OOM.
+                sb.Append("-rc-lookahead 12 -spatial_aq 1 -temporal_aq 1 -aq-strength 8 ");
+                sb.Append("-surfaces 24 ");
+            }
+            else
+            {
+                sb.Append("-rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 12 ");
+                sb.Append("-surfaces 48 ");
+
+                if (!isAv1Nvenc)
+                    sb.Append("-multipass fullres ");
+            }
+
+            if (videoCodec.Contains("h264", StringComparison.OrdinalIgnoreCase) ||
+                videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
+                videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
+            {
+                if (concurrentNvenc)
+                    sb.Append("-bf 3 -b_ref_mode middle -refs 3 ");
+                else
+                    sb.Append("-bf 4 -b_ref_mode middle -refs 4 ");
+            }
+        }
+
         private static void AppendTenBitFlags(StringBuilder sb, string videoCodec, bool wantsTenBit, string? tenBitPixFmt)
         {
             if (!wantsTenBit || string.IsNullOrEmpty(tenBitPixFmt))
@@ -945,6 +1117,13 @@ namespace Encode.Services
             {
                 sb.Append($"-pix_fmt {tenBitPixFmt} ");
             }
+        }
+
+        private static bool IsAsfFamilyInput(string path)
+        {
+            string ext = Path.GetExtension(path);
+            return string.Equals(ext, ".wmv", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(ext, ".asf", StringComparison.OrdinalIgnoreCase);
         }
 
         // --------------------------------------------------------------------
@@ -969,29 +1148,15 @@ namespace Encode.Services
 
             try
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = Path.Combine(_appPath, "ffprobe.exe"),
-                    Arguments =
-                        "-v error -select_streams a:0 " +
-                        "-show_entries stream=bit_rate " +
-                        "-of default=noprint_wrappers=1:nokey=1 " +
-                        $"\"{file}\"",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
+                string output = RunFfprobeText(
+                    "-v error -select_streams a:0 " +
+                    "-show_entries stream=bit_rate " +
+                    "-of default=noprint_wrappers=1:nokey=1 " +
+                    $"\"{file}\"",
+                    file);
 
-                using var p = Process.Start(psi);
-                if (p != null)
-                {
-                    string output = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit();
-
-                    if (long.TryParse(output.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var bps) && bps > 0)
-                        kbps = bps / 1000d;
-                }
+                if (long.TryParse(output.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var bps) && bps > 0)
+                    kbps = bps / 1000d;
             }
             catch (Exception ex)
             {
@@ -1039,25 +1204,23 @@ namespace Encode.Services
 
             try
             {
-                var psi = new ProcessStartInfo
+                string output = RunFfprobeText(
+                    "-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 " +
+                    $"\"{file}\"",
+                    file);
+
+                if (TryParseDurationSeconds(output, out var sec))
+                    result = TimeSpan.FromSeconds(sec);
+
+                if (result <= TimeSpan.Zero)
                 {
-                    FileName = Path.Combine(_appPath, "ffprobe.exe"),
-                    Arguments =
-                        "-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 " +
+                    output = RunFfprobeText(
+                        "-v error -select_streams v:0 -show_entries stream=duration " +
+                        "-of default=noprint_wrappers=1:nokey=1 " +
                         $"\"{file}\"",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
+                        file);
 
-                using var p = Process.Start(psi);
-                if (p != null)
-                {
-                    string output = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit();
-
-                    if (double.TryParse(output.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var sec))
+                    if (TryParseDurationSeconds(output, out sec))
                         result = TimeSpan.FromSeconds(sec);
                 }
             }
@@ -1066,19 +1229,86 @@ namespace Encode.Services
                 _log?.Invoke($"[EncodingService] ffprobe failed for '{file}': {ex}");
             }
 
-            try
+            if (result > TimeSpan.Zero)
             {
-                lock (_durationCache)
+                try
                 {
-                    _durationCache[file] = result;
+                    lock (_durationCache)
+                    {
+                        _durationCache[file] = result;
+                    }
+                }
+                catch
+                {
+                    // ignore cache store issues
                 }
             }
-            catch
+            else
             {
-                // ignore cache store issues
+                _log?.Invoke($"[EncodingService] Duration probe returned no usable duration for '{file}'.");
             }
 
             return result;
+        }
+
+        private static bool TryParseDurationSeconds(string output, out double seconds)
+        {
+            seconds = 0;
+            if (string.IsNullOrWhiteSpace(output))
+                return false;
+
+            foreach (string rawLine in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string line = rawLine.Trim();
+                if (double.TryParse(line, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && value > 0)
+                {
+                    seconds = value;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private string RunFfprobeText(string arguments, string file)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = _ffprobePath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                ErrorDialog = false,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+
+            using var p = Process.Start(psi);
+            if (p == null)
+                return string.Empty;
+
+            var outputTask = p.StandardOutput.ReadToEndAsync();
+            var errorTask = p.StandardError.ReadToEndAsync();
+
+            if (!p.WaitForExit(30000))
+            {
+                try
+                {
+                    _log?.Invoke($"[EncodingService] ffprobe timed out for '{file}'.");
+                    p.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // best-effort cleanup only
+                }
+
+                return string.Empty;
+            }
+
+            p.WaitForExit();
+            _ = errorTask.GetAwaiter().GetResult();
+            return outputTask.GetAwaiter().GetResult();
         }
 
         // --------------------------------------------------------------------
@@ -1106,3 +1336,7 @@ namespace Encode.Services
         }
     }
 }
+
+
+
+

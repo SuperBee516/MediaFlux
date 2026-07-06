@@ -122,12 +122,14 @@ namespace Encode
                         if (RowHasCustomSettings(meta))
                         {
                             ApplyCustomSettingsEstimate(row, meta!);
+                            RestoreQueuedStateAfterEstimate(row);
                             applied++;
                             continue;
                         }
 
                         // Use the new property names
                         SetRowEstimateRange(row, item.MinKiB, item.MaxKiB);
+                        RestoreQueuedStateAfterEstimate(row);
                         applied++;
                     }
                 }
@@ -140,6 +142,7 @@ namespace Encode
                     dgvEncodeQueue.Invalidate();
                     UpdateSizeTotals();
                 }
+                UpdateEstimateProgressStatus();
             }
         }
 
@@ -171,11 +174,26 @@ namespace Encode
                             row.Cells["colEstimatedSize"].Value = value;
                             row.Cells["colSize"].Value = FormatSize(srcMb);
                             row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(srcMb, estMb);
+                            if (_queueSourceSizeMap.TryGetValue(item.Path, out var previousSrc))
+                                _queueTotalSourceMb += srcMb - previousSrc;
+                            else
+                                _queueTotalSourceMb += srcMb;
+
+                            _queueSourceSizeMap[item.Path] = srcMb;
+
+                            if (_estimatedSizeMap.TryGetValue(item.Path, out var previousEst))
+                                _queueTotalEstimatedMb += estMb - previousEst;
+                            else
+                                _queueTotalEstimatedMb += estMb;
+
+                            _estimatedSizeMap[item.Path] = estMb;
+                            _queueTotalsDirty = false;
 
                             // Update RowMeta on the UI thread so later consumers can avoid probing
                             string path = item.Path;
                             double durSec = item.DurationSec;
                             string res = item.Resolution ?? "";
+                            string codec = item.VideoCodec ?? "";
 
                             if (row.Tag is RowMeta rm)
                             {
@@ -190,6 +208,9 @@ namespace Encode
 
                                 if (srcMb > 0)
                                     rm.SrcMb = srcMb;
+
+                                if (!string.IsNullOrWhiteSpace(codec))
+                                    rm.VideoCodec = codec;
                             }
                             else
                             {
@@ -198,18 +219,23 @@ namespace Encode
                                     Path = path,
                                     DurationSec = durSec,
                                     Resolution = res,
-                                    SrcMb = srcMb
+                                    SrcMb = srcMb,
+                                    VideoCodec = codec
                                 };
                             }
+
+                            TrackCodecFilterCount(path, codec);
 
                             var updatedMeta = row.Tag as RowMeta;
                             if (RowHasCustomSettings(updatedMeta))
                             {
                                 ApplyCustomSettingsEstimate(row, updatedMeta!);
+                                RestoreQueuedStateAfterEstimate(row);
                                 applied++;
                             }
                             else
                             {
+                                RestoreQueuedStateAfterEstimate(row);
                                 applied++;
                             }
                         }
@@ -227,6 +253,32 @@ namespace Encode
                 dgvEncodeQueue.ResumeLayout();
                 if (applied > 0) dgvEncodeQueue.Invalidate();
                 UpdateSizeTotals();
+                UpdateEstimateProgressStatus();
+            }
+        }
+
+        private void UpdateEstimateProgressStatus()
+        {
+            int pending = _estimateService.PendingEstimates;
+            if (_lastEstimateQueuedCount > 0 && pending > 0)
+            {
+                int completed = Math.Max(0, _lastEstimateQueuedCount - pending);
+                string text = $"Analyzing queue metadata... {completed:N0}/{_lastEstimateQueuedCount:N0}";
+                toolStripStatusLabel1.Text = text;
+                UpdateRelocatedEncodeStatus(text);
+                SetQueueProgress(completed, _lastEstimateQueuedCount, visible: true);
+                SetQueueWorkCancelVisible(true);
+            }
+            else if (_lastEstimateQueuedCount > 0 && pending <= 0)
+            {
+                string text = _estimatesDeferredForLargeQueue
+                    ? $"Large queue mode: {dgvEncodeQueue.Rows.Count:N0} files loaded. Use Analyze Queue to estimate sizes."
+                    : $"Queue analysis complete for {_lastEstimateQueuedCount:N0} file(s).";
+                toolStripStatusLabel1.Text = text;
+                UpdateRelocatedEncodeStatus(text);
+                _lastEstimateQueuedCount = 0;
+                SetQueueProgress(0, 0, visible: false);
+                SetQueueWorkCancelVisible(false);
             }
         }
 
@@ -254,10 +306,25 @@ namespace Encode
 
         private void RunEstimatePass()
         {
+            RunEstimatePass(force: false);
+        }
+
+        private void RunEstimatePass(bool force)
+        {
             _estimateService.ResetAndCancel();
 
             if (dgvEncodeQueue.Rows.Count == 0)
                 return;
+
+            _largeQueueModeActive = dgvEncodeQueue.Rows.Count >= GetLargeQueueThreshold();
+            if (_largeQueueModeActive && !_config.AutoAnalyzeLargeQueues && !force)
+            {
+                _estimatesDeferredForLargeQueue = true;
+                UpdateAnalyzeQueueButtonState();
+                toolStripStatusLabel1.Text = $"Large queue mode: {dgvEncodeQueue.Rows.Count:N0} files loaded. Use Analyze Queue to estimate sizes.";
+                UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+                return;
+            }
 
             bool auto = chkAutoTargetSize.Checked;
             string profile = comboCompressionProfile.SelectedItem?.ToString() ?? "Medium";
@@ -266,6 +333,7 @@ namespace Encode
             if (!auto && double.TryParse(txtTargetSize.Text, out var m) && m > 0)
                 manualTargetMb = m;
 
+            int queued = 0;
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
             {
                 if (row.IsNewRow) continue;
@@ -282,18 +350,47 @@ namespace Encode
                 if (RowHasCustomSettings(meta))
                 {
                     ApplyCustomSettingsEstimate(row, meta!);
+                    ApplyEncodeRowVisualState(row);
                     continue;
                 }
 
                 // Keep the path → row map in sync for the UI pump
                 _rowsByPath[path] = row;
+                if (row.Cells["colStatus"].Value?.ToString() is not "Encoding" and not "Done" and not "Failed" and not "Canceled" and not "Retry Queued")
+                    SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
 
                 // Queue estimate work; UI pump will apply results
                 QueueEstimate(path, auto, profile, manualTargetMb);
+                queued++;
             }
+
+            _lastEstimateQueuedCount = queued;
+            _estimatesDeferredForLargeQueue = false;
+            if (queued > 0)
+            {
+                SetQueueWorkCancelVisible(true);
+                SetQueueProgress(0, queued, visible: true);
+                toolStripStatusLabel1.Text = $"Analyzing queue metadata... 0/{queued:N0}";
+                UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+            }
+            UpdateAnalyzeQueueButtonState();
 
             // Make sure timers are alive (constructor already calls this, but this is cheap)
             StartEstimateUiPump();
+        }
+
+        private void RestoreQueuedStateAfterEstimate(DataGridViewRow row)
+        {
+            string status = row.Cells["colStatus"].Value?.ToString() ?? "";
+            if (status.Equals("Estimating", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(status))
+            {
+                SetEncodeRowState(row, "Queued", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Ready to encode.");
+            }
+            else
+            {
+                ApplyEncodeRowVisualState(row);
+            }
         }
 
         private void QueueEstimate(string path, bool auto, string profile, double manualTargetMb)
@@ -322,84 +419,108 @@ namespace Encode
 
         // totals & size formatting helpers
 
+        private void MarkQueueTotalsDirty()
+        {
+            _queueTotalsDirty = true;
+        }
+
         private void UpdateSizeTotals()
+        {
+            UpdateSizeTotals(force: false);
+        }
+
+        private void UpdateSizeTotals(bool force)
         {
             // Ensure we run on the UI thread
             if (InvokeRequired)
             {
-                Ui(() => UpdateSizeTotals());
+                Ui(() => UpdateSizeTotals(force));
                 return;
             }
 
             if (dgvEncodeQueue == null || dgvEncodeQueue.Rows.Count == 0)
             {
-                if (_statusTotalSize != null) _statusTotalSize.Text = "Total Size (0 files): --";
-                if (_statusTotalEstimated != null) _statusTotalEstimated.Text = "Total Est: --";
-                if (_statusSpaceSaved != null) _statusSpaceSaved.Text = "Space Saved: --";
+                _queueTotalSourceMb = 0;
+                _queueTotalEstimatedMb = 0;
+                _queueFileCount = 0;
+                _queueSourceSizeMap.Clear();
+                _estimatedSizeMap.Clear();
+                _queueTotalsDirty = false;
+                if (_summaryFileCountValue != null) _summaryFileCountValue.Text = "0";
+                if (_summaryTotalCurrentValue != null) _summaryTotalCurrentValue.Text = "--";
+                if (_summaryNewSizeValue != null) _summaryNewSizeValue.Text = "--";
+                if (_summaryEstimatedCompletionValue != null) _summaryEstimatedCompletionValue.Text = "--";
+                if (_summaryTotalEstimatedSavedValue != null) _summaryTotalEstimatedSavedValue.Text = "--";
+                if (_summarySelectedCountValue != null) _summarySelectedCountValue.Text = "0";
+                if (_summarySelectedSavedValue != null) _summarySelectedSavedValue.Text = "--";
                 return;
             }
 
-            double totalSizeMb = 0;
-            double totalEstMb = 0;
-            int fileCount = 0;
+            if (force || _queueTotalsDirty)
+            {
+                RebuildQueueTotalsFromGrid();
+            }
+            else if ((DateTime.UtcNow - _lastQueueTotalsRefreshUtc).TotalMilliseconds < 500)
+            {
+                return;
+            }
+
+            _lastQueueTotalsRefreshUtc = DateTime.UtcNow;
+
+            if (_summaryFileCountValue != null)
+                _summaryFileCountValue.Text = $"{_queueFileCount} file{(_queueFileCount == 1 ? "" : "s")}";
+
+            if (_summaryTotalCurrentValue != null)
+                _summaryTotalCurrentValue.Text = _queueTotalSourceMb > 0 ? FormatSize(_queueTotalSourceMb) : "--";
+
+            double savedForPanel = Math.Max(0, _queueTotalSourceMb - _queueTotalEstimatedMb);
+            if (_summaryNewSizeValue != null)
+            {
+                int estimatedFileCount = _queueSourceSizeMap.Keys.Count(path =>
+                    _estimatedSizeMap.TryGetValue(path, out var estimateMb) && estimateMb > 0);
+                _summaryNewSizeValue.Text = _queueFileCount > 0 && estimatedFileCount == _queueFileCount
+                    ? FormatSize(Math.Max(0, _queueTotalSourceMb - savedForPanel))
+                    : "Waiting for estimates";
+            }
+
+            if (_summaryTotalEstimatedSavedValue != null)
+            {
+                _summaryTotalEstimatedSavedValue.Text = savedForPanel > 0 && _queueTotalSourceMb > 0
+                    ? $"{FormatSize(savedForPanel)} ({(savedForPanel / _queueTotalSourceMb) * 100.0:0}% saved)"
+                    : "--";
+            }
+
+            UpdateSelectedSpaceTotals();
+            UpdateEncodePreview();
+        }
+
+        private void RebuildQueueTotalsFromGrid()
+        {
+            _queueTotalSourceMb = 0;
+            _queueTotalEstimatedMb = 0;
+            _queueFileCount = 0;
+            _queueSourceSizeMap.Clear();
 
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
             {
                 if (row.IsNewRow) continue;
 
-                fileCount++;
+                _queueFileCount++;
+                string? path = GetPathFromRow(row);
+                double sourceMb = ParseSizeToMb(row.Cells["colSize"].Value?.ToString());
+                double estimatedMb = ParseSizeToMb(row.Cells["colEstimatedSize"].Value?.ToString());
 
-                var sizeText = row.Cells["colSize"].Value?.ToString();
-                var estText = row.Cells["colEstimatedSize"].Value?.ToString();
+                _queueTotalSourceMb += sourceMb;
+                _queueTotalEstimatedMb += estimatedMb;
 
-                totalSizeMb += ParseSizeToMb(sizeText);
-                totalEstMb += ParseSizeToMb(estText);
+                if (!string.IsNullOrWhiteSpace(path) && sourceMb > 0)
+                    _queueSourceSizeMap[path] = sourceMb;
+
+                if (!string.IsNullOrWhiteSpace(path) && estimatedMb > 0)
+                    _estimatedSizeMap[path] = estimatedMb;
             }
 
-            // --- Total Size (with file count) ---
-            if (_statusTotalSize != null)
-            {
-                if (fileCount == 0 || totalSizeMb <= 0)
-                {
-                    _statusTotalSize.Text = "Total Size (0 files): --";
-                }
-                else
-                {
-                    _statusTotalSize.Text =
-                        $"Total Size ({fileCount} file{(fileCount == 1 ? "" : "s")}): {FormatSize(totalSizeMb)}";
-                }
-            }
-
-            // --- Total Estimated Output ---
-            if (_statusTotalEstimated != null)
-            {
-                string label = $"Total Est: {FormatSize(totalEstMb)}";
-
-                if (totalSizeMb > 0 && totalEstMb > 0)
-                {
-                    double ratio = totalEstMb / totalSizeMb;
-                    label += $" ({ratio * 100:0}% of source)";
-                }
-
-                _statusTotalEstimated.Text = label;
-            }
-
-            // --- Space Saved + % saved ---
-            if (_statusSpaceSaved != null)
-            {
-                double saved = totalSizeMb - totalEstMb;
-                if (saved < 0) saved = 0;
-
-                string label = $"Space Saved: {FormatSize(saved)}";
-
-                if (totalSizeMb > 0 && saved > 0)
-                {
-                    double savedPct = saved / totalSizeMb;
-                    label += $" ({savedPct * 100:0}% saved)";
-                }
-
-                _statusSpaceSaved.Text = label;
-            }
+            _queueTotalsDirty = false;
         }
 
         private static string FormatSize(long bytes)

@@ -78,6 +78,8 @@ namespace Encode
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Rename File…", null, RenameFile_Click);
             menu.Items.Add("Open Location", null, OpenLocationFromContextMenu_Click);
+            menu.Items.Add("Copy Source Path", null, CopySourcePathFromContextMenu_Click);
+            menu.Items.Add("Copy Output Preview", null, CopyOutputPreviewFromContextMenu_Click);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Schedule Start…", null, ScheduleEncode_Click);
 
@@ -88,21 +90,13 @@ namespace Encode
         {
             if (!_encodingActive || _activeEncodeQueue == null)
             {
-                MessageBox.Show(
-                    "No encode is currently running. Start encoding first, then use \"Add to queue\" while it is in progress.",
-                    "Add to queue",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                ShowStatusInfo("Start encoding first, then use Add to Encoding Queue while it is running.");
                 return;
             }
 
             if (dgvEncodeQueue.SelectedRows.Count == 0)
             {
-                MessageBox.Show(
-                    "Select one or more files in the list first.",
-                    "Add to queue",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                ShowStatusInfo("Select one or more files first.");
                 return;
             }
 
@@ -113,12 +107,19 @@ namespace Encode
                 if (row.IsNewRow || row.DataGridView == null)
                     continue;
 
-                // Don’t enqueue the same row twice
-                if (_activeEncodeQueue.Contains(row))
-                    continue;
+                bool addedRow = false;
+                lock (_activeEncodeQueueLock)
+                {
+                    // Don’t enqueue the same row twice
+                    if (!_activeEncodeQueue.Contains(row))
+                    {
+                        _activeEncodeQueue.Add(row);
+                        addedRow = true;
+                    }
+                }
 
-                _activeEncodeQueue.Add(row);
-                added++;
+                if (addedRow)
+                    added++;
             }
 
             if (added > 0)
@@ -126,7 +127,11 @@ namespace Encode
                 toolStripStatusLabel1.Text =
                     $"Added {added} file(s) to the in-progress encode queue.";
 
-                int totalNow = _activeEncodeQueue.Count;
+                int totalNow;
+                lock (_activeEncodeQueueLock)
+                {
+                    totalNow = _activeEncodeQueue.Count;
+                }
                 int queued = totalNow - _encodeProcessedCount;
 
                 string currentFileName = "Current file";
@@ -187,6 +192,56 @@ namespace Encode
             }
         }
 
+        private void CopySourcePathFromContextMenu_Click(object? sender, EventArgs e)
+        {
+            var path = GetSelectedEncodeRowPath();
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                ShowStatusInfo("Select a file before copying its path.");
+                return;
+            }
+
+            Clipboard.SetText(path);
+            ShowStatusInfo("Copied source path.");
+        }
+
+        private void CopyOutputPreviewFromContextMenu_Click(object? sender, EventArgs e)
+        {
+            var path = GetSelectedEncodeRowPath();
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                ShowStatusInfo("Select a file before copying its output preview.");
+                return;
+            }
+
+            string outputFolder = cmbEncodeOutput?.Text ?? "";
+            if (string.IsNullOrWhiteSpace(outputFolder))
+                outputFolder = Path.GetDirectoryName(path) ?? "";
+
+            string format = comboVideoFormat?.Text ?? "";
+            string outputPreview = Path.Combine(
+                outputFolder,
+                Path.GetFileNameWithoutExtension(path) + BuildOutputSuffix(format) + ".mp4");
+
+            Clipboard.SetText(outputPreview);
+            ShowStatusInfo("Copied output preview path.");
+        }
+
+        private string? GetSelectedEncodeRowPath()
+        {
+            if (dgvEncodeQueue.SelectedRows.Count == 0)
+                return null;
+
+            var row = dgvEncodeQueue.SelectedRows[0];
+            if (row.Tag is RowMeta meta)
+                return meta.Path;
+            if (row.Tag is string path)
+                return path;
+
+            return row.Cells["colPath"]?.Value as string
+                   ?? row.Cells["colSource"]?.Value as string;
+        }
+
         private void CustomProfileMenuItem_Click(object? sender, EventArgs e)
         {
             if (sender is not ToolStripMenuItem item || item.Tag is not string profile)
@@ -199,8 +254,7 @@ namespace Encode
         {
             if (dgvEncodeQueue.SelectedRows.Count == 0)
             {
-                MessageBox.Show("Select one or more files first.", "Custom Target Size",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowStatusInfo("Select one or more files before setting a custom target size.");
                 return;
             }
 
@@ -230,8 +284,7 @@ namespace Encode
         {
             if (dgvEncodeQueue.SelectedRows.Count == 0)
             {
-                MessageBox.Show("Select one or more files first.", "Clear Custom Settings",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowStatusInfo("Select one or more files before clearing custom settings.");
                 return;
             }
 
@@ -261,8 +314,7 @@ namespace Encode
         {
             if (dgvEncodeQueue.SelectedRows.Count == 0)
             {
-                MessageBox.Show("Select one or more files first.", "Custom Profile",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowStatusInfo("Select one or more files before applying a custom profile.");
                 return;
             }
 

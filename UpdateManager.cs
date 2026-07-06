@@ -13,7 +13,13 @@ namespace Encode
         /// detached updater script that replaces files and relaunches the app. Returns true
         /// if an update was initiated (the app should assume it will exit).
         /// </summary>
-        public static bool CheckAndPrompt(Form owner, string updateFolder, string? processNameOverride = null)
+        public static bool CheckAndPrompt(
+            Form owner,
+            string updateFolder,
+            bool automaticallyBackupBeforeUpdates,
+            string backupFolder,
+            int backupsToKeep,
+            string? processNameOverride = null)
         {
             if (string.IsNullOrWhiteSpace(updateFolder) || !Directory.Exists(updateFolder))
             {
@@ -45,8 +51,13 @@ namespace Encode
 
             try
             {
+                if (automaticallyBackupBeforeUpdates)
+                    BackupManager.CreateBackup(localExe.Directory!.FullName, backupFolder, backupsToKeep);
+
                 StartExternalUpdaterAndExit(updateFolder, targetDir: localExe.Directory!.FullName,
-                    exeName: localExe.Name, processName: processNameOverride ?? Path.GetFileName(localExe.Name));
+                    exeName: localExe.Name,
+                    processName: processNameOverride ?? Path.GetFileName(localExe.Name),
+                    processId: Environment.ProcessId);
                 return true;
             }
             catch (Exception ex)
@@ -59,14 +70,16 @@ namespace Encode
 
         /// <summary>
         /// Creates a temporary folder, copies the update payload there, writes a .cmd that:
-        /// 1) waits for the app to exit, 2) backs up the old exe, 3) copies all new files, 4) relaunches the app.
+        /// 1) waits for the app to exit, 2) backs up user JSON data, 3) copies all new files,
+        /// 4) restores user JSON data, 5) relaunches the app.
         /// Then runs the .cmd in a detached cmd.exe and exits the current process.
         /// </summary>
         private static void StartExternalUpdaterAndExit(
-    string updateSourceDir,
-    string targetDir,
-    string exeName,
-    string processName)
+            string updateSourceDir,
+            string targetDir,
+            string exeName,
+            string processName,
+            int processId)
         {
             var tempBase = Path.Combine(
                 Path.GetTempPath(),
@@ -82,13 +95,13 @@ namespace Encode
             var scriptPath = Path.Combine(tempBase, "run_update.cmd");
             File.WriteAllText(
                 scriptPath,
-                BuildBatch(processName, stageDir, targetDir, exeName),
+                BuildBatch(processName, processId, stageDir, targetDir, exeName),
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
             var psi = new ProcessStartInfo
             {
                 FileName = "cmd.exe",
-                Arguments = $"/c \"\"{scriptPath}\"\"",   // IMPORTANT: /c, not /k
+                Arguments = $"/d /q /c \"\"{scriptPath}\"\"",   // IMPORTANT: /c, not /k
                 UseShellExecute = false,
                 CreateNoWindow = true,                   // hide console
                 WindowStyle = ProcessWindowStyle.Hidden  // belt + suspenders
@@ -101,36 +114,50 @@ namespace Encode
         }
 
 
-        private static string BuildBatch(string processName, string src, string dest, string exeName)
+        private static string BuildBatch(string processName, int processId, string src, string dest, string exeName)
         {
             return
         $@"@echo off
-setlocal enableextensions
+setlocal enableextensions enabledelayedexpansion
 
 rem Values passed from C#
 set ""SRC={src}""
 set ""DEST={dest}""
 set ""EXE_NAME={exeName}""
 set ""PROC={processName}""
+set ""PID={processId}""
 set ""LOG=%TEMP%\Encode_update.log""
+set ""BACKUP=%TEMP%\Encode_Update_UserData_%RANDOM%%RANDOM%""
 
 echo ==== UPDATE START %DATE% %TIME% ==== > ""%LOG%""
-echo SRC=%SRC% >> ""%LOG%""
-echo DEST=%DEST% >> ""%LOG%""
-echo EXE_NAME=%EXE_NAME% >> ""%LOG%""
-echo PROC=%PROC% >> ""%LOG%""
+echo SRC=""%SRC%"" >> ""%LOG%""
+echo DEST=""%DEST%"" >> ""%LOG%""
+echo EXE_NAME=""%EXE_NAME%"" >> ""%LOG%""
+echo PROC=""%PROC%"" >> ""%LOG%""
+echo PID=%PID% >> ""%LOG%""
 
 rem --- 1) Wait for the running app to exit ---
 :WAIT_APP
-tasklist /FI ""IMAGENAME eq %PROC%"" | find /I ""%PROC%"" >nul
+tasklist /FI ""PID eq %PID%"" /FI ""IMAGENAME eq %PROC%"" | find /I ""%PROC%"" >nul
 if %ERRORLEVEL%==0 (
-    echo Waiting for %PROC% to exit... >> ""%LOG%""
+    echo Waiting for %PROC% PID %PID% to exit... >> ""%LOG%""
     timeout /t 1 /nobreak >nul
     goto WAIT_APP
 )
 
-rem --- 2) Copy updated files from SRC (staging) to DEST (install dir) ---
-echo Copying files from %SRC% to %DEST% >> ""%LOG%""
+rem --- 2) Preserve user-owned settings/data before copying the new build ---
+mkdir ""%BACKUP%"" >nul 2>&1
+if exist ""%DEST%\config.json"" (
+    copy /Y ""%DEST%\config.json"" ""%BACKUP%\config.json"" >> ""%LOG%"" 2>&1
+)
+if exist ""%DEST%\data"" (
+    robocopy ""%DEST%\data"" ""%BACKUP%\data"" *.json /E /R:3 /W:1 /NFL /NDL /NP /NS /NC >> ""%LOG%"" 2>&1
+    set DATA_BACKUP_RC=%ERRORLEVEL%
+    echo DATA BACKUP ROBOCOPY RC=!DATA_BACKUP_RC! >> ""%LOG%""
+)
+
+rem --- 3) Copy updated files from SRC (staging) to DEST (install dir) ---
+echo Copying files from ""%SRC%"" to ""%DEST%"" >> ""%LOG%""
 
 robocopy ""%SRC%"" ""%DEST%"" /E /R:3 /W:1 /NFL /NDL /NP /NS /NC >> ""%LOG%"" 2>&1
 set RC=%ERRORLEVEL%
@@ -140,18 +167,32 @@ if %RC% GEQ 8 (
     goto END
 )
 
-rem --- 3) Relaunch the app from DEST ---
+rem --- 4) Restore user-owned settings/data so upgrades do not reset preferences ---
+if exist ""%BACKUP%\config.json"" (
+    copy /Y ""%BACKUP%\config.json"" ""%DEST%\config.json"" >> ""%LOG%"" 2>&1
+)
+if exist ""%BACKUP%\data"" (
+    robocopy ""%BACKUP%\data"" ""%DEST%\data"" *.json /E /R:3 /W:1 /NFL /NDL /NP /NS /NC >> ""%LOG%"" 2>&1
+    set DATA_RESTORE_RC=%ERRORLEVEL%
+    echo DATA RESTORE ROBOCOPY RC=!DATA_RESTORE_RC! >> ""%LOG%""
+    if !DATA_RESTORE_RC! GEQ 8 (
+        echo ERROR: user data restore failed with code !DATA_RESTORE_RC! >> ""%LOG%""
+    )
+)
+
+rem --- 5) Relaunch the app from DEST ---
 echo Relaunching ""%DEST%\%EXE_NAME%"" >> ""%LOG%""
 
 if exist ""%DEST%\%EXE_NAME%"" (
-    pushd ""%DEST%""
-    start "" ""%EXE_NAME%""
-    popd
+    start """" /D ""%DEST%"" ""%DEST%\%EXE_NAME%""
+    set START_RC=%ERRORLEVEL%
+    echo START RC=!START_RC! >> ""%LOG%""
 ) else (
     echo ERROR: ""%DEST%\%EXE_NAME%"" not found, not relaunching >> ""%LOG%""
 )
 
 :END
+if exist ""%BACKUP%"" rmdir /S /Q ""%BACKUP%"" >nul 2>&1
 echo ==== UPDATE END %DATE% %TIME% ==== >> ""%LOG%""
 endlocal
 exit /b 0

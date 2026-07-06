@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using Encode.Services;
 
 namespace Encode
 {
@@ -12,8 +13,54 @@ namespace Encode
         private void Ui(Action a)
         {
             if (IsDisposed || !IsHandleCreated) return;
-            if (InvokeRequired) { try { BeginInvoke(a); } catch { } }
-            else a();
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action(() => RunUiActionSafely(a))); }
+                catch { }
+            }
+            else
+            {
+                RunUiActionSafely(a);
+            }
+        }
+
+        // Use for state transitions that must finish before the calling worker can
+        // report completion. Exceptions are allowed to reach the caller's handler.
+        private void UiInvoke(Action action)
+        {
+            if (IsDisposed || !IsHandleCreated)
+                return;
+
+            if (InvokeRequired)
+                Invoke(action);
+            else
+                action();
+        }
+
+        private void RunUiActionSafely(Action action)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                LogUiException("UI callback failed", ex);
+            }
+        }
+
+        private void LogUiException(string title, Exception ex)
+        {
+            try
+            {
+                var logPath = ErrorLogService.Append(Application.StartupPath, title, exception: ex);
+                if (!IsDisposed && IsHandleCreated && statusStrip1 != null)
+                    toolStripStatusLabel1.Text = $"UI error logged: {logPath}";
+            }
+            catch
+            {
+                // Last-chance logging must never trigger another UI exception.
+            }
         }
 
         // Optional: return a value (use sparingly on UI thread only)
@@ -43,6 +90,31 @@ namespace Encode
         }
 
         private int _busyDepth = 0;
+        private System.Windows.Forms.Timer? _statusResetTimer;
+
+        private void ShowStatusInfo(string message, int resetAfterMs = 6000)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return;
+
+            Ui(() =>
+            {
+                toolStripStatusLabel1.Text = message;
+
+                _statusResetTimer?.Stop();
+                _statusResetTimer?.Dispose();
+                _statusResetTimer = new System.Windows.Forms.Timer { Interval = resetAfterMs };
+                _statusResetTimer.Tick += (_, __) =>
+                {
+                    _statusResetTimer?.Stop();
+                    _statusResetTimer?.Dispose();
+                    _statusResetTimer = null;
+                    if (!_encodingActive && _busyDepth == 0)
+                        toolStripStatusLabel1.Text = "Ready";
+                };
+                _statusResetTimer.Start();
+            });
+        }
 
         private ActionOnDispose UiBusy(string statusText)
         {

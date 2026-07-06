@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using static Encode.Services.EncodingService;
 
@@ -17,12 +18,21 @@ namespace Encode
             if (_encodingActive)
                 return;
 
+            if (!ValidateOutputFolderAgainstWatchFolder(cmbEncodeOutput.Text, showMessage: true))
+                return;
+
             _encodingActive = true;
             SetStatusEncoding(true);
 
             btnStartEncode.Enabled = false;
             btnStopEncode.Enabled = true;
             _cancelEncode = false;
+            _encodeFailedCount = 0;
+            _encodeSucceededCount = 0;
+            _encodeRetryCount = 0;
+            _encodeCts?.Dispose();
+            _encodeCts = new CancellationTokenSource();
+            var encodeToken = _encodeCts.Token;
 
             // Handle "start at scheduled time" if set
             if (_encodeScheduledUtc.HasValue)
@@ -51,6 +61,8 @@ namespace Encode
                 SetStatusEncoding(true);
             }
 
+            var queueStartedUtc = DateTime.UtcNow;
+
             // Determine whether to process all rows or only the selected ones
             bool processAll = (chkProcessAll?.Checked ?? true);
 
@@ -70,23 +82,32 @@ namespace Encode
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
 
-            int maxParallel = GetMaxConcurrentEncodes(); // 1 or 2 depending on GPU/checkbox
+            int maxParallel = GetMaxConcurrentEncodes(); // Automatic NVENC parallelism, otherwise 1.
 
-            // Gather rows to process, preserving visual order
-            var rowsToProcess = dgvEncodeQueue.Rows
-                .Cast<DataGridViewRow>()
+            ReapplyCurrentEncodeQueueSort();
+
+            // Gather rows to process in the same order the user sees in the grid.
+            var rowsToProcess = GetEncodeRowsInVisualOrder()
                 .Where(r =>
                 {
                     var p = r.Tag is RowMeta rm ? rm.Path : (r.Tag as string);
                     // If selectedPaths is empty → we include all rows
                     return selectedPaths.Count == 0 || (p != null && selectedPaths.Contains(p));
                 })
-                .OrderBy(r => r.Index)
                 .ToList();
+
+            foreach (var row in rowsToProcess)
+            {
+                if (row == null || row.IsNewRow)
+                    continue;
+
+                EnsureRowMeta(row).AutoRetryScheduled = false;
+            }
 
             // Expose this list so the context menu can append rows while encoding
             _activeEncodeQueue = rowsToProcess;
             _encodeProcessedCount = 0;
+            UpdateQueueEstimatedCompletion();
 
             try
             {
@@ -99,17 +120,31 @@ namespace Encode
 
                 lblEncodeStatus.Text = "Encoding…";
 
-                await _encodeQueueRunner.RunAsync(
-                    rowsToProcess,
-                    row => EncodeSingleRow(row),
-                    maxParallel,
-                    () => _encodeQueuePaused,
-                    () => _cancelEncode);
+                using (SleepPreventionService.Acquire(_config.PreventSleepDuringEncoding))
+                {
+                    await _encodeQueueRunner.RunAsync(
+                        rowsToProcess,
+                        row => EncodeSingleRow(row, encodeToken),
+                        maxParallel,
+                        () => _encodeQueuePaused,
+                        () => _cancelEncode,
+                        encodeToken,
+                        _activeEncodeQueueLock,
+                        () => Volatile.Read(ref _pendingEncodeImports) > 0);
+                }
 
                 lblEncodeStatus.Text = _cancelEncode
                     ? "Encoding stopped."
-                    : "All done!";
+                    : _encodeFailedCount > 0
+                        ? $"Done. {_encodeFailedCount} job(s) failed; see the failed rows and central error log."
+                        : _encodeRetryCount > 0
+                            ? $"All done! Retried {_encodeRetryCount} failed job(s)."
+                        : "All done!";
                 ResetEncodeMetrics();
+                ClearEncodeInputFolderIfQueueEmptyAfterProcessing();
+
+                if (!_cancelEncode)
+                    await SendDiscordQueueCompleteNotificationAsync(queueStartedUtc);
             }
             finally
             {
@@ -118,7 +153,10 @@ namespace Encode
                 btnStartEncode.Enabled = true;
                 btnStopEncode.Enabled = false;
                 _cancelEncode = false;
+                _encodeCts?.Dispose();
+                _encodeCts = null;
                 SetStatusEncoding(false);
+                ClearEncodeInputFolderIfQueueEmptyAfterProcessing();
             }
         }
 
@@ -128,38 +166,12 @@ namespace Encode
         {
             // Signal the encode loop / workers to stop scheduling new work
             _cancelEncode = true;
+            _encodeCts?.Cancel();
 
             // If the queue was paused, un-pause it so the loop can actually exit
             _encodeQueuePaused = false;
             if (btnPauseQueue != null)
                 btnPauseQueue.Text = "Pause Queue";
-
-            // Brutal but effective: kill all ffmpeg processes that are currently running.
-            // With the worker pool we can have multiple ffmpeg instances; this guarantees
-            // they’re all torn down.
-            try
-            {
-                foreach (var proc in System.Diagnostics.Process.GetProcessesByName("ffmpeg"))
-                {
-                    try
-                    {
-                        if (!proc.HasExited)
-                            proc.Kill(true);
-                    }
-                    catch
-                    {
-                        // Ignore failures (permissions, race conditions, etc.)
-                    }
-                    finally
-                    {
-                        proc.Dispose();
-                    }
-                }
-            }
-            catch
-            {
-                // Ignore – worst case, some ffmpeg processes survive and exit on their own.
-            }
 
             lblEncodeStatus.Text = "Encoding stopped by user.";
             btnStopEncode.Enabled = false;
@@ -191,8 +203,7 @@ namespace Encode
         {
             if (dgvEncodeQueue.Rows.Count == 0)
             {
-                MessageBox.Show("Nothing to schedule. Add files first.", "Schedule",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowStatusInfo("Add files before scheduling an encode.");
                 return;
             }
 
@@ -224,9 +235,9 @@ namespace Encode
             }
         }
 
-        private async Task EncodeSingleRow(DataGridViewRow row)
+        private async Task EncodeSingleRow(DataGridViewRow row, CancellationToken cancellationToken)
         {
-            if (_cancelEncode)
+            if (_cancelEncode || cancellationToken.IsCancellationRequested)
                 return;
 
             if (row == null || row.IsNewRow || row.DataGridView == null)
@@ -237,6 +248,37 @@ namespace Encode
                 string.IsNullOrWhiteSpace(file))
                 return;
 
+            // Watched files can be queued and started before the background
+            // estimate pass attaches metadata to the row. Resolve duration here
+            // as a final pre-encode guarantee so percentage, ETA, elapsed media
+            // time, and the main progress bar update exactly like manual imports.
+            if (durationSec <= 0)
+            {
+                UiInvoke(() => SetEncodeRowState(
+                    row,
+                    "Reading metadata",
+                    "0%",
+                    "--:--:--",
+                    "Reading media duration before encoding."));
+
+                try
+                {
+                    durationSec = await Task.Run(
+                        () => ProbeDurationSeconds(file),
+                        cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                if (durationSec > 0)
+                {
+                    double resolvedDuration = durationSec;
+                    UiInvoke(() => EnsureRowMeta(row).DurationSec = resolvedDuration);
+                }
+            }
+
             // Which encode number is this?
             _encodeProcessedCount++;
             int totalNow = _activeEncodeQueue?.Count ?? dgvEncodeQueue.Rows.Count;
@@ -245,6 +287,9 @@ namespace Encode
             // Basic status + metrics wiring
             Ui(() =>
             {
+                if (row.DataGridView != dgvEncodeQueue)
+                    return;
+
                 lblEncodeStatus.Text =
                     $"Encoding: {Path.GetFileName(file)} ({_encodeProcessedCount}/{totalNow}) – Queued: {remaining}";
 
@@ -255,13 +300,12 @@ namespace Encode
                     StartJobTimer();
 
                 _activeEncodeRow = row;
-                row.Cells["colProgress"].Value = "0%";
-                row.Cells["colETA"].Value = "--:--:--";
+                SetEncodeRowState(row, "Encoding", "0%", "--:--:--", "Encoding is in progress.");
             });
 
             // Start per-job log capture
-            _activeJobLogSb = new StringBuilder();
-            var jobLog = _activeJobLogSb;
+            var jobLog = new StringBuilder();
+            _activeJobLogSb = jobLog;
             var jobStartUtc = DateTime.UtcNow;
 
             // Encoder mode (GPU/CPU)
@@ -328,6 +372,7 @@ namespace Encode
                 }
             }
 
+            _runningEncodeJobs[row] = file;
             try
             {
                 // ==== CALL THE SERVICE ====
@@ -341,6 +386,9 @@ namespace Encode
                 string nvencPreset = UiGet(() => GetSelectedNvencPreset(), string.Empty);
                 bool tenBit = UiGet(() => GetTenBitRequested(), false);
                 int? audioChannels = UiGet(() => GetSelectedAudioChannels(), null);
+                bool concurrentNvenc = UiGet(
+                    () => IsNvencSelected(encoderText) && GetMaxConcurrentEncodes() > 1,
+                    false);
                 string outputFolder = UiGet(() => cmbEncodeOutput.Text, string.Empty);
                 string suffix = BuildOutputSuffix(formatChoice);
 
@@ -351,7 +399,7 @@ namespace Encode
                     HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
                 };
 
-                bool ok = await _encodingService.EncodeAsync(
+                var result = await _encodingService.EncodeWithResultAsync(
                     file,
                     outputFolder,
                     suffix,
@@ -362,24 +410,23 @@ namespace Encode
                     nvencPreset,
                     tenBit,
                     audioChannels,
-                    jobCallback
+                    jobCallback,
+                    concurrentNvenc,
+                    cancellationToken: cancellationToken
                 );
 
-                if (!ok)
+                if (!result.Success)
                     throw new InvalidOperationException("Encoding returned failure.");
 
                 // On success, mark 100% and clear ETA
+                System.Threading.Interlocked.Increment(ref _encodeSucceededCount);
                 Ui(() =>
                 {
-                    row.Cells["colProgress"].Value = "100%";
-                    row.Cells["colETA"].Value = "00:00:00";
-                });
+                    if (row.DataGridView != dgvEncodeQueue)
+                        return;
 
-                // Guess the output path the same way the service names it
-                var guessedOut = Path.Combine(
-                    outputFolder,
-                    Path.GetFileNameWithoutExtension(file) + suffix + Path.GetExtension(file)
-                );
+                    SetEncodeRowState(row, "Done", "100%", "00:00:00", "Encoding completed successfully.");
+                });
 
                 // append success to history – never let this kill the job
                 try
@@ -393,11 +440,11 @@ namespace Encode
                             StartUtc = jobStartUtc,
                             EndUtc = DateTime.UtcNow,
                             SourcePath = file,
-                            OutputPath = guessedOut,
+                            OutputPath = result.OutputPath,
                             EncoderMode = encoderText,
                             TargetMb = targetMb,
                             DurationSec = durationSec,
-                            Log = _activeJobLogSb?.ToString() ?? "",
+                            Log = jobLog.ToString(),
                             Notes = $"Codec={videoCodec}"
                         });
                     }
@@ -422,8 +469,9 @@ namespace Encode
 
                 try
                 {
-                    Ui(() =>
+                    UiInvoke(() =>
                     {
+                        RememberCompletedEncodePaths(file, result.OutputPath);
                         RemoveRowAndCleanup(row);
 
                         // Re-scan the current input folder and merge any changes
@@ -433,6 +481,7 @@ namespace Encode
                         SafeRefreshEstimates();
                         UpdateSizeTotals();
                         UpdateSelectionSizeTotals();
+                        ClearEncodeInputFolderIfQueueEmptyAfterProcessing();
                     });
                 }
                 catch (Exception cleanupEx)
@@ -443,11 +492,8 @@ namespace Encode
             }
             catch (Exception ex)
             {
-                // We only have Success / Failed in JobStatus.
-                // For user-initiated Stop, we treat it as a "failed" job in history
-                // but annotate the Notes as "Cancelled by user." and skip the popup.
-
-                var notes = _cancelEncode
+                bool isCanceled = _cancelEncode || ex is OperationCanceledException;
+                var notes = isCanceled
                     ? "Cancelled by user."
                     : ex.Message;
 
@@ -458,7 +504,9 @@ namespace Encode
                         _historyService.Append(new Encode.Services.JobHistoryRecord
                         {
                             Type = Encode.Services.JobType.Encode,
-                            Status = Encode.Services.JobStatus.Failed,   // still no Cancelled enum
+                            Status = isCanceled
+                                ? Encode.Services.JobStatus.Canceled
+                                : Encode.Services.JobStatus.Failed,
                             StartUtc = jobStartUtc,
                             EndUtc = DateTime.UtcNow,
                             SourcePath = file,
@@ -466,7 +514,7 @@ namespace Encode
                             EncoderMode = encoderText,
                             TargetMb = targetMb,
                             DurationSec = durationSec,
-                            Log = _activeJobLogSb?.ToString() ?? "",
+                            Log = jobLog.ToString(),
                             Notes = notes
                         });
                     }
@@ -477,27 +525,143 @@ namespace Encode
                     // Don't let logging errors mask the *real* encode error.
                 }
 
-                // Only bother the user if this wasn’t a deliberate cancel
-                if (!_cancelEncode)
+                var centralLogPath = ErrorLogService.Append(
+                    Application.StartupPath,
+                    isCanceled ? "Encode job cancelled" : "Encode job failed",
+                    file,
+                    ex,
+                    $"Encoder Mode: {encoderText}{Environment.NewLine}" +
+                    $"Target MB   : {(targetMb.HasValue ? targetMb.Value.ToString("0.##") : "auto")}{Environment.NewLine}" +
+                    $"Duration Sec: {durationSec:0.##}{Environment.NewLine}{Environment.NewLine}" +
+                    "Captured Job Log:" + Environment.NewLine +
+                    jobLog);
+
+                bool retryQueued = false;
+                if (!isCanceled)
                 {
-                    MessageBox.Show(
-                        $"Encoding failed for:\n{file}\n\nError: {ex.Message}",
-                        "Encode Error",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Warning
-                    );
+                    retryQueued = TryQueueFailedRowForAutoRetry(row);
+                    if (!retryQueued)
+                        System.Threading.Interlocked.Increment(ref _encodeFailedCount);
                 }
+
+                Ui(() =>
+                {
+                    if (row.DataGridView == dgvEncodeQueue)
+                    {
+                        SetEncodeRowState(
+                            row,
+                            isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : "Failed",
+                            isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : "Failed",
+                            "",
+                            isCanceled
+                                ? "Canceled by user."
+                                : retryQueued
+                                    ? "Failed once; queued for automatic retry after the current queue finishes."
+                                    : ex.Message);
+                        row.Cells["colProgress"].ToolTipText = ex.Message;
+                    }
+
+                    lblEncodeStatus.Text = isCanceled
+                        ? $"Canceled: {Path.GetFileName(file)}"
+                        : retryQueued
+                            ? $"Retry queued: {Path.GetFileName(file)}. Continuing queue."
+                        : $"Failed: {Path.GetFileName(file)}. Continuing queue.";
+                    toolStripStatusLabel1.Text = $"Encode error logged: {centralLogPath}";
+                });
                 // leave the row so user can retry
             }
             finally
             {
-                _activeJobLogSb = null; // stop log capture for this job
+                _runningEncodeJobs.TryRemove(row, out _);
+                if (ReferenceEquals(_activeJobLogSb, jobLog))
+                    _activeJobLogSb = null; // stop log capture for this job
                 Ui(() =>
                 {
-                    _activeEncodeRow = null;
+                    if (ReferenceEquals(_activeEncodeRow, row))
+                        _activeEncodeRow = null;
                     EndEncodeMetricsForRow(row);
                 });
             }
+        }
+
+        private bool TryQueueFailedRowForAutoRetry(DataGridViewRow row)
+        {
+            bool retryFailedJobs = UiGet(() => chkRetryFailedJobs?.Checked ?? false, false);
+            if (!retryFailedJobs)
+                return false;
+
+            if (_activeEncodeQueue == null || row == null || row.IsNewRow || row.DataGridView != dgvEncodeQueue)
+                return false;
+
+            var meta = EnsureRowMeta(row);
+            if (meta.AutoRetryScheduled)
+                return false;
+
+            meta.AutoRetryScheduled = true;
+
+            lock (_activeEncodeQueueLock)
+            {
+                _activeEncodeQueue.Add(row);
+            }
+
+            System.Threading.Interlocked.Increment(ref _encodeRetryCount);
+            return true;
+        }
+
+        private async Task SendDiscordQueueCompleteNotificationAsync(DateTime queueStartedUtc)
+        {
+            if (!_config.DiscordQueueNotificationEnabled)
+                return;
+
+            string message = FormatDiscordQueueCompleteMessage(
+                _config.DiscordQueueCompleteMessage,
+                _encodeSucceededCount,
+                _encodeFailedCount,
+                _encodeRetryCount,
+                queueStartedUtc,
+                DateTime.UtcNow);
+
+            try
+            {
+                await DiscordWebhookService.SendAsync(
+                    _config.DiscordWebhookUrl,
+                    message,
+                    _config.DiscordUserMentionId);
+                toolStripStatusLabel1.Text = "Encode queue complete; Discord notification sent.";
+            }
+            catch (Exception ex)
+            {
+                string logPath = ErrorLogService.Append(
+                    Application.StartupPath,
+                    "Discord queue-completion notification failed",
+                    exception: ex);
+                toolStripStatusLabel1.Text = $"Discord notification failed; see {logPath}.";
+            }
+        }
+
+        internal static string FormatDiscordQueueCompleteMessage(
+            string? template,
+            int succeeded,
+            int failed,
+            int retried,
+            DateTime startedUtc,
+            DateTime finishedUtc)
+        {
+            string status = failed > 0 ? "Completed with failures" : "Completed successfully";
+            string result = string.IsNullOrWhiteSpace(template)
+                ? "Encode queue finished."
+                : template;
+
+            return result
+                .Replace("{total}", (succeeded + failed).ToString(), StringComparison.OrdinalIgnoreCase)
+                .Replace("{succeeded}", succeeded.ToString(), StringComparison.OrdinalIgnoreCase)
+                .Replace("{failed}", failed.ToString(), StringComparison.OrdinalIgnoreCase)
+                .Replace("{retried}", retried.ToString(), StringComparison.OrdinalIgnoreCase)
+                .Replace("{status}", status, StringComparison.OrdinalIgnoreCase)
+                .Replace("{computer}", Environment.MachineName, StringComparison.OrdinalIgnoreCase)
+                .Replace("{started}", startedUtc.ToLocalTime().ToString("g"), StringComparison.OrdinalIgnoreCase)
+                .Replace("{finished}", finishedUtc.ToLocalTime().ToString("g"), StringComparison.OrdinalIgnoreCase)
+                .Replace("{duration}", (finishedUtc - startedUtc).ToString(@"hh\:mm\:ss"), StringComparison.OrdinalIgnoreCase);
         }
 
     }
