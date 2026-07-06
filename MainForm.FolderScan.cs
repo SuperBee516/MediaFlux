@@ -2,6 +2,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Threading;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -9,107 +11,461 @@ namespace Encode
 {
     public partial class MainForm : Form
     {
+        private readonly HashSet<string> _codecFilterImportRoots = new(StringComparer.OrdinalIgnoreCase);
+
         private void ScanAndPopulateEncodeGrid(string folder)
         {
             if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+            {
+                ResetCodecFilterCounts();
                 return;
-
-            // Use the central helper that normalizes extensions and falls back to defaults
-            var extSet = GetAllowedExts();
-
-            int added = 0;
-
-            _activityIndicator?.StartActivity(UiActivity.FolderScan);
-            try
-            {
-                using (UiBusy("Scanning folder…"))
-                {
-                    dgvEncodeQueue.Rows.Clear();
-
-                    var searchOpt = chkIncludeSubfolders.Checked
-                        ? SearchOption.AllDirectories
-                        : SearchOption.TopDirectoryOnly;
-
-                    foreach (var f in Directory.GetFiles(folder, "*.*", searchOpt))
-                    {
-                        var ext = Path.GetExtension(f);
-                        if (string.IsNullOrEmpty(ext) || !extSet.Contains(ext))
-                            continue;
-
-                        // Respect codec filters
-                        var codec = GetVideoCodec(f);
-                        if (!PassesCodecFilter(codec))
-                            continue;
-
-                        if (AddEncodeItemIfNotPresent(f))
-                            added++;
-                    }
-                }
             }
-            finally
-            {
-                _activityIndicator?.StopActivity(UiActivity.FolderScan);
 
-                // Useful feedback for sanity-checking
-                toolStripStatusLabel1.Text = added > 0
-                    ? $"Scanned \"{folder}\" — {added} file(s) added."
-                    : $"Scanned \"{folder}\" — no files matched current filters.";
-            }
+            _ = ImportEncodePathsAsync(
+                new[] { folder },
+                chkIncludeSubfolders.Checked,
+                applyCodecFilters: true,
+                replaceExisting: !_encodingActive);
         }
 
         private void RescanInputFolderAndMerge()
         {
-            var folder = cmbInputFolder.Text;
-            if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return;
+            ClearCompletedEncodePaths();
+            _mediaInfoService.ClearCache();
+            RescanInputFolderAndMerge(recomputeEstimates: false);
+        }
 
+        private async Task ImportEncodePathsAsync(
+            IEnumerable<string> paths,
+            bool includeSubfolders,
+            bool applyCodecFilters,
+            bool replaceExisting = false,
+            bool rememberRoots = true)
+        {
+            var roots = paths.Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (roots.Length == 0)
+                return;
+
+            if (rememberRoots)
+            {
+                if (replaceExisting && !_encodingActive)
+                    _codecFilterImportRoots.Clear();
+
+                foreach (var root in roots)
+                    _codecFilterImportRoots.Add(root);
+            }
+
+            var allowedExts = GetAllowedExts();
+            bool allowH264 = chkFilterX264.Checked;
+            bool allowHevc = chkFilterX265.Checked;
+            bool allowOther = chkFilterOtherCodecs.Checked;
+            bool requestedCodecFilter = applyCodecFilters;
+            bool requireCodecProbeDuringDiscovery = requestedCodecFilter && _encodingActive;
+            _importCts?.Cancel();
+            _importCts?.Dispose();
+            _importCts = new CancellationTokenSource();
+            _codecFilterCts?.Cancel();
+            _codecFilterCts?.Dispose();
+            _codecFilterCts = new CancellationTokenSource();
+            var ct = _importCts.Token;
+            var codecFilterToken = _codecFilterCts.Token;
+            _lastImportDiscoveredCount = 0;
+            _lastImportAddedCount = 0;
+            Interlocked.Increment(ref _pendingEncodeImports);
             _activityIndicator?.StartActivity(UiActivity.FolderScan);
+            SetQueueWorkCancelVisible(true);
+            SetQueueProgress(0, 0, visible: true);
+            toolStripStatusLabel1.Text = "Discovering video files to add...";
+            UpdateRelocatedEncodeStatus("Discovering video files to add...");
+
             try
             {
-                var allowedExts = GetAllowedExtensionsFromUi();
-                var searchOpt = chkIncludeSubfolders.Checked
-                    ? SearchOption.AllDirectories
-                    : SearchOption.TopDirectoryOnly;
+                if (replaceExisting && !_encodingActive)
+                {
+                    ClearCompletedEncodePaths();
+                    _mediaInfoService.ClearCache();
+                    _estimateService.ResetAndCancel();
+                    ResetCodecFilterCounts();
+                    _rowsByPath.Clear();
+                    _estimatedSizeMap.Clear();
+                    _queueSourceSizeMap.Clear();
+                    _queueTotalSourceMb = 0;
+                    _queueTotalEstimatedMb = 0;
+                    _queueFileCount = 0;
+                    _queueTotalsDirty = false;
 
-                var fs = new HashSet<string>(Directory
-                    .EnumerateFiles(folder, "*.*", searchOpt)
-                    .Where(f =>
+                    _suppressRowEvents = true;
+                    try
                     {
-                        var ext = Path.GetExtension(f);
-                        if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext)) return false;
+                        dgvEncodeQueue.Rows.Clear();
+                    }
+                    finally
+                    {
+                        _suppressRowEvents = false;
+                    }
+                }
 
-                        // Respect codec filters
-                        var codec = GetVideoCodec(f);
-                        if (!PassesCodecFilter(codec))
-                            return false;
-                        return true;
-                    }),
-                    StringComparer.OrdinalIgnoreCase);
+                var files = await Task.Run(() =>
+                {
+                    var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var root in roots)
+                    {
+                        try
+                        {
+                            if (File.Exists(root))
+                            {
+                                AddIfSupported(root, found);
+                            }
+                            else if (Directory.Exists(root))
+                            {
+                                var option = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+                                foreach (var file in Directory.EnumerateFiles(root, "*.*", option))
+                                {
+                                    ct.ThrowIfCancellationRequested();
+                                    AddIfSupported(file, found);
+                                }
+                            }
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            ErrorLogService.Append(
+                                Application.StartupPath,
+                                "Encode queue import could not read a path",
+                                root,
+                                ex);
+                        }
+                    }
 
-                _suppressRowEvents = true;
+                    return found.ToList();
+
+                    void AddIfSupported(string file, Dictionary<string, string> destination)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        string ext = Path.GetExtension(file);
+                        if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext))
+                            return;
+
+                        string codec = "";
+                        if (requireCodecProbeDuringDiscovery)
+                        {
+                            codec = GetVideoCodec(file);
+                            if (!PassesCodecFilter(codec, allowH264, allowHevc, allowOther))
+                                return;
+                        }
+
+                        destination.TryAdd(file, codec);
+                        int discovered = Interlocked.Increment(ref _lastImportDiscoveredCount);
+                        if (discovered % 100 == 0)
+                            SafeQueueImportStatusUpdate($"Discovering video files... {discovered:N0} found");
+                    }
+
+                    void SafeQueueImportStatusUpdate(string text)
+                    {
+                        try
+                        {
+                            if (!IsDisposed && IsHandleCreated)
+                            {
+                                BeginInvoke(new Action(() =>
+                                {
+                                    toolStripStatusLabel1.Text = text;
+                                    UpdateRelocatedEncodeStatus(text);
+                                    SetQueueProgress(_lastImportDiscoveredCount, Math.Max(_lastImportDiscoveredCount, 1), visible: true);
+                                }));
+                            }
+                        }
+                        catch
+                        {
+                            // The form may be closing while a background enumeration is winding down.
+                        }
+                    }
+                }, ct);
+
+                int added = 0;
+                bool largeQueue = files.Count >= GetLargeQueueThreshold();
+                bool progressiveCodecFilter = requestedCodecFilter && !_encodingActive && largeQueue;
+                if (requestedCodecFilter && !_encodingActive && !progressiveCodecFilter)
+                    files = await FilterFilesByCodecAsync(files, allowH264, allowHevc, allowOther, ct);
+
+                _largeQueueModeActive = largeQueue;
+                dgvEncodeQueue.SuspendLayout();
                 try
                 {
-                    // Add new files
-                    foreach (var p in fs)
-                        AddEncodeItemIfNotPresent(p);
-
-                    // Remove missing/unmatched rows
-                    foreach (DataGridViewRow row in dgvEncodeQueue.Rows.Cast<DataGridViewRow>().ToList())
+                    foreach (var file in files)
                     {
-                        var p = (row.Tag as RowMeta)?.Path ?? row.Tag as string;
-                        if (string.IsNullOrWhiteSpace(p) || !fs.Contains(p))
-                            dgvEncodeQueue.Rows.Remove(row);   // no estimate call here due to _suppressRowEvents
+                        ct.ThrowIfCancellationRequested();
+                        if (AddEncodeItemIfNotPresent(file.Key, refreshEstimates: false))
+                        {
+                            added++;
+                            _lastImportAddedCount = added;
+                            if (requestedCodecFilter)
+                                TrackCodecFilterCount(file.Key, file.Value);
+                            if (progressiveCodecFilter && _rowsByPath.TryGetValue(file.Key, out var checkingRow))
+                                SetEncodeRowState(checkingRow, "Checking codec", "", "", "Checking video codec against current filters.");
+                            if (added % 100 == 0)
+                            {
+                                toolStripStatusLabel1.Text = $"Adding files to queue... {added:N0}/{files.Count:N0}";
+                                UpdateRelocatedEncodeStatus($"Adding files to queue... {added:N0}/{files.Count:N0}");
+                                SetQueueProgress(added, files.Count, visible: true);
+                            }
+                        }
                     }
                 }
                 finally
                 {
-                    _suppressRowEvents = false;
+                    dgvEncodeQueue.ResumeLayout();
                 }
-                RunEstimatePass();
+
+                int removedByCodecFilter = 0;
+                if (progressiveCodecFilter && added > 0)
+                {
+                    removedByCodecFilter = await ApplyProgressiveCodecFilterAsync(
+                        files.Select(file => file.Key).ToList(),
+                        allowH264,
+                        allowHevc,
+                        allowOther,
+                        codecFilterToken);
+                    added -= removedByCodecFilter;
+                }
+
+                // Avoid competing media probes while FFmpeg is active. EncodeSingleRow
+                // resolves the metadata it needs when each appended job is dispatched.
+                if (added > 0 && !_encodingActive && (!largeQueue || _config.AutoAnalyzeLargeQueues))
+                    RunEstimatePass();
+                else if (added > 0 && largeQueue)
+                {
+                    _estimatesDeferredForLargeQueue = true;
+                    UpdateSizeTotals(force: true);
+                }
+                else
+                    UpdateSizeTotals(force: true);
+
+                UpdateAnalyzeQueueButtonState();
+
+                toolStripStatusLabel1.Text = added > 0
+                    ? largeQueue
+                        ? $"Added {added:N0} file(s){(removedByCodecFilter > 0 ? $" after filtering out {removedByCodecFilter:N0} codec mismatch(es)" : "")}. Large queue mode: estimates deferred until Analyze Queue."
+                        : $"Added {added:N0} file(s){(_encodingActive ? " to the in-progress encode queue" : " to the queue")}. Estimates will update in the background."
+                    : "No new supported video files were found.";
+                UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+                if (_estimateService.PendingEstimates <= 0)
+                    SetQueueProgress(0, 0, visible: false);
+            }
+            catch (OperationCanceledException)
+            {
+                toolStripStatusLabel1.Text = $"Queue import canceled after adding {_lastImportAddedCount:N0} file(s).";
+                UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+                SetQueueProgress(0, 0, visible: false);
+            }
+            catch (Exception ex)
+            {
+                ErrorLogService.Append(
+                    Application.StartupPath,
+                    "Encode queue import failed",
+                    exception: ex);
+                toolStripStatusLabel1.Text = "Some files could not be added. See the error log for details.";
+                SetQueueProgress(0, 0, visible: false);
             }
             finally
             {
                 _activityIndicator?.StopActivity(UiActivity.FolderScan);
-            }            
+                Interlocked.Decrement(ref _pendingEncodeImports);
+                SetQueueWorkCancelVisible(_estimateService?.PendingEstimates > 0);
+            }
+        }
+
+        private async Task ReapplyCodecFiltersAsync()
+        {
+            string inputFolder = cmbInputFolder.Text?.Trim() ?? string.Empty;
+            var availableRoots = new HashSet<string>(
+                _codecFilterImportRoots.Where(path => File.Exists(path) || Directory.Exists(path)),
+                StringComparer.OrdinalIgnoreCase);
+
+            if (Directory.Exists(inputFolder))
+                availableRoots.Add(inputFolder);
+
+            string[] roots = availableRoots.ToArray();
+
+            if (roots.Length == 0)
+            {
+                toolStripStatusLabel1.Text = "No source files or input folder are available to reapply codec filters.";
+                UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+                return;
+            }
+
+            await ImportEncodePathsAsync(
+                roots,
+                chkIncludeSubfolders.Checked,
+                applyCodecFilters: true,
+                replaceExisting: !_encodingActive,
+                rememberRoots: false);
+        }
+
+        private async Task<List<KeyValuePair<string, string>>> FilterFilesByCodecAsync(
+            List<KeyValuePair<string, string>> files,
+            bool allowH264,
+            bool allowHevc,
+            bool allowOther,
+            CancellationToken ct)
+        {
+            if (files.Count == 0)
+                return files;
+
+            toolStripStatusLabel1.Text = $"Checking codecs... 0/{files.Count:N0}";
+            UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+            SetQueueProgress(0, files.Count, visible: true);
+
+            var filtered = new List<KeyValuePair<string, string>>(files.Count);
+            for (int i = 0; i < files.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                string path = files[i].Key;
+                string codec = await Task.Run(() => GetVideoCodec(path), ct);
+                TrackCodecFilterCount(path, codec);
+                if (PassesCodecFilter(codec, allowH264, allowHevc, allowOther))
+                {
+                    filtered.Add(new KeyValuePair<string, string>(path, codec));
+                }
+
+                int checkedCount = i + 1;
+                if (checkedCount % 25 == 0 || checkedCount == files.Count)
+                {
+                    toolStripStatusLabel1.Text = $"Checking codecs... {checkedCount:N0}/{files.Count:N0}";
+                    UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+                    SetQueueProgress(checkedCount, files.Count, visible: true);
+                }
+            }
+
+            return filtered;
+        }
+
+        private async Task<int> ApplyProgressiveCodecFilterAsync(
+            List<string> paths,
+            bool allowH264,
+            bool allowHevc,
+            bool allowOther,
+            CancellationToken ct)
+        {
+            if (paths.Count == 0)
+                return 0;
+
+            int removed = 0;
+            toolStripStatusLabel1.Text = $"Checking codecs... 0/{paths.Count:N0}";
+            UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+            SetQueueProgress(0, paths.Count, visible: true);
+
+            for (int i = 0; i < paths.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                string path = paths[i];
+                string codec = await Task.Run(() => GetVideoCodec(path), ct);
+                bool keep = PassesCodecFilter(codec, allowH264, allowHevc, allowOther);
+
+                TrackCodecFilterCount(path, codec);
+
+                if (_rowsByPath.TryGetValue(path, out var row) && row?.DataGridView == dgvEncodeQueue)
+                {
+                    var meta = EnsureRowMeta(row);
+                    meta.VideoCodec = codec;
+
+                    if (keep)
+                    {
+                        SetEncodeRowState(row, "Queued", "", "", "Ready to encode.");
+                    }
+                    else
+                    {
+                        RemoveCodecFilteredRow(row);
+                        removed++;
+                    }
+                }
+
+                int checkedCount = i + 1;
+                if (checkedCount % 25 == 0 || checkedCount == paths.Count)
+                {
+                    toolStripStatusLabel1.Text = $"Checking codecs... {checkedCount:N0}/{paths.Count:N0}";
+                    UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+                    SetQueueProgress(checkedCount, paths.Count, visible: true);
+                }
+            }
+
+            if (removed > 0)
+                UpdateSizeTotals(force: true);
+
+            return removed;
+        }
+
+        private void RemoveCodecFilteredRow(DataGridViewRow row)
+        {
+            var path = GetPathFromRow(row);
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                _rowsByPath.TryRemove(path, out _);
+                _estimatedSizeMap.Remove(path);
+                _queueSourceSizeMap.Remove(path);
+            }
+
+            _suppressRowEvents = true;
+            try
+            {
+                if (row.DataGridView == dgvEncodeQueue)
+                    dgvEncodeQueue.Rows.Remove(row);
+            }
+            finally
+            {
+                _suppressRowEvents = false;
+            }
+
+            MarkQueueTotalsDirty();
+        }
+
+        private void RememberCompletedEncodePaths(string sourcePath, string outputPath)
+        {
+            _mediaInfoService.Invalidate(sourcePath);
+            _mediaInfoService.Invalidate(outputPath);
+            AddCompletedEncodePath(sourcePath);
+            AddCompletedEncodePath(outputPath);
+        }
+
+        private void AddCompletedEncodePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            try
+            {
+                path = Path.GetFullPath(path);
+            }
+            catch
+            {
+                // The path returned by the encoder is normally absolute; retaining
+                // the original value is still better than allowing an automatic re-add.
+            }
+
+            lock (_completedEncodePathsLock)
+                _completedEncodePaths.Add(path);
+        }
+
+        private bool IsCompletedEncodePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+
+            try
+            {
+                path = Path.GetFullPath(path);
+            }
+            catch
+            {
+                // Compare the original value when normalization is unavailable.
+            }
+
+            lock (_completedEncodePathsLock)
+                return _completedEncodePaths.Contains(path);
+        }
+
+        private void ClearCompletedEncodePaths()
+        {
+            lock (_completedEncodePathsLock)
+                _completedEncodePaths.Clear();
         }
     }
 }

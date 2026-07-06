@@ -96,7 +96,73 @@ namespace Encode
             if (!TryParseFfmpegProgress(line, out var metrics))
                 return;
 
-            Ui(() => UpdateEncodeMetricsForRow(row, metrics));
+            Ui(() =>
+            {
+                UpdateEncodeMetricsForRow(row, metrics);
+                UpdateQueueEstimatedCompletion();
+            });
+        }
+
+        private void UpdateQueueEstimatedCompletion()
+        {
+            if (_summaryEstimatedCompletionValue == null)
+                return;
+
+            if (_activeEncodeRows.Count == 0)
+            {
+                _summaryEstimatedCompletionValue.Text = dgvEncodeQueue.Rows.Count > 0
+                    ? "Starts when encoding begins"
+                    : "--";
+                return;
+            }
+
+            double remainingMediaSeconds = 0;
+            double combinedSpeed = 0;
+            bool missingDuration = false;
+
+            foreach (DataGridViewRow queueRow in dgvEncodeQueue.Rows)
+            {
+                if (queueRow.IsNewRow)
+                    continue;
+
+                string status = queueRow.Cells["colStatus"].Value?.ToString() ?? string.Empty;
+                if (status.Equals("Done", StringComparison.OrdinalIgnoreCase) ||
+                    status.Equals("Failed", StringComparison.OrdinalIgnoreCase) ||
+                    status.Equals("Canceled", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                double duration = (queueRow.Tag as RowMeta)?.DurationSec ?? 0;
+                if (duration <= 0)
+                {
+                    missingDuration = true;
+                    continue;
+                }
+
+                double completed = 0;
+                if (_activeEncodeMetrics.TryGetValue(queueRow, out var activeMetrics))
+                {
+                    completed = ParseFfmpegTimeToSeconds(activeMetrics.TimeStr);
+                    if (activeMetrics.Speed > 0)
+                        combinedSpeed += activeMetrics.Speed;
+                }
+
+                remainingMediaSeconds += Math.Max(0, duration - completed);
+            }
+
+            if (combinedSpeed <= 0 || remainingMediaSeconds <= 0)
+            {
+                _summaryEstimatedCompletionValue.Text = "Calculating...";
+                return;
+            }
+
+            TimeSpan eta = TimeSpan.FromSeconds(remainingMediaSeconds / combinedSpeed);
+            string etaText = eta.TotalDays >= 1
+                ? $"{(int)eta.TotalDays}d {eta.Hours:00}:{eta.Minutes:00}:{eta.Seconds:00}"
+                : eta.ToString(@"hh\:mm\:ss");
+
+            _summaryEstimatedCompletionValue.Text = missingDuration
+                ? $"~{etaText} + unknown jobs"
+                : $"~{etaText}";
         }
 
         private static double ParseSpeedX(string line)
@@ -218,6 +284,7 @@ namespace Encode
 
             _activeEncodeMetrics.Remove(row);
             _activeEncodeRows.Remove(row);
+            UpdateQueueEstimatedCompletion();
 
             if (_activeEncodeRows.Count == 0)
             {

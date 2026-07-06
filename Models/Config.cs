@@ -5,6 +5,9 @@ namespace Encode.Models
     public class Config
     {
         public string UpdateFolderPath { get; set; } = "";
+        public bool AutomaticallyBackupBeforeUpdates { get; set; } = true;
+        public string BackupFolderPath { get; set; } = "";
+        public int BackupsToKeep { get; set; } = 5;
         public string AutoNamingPattern { get; set; } = "clip_%TITLE%_%START%-%END%";
 
         // Filename suffixes
@@ -15,8 +18,16 @@ namespace Encode.Models
         // Persist column visibility
         public bool ShowSizeColumn { get; set; } = true;
         public bool ShowCreatedColumn { get; set; } = false;
+        public bool ShowCustomColumn { get; set; } = true;
 
-        // Persist delete–source setting
+        // Persist the Encode queue's last selected sort.
+        public string EncodeQueueSortColumn { get; set; } = "";
+        public bool EncodeQueueSortDescending { get; set; } = false;
+
+        // Empty means all supported extensions are enabled (legacy/default behavior).
+        public List<string> EnabledVideoExtensions { get; set; } = new();
+
+        // Persist delete-source setting
         public bool DeleteSourceAfterCompression { get; set; } = true;
 
         // Persist the last widths the user set
@@ -34,18 +45,33 @@ namespace Encode.Models
         public string ExternalPlayerPath { get; set; } = ""; // e.g. "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"
 
         // lightweight history to help duplicate detection (keep it short)
-        public List<string> DownloadHistory { get; set; } = new List<string>(); // store normalized output paths
+        public List<string> DownloadHistory { get; set; } = new(); // store normalized output paths
 
-        public static Config Load(string path)
-        {
-            if (!File.Exists(path))
-                return new Config();
-            var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<Config>(json)!;
-        }
+        public bool RememberCheckboxStates { get; set; } = true;
+        public bool PreventSleepDuringEncoding { get; set; } = false;
+        public bool LimitGpuEncodingQueueToOneJob { get; set; } = false;
+        public int LargeQueueThreshold { get; set; } = 300;
+        public bool AutoAnalyzeLargeQueues { get; set; } = false;
+        public bool EnablePersistentMediaInfoCache { get; set; } = true;
+        public string FfmpegPath { get; set; } = "";
+        public string FfprobePath { get; set; } = "";
 
-        // Models/Config.cs  (add inside class)
-        public bool RememberCheckboxStates { get; set; } = false;
+        // Optional Discord notification sent after the Encode queue drains normally.
+        public bool DiscordQueueNotificationEnabled { get; set; } = false;
+        public string DiscordWebhookUrl { get; set; } = "";
+        public string DiscordUserMentionId { get; set; } = "";
+        public string DiscordQueueCompleteMessage { get; set; } =
+            "Encode queue finished on {computer}. Total: {total}, succeeded: {succeeded}, failed: {failed}, retried: {retried}. Finished at {finished}.";
+
+        // Automatically watch one folder and append newly completed video files
+        // to the normal Encode queue. Codec eligibility always follows the three
+        // Show codec filters on the Encode screen.
+        public bool WatchFolderEnabled { get; set; } = false;
+        public string WatchFolderPath { get; set; } = "";
+        public int WatchFolderIntervalMinutes { get; set; } = 5;
+        public bool WatchFolderIncludeSubfolders { get; set; } = true;
+        public int WatchFolderStabilizationSeconds { get; set; } = 60;
+        public bool HideWatchFolderStatusText { get; set; } = false;
 
         // Per-checkbox “last used” values:
         public bool LastChkAutoTargetSize { get; set; } = false;
@@ -53,11 +79,59 @@ namespace Encode.Models
         public bool LastChkFilterX264 { get; set; } = true;
         public bool LastChkFilterX265 { get; set; } = true;
         public bool LastChkDownloadPlaylist { get; set; } = false;
-        public bool LastChkProcessAll { get; set; } = true;  // NEW: default to checked
+        public bool LastChkProcessAll { get; set; } = true;
+
+        // Per-dropdown "last used" values.
+        public string LastCompressionProfile { get; set; } = "Medium Quality (Default)";
+        public string LastEncodingSpeedPreset { get; set; } = "Balanced (Recommended)";
+
+        // Persist the main window's last usable size and position.
+        public int MainWindowX { get; set; } = 0;
+        public int MainWindowY { get; set; } = 0;
+        public int MainWindowWidth { get; set; } = 0;
+        public int MainWindowHeight { get; set; } = 0;
+        public bool MainWindowMaximized { get; set; } = false;
+        public bool EncodeInfoHeaderCollapsed { get; set; } = false;
+
+        // Compact floating queue window preferences.
+        public bool CompactWindowAlwaysOnTop { get; set; } = false;
+        public int CompactWindowX { get; set; } = int.MinValue;
+        public int CompactWindowY { get; set; } = int.MinValue;
 
         // Persist which codecs to show
         public bool ShowX264Files { get; set; } = true;
         public bool ShowX265Files { get; set; } = true;
+        public bool ShowOtherCodecFiles { get; set; } = true;
+
+        // Persist arbitrary main-form checkbox states keyed by a stable control path.
+        public Dictionary<string, bool> CheckboxStates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public static Config Load(string path)
+        {
+            if (!File.Exists(path))
+                return new Config();
+
+            var json = File.ReadAllText(path);
+            var config = JsonSerializer.Deserialize<Config>(json) ?? new Config();
+
+            config.CheckboxStates ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            config.EnabledVideoExtensions ??= new List<string>();
+            if (config.LargeQueueThreshold < 1)
+                config.LargeQueueThreshold = 300;
+            if (config.WatchFolderIntervalMinutes < 1)
+                config.WatchFolderIntervalMinutes = 5;
+            if (config.WatchFolderStabilizationSeconds < 0)
+                config.WatchFolderStabilizationSeconds = 60;
+            if (config.BackupsToKeep < 1)
+                config.BackupsToKeep = 5;
+
+            // Older configs never persisted checkbox state unless the user opted in.
+            // Treat missing settings as enabled so existing installs pick up the new behavior.
+            if (!json.Contains("\"RememberCheckboxStates\"", StringComparison.OrdinalIgnoreCase))
+                config.RememberCheckboxStates = true;
+
+            return config;
+        }
 
         public void Save(string path)
         {

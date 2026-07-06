@@ -77,7 +77,7 @@ GoEncode performs **no silent fallbacks** — behavior is explicit and logged.
 
 - **Predictable execution over maximum throughput**
 - **Explicit configuration over hidden automation**
-- **One job at a time by design** to avoid:
+- **Conservative automatic queue concurrency** to avoid:
   - GPU saturation
   - Disk I/O contention
   - Process collisions

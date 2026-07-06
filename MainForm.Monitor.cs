@@ -1,237 +1,571 @@
-﻿using Encode.Services;
+using Encode.Services;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace Encode
 {
     public partial class MainForm : Form
     {
-        // ───────── Monitor state ─────────
+        private int _h264FileCount;
+        private int _h265FileCount;
+        private int _otherCodecFileCount;
+        private readonly HashSet<string> _codecCountedPaths = new(StringComparer.OrdinalIgnoreCase);
+
         private System.Threading.Timer? _monitorTimer;
-        private readonly HashSet<string> _monSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        private volatile bool _monitoring = false;
-        private readonly object _monLock = new object();
-        private FileSystemWatcher? _monWatcher;
-        private volatile bool _monNeedsScan = false;
+        private readonly HashSet<string> _monSeen = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _monLock = new();
+        private volatile bool _monitoring;
+        private int _monitorScanInProgress;
+        private int _monitorGeneration;
+        private bool _updatingWatchFolderCheckbox;
+        private System.Windows.Forms.Timer? _watchCountdownTimer;
+        private long _nextMonitorScanUtcTicks;
+        private volatile bool _watchCheckInProgress;
+        private string _lastWatchStatus = "Folder watching is off.";
 
-        private void btnBrowseMonFolder_Click(object? sender, EventArgs e)
+        private sealed record WatchScanSettings(
+            string Root,
+            bool IncludeSubfolders,
+            int StabilizationSeconds,
+            HashSet<string> AllowedExtensions,
+            bool AllowH264,
+            bool AllowH265,
+            bool AllowOther);
+
+        private void InitializeWatchFolderUi()
         {
-            using var dlg = new FolderBrowserDialog
-            {
-                SelectedPath = string.IsNullOrWhiteSpace(cmbMonFolder.Text) ? Application.StartupPath : cmbMonFolder.Text
-            };
-            if (dlg.ShowDialog(this) != DialogResult.OK) return;
-
-            var picked = dlg.SelectedPath;
-            cmbMonFolder.Text = picked;
-
-            // reuse history helpers
-            AddToHistory(_config.LastInputFolders, picked);
-            RefreshHistoryCombo(cmbMonFolder, _config.LastInputFolders);
-            _config.Save(_configPath);
-        }
-
-        private void btnMonStart_Click(object? sender, EventArgs e)
-        {
-            if (_monitoring) return;
-
-            string root = cmbMonFolder.Text;
-            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
-            {
-                MessageBox.Show("Pick a valid folder to monitor.", "Monitor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (chkWatchFolder == null)
                 return;
+
+            // Watching is intentionally session-only. Preserve the configured
+            // folder and timing options, but require an explicit opt-in after
+            // every application launch.
+            if (_config.WatchFolderEnabled)
+            {
+                _config.WatchFolderEnabled = false;
+                _config.Save(_configPath);
             }
 
-            _monSeen.Clear();
+            _updatingWatchFolderCheckbox = true;
+            chkWatchFolder.Checked = false;
+            _updatingWatchFolderCheckbox = false;
+            chkWatchFolder.CheckedChanged += chkWatchFolder_CheckedChanged;
+            _uiToolTip.SetToolTip(
+                chkWatchFolder,
+                "Watch the folder configured in Tools > Settings. New files use the current codec filters and encoding settings.");
 
-            // Find eligible existing files (using all current filters)
-            var eligibleExisting = EnumerateEligibleNewFiles(
-                root: root,
-                includeSubfolders: chkMonIncludeSubfolders.Checked,
-                respectCodecFilters: chkMonUseEncodeFilters.Checked,
-                minSizeBytes: (long)nudMonMinSizeMb.Value * 1024L * 1024L,
-                stabilizeSeconds: (int)nudMonStabilizeSec.Value
-            );
+            _watchCountdownTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            _watchCountdownTimer.Tick += (_, __) => UpdateWatchCountdownDisplay();
 
-            // If we found files, ask whether to process them right now
-            if (eligibleExisting.Count > 0)
+            _lastWatchStatus = "Folder watching is off. Enable it to begin this session.";
+            UpdateWatchCountdownDisplay();
+        }
+
+        private void chkWatchFolder_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (_updatingWatchFolderCheckbox || chkWatchFolder == null)
+                return;
+
+            if (chkWatchFolder.Checked)
             {
-                var resp = MessageBox.Show(
-                    $"Found {eligibleExisting.Count} existing file(s) in \"{root}\".\n\nProcess them now?",
-                    "Monitor",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Question
-                );
-
-                if (resp == DialogResult.Yes)
+                if (!Directory.Exists(_config.WatchFolderPath))
                 {
-                    // Mark as seen
-                    foreach (var f in eligibleExisting) _monSeen.Add(f);
-
-                    // Enqueue immediately
-                    EnqueueBatch(eligibleExisting);
-
-                    // Update estimates
-                    SafeRefreshEstimates();
-
-                    // Select all rows so the Start logic processes the full batch
-                    dgvEncodeQueue.SuspendLayout();
-                    try
+                    string inputFolder = cmbInputFolder.Text?.Trim() ?? string.Empty;
+                    if (Directory.Exists(inputFolder))
                     {
-                        dgvEncodeQueue.ClearSelection();
-                        foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
-                            row.Selected = true;
+                        _config.WatchFolderPath = inputFolder;
                     }
-                    finally
+                    else
                     {
-                        dgvEncodeQueue.ResumeLayout();
-                        dgvEncodeQueue.Refresh();
-                    }
-
-                    // Robust auto-start (doesn't depend on button state or active panel)
-                    if (chkMonAutoStart.Checked)
-                    {
-                        AutoStartEncodeIfPossible();
+                        MessageBox.Show(
+                            this,
+                            "Choose a valid Input Folder, or configure the watch folder in Tools > Settings.",
+                            "Watch Folder",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                        SetWatchFolderCheckbox(false);
+                        return;
                     }
                 }
-                else
+
+                PopulateLastUsedWatchOutputFolder();
+
+                if (!ValidateOutputFolderAgainstWatchFolder(
+                        cmbEncodeOutput.Text,
+                        showMessage: true,
+                        watchWillBeEnabled: true))
                 {
-                    // User chose not to process existing files; seed 'seen' so we won’t re-ask
-                    SeedSeen(root, chkMonIncludeSubfolders.Checked);
+                    SetWatchFolderCheckbox(false);
+                    return;
                 }
+
+                _config.WatchFolderEnabled = true;
+                _config.Save(_configPath);
+                StartMonitoringFromConfig();
             }
             else
             {
-                // Nothing to pre-process; seed seen so only truly new files are picked up
-                SeedSeen(root, chkMonIncludeSubfolders.Checked);
+                _config.WatchFolderEnabled = false;
+                _config.Save(_configPath);
+                StopMonitoring("Folder watching is off.");
             }
+        }
 
-            // Start timer (immediate first tick + cadence)
-            int mins = (int)nudMonMinutes.Value;
-            _monitorTimer = new System.Threading.Timer(_ => MonitorTickSafe(), null, TimeSpan.Zero, TimeSpan.FromMinutes(mins));
-            _monitoring = true;
+        private void ApplyWatchFolderConfiguration()
+        {
+            SetWatchFolderCheckbox(_config.WatchFolderEnabled);
 
-            // Optional FileSystemWatcher hybrid (if enabled)
-            if (chkMonUseWatcher.Checked)
+            if (_config.WatchFolderEnabled)
+                StartMonitoringFromConfig();
+            else
+                StopMonitoring("Folder watching is off.");
+        }
+
+        private void SetWatchFolderCheckbox(bool value)
+        {
+            if (chkWatchFolder == null)
+                return;
+
+            _updatingWatchFolderCheckbox = true;
+            chkWatchFolder.Checked = value;
+            _updatingWatchFolderCheckbox = false;
+        }
+
+        private void StartMonitoringFromConfig()
+        {
+            string root = _config.WatchFolderPath?.Trim() ?? string.Empty;
+            if (!Directory.Exists(root))
             {
-                _monWatcher = new FileSystemWatcher(root)
-                {
-                    IncludeSubdirectories = chkMonIncludeSubfolders.Checked,
-                    EnableRaisingEvents = true,
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.Size | NotifyFilters.LastWrite
-                };
-                _monWatcher.Created += (_, __) => { _monNeedsScan = true; };
-                _monWatcher.Changed += (_, __) => { _monNeedsScan = true; };
-                _monWatcher.Renamed += (_, __) => { _monNeedsScan = true; };
+                _config.WatchFolderEnabled = false;
+                _config.Save(_configPath);
+                SetWatchFolderCheckbox(false);
+                ShowWatchStatus("Watch folder is unavailable. Folder watching was disabled.");
+                return;
             }
 
-            // ── UI toggles: marshal to UI thread
+            if (!ValidateOutputFolderAgainstWatchFolder(
+                    cmbEncodeOutput.Text,
+                    showMessage: false,
+                    watchWillBeEnabled: true))
+            {
+                _config.WatchFolderEnabled = false;
+                _config.Save(_configPath);
+                SetWatchFolderCheckbox(false);
+                ShowWatchStatus("Folder watching was disabled because it requires a separate Output Folder.");
+                return;
+            }
+
+            int minutes = Math.Clamp(_config.WatchFolderIntervalMinutes, 1, 1440);
+
+            lock (_monLock)
+            {
+                _monitorTimer?.Dispose();
+                _monitorTimer = null;
+                _monSeen.Clear();
+                _monitoring = true;
+                _monitorGeneration++;
+                _monitorTimer = new System.Threading.Timer(
+                    _ => MonitorTickSafe(),
+                    null,
+                    TimeSpan.Zero,
+                    Timeout.InfiniteTimeSpan);
+            }
+
+            Interlocked.Exchange(ref _nextMonitorScanUtcTicks, 0);
+            _watchCheckInProgress = false;
+            _watchCountdownTimer?.Start();
+            ShowWatchStatus($"Checking \"{root}\" for new files…");
+        }
+
+        private void PopulateLastUsedWatchOutputFolder()
+        {
+            string currentOutput = cmbEncodeOutput.Text?.Trim() ?? string.Empty;
+            if (Directory.Exists(currentOutput) &&
+                !FolderPathComparer.OutputConflictsWithWatchFolder(
+                    currentOutput,
+                    _config.WatchFolderPath,
+                    _config.WatchFolderIncludeSubfolders))
+            {
+                return;
+            }
+
+            string? lastUsableOutput = _config.LastOutputFolders
+                .FirstOrDefault(path =>
+                    Directory.Exists(path) &&
+                    !FolderPathComparer.OutputConflictsWithWatchFolder(
+                        path,
+                        _config.WatchFolderPath,
+                        _config.WatchFolderIncludeSubfolders));
+
+            if (string.IsNullOrWhiteSpace(lastUsableOutput))
+                return;
+
+            cmbEncodeOutput.Text = lastUsableOutput;
+            ShowWatchStatus($"Restored last Output Folder: \"{lastUsableOutput}\".");
+        }
+
+        private bool ValidateOutputFolderAgainstWatchFolder(
+            string? outputFolder,
+            bool showMessage,
+            bool watchWillBeEnabled = false)
+        {
+            bool watching = _config.WatchFolderEnabled || watchWillBeEnabled;
+            if (watching && string.IsNullOrWhiteSpace(outputFolder))
+            {
+                if (showMessage)
+                {
+                    MessageBox.Show(
+                        this,
+                        "Choose an Output Folder outside the watched folder. A blank Output Folder writes beside the source file and is not allowed while folder watching is enabled.",
+                        "Output folder required",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+                return false;
+            }
+
+            if (!FolderPathComparer.OutputConflictsWithWatchFolder(
+                    outputFolder,
+                    _config.WatchFolderPath,
+                    _config.WatchFolderIncludeSubfolders))
+            {
+                return true;
+            }
+
+            if (showMessage)
+            {
+                MessageBox.Show(
+                    this,
+                    "The Output Folder cannot be the watched folder or a folder inside its watched subfolders. Choose a separate output location.",
+                    "Folder conflict",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            return false;
+        }
+
+        private void StopMonitoring(string status)
+        {
+            lock (_monLock)
+            {
+                _monitorTimer?.Dispose();
+                _monitorTimer = null;
+                _monitoring = false;
+                _monitorGeneration++;
+            }
+
+            _watchCheckInProgress = false;
+            Interlocked.Exchange(ref _nextMonitorScanUtcTicks, 0);
+            Ui(() => _watchCountdownTimer?.Stop());
+            ShowWatchStatus(status);
+        }
+
+        private void MonitorTickSafe()
+        {
+            if (!_monitoring || Interlocked.Exchange(ref _monitorScanInProgress, 1) != 0)
+                return;
+
+            int generation = Volatile.Read(ref _monitorGeneration);
+            int intervalMinutes = Math.Clamp(_config.WatchFolderIntervalMinutes, 1, 1440);
+            _watchCheckInProgress = true;
+            Interlocked.Exchange(ref _nextMonitorScanUtcTicks, 0);
+            ShowWatchStatus("Checking for new files…");
+            try
+            {
+                var settings = CaptureWatchScanSettings();
+                if (settings == null)
+                {
+                    ShowWatchStatus($"Check failed at {DateTime.Now:t}: watch folder is unavailable.");
+                    return;
+                }
+
+                if (!settings.AllowH264 && !settings.AllowH265 && !settings.AllowOther)
+                {
+                    ShowWatchStatus($"Checked {DateTime.Now:t}: no codec types are selected.");
+                    return;
+                }
+
+                var newFiles = EnumerateEligibleNewFiles(settings);
+                if (!_monitoring || generation != Volatile.Read(ref _monitorGeneration))
+                    return;
+
+                if (newFiles.Count == 0)
+                {
+                    ShowWatchStatus($"Checked {DateTime.Now:t}: no new matching files found.");
+                    return;
+                }
+
+                // Tell the dynamic queue runner that an append is in flight so it
+                // cannot finish in the narrow window before the UI adds the rows.
+                Interlocked.Increment(ref _pendingEncodeImports);
+                try
+                {
+                    UiInvoke(() => EnqueueWatchedFiles(newFiles));
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _pendingEncodeImports);
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorLogService.Append(
+                    Application.StartupPath,
+                    "Watch folder scan failed",
+                    _config.WatchFolderPath,
+                    ex);
+                ShowWatchStatus($"Check failed at {DateTime.Now:t}: {ex.Message}");
+            }
+            finally
+            {
+                _watchCheckInProgress = false;
+                Interlocked.Exchange(ref _monitorScanInProgress, 0);
+                ScheduleNextMonitorScan(generation, intervalMinutes);
+            }
+        }
+
+        private void ScheduleNextMonitorScan(int generation, int intervalMinutes)
+        {
+            var interval = TimeSpan.FromMinutes(Math.Clamp(intervalMinutes, 1, 1440));
+            lock (_monLock)
+            {
+                if (!_monitoring || generation != _monitorGeneration || _monitorTimer == null)
+                    return;
+
+                _monitorTimer.Change(interval, Timeout.InfiniteTimeSpan);
+                Interlocked.Exchange(
+                    ref _nextMonitorScanUtcTicks,
+                    DateTime.UtcNow.Add(interval).Ticks);
+            }
+
+            Ui(UpdateWatchCountdownDisplay);
+        }
+
+        private WatchScanSettings? CaptureWatchScanSettings()
+        {
+            return UiGet(() =>
+            {
+                if (!_config.WatchFolderEnabled || !Directory.Exists(_config.WatchFolderPath))
+                    return null;
+
+                return new WatchScanSettings(
+                    _config.WatchFolderPath,
+                    _config.WatchFolderIncludeSubfolders,
+                    Math.Clamp(_config.WatchFolderStabilizationSeconds, 0, 3600),
+                    GetAllowedExts(),
+                    chkFilterX264.Checked,
+                    chkFilterX265.Checked,
+                    chkFilterOtherCodecs.Checked);
+            }, null);
+        }
+
+        private List<string> EnumerateEligibleNewFiles(WatchScanSettings settings)
+        {
+            var eligible = new List<string>();
+            var searchOption = settings.IncludeSubfolders
+                ? SearchOption.AllDirectories
+                : SearchOption.TopDirectoryOnly;
+
+            foreach (var path in Directory.EnumerateFiles(settings.Root, "*.*", searchOption))
+            {
+                string extension = Path.GetExtension(path);
+                if (string.IsNullOrWhiteSpace(extension) || !settings.AllowedExtensions.Contains(extension))
+                    continue;
+
+                lock (_monLock)
+                {
+                    if (_monSeen.Contains(path))
+                        continue;
+                }
+
+                if (IsCompletedEncodePath(path))
+                    continue;
+
+                FileInfo file;
+                try
+                {
+                    file = new FileInfo(path);
+                    if (!file.Exists ||
+                        DateTime.UtcNow - file.LastWriteTimeUtc < TimeSpan.FromSeconds(settings.StabilizationSeconds))
+                    {
+                        continue;
+                    }
+                }
+                catch (IOException)
+                {
+                    continue;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    continue;
+                }
+
+                if (!CanOpenWatchedFileExclusively(path))
+                    continue;
+
+                string codec;
+                try
+                {
+                    codec = GetVideoCodec(path);
+                }
+                catch
+                {
+                    // An in-progress or temporarily locked file remains unseen and
+                    // will be retried on the next scheduled scan.
+                    continue;
+                }
+
+                if (!PassesCodecFilter(
+                        codec,
+                        settings.AllowH264,
+                        settings.AllowH265,
+                        settings.AllowOther))
+                {
+                    // Keep it eligible for a future scan if the user later changes
+                    // the Show codec selections.
+                    continue;
+                }
+
+                lock (_monLock)
+                    _monSeen.Add(path);
+                eligible.Add(path);
+            }
+
+            return eligible;
+        }
+
+        private static bool CanOpenWatchedFileExclusively(string path)
+        {
+            try
+            {
+                using var stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.None,
+                    bufferSize: 1,
+                    FileOptions.SequentialScan);
+                return stream.Length >= 0;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        private void EnqueueWatchedFiles(IReadOnlyList<string> files)
+        {
+            var addedRows = new List<DataGridViewRow>();
+            foreach (var file in files)
+            {
+                try
+                {
+                    TrackCodecFilterCount(file, GetVideoCodec(file));
+                }
+                catch
+                {
+                    // The eligibility scan already validated the codec. A cache
+                    // refresh failure here should not prevent queueing the file.
+                }
+
+                if (!AddEncodeItemIfNotPresent(file, refreshEstimates: false))
+                    continue;
+
+                if (_rowsByPath.TryGetValue(file, out var row))
+                    addedRows.Add(row);
+                AppendRecentDiscovery(file);
+            }
+
+            if (addedRows.Count == 0)
+            {
+                ShowWatchStatus($"Checked {DateTime.Now:t}: discovered files were already queued.");
+                return;
+            }
+
+            if (!_encodingActive)
+            {
+                if (dgvEncodeQueue.Rows.Count < GetLargeQueueThreshold() || _config.AutoAnalyzeLargeQueues)
+                    RunEstimatePass();
+                else
+                    UpdateSizeTotals(force: true);
+
+                dgvEncodeQueue.ClearSelection();
+                foreach (var row in addedRows)
+                    row.Selected = true;
+            }
+
+            string message = $"Checked {DateTime.Now:t}: added {addedRows.Count:N0} new file(s) to the encode queue.";
+            ShowWatchStatus(message);
+
+            // AddEncodeItemIfNotPresent appends directly to the live queue while an
+            // encode is running. Otherwise start the normal button path now.
+            if (!_encodingActive)
+                AutoStartEncodeIfPossible();
+        }
+
+        private void ShowWatchStatus(string status)
+        {
             Ui(() =>
             {
-                btnMonStart.Enabled = false;
-                btnMonStop.Enabled = true;
-                lblMonStatus.Text = $"Monitoring \"{root}\" every {mins} minute(s)…";
-                toolStripStatusLabel1.Text = "Monitoring started";
+                _lastWatchStatus = status;
+                UpdateWatchCountdownDisplay();
+                if (lblMonStatus != null && !lblMonStatus.IsDisposed)
+                    lblMonStatus.Text = status;
+                if (toolStripStatusLabel1 != null)
+                    toolStripStatusLabel1.Text = status;
+                if (btnMonStart != null)
+                    btnMonStart.Enabled = !_monitoring;
+                if (btnMonStop != null)
+                    btnMonStop.Enabled = _monitoring;
             });
         }
 
-        // Robustly start encoding from anywhere (Monitor, context menu, etc.)
-        private void AutoStartEncodeIfPossible()
+        private void UpdateWatchCountdownDisplay()
         {
-            // Don't double-start
-            if (_encodingActive) return;
+            if (lblWatchFolderStatus == null || lblWatchFolderStatus.IsDisposed)
+                return;
 
-            // Must run on UI thread
-            if (InvokeRequired) { Ui(AutoStartEncodeIfPossible); return; }
+            lblWatchFolderStatus.Visible = !_config.HideWatchFolderStatusText;
+            if (_config.HideWatchFolderStatusText)
+                return;
 
-            try
+            if (!_monitoring)
             {
-                // Call the same logic your Start button uses
-                btnStartEncode_Click(btnStartEncode, EventArgs.Empty);
+                lblWatchFolderStatus.Text = _lastWatchStatus;
+                return;
             }
-            catch
+
+            if (_watchCheckInProgress)
             {
-                // Fallback: try simulated click (in case handler changes later)
-                try { btnStartEncode.PerformClick(); } catch { /* swallow */ }
+                lblWatchFolderStatus.Text = "Checking for new files…";
+                return;
             }
+
+            long nextTicks = Interlocked.Read(ref _nextMonitorScanUtcTicks);
+            if (nextTicks <= 0)
+            {
+                lblWatchFolderStatus.Text = _lastWatchStatus;
+                return;
+            }
+
+            TimeSpan remaining = new DateTime(nextTicks, DateTimeKind.Utc) - DateTime.UtcNow;
+            if (remaining < TimeSpan.Zero)
+                remaining = TimeSpan.Zero;
+
+            lblWatchFolderStatus.Text =
+                $"{_lastWatchStatus} Next check in {FormatWatchCountdown(remaining)}.";
         }
 
-        // Enumerate files that PASS all Monitor filters and are not yet in _monSeen
-        private List<string> EnumerateEligibleNewFiles(
-            string root,
-            bool includeSubfolders,
-            bool respectCodecFilters,
-            long minSizeBytes,
-            int stabilizeSeconds)
+        private static string FormatWatchCountdown(TimeSpan remaining)
         {
-            var list = new List<string>();
-            var searchOpt = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var allowedExts = GetAllowedExtensionsFromUi();
-
-            foreach (var path in Directory.EnumerateFiles(root, "*.*", searchOpt))
-            {
-                // extension filter
-                string ext = Path.GetExtension(path);
-                if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext))
-                    continue;
-
-                // already seen? skip
-                if (_monSeen.Contains(path))
-                    continue;
-
-                // size threshold
-                var fi = new FileInfo(path);
-                if (fi.Exists && fi.Length < minSizeBytes)
-                    continue;
-
-                // stabilization window
-                if (stabilizeSeconds > 0)
-                {
-                    var age = DateTime.UtcNow - fi.LastWriteTimeUtc;
-                    if (age < TimeSpan.FromSeconds(stabilizeSeconds))
-                        continue;
-                }
-
-                // optional codec filter (same logic as your Encode scan)
-                if (respectCodecFilters)
-                {
-                    string codec = string.Empty;
-                    try { codec = GetVideoCodec(path); } catch { /* ignore probe errors */ }
-
-                    if (!PassesCodecFilter(codec))
-                        continue;
-                }
-
-                list.Add(path);
-            }
-
-            return list;
-        }
-
-        // Enqueue a batch and update UI
-        private void EnqueueBatch(IReadOnlyList<string> files)
-        {
-            int enq = 0;
-            foreach (var f in files)
-            {
-                if (AddEncodeItemIfNotPresent(f))
-                {
-                    enq++;
-                    AppendRecentDiscovery(f); // UI control
-                }
-            }
-
-            if (enq > 0)
-            {
-                Ui(() =>
-                {
-                    lblMonStatus.Text = $"Enqueued {enq} file(s).";
-                    toolStripStatusLabel1.Text = $"Enqueued {enq} file(s) from initial scan";
-                    dgvEncodeQueue.Refresh();
-                });
-            }
+            int totalHours = (int)remaining.TotalHours;
+            return totalHours > 0
+                ? $"{totalHours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}"
+                : $"{remaining.Minutes:00}:{remaining.Seconds:00}";
         }
 
         private void AppendRecentDiscovery(string path)
@@ -239,225 +573,130 @@ namespace Encode
             if (listMonLastFound == null || listMonLastFound.IsDisposed)
                 return;
 
-            if (listMonLastFound.Items.Count > 200)
+            if (listMonLastFound.Items.Count >= 200)
                 listMonLastFound.Items.RemoveAt(0);
 
             listMonLastFound.Items.Add(path);
         }
 
-        private void btnMonStop_Click(object? sender, EventArgs e)
+        private void AutoStartEncodeIfPossible()
         {
-            StopMonitoring("Monitoring stopped.");
-        }
-
-        private void btnMonScanNow_Click(object? sender, EventArgs e)
-        {
-            if (!_monitoring)
-            {
-                // allow ad-hoc single scan even if not started
-                MonitorScanOnce();
-            }
-            else
-            {
-                // kick an extra scan while monitoring
-                MonitorTickSafe();
-            }
-        }
-
-        // StopMonitoring (UI toggles via Ui(...))
-        private void StopMonitoring(string status)
-        {
-            lock (_monLock)
-            {
-                // stop timer
-                _monitorTimer?.Dispose();
-                _monitorTimer = null;
-
-                // ensure watcher is disposed and flags reset
-                _monWatcher?.Dispose();
-                _monWatcher = null;
-                _monNeedsScan = false;
-
-                _monitoring = false;
-            }
-
-            // ── UI toggles: marshal to UI thread
-            Ui(() =>
-            {
-                btnMonStart.Enabled = true;
-                btnMonStop.Enabled = false;
-                lblMonStatus.Text = status;
-                toolStripStatusLabel1.Text = "Ready";
-            });
-        }
-
-        private void MonitorTickSafe()
-        {
-            try
-            {
-                // If FSW fired, swallow the flag and scan immediately
-                if (_monNeedsScan)
-                {
-                    _monNeedsScan = false;
-                    MonitorScanOnce();
-                }
-
-                // Then do the normal periodic scan
-                MonitorScanOnce();
-            }
-            catch (Exception ex)
-            {
-                Ui(() => lblMonStatus.Text = $"Monitor error: {ex.Message}");
-            }
-        }
-
-        private void MonitorScanOnce()
-        {
-            string root = cmbMonFolder.Text;
-            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            if (_encodingActive)
                 return;
 
-            _activityIndicator?.StartActivity(UiActivity.FolderScan);
-            try
+            if (InvokeRequired)
             {
-                var searchOpt = chkMonIncludeSubfolders.Checked
-                    ? SearchOption.AllDirectories
-                    : SearchOption.TopDirectoryOnly;
-
-                HashSet<string> allowedExts = GetAllowedExtensionsFromUi();
-                bool respectCodecFilters = chkMonUseEncodeFilters.Checked;
-
-                long minBytes = (long)nudMonMinSizeMb.Value * 1024L * 1024L;
-                int stabilizeSec = (int)nudMonStabilizeSec.Value;
-
-                var newFiles = new List<string>();
-
-                foreach (var path in Directory.EnumerateFiles(root, "*.*", searchOpt))
-                {
-                    // ext filter
-                    string ext = Path.GetExtension(path);
-                    if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext))
-                        continue;
-
-                    // already seen? skip
-                    if (_monSeen.Contains(path))
-                        continue;
-
-                    // size threshold
-                    var fi = new FileInfo(path);
-                    if (fi.Exists && fi.Length < minBytes)
-                        continue;
-
-                    // stabilization window
-                    if (stabilizeSec > 0)
-                    {
-                        var age = DateTime.UtcNow - fi.LastWriteTimeUtc;
-                        if (age < TimeSpan.FromSeconds(stabilizeSec))
-                            continue;
-                    }
-
-                    // optional codec filter (same logic as your Encode scan)
-                    if (respectCodecFilters)
-                    {
-                        string codec = string.Empty;
-                        try { codec = GetVideoCodec(path); } catch { /* ignore probe errors */ }
-
-                        if (!PassesCodecFilter(codec))
-                        {
-                            _monSeen.Add(path); // don’t keep re-checking filtered out files
-                            continue;
-                        }
-                    }
-
-                    // passed all checks; mark seen and queue locally
-                    _monSeen.Add(path);
-                    newFiles.Add(path);
-                }
-
-                if (newFiles.Count == 0)
-                    return;
-
-                // Enqueue to existing Encode queue
-                Ui(() =>
-                {
-                    int enq = 0;
-                    foreach (var f in newFiles)
-                    {
-                        if (AddEncodeItemIfNotPresent(f))
-                        {
-                            enq++;
-                            AppendRecentDiscovery(f);
-                        }
-                    }
-
-                    if (enq > 0)
-                    {
-                        lblMonStatus.Text = $"Found {enq} new file(s).";
-                        toolStripStatusLabel1.Text = $"Enqueued {enq} new file(s) from Monitor";
-                        SafeRefreshEstimates();
-
-                        dgvEncodeQueue.SuspendLayout();
-                        try
-                        {
-                            dgvEncodeQueue.ClearSelection();
-                            foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
-                                row.Selected = true;
-                        }
-                        finally
-                        {
-                            dgvEncodeQueue.ResumeLayout();
-                            dgvEncodeQueue.Refresh();
-                        }
-
-                        if (chkMonAutoStart.Checked)
-                            AutoStartEncodeIfPossible();
-                    }
-                });
+                Ui(AutoStartEncodeIfPossible);
+                return;
             }
-            finally
+
+            btnStartEncode_Click(btnStartEncode, EventArgs.Empty);
+        }
+
+        // Compatibility handlers for the older, hidden Monitor panel. They route
+        // through the same persisted watch-folder implementation.
+        private void btnBrowseMonFolder_Click(object? sender, EventArgs e)
+        {
+            using var dlg = new FolderBrowserDialog
             {
-                _activityIndicator?.StopActivity(UiActivity.FolderScan);
-            }
+                SelectedPath = Directory.Exists(_config.WatchFolderPath)
+                    ? _config.WatchFolderPath
+                    : Application.StartupPath
+            };
+            if (dlg.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            cmbMonFolder.Text = dlg.SelectedPath;
+            _config.WatchFolderPath = dlg.SelectedPath;
+            _config.Save(_configPath);
         }
 
-        private void SeedSeen(string root, bool includeSubfolders)
+        private void btnMonStart_Click(object? sender, EventArgs e)
         {
-            var opt = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-
-            HashSet<string> allowedExts = GetAllowedExtensionsFromUi();
-            foreach (var path in Directory.EnumerateFiles(root, "*.*", opt))
-            {
-                if (allowedExts.Contains(Path.GetExtension(path)))
-                    _monSeen.Add(path);
-            }
+            if (Directory.Exists(cmbMonFolder.Text))
+                _config.WatchFolderPath = cmbMonFolder.Text.Trim();
+            _config.WatchFolderIntervalMinutes = (int)nudMonMinutes.Value;
+            _config.WatchFolderIncludeSubfolders = chkMonIncludeSubfolders.Checked;
+            _config.WatchFolderStabilizationSeconds = (int)nudMonStabilizeSec.Value;
+            _config.WatchFolderEnabled = true;
+            _config.Save(_configPath);
+            SetWatchFolderCheckbox(true);
+            PopulateLastUsedWatchOutputFolder();
+            StartMonitoringFromConfig();
         }
 
-        private HashSet<string> GetAllowedExtensionsFromUi()
+        private void btnMonStop_Click(object? sender, EventArgs e)
         {
-            return new HashSet<string>(
-                checkedListExt.CheckedItems.Cast<string>(),
-                StringComparer.OrdinalIgnoreCase
-            );
+            _config.WatchFolderEnabled = false;
+            _config.Save(_configPath);
+            SetWatchFolderCheckbox(false);
+            StopMonitoring("Folder watching is off.");
         }
 
-        private string GetVideoCodec(string path)
-        {
-            return _mediaInfoService.GetVideoCodec(path);
-        }
+        private void btnMonScanNow_Click(object? sender, EventArgs e) =>
+            _ = System.Threading.Tasks.Task.Run(MonitorTickSafe);
+
+        private string GetVideoCodec(string path) => _mediaInfoService.GetVideoCodec(path);
 
         private bool PassesCodecFilter(string codec)
         {
-            bool allowH264 = chkFilterX264.Checked;
-            bool allowHevc = chkFilterX265.Checked;
+            return PassesCodecFilter(
+                codec,
+                chkFilterX264.Checked,
+                chkFilterX265.Checked,
+                chkFilterOtherCodecs.Checked);
+        }
 
-            if (!allowH264 && !allowHevc)
-                return true;
+        private static bool PassesCodecFilter(
+            string codec,
+            bool allowH264,
+            bool allowHevc,
+            bool allowOther)
+        {
+            if (!allowH264 && !allowHevc && !allowOther)
+                return false;
+            if (IsH264Codec(codec))
+                return allowH264;
+            if (IsH265Codec(codec))
+                return allowHevc;
+            return allowOther;
+        }
 
-            bool isH264 = string.Equals(codec, "h264", StringComparison.OrdinalIgnoreCase);
-            bool isHevc = string.Equals(codec, "hevc", StringComparison.OrdinalIgnoreCase) ||
-                          string.Equals(codec, "h265", StringComparison.OrdinalIgnoreCase);
+        private static bool IsH264Codec(string codec) =>
+            string.Equals(codec, "h264", StringComparison.OrdinalIgnoreCase);
 
-            return (isH264 && allowH264) || (isHevc && allowHevc);
+        private static bool IsH265Codec(string codec) =>
+            string.Equals(codec, "hevc", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(codec, "h265", StringComparison.OrdinalIgnoreCase);
+
+        private void UpdateCodecFilterCounts(int h264Count, int h265Count, int otherCount)
+        {
+            _h264FileCount = h264Count;
+            _h265FileCount = h265Count;
+            _otherCodecFileCount = otherCount;
+            chkFilterX264.Text = $"Show x264 / h.264 ({h264Count:N0})";
+            chkFilterX265.Text = $"Show x265 / h.265 ({h265Count:N0})";
+            chkFilterOtherCodecs.Text = $"Show other codecs ({otherCount:N0})";
+        }
+
+        private void ResetCodecFilterCounts()
+        {
+            _codecCountedPaths.Clear();
+            UpdateCodecFilterCounts(0, 0, 0);
+        }
+
+        private void TrackCodecFilterCount(string path, string? codec)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !_codecCountedPaths.Add(path))
+                return;
+
+            codec ??= string.Empty;
+            if (IsH264Codec(codec))
+                UpdateCodecFilterCounts(_h264FileCount + 1, _h265FileCount, _otherCodecFileCount);
+            else if (IsH265Codec(codec))
+                UpdateCodecFilterCounts(_h264FileCount, _h265FileCount + 1, _otherCodecFileCount);
+            else
+                UpdateCodecFilterCounts(_h264FileCount, _h265FileCount, _otherCodecFileCount + 1);
         }
     }
 }

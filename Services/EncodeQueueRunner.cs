@@ -25,7 +25,9 @@ namespace Encode.Services
             int maxParallel,
             Func<bool> isPaused,
             Func<bool> isCancelled,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            object? syncRoot = null,
+            Func<bool>? hasPendingItems = null)
         {
             if (items == null) throw new ArgumentNullException(nameof(items));
             if (worker == null) throw new ArgumentNullException(nameof(worker));
@@ -64,12 +66,11 @@ namespace Encode.Services
 
                 // Fill slots up to maxParallel using the *current* items.Count
                 while (running.Count < maxParallel &&
-                       jobIndex < items.Count &&
+                       jobIndex < GetCount(items, syncRoot) &&
                        !isCancelled() &&
                        !cancellationToken.IsCancellationRequested)
                 {
-                    var item = items[jobIndex];
-                    jobIndex++;
+                    var item = GetItemAndAdvance(items, syncRoot, ref jobIndex);
 
                     // Start worker WITHOUT awaiting it → this is where we get parallelism.
                     // Guard against synchronous exceptions so they are treated like faulted tasks.
@@ -90,8 +91,23 @@ namespace Encode.Services
                 if (running.Count == 0)
                 {
                     // And there is nothing undispatched → we are done
-                    if (jobIndex >= items.Count)
+                    if (jobIndex >= GetCount(items, syncRoot))
+                    {
+                        if (hasPendingItems?.Invoke() == true)
+                        {
+                            try
+                            {
+                                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+
                         break;
+                    }
 
                     // Otherwise, new items have been appended; loop again to schedule them
                     continue;
@@ -118,11 +134,9 @@ namespace Encode.Services
                 }
             }
 
-            // If we didn't get a hard cancel, wait for any remaining tasks to complete.
-            // This preserves normal completion semantics while still allowing fast exit on cancel.
-            if (!isCancelled() &&
-                !cancellationToken.IsCancellationRequested &&
-                running.Count > 0)
+            // Wait for active workers to finish their own cleanup paths. Cancellation stops
+            // new dispatches, but launched FFmpeg processes still need a chance to quit safely.
+            if (running.Count > 0)
             {
                 try
                 {
@@ -132,6 +146,34 @@ namespace Encode.Services
                 {
                     // per-job failures already handled in worker
                 }
+            }
+        }
+
+        private int GetCount<T>(IList<T> items, object? syncRoot)
+        {
+            if (syncRoot == null)
+                return items.Count;
+
+            lock (syncRoot)
+            {
+                return items.Count;
+            }
+        }
+
+        private T GetItemAndAdvance<T>(IList<T> items, object? syncRoot, ref int jobIndex)
+        {
+            if (syncRoot == null)
+            {
+                var item = items[jobIndex];
+                jobIndex++;
+                return item;
+            }
+
+            lock (syncRoot)
+            {
+                var item = items[jobIndex];
+                jobIndex++;
+                return item;
             }
         }
     }

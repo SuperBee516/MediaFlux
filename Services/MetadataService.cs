@@ -26,7 +26,9 @@ namespace Encode.Services
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                ErrorDialog = false,
+                WindowStyle = ProcessWindowStyle.Hidden
             };
 
             using var p = new Process { StartInfo = psi };

@@ -6,17 +6,15 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
-    <ApplicationIcon>compress.ico</ApplicationIcon>
-    <PackageIcon>compress128.png</PackageIcon>
+    <ApplicationIcon>images\goencode_icn.ico</ApplicationIcon>
+    <PackageIcon>goencode_icn128.png</PackageIcon>
     <AssemblyVersion></AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="compress.ico" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="C:\Users\ghirschberg\Pictures\compress128.png">
+    <Content Include="images\goencode_icn.ico" />
+    <None Update="compress128.png" Pack="True" PackagePath="\" />
+    <None Update="images\goencode_icn128.png">
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>
@@ -28,7 +26,6 @@
 
   <ItemGroup>
     <Folder Include="Helpers\" />
-    <Folder Include="images\" />
   </ItemGroup>
 
 </Project>

@@ -14,11 +14,13 @@ namespace Encode.Services
     public class AudioService
     {
         private readonly string _appPath;
+        private readonly string _ffmpegPath;
         private readonly Action<string> _progress;
 
-        public AudioService(string appPath, Action<string> progressCallback)
+        public AudioService(string appPath, Action<string> progressCallback, string? ffmpegPath = null)
         {
             _appPath = appPath ?? throw new ArgumentNullException(nameof(appPath));
+            _ffmpegPath = FfmpegToolResolver.Resolve(_appPath, ffmpegPath).FfmpegPath;
             _progress = progressCallback ?? throw new ArgumentNullException(nameof(progressCallback));
         }
 
@@ -128,12 +130,14 @@ namespace Encode.Services
 
             var psi = new ProcessStartInfo
             {
-                FileName = Path.Combine(_appPath, "ffmpeg.exe"),
+                FileName = _ffmpegPath,
                 Arguments = args,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                ErrorDialog = false,
+                WindowStyle = ProcessWindowStyle.Hidden
             };
 
             var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
@@ -157,12 +161,19 @@ namespace Encode.Services
                 {
                     if (proc.ExitCode != 0)
                     {
-                        string logName = $"{name}_audio_error_{DateTime.Now:yyyyMMdd_HHmmss}.log";
-                        string logPath = Path.Combine(outFolder, logName);
-                        try { File.WriteAllText(logPath, stderrBuilder.ToString()); } catch { }
+                        string logPath = ErrorLogService.Append(
+                            _appPath,
+                            "FFmpeg audio job failed",
+                            job.InputPath,
+                            details:
+                            $"Output     : {outputPath}{Environment.NewLine}" +
+                            $"Exit Code  : {proc.ExitCode}{Environment.NewLine}" +
+                            $"Arguments  : {args}{Environment.NewLine}{Environment.NewLine}" +
+                            "FFmpeg Output:" + Environment.NewLine +
+                            stderrBuilder);
 
                         tcs.TrySetException(new InvalidOperationException(
-                            $"ffmpeg exited with code {proc.ExitCode}. See log: {logName}"
+                            $"ffmpeg exited with code {proc.ExitCode}. See central log: {logPath}"
                         ));
                     }
                     else
@@ -364,13 +375,15 @@ namespace Encode.Services
 
             var psi = new ProcessStartInfo
             {
-                FileName = Path.Combine(_appPath, "ffmpeg.exe"),
+                FileName = _ffmpegPath,
                 Arguments = $"-hide_banner -i \"{job.InputPath}\" " +
                             "-af loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json -f null -",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                ErrorDialog = false,
+                WindowStyle = ProcessWindowStyle.Hidden
             };
 
             var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
