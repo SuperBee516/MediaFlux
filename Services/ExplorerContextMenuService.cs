@@ -135,12 +135,12 @@ namespace MediaFlux.Services
             using var key = Registry.CurrentUser.CreateSubKey(keyPath, writable: true)
                 ?? throw new InvalidOperationException("Windows could not create the Explorer context-menu registration.");
             key.SetValue(null, label);
-            key.SetValue("Icon", $"\"{Application.ExecutablePath}\"");
+            key.SetValue("Icon", $"\"{AppPaths.LauncherExecutablePath}\"");
             key.SetValue("MultiSelectModel", "Player");
 
             using var command = key.CreateSubKey("command", writable: true)
                 ?? throw new InvalidOperationException("Windows could not create the Explorer context-menu command.");
-            command.SetValue(null, $"\"{Application.ExecutablePath}\" {argument} \"%1\"");
+            command.SetValue(null, $"\"{AppPaths.LauncherExecutablePath}\" {argument} \"%1\"");
         }
 
         private static bool KeyPointsToCurrentExecutable(string keyPath, string argument)
@@ -148,7 +148,7 @@ namespace MediaFlux.Services
             using var key = Registry.CurrentUser.OpenSubKey(keyPath + @"\command");
             string? command = key?.GetValue(null) as string;
             return command != null &&
-                   command.Contains(Application.ExecutablePath, StringComparison.OrdinalIgnoreCase) &&
+                   command.Contains(AppPaths.LauncherExecutablePath, StringComparison.OrdinalIgnoreCase) &&
                    command.Contains(argument, StringComparison.OrdinalIgnoreCase);
         }
 

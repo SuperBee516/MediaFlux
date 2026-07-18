@@ -34,7 +34,8 @@ namespace MediaFlux.Services
             MediaInfoService mediaInfoService,
             string? baseDirectory = null,
             string? ffmpegPath = null,
-            bool persistentCacheEnabled = true)
+            bool persistentCacheEnabled = true,
+            string? dataDirectory = null)
         {
             _mediaInfoService = mediaInfoService;
             var root = string.IsNullOrWhiteSpace(baseDirectory)
@@ -44,7 +45,10 @@ namespace MediaFlux.Services
             _persistentCacheEnabled = persistentCacheEnabled;
             if (_persistentCacheEnabled)
             {
-                _cachePath = Path.Combine(root, "data", "duplicate-signature-cache.json");
+                string cacheRoot = string.IsNullOrWhiteSpace(dataDirectory)
+                    ? Path.Combine(root, "data")
+                    : dataDirectory;
+                _cachePath = Path.Combine(cacheRoot, "duplicate-signature-cache.json");
                 LoadPersistentCache();
             }
         }

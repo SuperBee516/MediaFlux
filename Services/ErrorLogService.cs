@@ -11,11 +11,7 @@ namespace MediaFlux.Services
 
         public static string GetDefaultLogPath(string applicationDirectory)
         {
-            var appPath = string.IsNullOrWhiteSpace(applicationDirectory)
-                ? AppDomain.CurrentDomain.BaseDirectory
-                : applicationDirectory;
-
-            return Path.Combine(appPath, "data", "logs", "encode-errors.log");
+            return Path.Combine(AppPaths.DataDirectory, "logs", "mediaflux-errors.log");
         }
 
         public static string Append(
