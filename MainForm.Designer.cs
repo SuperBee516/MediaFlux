@@ -1523,7 +1523,7 @@ namespace MediaFlux
 
             MainMenuStrip = menuStrip1;
 
-            Text = "MediaFlux v0.10.6.1";
+            Text = "MediaFlux";
             ClientSize = new Size(800, 760);
         }
     }

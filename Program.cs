@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Runtime.Versioning;
 using MediaFlux.Services;
+using Velopack;
 
 [assembly: SupportedOSPlatform("windows")]
 
@@ -15,6 +16,22 @@ namespace MediaFlux
         [STAThread]
         static void Main(string[] args)
         {
+            VelopackApp.Build().Run();
+
+            try
+            {
+                AppPaths.Initialize();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "MediaFlux could not prepare its application-data folder and cannot start safely.\r\n\r\n" + ex.Message,
+                    "MediaFlux startup failed",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                return;
+            }
+
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += Application_ThreadException;
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
@@ -73,13 +90,13 @@ namespace MediaFlux
 
         private static void Application_ThreadException(object sender, ThreadExceptionEventArgs e)
         {
-            ErrorLogService.Append(Application.StartupPath, "Unhandled UI thread exception", exception: e.Exception);
+            ErrorLogService.Append(AppPaths.UserDataDirectory, "Unhandled UI thread exception", exception: e.Exception);
         }
 
         private static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
             ErrorLogService.Append(
-                Application.StartupPath,
+                AppPaths.UserDataDirectory,
                 "Unhandled application exception",
                 exception: e.ExceptionObject as Exception,
                 details: e.ExceptionObject?.ToString());
@@ -87,7 +104,7 @@ namespace MediaFlux
 
         private static void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
         {
-            ErrorLogService.Append(Application.StartupPath, "Unobserved task exception", exception: e.Exception);
+            ErrorLogService.Append(AppPaths.UserDataDirectory, "Unobserved task exception", exception: e.Exception);
             e.SetObserved();
         }
     }

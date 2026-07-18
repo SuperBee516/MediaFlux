@@ -18,7 +18,7 @@ The application is intended for power users who want a graphical orchestration l
 - Audio extraction/conversion with loudness normalization and optional RNNoise denoising
 - Persistent job history, requeue actions, diagnostics, and centralized error logging
 - Watch-folder automation, Windows Explorer context-menu integration, Discord completion notifications, and compact mode
-- Program backup/restore and install-folder update support
+- User-data backup/restore and GitHub Releases-based application updates
 
 ## Video queue
 
@@ -106,8 +106,14 @@ MediaFlux can send a queue-completion message through a Discord webhook. The mes
 - History rows can be inspected and requeued.
 - FFmpeg failures and unexpected application errors are written to the central error log.
 - The error log is accessible from the application menu.
-- Optional program backups can run before updates.
+- Optional user-data backups can run before updates.
 - Manual backup and restore actions are available in Settings.
+
+## Installation and updates
+
+Public releases use a self-contained Windows x64 installer, so end users do not need to install .NET separately. Install MediaFlux with `MediaFlux-Setup.exe` from the GitHub Releases page. Installed copies can check the stable release channel through **Help > Check for Updates** and will display release notes before downloading and restarting.
+
+Legacy portable ZIP copies must run the installer once before automatic updates are available. Release and maintainer instructions are documented in [`docs/releasing.md`](docs/releasing.md).
 
 ## Requirements
 
@@ -141,9 +147,9 @@ For normal use, place FFmpeg and FFprobe in one of the supported locations or co
 
 ## Configuration and application data
 
-MediaFlux stores its configuration and supporting data as JSON/JSONL files near the installed application. Depending on the enabled features, this includes settings, supported extensions, media-information caches, duplicate-signature caches, history, and logs.
+MediaFlux stores configuration and supporting data under `%LocalAppData%\MediaFlux\UserData`. Depending on the enabled features, this includes settings, supported extensions, media-information caches, duplicate-signature caches, history, and logs.
 
-When replacing or updating an existing installation, preserve these local data files. The built-in updater and backup workflow is designed to retain them.
+On first launch after upgrading from a legacy portable build, existing `config.json` and `data` files beside the executable are copied to the new location automatically. The built-in updater replaces application files without replacing user data.
 
 ## Project structure
 

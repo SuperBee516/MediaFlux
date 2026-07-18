@@ -218,9 +218,9 @@
             this.lblUpdateFolder.AutoSize = true;
             this.lblUpdateFolder.Location = new System.Drawing.Point(12, 15);
             this.lblUpdateFolder.Name = "lblUpdateFolder";
-            this.lblUpdateFolder.Size = new System.Drawing.Size(116, 15);
+            this.lblUpdateFolder.Size = new System.Drawing.Size(248, 15);
             this.lblUpdateFolder.TabIndex = 0;
-            this.lblUpdateFolder.Text = "Update Folder Path:";
+            this.lblUpdateFolder.Text = "Updates are delivered through GitHub Releases:";
             // 
             // txtUpdateFolder
             // 
@@ -233,9 +233,9 @@
             // 
             this.btnBrowseUpdate.Location = new System.Drawing.Point(320, 34);
             this.btnBrowseUpdate.Name = "btnBrowseUpdate";
-            this.btnBrowseUpdate.Size = new System.Drawing.Size(75, 23);
+            this.btnBrowseUpdate.Size = new System.Drawing.Size(95, 23);
             this.btnBrowseUpdate.TabIndex = 2;
-            this.btnBrowseUpdate.Text = "Browse…";
+            this.btnBrowseUpdate.Text = "View Releases";
             this.btnBrowseUpdate.UseVisualStyleBackColor = true;
             this.btnBrowseUpdate.Click += new System.EventHandler(this.btnBrowseUpdate_Click);
             // 
@@ -971,7 +971,7 @@
             this.grpBackupRestore.Size = new System.Drawing.Size(390, 250);
             this.grpBackupRestore.TabIndex = 23;
             this.grpBackupRestore.TabStop = false;
-            this.grpBackupRestore.Text = "Program Backup and Restore";
+            this.grpBackupRestore.Text = "User Data Backup and Restore";
             // 
             // chkBackupBeforeUpdates
             // 
@@ -1044,7 +1044,7 @@
             this.lblBackupHint.Location = new System.Drawing.Point(15, 193);
             this.lblBackupHint.Name = "lblBackupHint";
             this.lblBackupHint.Size = new System.Drawing.Size(355, 42);
-            this.lblBackupHint.Text = "Backups are complete program snapshots. Restoring closes Encode, replaces the installed files, and restarts it.";
+            this.lblBackupHint.Text = "Backups contain settings, history, presets, caches, and logs. Restoring closes MediaFlux, replaces its user data, and restarts it.";
             // 
             // btnOK
             // 

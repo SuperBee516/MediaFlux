@@ -10,13 +10,17 @@
     <RootNamespace>MediaFlux</RootNamespace>
     <AssemblyName>MediaFlux</AssemblyName>
 
-    <ApplicationIcon>images\goencode_icn.ico</ApplicationIcon>
+    <ApplicationIcon>images\mediaflux_icn.ico</ApplicationIcon>
     <PackageIcon>goencode_icn128.png</PackageIcon>
-    <AssemblyVersion></AssemblyVersion>
+    <Version>0.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="images\goencode_icn.ico" />
+    <Content Include="images\mediaflux_icn.ico" />
+    <Content Include="gear-idle.png" Link="images\gear-idle.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="gear-wheel-animated.gif" Link="images\gear-wheel-animated.gif" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="folder-scan-animated.gif" Link="images\folder-scan-animated.gif" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="upscale-animated.gif" Link="images\upscale-animated.gif" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Update="compress128.png" Pack="True" PackagePath="\" />
     <None Update="images\goencode_icn128.png">
       <Pack>True</Pack>
@@ -26,6 +30,7 @@
 
   <ItemGroup>
     <PackageReference Include="taglib-sharp-netstandard2.0" Version="2.1.0" />
+    <PackageReference Include="Velopack" Version="1.2.0" />
   </ItemGroup>
 
   <ItemGroup>

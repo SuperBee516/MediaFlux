@@ -2,6 +2,7 @@
 using MediaFlux.Services;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -45,7 +46,8 @@ namespace MediaFlux
             _defaultVideoExts = (defaultVideoExts ?? Array.Empty<string>()).ToList();
             _currentOutputFolder = currentOutputFolder?.Trim() ?? string.Empty;
 
-            txtUpdateFolder.Text = cfg.UpdateFolderPath;
+            txtUpdateFolder.Text = "https://github.com/SuperBee516/MediaFlux/releases";
+            txtUpdateFolder.ReadOnly = true;
             chkBackupBeforeUpdates.Checked = cfg.AutomaticallyBackupBeforeUpdates;
             txtBackupFolder.Text = BackupManager.ResolveBackupFolder(cfg.BackupFolderPath);
             nudBackupsToKeep.Value = Math.Clamp(cfg.BackupsToKeep, 1, 100);
@@ -104,9 +106,23 @@ namespace MediaFlux
 
         private void btnBrowseUpdate_Click(object sender, EventArgs e)
         {
-            using var dlg = new FolderBrowserDialog { SelectedPath = Config.UpdateFolderPath };
-            if (dlg.ShowDialog() == DialogResult.OK)
-                txtUpdateFolder.Text = dlg.SelectedPath;
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = txtUpdateFolder.Text,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    this,
+                    $"MediaFlux could not open the GitHub Releases page.\n\n{ex.Message}",
+                    "Open GitHub Releases",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
         }
 
         private void btnBrowseBackupFolder_Click(object sender, EventArgs e)
@@ -128,10 +144,10 @@ namespace MediaFlux
             try
             {
                 string archive = BackupManager.CreateBackup(
-                    Application.StartupPath,
+                    AppPaths.UserDataDirectory,
                     txtBackupFolder.Text,
                     (int)nudBackupsToKeep.Value);
-                MessageBox.Show(this, $"Backup completed successfully.\n\n{archive}", "Program backup",
+                MessageBox.Show(this, $"Backup completed successfully.\n\n{archive}", "User data backup",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
@@ -150,8 +166,8 @@ namespace MediaFlux
         {
             using var dlg = new OpenFileDialog
             {
-                Title = "Select an Encode backup to restore",
-                Filter = "Encode backups (Encode_Backup_*.zip)|Encode_Backup_*.zip|ZIP archives (*.zip)|*.zip",
+                Title = "Select a MediaFlux backup to restore",
+                Filter = "MediaFlux backups (*.zip)|*.zip|ZIP archives (*.zip)|*.zip",
                 CheckFileExists = true,
                 InitialDirectory = Directory.Exists(txtBackupFolder.Text)
                     ? txtBackupFolder.Text
@@ -161,8 +177,8 @@ namespace MediaFlux
                 return;
 
             if (MessageBox.Show(this,
-                    "Encode will close, restore all program files from the selected backup, and restart. Continue?",
-                    "Restore program backup",
+                    "MediaFlux will close, restore the selected user-data backup, and restart. Continue?",
+                    "Restore user data backup",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Warning,
                     MessageBoxDefaultButton.Button2) != DialogResult.Yes)
@@ -172,8 +188,8 @@ namespace MediaFlux
             {
                 BackupManager.StartRestoreAndExit(
                     dlg.FileName,
-                    Application.StartupPath,
-                    Path.GetFileName(Application.ExecutablePath),
+                    AppPaths.UserDataDirectory,
+                    Application.ExecutablePath,
                     Environment.ProcessId);
             }
             catch (Exception ex)
@@ -306,7 +322,7 @@ namespace MediaFlux
             if (confirm != DialogResult.Yes)
                 return;
 
-            DuplicateDetectionService.ClearPersistentCache(AppDomain.CurrentDomain.BaseDirectory);
+            DuplicateDetectionService.ClearPersistentCache(AppPaths.UserDataDirectory);
             MessageBox.Show(this, "Duplicate signature cache cleared.", "Duplicate Cache",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -324,7 +340,7 @@ namespace MediaFlux
             if (confirm != DialogResult.Yes)
                 return;
 
-            var result = DuplicatePreviewCacheService.Clear(AppDomain.CurrentDomain.BaseDirectory);
+            var result = DuplicatePreviewCacheService.Clear(AppPaths.UserDataDirectory);
             MessageBox.Show(
                 this,
                 $"Duplicate preview cache cleared.{Environment.NewLine}{result.DeletedFiles:N0} file(s), {FormatBytes(result.FreedBytes)} removed.",
@@ -409,7 +425,6 @@ namespace MediaFlux
                 return;
             }
 
-            Config.UpdateFolderPath = txtUpdateFolder.Text.Trim();
             Config.AutomaticallyBackupBeforeUpdates = chkBackupBeforeUpdates.Checked;
             Config.BackupFolderPath = txtBackupFolder.Text.Trim();
             Config.BackupsToKeep = (int)nudBackupsToKeep.Value;

@@ -168,6 +168,7 @@ namespace MediaFlux
         public MainForm()
         {
             InitializeComponent();
+            Text = $"MediaFlux v{UpdateManager.CurrentVersion}";
 
 
             // Promote progressPanel to a global, bottom-docked panel shared by all modes
@@ -185,13 +186,13 @@ namespace MediaFlux
             InitializeEncodingSpinner();
 
             // load configuration before constructing FFmpeg-dependent services
-            _configPath = Path.Combine(Application.StartupPath, "config.json");
+            _configPath = AppPaths.ConfigFile;
             _config = Config.Load(_configPath);
 
             InitializeCompactModeControls();
 
             // supported extension list storage (managed via Settings)
-            _supportedVideoExtsPath = Path.Combine(Application.StartupPath, "data", "supported_video_extensions.json");
+            _supportedVideoExtsPath = Path.Combine(AppPaths.DataDirectory, "supported_video_extensions.json");
             RepairConfiguredExplorerIntegration();
 
             InitializeLargeQueueControls();
@@ -235,10 +236,10 @@ namespace MediaFlux
             }
 
             //History service init
-            var historyPath = Path.Combine(Application.StartupPath, "data", "history.json");
+            var historyPath = Path.Combine(AppPaths.DataDirectory, "history.json");
             _historyService = new HistoryService(historyPath);
             _presetService = new EncodingPresetService(
-                Path.Combine(Application.StartupPath, "data", "encoding_presets.json"));
+                Path.Combine(AppPaths.DataDirectory, "encoding_presets.json"));
 
             // Touch lblResolution so the field is considered "used" by the analyzer
             _ = lblResolution;
@@ -3170,29 +3171,31 @@ namespace MediaFlux
             _mediaInfoService?.FlushCache();
 
             _encodingService = new EncodingService(
-                Application.StartupPath,
+                AppPaths.InstallDirectory,
                 HandleFfmpegProgressLine,
                 null,
                 _config.FfmpegPath,
                 _config.FfprobePath);
 
             _audioService = new AudioService(
-                Application.StartupPath,
+                AppPaths.InstallDirectory,
                 HandleFfmpegProgressLine,
                 _config.FfmpegPath);
 
             _mediaInfoService = new MediaInfoService(
-                AppDomain.CurrentDomain.BaseDirectory,
+                AppPaths.InstallDirectory,
                 _config.FfprobePath,
-                _config.EnablePersistentMediaInfoCache);
+                _config.EnablePersistentMediaInfoCache,
+                AppPaths.DataDirectory);
 
             _sizeEstimateService = new SizeEstimateService(_mediaInfoService);
             _estimateService = new EstimateBackgroundService(_sizeEstimateService, _mediaInfoService);
             _duplicateDetectionService = new DuplicateDetectionService(
                 _mediaInfoService,
-                AppDomain.CurrentDomain.BaseDirectory,
+                AppPaths.InstallDirectory,
                 _config.FfmpegPath,
-                _config.EnableDuplicateSignatureCache);
+                _config.EnableDuplicateSignatureCache,
+                AppPaths.DataDirectory);
         }
 
         private void SettingsToolStripMenuItem_Click(object? sender, EventArgs e)
@@ -3216,8 +3219,22 @@ namespace MediaFlux
             }
         }
 
-        private void CheckForUpdatesToolStripMenuItem_Click(object? sender, EventArgs e)
+        private async void CheckForUpdatesToolStripMenuItem_Click(object? sender, EventArgs e)
         {
+            if (_encodingActive ||
+                _pendingEncodeImports > 0 ||
+                (_importCts != null && !_importCts.IsCancellationRequested) ||
+                (_duplicateScanCts != null && !_duplicateScanCts.IsCancellationRequested))
+            {
+                MessageBox.Show(
+                    this,
+                    "Finish or cancel the active MediaFlux work before installing an update.",
+                    "MediaFlux is busy",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
             SaveMainWindowBounds();
             SaveEncodeDropdownPreferences();
             if (_config.RememberCheckboxStates)
@@ -3229,14 +3246,21 @@ namespace MediaFlux
             }
             _config.Save(_configPath);
 
-            if (UpdateManager.CheckAndPrompt(
+            checkForUpdatesToolStripMenuItem.Enabled = false;
+            try
+            {
+                await UpdateManager.CheckAndPromptAsync(
                     this,
-                    _config.UpdateFolderPath,
                     _config.AutomaticallyBackupBeforeUpdates,
                     _config.BackupFolderPath,
                     _config.BackupsToKeep,
-                    reportStatus: ShowUpdateStatus))
-                return; // updater launched; app will exit from UpdateManager
+                    reportStatus: ShowUpdateStatus);
+            }
+            finally
+            {
+                if (!IsDisposed)
+                    checkForUpdatesToolStripMenuItem.Enabled = true;
+            }
         }
 
         private void ShowUpdateStatus(string status)

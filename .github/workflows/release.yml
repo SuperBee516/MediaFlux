@@ -1,0 +1,184 @@
+name: Build and Publish MediaFlux Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version to release, without the v prefix (for example 0.2.0 or 0.2.0-beta.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mediaflux-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      DOTNET_NOLOGO: true
+      VPK_VERSION: "1.2.0"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Determine release version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}".Trim()
+          }
+          else {
+            $version = "${{ github.ref_name }}".TrimStart('v')
+          }
+
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "'$version' is not a supported semantic version."
+          }
+
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Restore and build
+        shell: pwsh
+        run: |
+          dotnet restore .\MediaFlux.sln
+          dotnet build .\MediaFlux.sln -c Release --no-restore -p:Version=${{ steps.version.outputs.value }}
+
+      - name: Publish self-contained Windows build
+        shell: pwsh
+        run: |
+          dotnet publish .\MediaFlux.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:Version=${{ steps.version.outputs.value }} `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -o .\artifacts\publish
+
+      - name: Verify release payload
+        shell: pwsh
+        run: |
+          $required = @(
+            '.\artifacts\publish\MediaFlux.exe',
+            '.\artifacts\publish\images\gear-wheel-animated.gif',
+            '.\artifacts\publish\images\folder-scan-animated.gif',
+            '.\artifacts\publish\images\upscale-animated.gif'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required release file is missing: $path"
+            }
+          }
+
+          $forbidden = Get-ChildItem .\artifacts\publish -Recurse -File | Where-Object {
+            $_.Name -eq 'config.json' -or
+            $_.Extension -eq '.pdb' -or
+            $_.FullName -match '[\\/]data[\\/]'
+          }
+          if ($forbidden) {
+            throw "Release payload contains user data or debug files: $($forbidden.FullName -join ', ')"
+          }
+
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          $currentTag = "${{ steps.version.outputs.tag }}"
+          $previousTag = git tag --sort=-version:refname | Where-Object { $_ -ne $currentTag } | Select-Object -First 1
+          $range = if ($previousTag) { "$previousTag..HEAD" } else { "HEAD" }
+          $changes = @(git log $range --pretty=format:'- %s (`%h`)')
+          if ($changes.Count -eq 0) {
+            $changes = @('- Maintenance and reliability improvements.')
+          }
+
+          @(
+            "# MediaFlux ${{ steps.version.outputs.value }}",
+            "",
+            "## Changes",
+            ""
+          ) + $changes + @(
+            "",
+            "Full project history is available in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/CHANGELOG.md)."
+          ) | Set-Content .\artifacts\release-notes.md
+
+      - name: Install Velopack packaging tool
+        shell: pwsh
+        run: dotnet tool install vpk --tool-path .\.tools --version $env:VPK_VERSION
+
+      - name: Download previous Velopack release
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $arguments = @(
+            'download', 'github',
+            '--repoUrl', 'https://github.com/${{ github.repository }}',
+            '--token', '${{ secrets.GITHUB_TOKEN }}',
+            '--outputDir', '.\artifacts\releases'
+          )
+          if ('${{ steps.version.outputs.prerelease }}' -eq 'true') {
+            $arguments += '--pre'
+          }
+          & .\.tools\vpk.exe @arguments
+
+      - name: Package installer and update assets
+        shell: pwsh
+        run: |
+          .\.tools\vpk.exe pack `
+            --packId MediaFlux `
+            --packVersion ${{ steps.version.outputs.value }} `
+            --packDir .\artifacts\publish `
+            --outputDir .\artifacts\releases `
+            --mainExe MediaFlux.exe `
+            --packTitle MediaFlux `
+            --packAuthors SuperBee516 `
+            --releaseNotes .\artifacts\release-notes.md `
+            --icon .\images\mediaflux_icn.ico `
+            --runtime win-x64 `
+            --shortcuts Desktop,StartMenuRoot
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        run: |
+          $arguments = @(
+            'upload', 'github',
+            '--repoUrl', 'https://github.com/${{ github.repository }}',
+            '--token', '${{ secrets.GITHUB_TOKEN }}',
+            '--outputDir', '.\artifacts\releases',
+            '--publish',
+            '--releaseName', 'MediaFlux ${{ steps.version.outputs.value }}',
+            '--tag', '${{ steps.version.outputs.tag }}',
+            '--targetCommitish', '${{ github.sha }}'
+          )
+          if ('${{ steps.version.outputs.prerelease }}' -eq 'true') {
+            $arguments += '--pre'
+          }
+          & .\.tools\vpk.exe @arguments
+
+      - name: Upload workflow diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaFlux-${{ steps.version.outputs.value }}-release-output
+          path: |
+            artifacts/release-notes.md
+            artifacts/releases/
+          if-no-files-found: ignore
+          retention-days: 7

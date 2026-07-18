@@ -4,7 +4,6 @@ namespace MediaFlux.Models
 {
     public class Config
     {
-        public string UpdateFolderPath { get; set; } = "";
         public bool AutomaticallyBackupBeforeUpdates { get; set; } = true;
         public string BackupFolderPath { get; set; } = "";
         public int BackupsToKeep { get; set; } = 5;

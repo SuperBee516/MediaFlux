@@ -1251,7 +1251,7 @@ namespace MediaFlux
         private string AppendDuplicateActionAudit(IReadOnlyCollection<DuplicateActionAuditEntry> entries)
         {
             string logPath = GetDuplicateActionAuditPath();
-            string logDir = Path.GetDirectoryName(logPath) ?? Application.StartupPath;
+            string logDir = Path.GetDirectoryName(logPath) ?? AppPaths.DataDirectory;
 
             try
             {
@@ -1306,7 +1306,7 @@ namespace MediaFlux
 
         private string GetDuplicateActionAuditPath()
         {
-            return Path.Combine(Application.StartupPath, "data", "logs", "duplicate-actions.csv");
+            return Path.Combine(AppPaths.DataDirectory, "logs", "duplicate-actions.csv");
         }
 
         private void ViewDuplicateActionLogToolStripMenuItem_Click(object? sender, EventArgs e)
@@ -1597,7 +1597,7 @@ namespace MediaFlux
         {
             DisposeDuplicateReviewImages(body);
             body.Controls.Clear();
-            DuplicatePreviewCacheService.PruneOlderThan(Application.StartupPath, TimeSpan.FromDays(30));
+            DuplicatePreviewCacheService.PruneOlderThan(AppPaths.UserDataDirectory, TimeSpan.FromDays(30));
 
             foreach (var item in group.Items)
             {
@@ -1986,9 +1986,9 @@ namespace MediaFlux
             if (!File.Exists(tools.FfmpegPath))
                 return null;
 
-            string previewDir = DuplicatePreviewCacheService.GetPreviewDirectory(Application.StartupPath);
+            string previewDir = DuplicatePreviewCacheService.GetPreviewDirectory(AppPaths.UserDataDirectory);
             Directory.CreateDirectory(previewDir);
-            string thumbnailPath = DuplicatePreviewCacheService.GetThumbnailPath(Application.StartupPath, item.Path);
+            string thumbnailPath = DuplicatePreviewCacheService.GetThumbnailPath(AppPaths.UserDataDirectory, item.Path);
 
             var source = new FileInfo(item.Path);
             if (File.Exists(thumbnailPath) &&

@@ -21,7 +21,11 @@ namespace MediaFlux.Services
         private readonly ConcurrentDictionary<string, CacheEntry> _cache =
             new(StringComparer.OrdinalIgnoreCase);
 
-        public MediaInfoService(string? baseDirectory = null, string? ffprobePath = null, bool persistentCacheEnabled = true)
+        public MediaInfoService(
+            string? baseDirectory = null,
+            string? ffprobePath = null,
+            bool persistentCacheEnabled = true,
+            string? dataDirectory = null)
         {
             var root = string.IsNullOrWhiteSpace(baseDirectory)
                 ? AppDomain.CurrentDomain.BaseDirectory
@@ -31,7 +35,10 @@ namespace MediaFlux.Services
             _persistentCacheEnabled = persistentCacheEnabled;
             if (_persistentCacheEnabled)
             {
-                _cachePath = Path.Combine(root, "data", "media-info-cache.json");
+                string cacheRoot = string.IsNullOrWhiteSpace(dataDirectory)
+                    ? Path.Combine(root, "data")
+                    : dataDirectory;
+                _cachePath = Path.Combine(cacheRoot, "media-info-cache.json");
                 LoadPersistentCache();
             }
         }
