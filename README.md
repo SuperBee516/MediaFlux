@@ -164,7 +164,8 @@ MediaFlux is stable and under active private development. The application is pri
 
 ## Screenshot
 
-<img width="802" height="792" alt="GoEncode application screenshot from before the MediaFlux rename" src="https://github.com/user-attachments/assets/c6924814-d391-4d17-a7e1-ee6cddb8a4d8" />
+<img width="1128" height="1063" alt="screenshot1" src="https://github.com/user-attachments/assets/c82d7071-30a4-4b16-8696-6a514cc4686b" />
+
 
 The screenshot predates the MediaFlux rename and may not show the latest interface.
 
