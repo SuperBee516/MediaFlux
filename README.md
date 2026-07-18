@@ -172,6 +172,10 @@ MediaFlux is stable and under active private development. The application is pri
 
 <img width="1128" height="1063" alt="screenshot1" src="https://github.com/user-attachments/assets/c82d7071-30a4-4b16-8696-6a514cc4686b" />
 
+<img width="1086" height="643" alt="screenshot2" src="https://github.com/user-attachments/assets/9433a897-8415-449c-aa3c-78b2fc1d596b" />
+
+<img width="1106" height="753" alt="screenshot3" src="https://github.com/user-attachments/assets/e4e74413-16f7-493b-870d-a5a461724749" />
+
 
 The screenshot predates the MediaFlux rename and may not show the latest interface.
 
