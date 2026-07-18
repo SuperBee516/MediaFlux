@@ -5,7 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     /// <summary>
     /// Runs background size-estimation work and exposes result queues for the UI thread.

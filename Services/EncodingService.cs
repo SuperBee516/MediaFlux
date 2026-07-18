@@ -7,7 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     /// <summary>
     /// Encapsulates video encoding logic via FFmpeg with GPU or CPU, optional 10-bit,
@@ -175,7 +175,8 @@ namespace Encode.Services
             bool concurrentNvenc = false,
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Action<string>? outputPathCallback = null)
         {
             return EncodeInternalAsync(
                 input,
@@ -192,7 +193,8 @@ namespace Encode.Services
                 concurrentNvenc,
                 mapMode,
                 copySubtitles,
-                cancellationToken);
+                cancellationToken,
+                outputPathCallback);
         }
 
         // Compatibility overload (keeps existing call sites where CancellationToken was arg #12)
@@ -332,7 +334,8 @@ namespace Encode.Services
             bool concurrentNvenc,
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Action<string>? outputPathCallback = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -355,6 +358,7 @@ namespace Encode.Services
 
             // Collision-safe output naming so we don't overwrite existing files
             string output = GetUniqueOutputPath(outFolder, name, actualSuffix, ".mp4");
+            outputPathCallback?.Invoke(output);
             bool isAsfFamilyInput = IsAsfFamilyInput(input);
 
             bool allowSubtitleCopy = copySubtitles;

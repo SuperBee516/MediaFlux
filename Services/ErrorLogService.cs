@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public static class ErrorLogService
     {

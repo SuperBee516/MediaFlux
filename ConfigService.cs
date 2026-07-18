@@ -1,6 +1,6 @@
-﻿using Encode.Models;
+﻿using MediaFlux.Models;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     /// <summary>
     /// Manages loading and saving of application configuration (config.json).

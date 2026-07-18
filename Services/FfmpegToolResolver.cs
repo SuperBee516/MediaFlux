@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public sealed class FfmpegToolPaths
     {

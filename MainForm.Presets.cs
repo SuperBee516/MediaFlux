@@ -1,10 +1,10 @@
-using Encode.Models;
+using MediaFlux.Models;
 using System;
 using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {

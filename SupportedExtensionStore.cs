@@ -6,7 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
-namespace Encode
+namespace MediaFlux
 {
     internal static class SupportedExtensionsStore
     {

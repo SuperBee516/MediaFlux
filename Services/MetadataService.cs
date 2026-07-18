@@ -4,7 +4,7 @@ using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public class MetadataService
     {

@@ -6,6 +6,10 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+
+    <RootNamespace>MediaFlux</RootNamespace>
+    <AssemblyName>MediaFlux</AssemblyName>
+
     <ApplicationIcon>images\goencode_icn.ico</ApplicationIcon>
     <PackageIcon>goencode_icn128.png</PackageIcon>
     <AssemblyVersion></AssemblyVersion>

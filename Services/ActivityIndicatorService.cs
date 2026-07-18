@@ -6,7 +6,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Windows.Forms;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public enum UiActivity
     {

@@ -1,7 +1,7 @@
 using System.Text.Json;
-using Encode.Models;
+using MediaFlux.Models;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public sealed class EncodingPresetService
     {

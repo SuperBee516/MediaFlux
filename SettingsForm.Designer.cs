@@ -1,4 +1,4 @@
-﻿namespace Encode
+﻿namespace MediaFlux
 {
     partial class SettingsForm
     {
@@ -28,6 +28,9 @@
         private System.Windows.Forms.CheckBox chkRememberCheckboxes;
         private System.Windows.Forms.CheckBox chkPreventSleepDuringEncoding;
         private System.Windows.Forms.CheckBox chkLimitGpuEncodingQueueToOneJob;
+        private System.Windows.Forms.GroupBox grpIncompleteOutputCleanup;
+        private System.Windows.Forms.CheckBox chkDeleteFailedEncodeOutputs;
+        private System.Windows.Forms.CheckBox chkDeleteCanceledEncodeOutputs;
         private System.Windows.Forms.Label lblLargeQueueThreshold;
         private System.Windows.Forms.NumericUpDown nudLargeQueueThreshold;
         private System.Windows.Forms.CheckBox chkAutoAnalyzeLargeQueues;
@@ -75,6 +78,28 @@
         private System.Windows.Forms.Button btnRestoreBackup;
         private System.Windows.Forms.Label lblBackupHint;
 
+        private System.Windows.Forms.GroupBox grpDuplicateManagement;
+        private System.Windows.Forms.CheckBox chkFindDuplicatesOnImport;
+        private System.Windows.Forms.CheckBox chkOnlyQueueDuplicateCandidates;
+        private System.Windows.Forms.Label lblDuplicateScanMode;
+        private System.Windows.Forms.ComboBox comboDuplicateScanMode;
+        private System.Windows.Forms.Label lblDuplicateReferenceFolder;
+        private System.Windows.Forms.TextBox txtDuplicateReferenceFolder;
+        private System.Windows.Forms.Button btnBrowseDuplicateReferenceFolder;
+        private System.Windows.Forms.Label lblDuplicateQuarantineFolder;
+        private System.Windows.Forms.TextBox txtDuplicateQuarantineFolder;
+        private System.Windows.Forms.Button btnBrowseDuplicateQuarantineFolder;
+        private System.Windows.Forms.CheckBox chkEnableDuplicateSignatureCache;
+        private System.Windows.Forms.CheckBox chkAllowDuplicateRecycleBin;
+        private System.Windows.Forms.CheckBox chkAllowDuplicateQuarantine;
+        private System.Windows.Forms.CheckBox chkAllowDuplicatePermanentDelete;
+        private System.Windows.Forms.CheckBox chkRequireDuplicateCleanupConfirmation;
+        private System.Windows.Forms.CheckBox chkShowDuplicateReferenceFolderOnMain;
+        private System.Windows.Forms.Label lblDuplicateCleanupActions;
+        private System.Windows.Forms.Button btnClearDuplicateSignatureCache;
+        private System.Windows.Forms.Button btnClearDuplicatePreviewCache;
+        private System.Windows.Forms.Label lblDuplicateManagementHint;
+
         private System.Windows.Forms.Button btnOK;
         private System.Windows.Forms.Button btnCancel;
 
@@ -107,6 +132,9 @@
             this.chkRememberCheckboxes = new System.Windows.Forms.CheckBox();
             this.chkPreventSleepDuringEncoding = new System.Windows.Forms.CheckBox();
             this.chkLimitGpuEncodingQueueToOneJob = new System.Windows.Forms.CheckBox();
+            this.grpIncompleteOutputCleanup = new System.Windows.Forms.GroupBox();
+            this.chkDeleteFailedEncodeOutputs = new System.Windows.Forms.CheckBox();
+            this.chkDeleteCanceledEncodeOutputs = new System.Windows.Forms.CheckBox();
             this.lblLargeQueueThreshold = new System.Windows.Forms.Label();
             this.nudLargeQueueThreshold = new System.Windows.Forms.NumericUpDown();
             this.chkAutoAnalyzeLargeQueues = new System.Windows.Forms.CheckBox();
@@ -150,13 +178,36 @@
             this.btnBackupNow = new System.Windows.Forms.Button();
             this.btnRestoreBackup = new System.Windows.Forms.Button();
             this.lblBackupHint = new System.Windows.Forms.Label();
+            this.grpDuplicateManagement = new System.Windows.Forms.GroupBox();
+            this.chkFindDuplicatesOnImport = new System.Windows.Forms.CheckBox();
+            this.chkOnlyQueueDuplicateCandidates = new System.Windows.Forms.CheckBox();
+            this.lblDuplicateScanMode = new System.Windows.Forms.Label();
+            this.comboDuplicateScanMode = new System.Windows.Forms.ComboBox();
+            this.lblDuplicateReferenceFolder = new System.Windows.Forms.Label();
+            this.txtDuplicateReferenceFolder = new System.Windows.Forms.TextBox();
+            this.btnBrowseDuplicateReferenceFolder = new System.Windows.Forms.Button();
+            this.lblDuplicateQuarantineFolder = new System.Windows.Forms.Label();
+            this.txtDuplicateQuarantineFolder = new System.Windows.Forms.TextBox();
+            this.btnBrowseDuplicateQuarantineFolder = new System.Windows.Forms.Button();
+            this.chkEnableDuplicateSignatureCache = new System.Windows.Forms.CheckBox();
+            this.chkAllowDuplicateRecycleBin = new System.Windows.Forms.CheckBox();
+            this.chkAllowDuplicateQuarantine = new System.Windows.Forms.CheckBox();
+            this.chkAllowDuplicatePermanentDelete = new System.Windows.Forms.CheckBox();
+            this.chkRequireDuplicateCleanupConfirmation = new System.Windows.Forms.CheckBox();
+            this.chkShowDuplicateReferenceFolderOnMain = new System.Windows.Forms.CheckBox();
+            this.lblDuplicateCleanupActions = new System.Windows.Forms.Label();
+            this.btnClearDuplicateSignatureCache = new System.Windows.Forms.Button();
+            this.btnClearDuplicatePreviewCache = new System.Windows.Forms.Button();
+            this.lblDuplicateManagementHint = new System.Windows.Forms.Label();
             this.btnOK = new System.Windows.Forms.Button();
             this.btnCancel = new System.Windows.Forms.Button();
             this.grpExtensions.SuspendLayout();
+            this.grpIncompleteOutputCleanup.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.nudLargeQueueThreshold)).BeginInit();
             this.grpWatchFolder.SuspendLayout();
             this.grpDiscordNotification.SuspendLayout();
             this.grpBackupRestore.SuspendLayout();
+            this.grpDuplicateManagement.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.nudBackupsToKeep)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.nudWatchInterval)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.nudWatchStabilization)).BeginInit();
@@ -457,6 +508,37 @@
             this.btnBrowseFfprobe.UseVisualStyleBackColor = true;
             this.btnBrowseFfprobe.Click += new System.EventHandler(this.btnBrowseFfprobe_Click);
             // 
+            // grpIncompleteOutputCleanup
+            // 
+            this.grpIncompleteOutputCleanup.Controls.Add(this.chkDeleteFailedEncodeOutputs);
+            this.grpIncompleteOutputCleanup.Controls.Add(this.chkDeleteCanceledEncodeOutputs);
+            this.grpIncompleteOutputCleanup.Location = new System.Drawing.Point(15, 680);
+            this.grpIncompleteOutputCleanup.Name = "grpIncompleteOutputCleanup";
+            this.grpIncompleteOutputCleanup.Size = new System.Drawing.Size(380, 85);
+            this.grpIncompleteOutputCleanup.TabIndex = 21;
+            this.grpIncompleteOutputCleanup.TabStop = false;
+            this.grpIncompleteOutputCleanup.Text = "Incomplete Output Cleanup";
+            // 
+            // chkDeleteFailedEncodeOutputs
+            // 
+            this.chkDeleteFailedEncodeOutputs.AutoSize = true;
+            this.chkDeleteFailedEncodeOutputs.Location = new System.Drawing.Point(12, 25);
+            this.chkDeleteFailedEncodeOutputs.Name = "chkDeleteFailedEncodeOutputs";
+            this.chkDeleteFailedEncodeOutputs.Size = new System.Drawing.Size(247, 19);
+            this.chkDeleteFailedEncodeOutputs.TabIndex = 0;
+            this.chkDeleteFailedEncodeOutputs.Text = "Delete output files from failed encode jobs";
+            this.chkDeleteFailedEncodeOutputs.UseVisualStyleBackColor = true;
+            // 
+            // chkDeleteCanceledEncodeOutputs
+            // 
+            this.chkDeleteCanceledEncodeOutputs.AutoSize = true;
+            this.chkDeleteCanceledEncodeOutputs.Location = new System.Drawing.Point(12, 50);
+            this.chkDeleteCanceledEncodeOutputs.Name = "chkDeleteCanceledEncodeOutputs";
+            this.chkDeleteCanceledEncodeOutputs.Size = new System.Drawing.Size(262, 19);
+            this.chkDeleteCanceledEncodeOutputs.TabIndex = 1;
+            this.chkDeleteCanceledEncodeOutputs.Text = "Delete output files from canceled encode jobs";
+            this.chkDeleteCanceledEncodeOutputs.UseVisualStyleBackColor = true;
+            // 
             // grpWatchFolder
             // 
             this.grpWatchFolder.Controls.Add(this.lblWatchFolderPath);
@@ -475,6 +557,223 @@
             this.grpWatchFolder.TabIndex = 21;
             this.grpWatchFolder.TabStop = false;
             this.grpWatchFolder.Text = "Watch Folder";
+            // 
+            // grpDuplicateManagement
+            // 
+            this.grpDuplicateManagement.Controls.Add(this.chkFindDuplicatesOnImport);
+            this.grpDuplicateManagement.Controls.Add(this.chkOnlyQueueDuplicateCandidates);
+            this.grpDuplicateManagement.Controls.Add(this.lblDuplicateScanMode);
+            this.grpDuplicateManagement.Controls.Add(this.comboDuplicateScanMode);
+            this.grpDuplicateManagement.Controls.Add(this.lblDuplicateReferenceFolder);
+            this.grpDuplicateManagement.Controls.Add(this.txtDuplicateReferenceFolder);
+            this.grpDuplicateManagement.Controls.Add(this.btnBrowseDuplicateReferenceFolder);
+            this.grpDuplicateManagement.Controls.Add(this.lblDuplicateQuarantineFolder);
+            this.grpDuplicateManagement.Controls.Add(this.txtDuplicateQuarantineFolder);
+            this.grpDuplicateManagement.Controls.Add(this.btnBrowseDuplicateQuarantineFolder);
+            this.grpDuplicateManagement.Controls.Add(this.chkShowDuplicateReferenceFolderOnMain);
+            this.grpDuplicateManagement.Controls.Add(this.lblDuplicateCleanupActions);
+            this.grpDuplicateManagement.Controls.Add(this.chkAllowDuplicateRecycleBin);
+            this.grpDuplicateManagement.Controls.Add(this.chkAllowDuplicateQuarantine);
+            this.grpDuplicateManagement.Controls.Add(this.chkAllowDuplicatePermanentDelete);
+            this.grpDuplicateManagement.Controls.Add(this.chkRequireDuplicateCleanupConfirmation);
+            this.grpDuplicateManagement.Controls.Add(this.chkEnableDuplicateSignatureCache);
+            this.grpDuplicateManagement.Controls.Add(this.btnClearDuplicateSignatureCache);
+            this.grpDuplicateManagement.Controls.Add(this.btnClearDuplicatePreviewCache);
+            this.grpDuplicateManagement.Controls.Add(this.lblDuplicateManagementHint);
+            this.grpDuplicateManagement.Location = new System.Drawing.Point(820, 275);
+            this.grpDuplicateManagement.Name = "grpDuplicateManagement";
+            this.grpDuplicateManagement.Size = new System.Drawing.Size(390, 445);
+            this.grpDuplicateManagement.TabIndex = 24;
+            this.grpDuplicateManagement.TabStop = false;
+            this.grpDuplicateManagement.Text = "Duplicate Management";
+            // 
+            // chkFindDuplicatesOnImport
+            // 
+            this.chkFindDuplicatesOnImport.AutoSize = true;
+            this.chkFindDuplicatesOnImport.Location = new System.Drawing.Point(15, 25);
+            this.chkFindDuplicatesOnImport.Name = "chkFindDuplicatesOnImport";
+            this.chkFindDuplicatesOnImport.Size = new System.Drawing.Size(215, 19);
+            this.chkFindDuplicatesOnImport.TabIndex = 0;
+            this.chkFindDuplicatesOnImport.Text = "Check for duplicates before queueing";
+            this.chkFindDuplicatesOnImport.UseVisualStyleBackColor = true;
+            // 
+            // chkOnlyQueueDuplicateCandidates
+            // 
+            this.chkOnlyQueueDuplicateCandidates.AutoSize = true;
+            this.chkOnlyQueueDuplicateCandidates.Location = new System.Drawing.Point(15, 50);
+            this.chkOnlyQueueDuplicateCandidates.Name = "chkOnlyQueueDuplicateCandidates";
+            this.chkOnlyQueueDuplicateCandidates.Size = new System.Drawing.Size(202, 19);
+            this.chkOnlyQueueDuplicateCandidates.TabIndex = 1;
+            this.chkOnlyQueueDuplicateCandidates.Text = "Show only duplicate candidates";
+            this.chkOnlyQueueDuplicateCandidates.UseVisualStyleBackColor = true;
+            // 
+            // lblDuplicateScanMode
+            // 
+            this.lblDuplicateScanMode.AutoSize = true;
+            this.lblDuplicateScanMode.Location = new System.Drawing.Point(12, 78);
+            this.lblDuplicateScanMode.Name = "lblDuplicateScanMode";
+            this.lblDuplicateScanMode.Size = new System.Drawing.Size(69, 15);
+            this.lblDuplicateScanMode.Text = "Scan mode:";
+            // 
+            // comboDuplicateScanMode
+            // 
+            this.comboDuplicateScanMode.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+            this.comboDuplicateScanMode.Items.AddRange(new object[] {
+            "Exact duplicates",
+            "Strict visual duplicates",
+            "Review similar videos"});
+            this.comboDuplicateScanMode.Location = new System.Drawing.Point(115, 74);
+            this.comboDuplicateScanMode.Name = "comboDuplicateScanMode";
+            this.comboDuplicateScanMode.Size = new System.Drawing.Size(256, 23);
+            this.comboDuplicateScanMode.TabIndex = 2;
+            // 
+            // lblDuplicateReferenceFolder
+            // 
+            this.lblDuplicateReferenceFolder.AutoSize = true;
+            this.lblDuplicateReferenceFolder.Location = new System.Drawing.Point(12, 108);
+            this.lblDuplicateReferenceFolder.Name = "lblDuplicateReferenceFolder";
+            this.lblDuplicateReferenceFolder.Size = new System.Drawing.Size(96, 15);
+            this.lblDuplicateReferenceFolder.Text = "Reference folder:";
+            // 
+            // txtDuplicateReferenceFolder
+            // 
+            this.txtDuplicateReferenceFolder.Location = new System.Drawing.Point(15, 129);
+            this.txtDuplicateReferenceFolder.Name = "txtDuplicateReferenceFolder";
+            this.txtDuplicateReferenceFolder.Size = new System.Drawing.Size(275, 23);
+            this.txtDuplicateReferenceFolder.TabIndex = 3;
+            // 
+            // btnBrowseDuplicateReferenceFolder
+            // 
+            this.btnBrowseDuplicateReferenceFolder.Location = new System.Drawing.Point(296, 128);
+            this.btnBrowseDuplicateReferenceFolder.Name = "btnBrowseDuplicateReferenceFolder";
+            this.btnBrowseDuplicateReferenceFolder.Size = new System.Drawing.Size(75, 23);
+            this.btnBrowseDuplicateReferenceFolder.TabIndex = 4;
+            this.btnBrowseDuplicateReferenceFolder.Text = "Browse…";
+            this.btnBrowseDuplicateReferenceFolder.UseVisualStyleBackColor = true;
+            this.btnBrowseDuplicateReferenceFolder.Click += new System.EventHandler(this.btnBrowseDuplicateReferenceFolder_Click);
+            // 
+            // lblDuplicateQuarantineFolder
+            // 
+            this.lblDuplicateQuarantineFolder.AutoSize = true;
+            this.lblDuplicateQuarantineFolder.Location = new System.Drawing.Point(12, 278);
+            this.lblDuplicateQuarantineFolder.Name = "lblDuplicateQuarantineFolder";
+            this.lblDuplicateQuarantineFolder.Size = new System.Drawing.Size(103, 15);
+            this.lblDuplicateQuarantineFolder.Text = "Quarantine folder:";
+            // 
+            // txtDuplicateQuarantineFolder
+            // 
+            this.txtDuplicateQuarantineFolder.Location = new System.Drawing.Point(15, 299);
+            this.txtDuplicateQuarantineFolder.Name = "txtDuplicateQuarantineFolder";
+            this.txtDuplicateQuarantineFolder.Size = new System.Drawing.Size(275, 23);
+            this.txtDuplicateQuarantineFolder.TabIndex = 10;
+            // 
+            // btnBrowseDuplicateQuarantineFolder
+            // 
+            this.btnBrowseDuplicateQuarantineFolder.Location = new System.Drawing.Point(296, 298);
+            this.btnBrowseDuplicateQuarantineFolder.Name = "btnBrowseDuplicateQuarantineFolder";
+            this.btnBrowseDuplicateQuarantineFolder.Size = new System.Drawing.Size(75, 23);
+            this.btnBrowseDuplicateQuarantineFolder.TabIndex = 11;
+            this.btnBrowseDuplicateQuarantineFolder.Text = "Browse…";
+            this.btnBrowseDuplicateQuarantineFolder.UseVisualStyleBackColor = true;
+            this.btnBrowseDuplicateQuarantineFolder.Click += new System.EventHandler(this.btnBrowseDuplicateQuarantineFolder_Click);
+            // 
+            // chkShowDuplicateReferenceFolderOnMain
+            // 
+            this.chkShowDuplicateReferenceFolderOnMain.AutoEllipsis = true;
+            this.chkShowDuplicateReferenceFolderOnMain.AutoSize = false;
+            this.chkShowDuplicateReferenceFolderOnMain.Location = new System.Drawing.Point(15, 157);
+            this.chkShowDuplicateReferenceFolderOnMain.Name = "chkShowDuplicateReferenceFolderOnMain";
+            this.chkShowDuplicateReferenceFolderOnMain.Size = new System.Drawing.Size(245, 19);
+            this.chkShowDuplicateReferenceFolderOnMain.TabIndex = 5;
+            this.chkShowDuplicateReferenceFolderOnMain.Text = "Show reference controls on main screen";
+            this.chkShowDuplicateReferenceFolderOnMain.UseVisualStyleBackColor = true;
+            // 
+            // lblDuplicateCleanupActions
+            // 
+            this.lblDuplicateCleanupActions.AutoSize = true;
+            this.lblDuplicateCleanupActions.Location = new System.Drawing.Point(12, 188);
+            this.lblDuplicateCleanupActions.Name = "lblDuplicateCleanupActions";
+            this.lblDuplicateCleanupActions.Size = new System.Drawing.Size(93, 15);
+            this.lblDuplicateCleanupActions.Text = "Cleanup actions:";
+            // 
+            // chkAllowDuplicateRecycleBin
+            // 
+            this.chkAllowDuplicateRecycleBin.AutoSize = true;
+            this.chkAllowDuplicateRecycleBin.Location = new System.Drawing.Point(15, 210);
+            this.chkAllowDuplicateRecycleBin.Name = "chkAllowDuplicateRecycleBin";
+            this.chkAllowDuplicateRecycleBin.Size = new System.Drawing.Size(180, 19);
+            this.chkAllowDuplicateRecycleBin.TabIndex = 6;
+            this.chkAllowDuplicateRecycleBin.Text = "Allow move to Recycle Bin";
+            this.chkAllowDuplicateRecycleBin.UseVisualStyleBackColor = true;
+            // 
+            // chkAllowDuplicateQuarantine
+            // 
+            this.chkAllowDuplicateQuarantine.AutoSize = true;
+            this.chkAllowDuplicateQuarantine.Location = new System.Drawing.Point(15, 233);
+            this.chkAllowDuplicateQuarantine.Name = "chkAllowDuplicateQuarantine";
+            this.chkAllowDuplicateQuarantine.Size = new System.Drawing.Size(163, 19);
+            this.chkAllowDuplicateQuarantine.TabIndex = 7;
+            this.chkAllowDuplicateQuarantine.Text = "Allow move to quarantine";
+            this.chkAllowDuplicateQuarantine.UseVisualStyleBackColor = true;
+            // 
+            // chkAllowDuplicatePermanentDelete
+            // 
+            this.chkAllowDuplicatePermanentDelete.AutoSize = true;
+            this.chkAllowDuplicatePermanentDelete.Location = new System.Drawing.Point(15, 256);
+            this.chkAllowDuplicatePermanentDelete.Name = "chkAllowDuplicatePermanentDelete";
+            this.chkAllowDuplicatePermanentDelete.Size = new System.Drawing.Size(148, 19);
+            this.chkAllowDuplicatePermanentDelete.TabIndex = 8;
+            this.chkAllowDuplicatePermanentDelete.Text = "Allow permanent delete";
+            this.chkAllowDuplicatePermanentDelete.UseVisualStyleBackColor = true;
+            // 
+            // chkRequireDuplicateCleanupConfirmation
+            // 
+            this.chkRequireDuplicateCleanupConfirmation.AutoSize = true;
+            this.chkRequireDuplicateCleanupConfirmation.Location = new System.Drawing.Point(15, 330);
+            this.chkRequireDuplicateCleanupConfirmation.Name = "chkRequireDuplicateCleanupConfirmation";
+            this.chkRequireDuplicateCleanupConfirmation.Size = new System.Drawing.Size(214, 19);
+            this.chkRequireDuplicateCleanupConfirmation.TabIndex = 12;
+            this.chkRequireDuplicateCleanupConfirmation.Text = "Require confirmation before duplicate cleanup";
+            this.chkRequireDuplicateCleanupConfirmation.UseVisualStyleBackColor = true;
+            // 
+            // chkEnableDuplicateSignatureCache
+            // 
+            this.chkEnableDuplicateSignatureCache.AutoSize = true;
+            this.chkEnableDuplicateSignatureCache.Location = new System.Drawing.Point(15, 360);
+            this.chkEnableDuplicateSignatureCache.Name = "chkEnableDuplicateSignatureCache";
+            this.chkEnableDuplicateSignatureCache.Size = new System.Drawing.Size(180, 19);
+            this.chkEnableDuplicateSignatureCache.TabIndex = 13;
+            this.chkEnableDuplicateSignatureCache.Text = "Cache duplicate signatures";
+            this.chkEnableDuplicateSignatureCache.UseVisualStyleBackColor = true;
+            // 
+            // btnClearDuplicateSignatureCache
+            // 
+            this.btnClearDuplicateSignatureCache.Location = new System.Drawing.Point(205, 355);
+            this.btnClearDuplicateSignatureCache.Name = "btnClearDuplicateSignatureCache";
+            this.btnClearDuplicateSignatureCache.Size = new System.Drawing.Size(166, 27);
+            this.btnClearDuplicateSignatureCache.TabIndex = 14;
+            this.btnClearDuplicateSignatureCache.Text = "Clear Duplicate Cache";
+            this.btnClearDuplicateSignatureCache.UseVisualStyleBackColor = true;
+            this.btnClearDuplicateSignatureCache.Click += new System.EventHandler(this.btnClearDuplicateSignatureCache_Click);
+            // 
+            // btnClearDuplicatePreviewCache
+            // 
+            this.btnClearDuplicatePreviewCache.Location = new System.Drawing.Point(205, 385);
+            this.btnClearDuplicatePreviewCache.Name = "btnClearDuplicatePreviewCache";
+            this.btnClearDuplicatePreviewCache.Size = new System.Drawing.Size(166, 27);
+            this.btnClearDuplicatePreviewCache.TabIndex = 15;
+            this.btnClearDuplicatePreviewCache.Text = "Clear Preview Cache";
+            this.btnClearDuplicatePreviewCache.UseVisualStyleBackColor = true;
+            this.btnClearDuplicatePreviewCache.Click += new System.EventHandler(this.btnClearDuplicatePreviewCache_Click);
+            // 
+            // lblDuplicateManagementHint
+            // 
+            this.lblDuplicateManagementHint.AutoSize = false;
+            this.lblDuplicateManagementHint.Location = new System.Drawing.Point(15, 389);
+            this.lblDuplicateManagementHint.Name = "lblDuplicateManagementHint";
+            this.lblDuplicateManagementHint.Size = new System.Drawing.Size(184, 45);
+            this.lblDuplicateManagementHint.ForeColor = System.Drawing.SystemColors.GrayText;
+            this.lblDuplicateManagementHint.Text = "Confirmations are recommended, especially for permanent delete.";
             // 
             // lblWatchFolderPath
             // 
@@ -548,7 +847,7 @@
             this.lblWatchHint.Location = new System.Drawing.Point(15, 207);
             this.lblWatchHint.Name = "lblWatchHint";
             this.lblWatchHint.Size = new System.Drawing.Size(355, 36);
-            this.lblWatchHint.Text = "Enable watching on the Encode screen. New files follow the current Show x264 / x265 / other codec filters and begin encoding automatically.";
+            this.lblWatchHint.Text = "Enable watching on the Encode screen. New files follow the current Show x264 / x265 / AV1 / other codec filters and begin encoding automatically.";
             // 
             // grpDiscordNotification
             // 
@@ -749,7 +1048,7 @@
             // 
             // btnOK
             // 
-            this.btnOK.Location = new System.Drawing.Point(15, 685);
+            this.btnOK.Location = new System.Drawing.Point(15, 850);
             this.btnOK.Name = "btnOK";
             this.btnOK.Size = new System.Drawing.Size(75, 25);
             this.btnOK.TabIndex = 21;
@@ -760,7 +1059,7 @@
             // btnCancel
             // 
             this.btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel;
-            this.btnCancel.Location = new System.Drawing.Point(100, 685);
+            this.btnCancel.Location = new System.Drawing.Point(100, 850);
             this.btnCancel.Name = "btnCancel";
             this.btnCancel.Size = new System.Drawing.Size(75, 25);
             this.btnCancel.TabIndex = 22;
@@ -773,9 +1072,11 @@
             this.CancelButton = this.btnCancel;
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(1225, 725);
+            this.ClientSize = new System.Drawing.Size(1225, 890);
+            this.Controls.Add(this.grpIncompleteOutputCleanup);
             this.Controls.Add(this.grpBackupRestore);
             this.Controls.Add(this.grpWatchFolder);
+            this.Controls.Add(this.grpDuplicateManagement);
             this.Controls.Add(this.grpDiscordNotification);
             this.Controls.Add(this.btnCancel);
             this.Controls.Add(this.btnOK);
@@ -811,6 +1112,8 @@
             this.Load += new System.EventHandler(this.SettingsForm_Load);
             this.grpExtensions.ResumeLayout(false);
             this.grpExtensions.PerformLayout();
+            this.grpIncompleteOutputCleanup.ResumeLayout(false);
+            this.grpIncompleteOutputCleanup.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.nudLargeQueueThreshold)).EndInit();
             this.grpWatchFolder.ResumeLayout(false);
             this.grpWatchFolder.PerformLayout();
@@ -818,6 +1121,8 @@
             this.grpDiscordNotification.PerformLayout();
             this.grpBackupRestore.ResumeLayout(false);
             this.grpBackupRestore.PerformLayout();
+            this.grpDuplicateManagement.ResumeLayout(false);
+            this.grpDuplicateManagement.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.nudBackupsToKeep)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.nudWatchInterval)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.nudWatchStabilization)).EndInit();

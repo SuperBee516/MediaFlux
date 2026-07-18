@@ -1,4 +1,4 @@
-﻿using Encode.Services;
+﻿using MediaFlux.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -6,9 +6,9 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using static Encode.Services.EncodingService;
+using static MediaFlux.Services.EncodingService;
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {
@@ -92,7 +92,9 @@ namespace Encode
                 {
                     var p = r.Tag is RowMeta rm ? rm.Path : (r.Tag as string);
                     // If selectedPaths is empty → we include all rows
-                    return selectedPaths.Count == 0 || (p != null && selectedPaths.Contains(p));
+                    bool selected = selectedPaths.Count == 0 || (p != null && selectedPaths.Contains(p));
+                    bool duplicateExcluded = r.Tag is RowMeta meta && meta.ExcludedFromEncodeAsDuplicate;
+                    return selected && !duplicateExcluded;
                 })
                 .ToList();
 
@@ -150,6 +152,7 @@ namespace Encode
             {
                 _encodingActive = false;
                 _activeEncodeQueue = null;
+                ApplyDuplicateCandidateViewFilter();
                 btnStartEncode.Enabled = true;
                 btnStopEncode.Enabled = false;
                 _cancelEncode = false;
@@ -373,6 +376,7 @@ namespace Encode
             }
 
             _runningEncodeJobs[row] = file;
+            string attemptedOutputPath = string.Empty;
             try
             {
                 // ==== CALL THE SERVICE ====
@@ -412,7 +416,8 @@ namespace Encode
                     audioChannels,
                     jobCallback,
                     concurrentNvenc,
-                    cancellationToken: cancellationToken
+                    cancellationToken: cancellationToken,
+                    outputPathCallback: path => attemptedOutputPath = path
                 );
 
                 if (!result.Success)
@@ -433,10 +438,10 @@ namespace Encode
                 {
                     lock (_historyLock)
                     {
-                        _historyService.Append(new Encode.Services.JobHistoryRecord
+                        _historyService.Append(new JobHistoryRecord
                         {
-                            Type = Encode.Services.JobType.Encode,
-                            Status = Encode.Services.JobStatus.Success,
+                            Type = JobType.Encode,
+                            Status = JobStatus.Success,
                             StartUtc = jobStartUtc,
                             EndUtc = DateTime.UtcNow,
                             SourcePath = file,
@@ -497,25 +502,35 @@ namespace Encode
                     ? "Cancelled by user."
                     : ex.Message;
 
+                bool cleanupEnabled = isCanceled
+                    ? _config.DeleteCanceledEncodeOutputs
+                    : _config.DeleteFailedEncodeOutputs;
+                string cleanupResult = await CleanupIncompleteEncodeOutputAsync(
+                    file,
+                    attemptedOutputPath,
+                    cleanupEnabled,
+                    isCanceled ? "canceled" : "failed");
+                string historyNotes = $"{notes} Incomplete output cleanup: {cleanupResult}";
+
                 try
                 {
                     lock (_historyLock)
                     {
-                        _historyService.Append(new Encode.Services.JobHistoryRecord
+                        _historyService.Append(new JobHistoryRecord
                         {
-                            Type = Encode.Services.JobType.Encode,
+                            Type = JobType.Encode,
                             Status = isCanceled
-                                ? Encode.Services.JobStatus.Canceled
-                                : Encode.Services.JobStatus.Failed,
+                                ? JobStatus.Canceled
+                                : JobStatus.Failed,
                             StartUtc = jobStartUtc,
                             EndUtc = DateTime.UtcNow,
                             SourcePath = file,
-                            OutputPath = "",
+                            OutputPath = attemptedOutputPath,
                             EncoderMode = encoderText,
                             TargetMb = targetMb,
                             DurationSec = durationSec,
                             Log = jobLog.ToString(),
-                            Notes = notes
+                            Notes = historyNotes
                         });
                     }
                 }
@@ -532,7 +547,9 @@ namespace Encode
                     ex,
                     $"Encoder Mode: {encoderText}{Environment.NewLine}" +
                     $"Target MB   : {(targetMb.HasValue ? targetMb.Value.ToString("0.##") : "auto")}{Environment.NewLine}" +
-                    $"Duration Sec: {durationSec:0.##}{Environment.NewLine}{Environment.NewLine}" +
+                    $"Duration Sec: {durationSec:0.##}{Environment.NewLine}" +
+                    $"Output      : {attemptedOutputPath}{Environment.NewLine}" +
+                    $"Cleanup     : {cleanupResult}{Environment.NewLine}{Environment.NewLine}" +
                     "Captured Job Log:" + Environment.NewLine +
                     jobLog);
 
@@ -553,12 +570,12 @@ namespace Encode
                             isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : "Failed",
                             isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : "Failed",
                             "",
-                            isCanceled
+                            (isCanceled
                                 ? "Canceled by user."
                                 : retryQueued
                                     ? "Failed once; queued for automatic retry after the current queue finishes."
-                                    : ex.Message);
-                        row.Cells["colProgress"].ToolTipText = ex.Message;
+                                    : ex.Message) + $" Incomplete output cleanup: {cleanupResult}");
+                        row.Cells["colProgress"].ToolTipText = $"{ex.Message}{Environment.NewLine}Incomplete output cleanup: {cleanupResult}";
                     }
 
                     lblEncodeStatus.Text = isCanceled
@@ -606,6 +623,60 @@ namespace Encode
 
             System.Threading.Interlocked.Increment(ref _encodeRetryCount);
             return true;
+        }
+
+        private static async Task<string> CleanupIncompleteEncodeOutputAsync(
+            string sourcePath,
+            string outputPath,
+            bool cleanupEnabled,
+            string outcome)
+        {
+            if (!cleanupEnabled)
+                return "disabled in Settings.";
+
+            if (string.IsNullOrWhiteSpace(outputPath))
+                return "no output path was allocated.";
+
+            string fullSourcePath;
+            string fullOutputPath;
+            try
+            {
+                fullSourcePath = Path.GetFullPath(sourcePath);
+                fullOutputPath = Path.GetFullPath(outputPath);
+            }
+            catch (Exception ex)
+            {
+                return $"not deleted because the attempt path was invalid ({ex.Message}).";
+            }
+
+            if (string.Equals(fullSourcePath, fullOutputPath, StringComparison.OrdinalIgnoreCase))
+                return "not deleted because the output path matched the source path.";
+
+            const int attempts = 3;
+            Exception? lastError = null;
+            for (int attempt = 1; attempt <= attempts; attempt++)
+            {
+                try
+                {
+                    if (!File.Exists(fullOutputPath))
+                        return "no incomplete output file was present.";
+
+                    File.Delete(fullOutputPath);
+                    if (!File.Exists(fullOutputPath))
+                        return $"deleted the {outcome} attempt output.";
+
+                    lastError = new IOException("The file still exists after the delete request.");
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                }
+
+                if (attempt < attempts)
+                    await Task.Delay(250 * attempt);
+            }
+
+            return $"could not delete the {outcome} attempt output after {attempts} attempts ({lastError?.Message ?? "unknown error"}).";
         }
 
         private async Task SendDiscordQueueCompleteNotificationAsync(DateTime queueStartedUtc)

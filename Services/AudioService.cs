@@ -4,9 +4,9 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Encode.Models;
+using MediaFlux.Models;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     /// <summary>
     /// Encapsulates ffmpeg audio operations: extract (copy) and convert (re-encode).

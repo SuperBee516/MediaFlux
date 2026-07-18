@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     internal static class FolderPathComparer
     {

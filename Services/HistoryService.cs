@@ -1,7 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public enum JobType { Encode, Download, Audio }
     public enum JobStatus { Success, Failed, Canceled }

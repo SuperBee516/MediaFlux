@@ -6,7 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {
@@ -80,10 +80,43 @@ namespace Encode
             menu.Items.Add("Open Location", null, OpenLocationFromContextMenu_Click);
             menu.Items.Add("Copy Source Path", null, CopySourcePathFromContextMenu_Click);
             menu.Items.Add("Copy Output Preview", null, CopyOutputPreviewFromContextMenu_Click);
+            menu.Items.Add("Open Duplicate Manager", null, ShowDuplicateManager_Click);
+            menu.Items.Add("Include Selected Exact Duplicate(s) in Encode", null, IncludeSelectedDuplicateRowsInEncode_Click);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Schedule Start…", null, ScheduleEncode_Click);
 
             dgvEncodeQueue.ContextMenuStrip = menu;
+        }
+
+        private void IncludeSelectedDuplicateRowsInEncode_Click(object? sender, EventArgs e)
+        {
+            int included = 0;
+            foreach (DataGridViewRow row in dgvEncodeQueue.SelectedRows)
+            {
+                if (row.IsNewRow || row.Tag is not RowMeta meta || !meta.ExcludedFromEncodeAsDuplicate)
+                    continue;
+
+                meta.ExcludedFromEncodeAsDuplicate = false;
+                meta.DuplicateExclusionOverridden = true;
+                SetEncodeRowState(row, meta.StatusBeforeDuplicateExclusion, "", "", "Included in encoding by user override; the duplicate marking remains for review.");
+
+                lock (_activeEncodeQueueLock)
+                {
+                    if (_encodingActive && _activeEncodeQueue != null && !_activeEncodeQueue.Contains(row))
+                        _activeEncodeQueue.Add(row);
+                }
+                included++;
+            }
+
+            if (included == 0)
+            {
+                ShowStatusInfo("Select one or more soft-excluded exact duplicate rows first.");
+                return;
+            }
+
+            UpdateDuplicateSummary(_lastDuplicateScanResult);
+            SafeRefreshEstimates();
+            ShowStatusInfo($"Included {included:N0} exact duplicate file(s) in encoding. No source files were changed.");
         }
 
         private void AddToEncodeQueueFromContextMenu_Click(object? sender, EventArgs e)
@@ -101,11 +134,18 @@ namespace Encode
             }
 
             int added = 0;
+            int excluded = 0;
 
             foreach (DataGridViewRow row in dgvEncodeQueue.SelectedRows)
             {
                 if (row.IsNewRow || row.DataGridView == null)
                     continue;
+
+                if (row.Tag is RowMeta meta && meta.ExcludedFromEncodeAsDuplicate)
+                {
+                    excluded++;
+                    continue;
+                }
 
                 bool addedRow = false;
                 lock (_activeEncodeQueueLock)
@@ -150,6 +190,10 @@ namespace Encode
 
                 lblEncodeStatus.Text =
                     $"Encoding: {currentFileName} ({_encodeProcessedCount}/{totalNow}) – Queued: {queued}";
+            }
+            else if (excluded > 0)
+            {
+                ShowStatusInfo("Soft-excluded exact duplicates were not added. Use 'Include Selected Exact Duplicate(s) in Encode' first.");
             }
         }
 

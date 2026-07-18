@@ -1,5 +1,5 @@
-using Encode.Models;
-using Encode.Services;
+using MediaFlux.Models;
+using MediaFlux.Services;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -15,7 +15,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {
@@ -27,8 +27,8 @@ namespace Encode
         private bool _suppressRowEvents;
 
         private volatile bool _cancelEncode = false;
-        private Encode.Services.HistoryService _historyService;
-        private Encode.Services.EncodingPresetService _presetService;
+        private HistoryService _historyService;
+        private EncodingPresetService _presetService;
         private ToolStripMenuItem? _applyPresetToolStripMenuItem;
         private readonly object _historyLock = new();
         private readonly Dictionary<string, double> _estimatedSizeMap = new();
@@ -37,9 +37,12 @@ namespace Encode
         private EncodingService _encodingService = null!;
         private AudioService _audioService = null!;
         private MediaInfoService _mediaInfoService = null!;
+        private DuplicateDetectionService _duplicateDetectionService = null!;
 
         private SizeEstimateService _sizeEstimateService = null!;
         private EstimateBackgroundService _estimateService = null!;
+        private CancellationTokenSource? _duplicateScanCts;
+        private DuplicateScanResult? _lastDuplicateScanResult;
         private readonly EncodeQueueRunner _encodeQueueRunner;
 
         private DateTime? _encodeScheduledUtc = null;
@@ -54,6 +57,7 @@ namespace Encode
         private TableLayoutPanel? _encodeQueueLayout;
         private TableLayoutPanel? _encodeInfoHeaderContent;
         private Button? _btnToggleEncodeInfoHeader;
+        private TabControl? _encodeInfoTabs;
         private TableLayoutPanel? _queueSummaryTable;
         private TableLayoutPanel? _encodePreviewTable;
         private Label? _summaryFileCountValue;
@@ -64,9 +68,15 @@ namespace Encode
         private Label? _summaryTotalCurrentValue;
         private Label? _summaryNewSizeValue;
         private Label? _summaryEstimatedCompletionValue;
+        private Label? _summaryDuplicateGroupsValue;
+        private Label? _summaryDuplicateFilesValue;
+        private Label? _summaryDuplicateRecoverableValue;
         private Label? _summaryTotalEstimatedSavedValue;
         private readonly Dictionary<string, Label> _previewValueLabels = new(StringComparer.OrdinalIgnoreCase);
         private readonly ToolTip _uiToolTip = new();
+        private Button? _btnToggleDuplicateFinder;
+        private Control? _duplicateFinderBodyPanel;
+        private Label? _duplicateFinderHeaderStatusLabel;
         private bool _applyingEncodeDropdownSettings;
         private bool _applyingCheckboxStates;
         private bool _applyingRememberedSort;
@@ -182,6 +192,7 @@ namespace Encode
 
             // supported extension list storage (managed via Settings)
             _supportedVideoExtsPath = Path.Combine(Application.StartupPath, "data", "supported_video_extensions.json");
+            RepairConfiguredExplorerIntegration();
 
             InitializeLargeQueueControls();
             StartEstimateUiPump();
@@ -194,26 +205,39 @@ namespace Encode
             var viewHistoryToolStripMenuItem = new ToolStripMenuItem("View History");
             viewHistoryToolStripMenuItem.Click += ViewHistoryToolStripMenuItem_Click;
             toolsToolStripMenuItem.DropDownItems.Insert(0, viewHistoryToolStripMenuItem);
-            toolsToolStripMenuItem.DropDownItems.Insert(1, new ToolStripSeparator());
+            var analyzeDuplicatesToolStripMenuItem = new ToolStripMenuItem("Run Duplicate Check Again");
+            analyzeDuplicatesToolStripMenuItem.Click += AnalyzeDuplicatesNow_Click;
+            var duplicateManagerToolStripMenuItem = new ToolStripMenuItem("Duplicate Manager");
+            duplicateManagerToolStripMenuItem.Click += ShowDuplicateManager_Click;
+            var exportDuplicateReportToolStripMenuItem = new ToolStripMenuItem("Export Duplicate Report");
+            exportDuplicateReportToolStripMenuItem.Click += ExportDuplicateReport_Click;
+            toolsToolStripMenuItem.DropDownItems.Insert(1, analyzeDuplicatesToolStripMenuItem);
+            toolsToolStripMenuItem.DropDownItems.Insert(2, duplicateManagerToolStripMenuItem);
+            toolsToolStripMenuItem.DropDownItems.Insert(3, exportDuplicateReportToolStripMenuItem);
+            toolsToolStripMenuItem.DropDownItems.Insert(4, new ToolStripSeparator());
 
             // File → View Error Log
             var viewErrorLogToolStripMenuItem = new ToolStripMenuItem("View Error Log");
             viewErrorLogToolStripMenuItem.Click += ViewErrorLogToolStripMenuItem_Click;
+            var viewDuplicateActionLogToolStripMenuItem = new ToolStripMenuItem("View Duplicate Action Log");
+            viewDuplicateActionLogToolStripMenuItem.Click += ViewDuplicateActionLogToolStripMenuItem_Click;
             var exitIndex = fileToolStripMenuItem.DropDownItems.IndexOf(exitToolStripMenuItem);
             if (exitIndex < 0)
             {
                 fileToolStripMenuItem.DropDownItems.Add(viewErrorLogToolStripMenuItem);
+                fileToolStripMenuItem.DropDownItems.Add(viewDuplicateActionLogToolStripMenuItem);
             }
             else
             {
                 fileToolStripMenuItem.DropDownItems.Insert(exitIndex, viewErrorLogToolStripMenuItem);
-                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 1, new ToolStripSeparator());
+                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 1, viewDuplicateActionLogToolStripMenuItem);
+                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 2, new ToolStripSeparator());
             }
 
             //History service init
             var historyPath = Path.Combine(Application.StartupPath, "data", "history.json");
-            _historyService = new Encode.Services.HistoryService(historyPath);
-            _presetService = new Encode.Services.EncodingPresetService(
+            _historyService = new HistoryService(historyPath);
+            _presetService = new EncodingPresetService(
                 Path.Combine(Application.StartupPath, "data", "encoding_presets.json"));
 
             // Touch lblResolution so the field is considered "used" by the analyzer
@@ -285,6 +309,7 @@ namespace Encode
             WireCheckboxPersistence();
             ApplyRememberedCheckboxStates();
             ApplyEncodeInfoHeaderCollapsedState(_config.EncodeInfoHeaderCollapsed);
+            ApplyDuplicateFinderCollapsedState(_config.DuplicateFinderCollapsed);
 
             // Encode defaults
             comboEncoderMode.SelectedItem = "GPU (NVENC)";
@@ -307,6 +332,7 @@ namespace Encode
 
             // Init metrics panel to dashes/defaults
             ResetEncodeMetrics();
+            InitializeExplorerQueueIntegration();
         }
 
         private static double TryParseSizeToMb(string? s)
@@ -487,6 +513,7 @@ namespace Encode
         {
             try { _importCts?.Cancel(); } catch { }
             try { _codecFilterCts?.Cancel(); } catch { }
+            try { _duplicateScanCts?.Cancel(); } catch { }
             _estimateService?.ResetAndCancel();
             _estimatesDeferredForLargeQueue = false;
             SetQueueProgress(0, 0, visible: false);
@@ -505,25 +532,30 @@ namespace Encode
             if (_collapsedQueueStatusLabel?.Parent == null)
                 return;
 
-            int availableWidth = _collapsedQueueStatusLabel.Parent.ClientSize.Width
-                - _collapsedQueueStatusLabel.Left
-                - _collapsedQueueStatusLabel.Margin.Right;
-
-            _collapsedQueueStatusLabel.MaximumSize = new Size(Math.Max(240, availableWidth), 0);
             _collapsedQueueStatusLabel.Parent.PerformLayout();
         }
 
         private Control CreateEncodeInfoHeader()
         {
-            var shell = new TableLayoutPanel
+            var outer = new Panel
             {
                 AutoSize = true,
                 Dock = DockStyle.Top,
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+                Margin = new Padding(0, 0, 0, 8),
+                Padding = Padding.Empty
+            };
+
+            var shell = new TableLayoutPanel
+            {
+                AutoSize = true,
+                Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 2,
-                Padding = new Padding(0, 0, 0, 8),
+                Padding = Padding.Empty,
                 Margin = new Padding(0),
-                BackColor = SystemColors.Control
+                BackColor = Color.White
             };
             shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -535,20 +567,54 @@ namespace Encode
             {
                 AutoSize = true,
                 Dock = DockStyle.Top,
-                ColumnCount = 2,
+                ColumnCount = 1,
                 RowCount = 1,
                 Padding = new Padding(0),
                 Margin = new Padding(0),
                 BackColor = SystemColors.Control
             };
-            _encodeInfoHeaderContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44F));
-            _encodeInfoHeaderContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56F));
+            _encodeInfoHeaderContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             _encodeInfoHeaderContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            _encodeInfoHeaderContent.Controls.Add(CreateQueueSummaryGroup(), 0, 0);
-            _encodeInfoHeaderContent.Controls.Add(CreateEncodePreviewGroup(), 1, 0);
+            _encodeInfoHeaderContent.Controls.Add(CreateEncodeInfoTabs(), 0, 0);
 
             shell.Controls.Add(_encodeInfoHeaderContent, 0, 1);
-            return shell;
+            outer.Controls.Add(shell);
+            return outer;
+        }
+
+        private Control CreateEncodeInfoTabs()
+        {
+            _encodeInfoTabs = new TabControl
+            {
+                Dock = DockStyle.Top,
+                Height = 230,
+                Margin = Padding.Empty
+            };
+
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Queue Summary", CreateQueueSummaryGroup()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Output Preview", CreateEncodePreviewGroup()));
+            return _encodeInfoTabs;
+        }
+
+        private static TabPage CreateScrollableInfoTab(string title, Control content)
+        {
+            var page = new TabPage(title)
+            {
+                Padding = new Padding(6),
+                BackColor = SystemColors.Control
+            };
+
+            var scrollHost = new Panel
+            {
+                Dock = DockStyle.Fill,
+                AutoScroll = true,
+                BackColor = SystemColors.Control
+            };
+
+            content.Dock = DockStyle.Top;
+            scrollHost.Controls.Add(content);
+            page.Controls.Add(scrollHost);
+            return page;
         }
 
         private Control CreateEncodeInfoToggleBar()
@@ -558,55 +624,75 @@ namespace Encode
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Dock = DockStyle.Top,
-                ColumnCount = 2,
+                ColumnCount = 3,
                 RowCount = 1,
                 Margin = new Padding(0, 0, 0, 4),
-                Padding = new Padding(0),
-                BackColor = SystemColors.Control
+                Padding = new Padding(8, 5, 8, 5),
+                BackColor = Color.FromArgb(248, 249, 251),
+                Cursor = Cursors.Hand
             };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             _btnToggleEncodeInfoHeader = new Button
             {
-                Text = "Hide Summary / Preview",
-                AutoSize = true,
-                Height = 26,
+                Text = "v",
+                Width = 26,
+                Height = 24,
                 FlatStyle = FlatStyle.System,
-                Anchor = AnchorStyles.Left | AnchorStyles.Top,
-                Margin = new Padding(0, 2, 0, 2)
+                Margin = new Padding(0, 0, 8, 0)
             };
-            _btnToggleEncodeInfoHeader.Click += (_, __) =>
-            {
-                bool collapse = _encodeInfoHeaderContent?.Visible == true;
-                ApplyEncodeInfoHeaderCollapsedState(collapse);
+            _btnToggleEncodeInfoHeader.Click += (_, __) => ToggleEncodeInfoHeaderCollapsed();
 
-                if (_config != null)
-                {
-                    _config.EncodeInfoHeaderCollapsed = collapse;
-                    _config.Save(_configPath);
-                }
+            var title = new Label
+            {
+                Text = "Summary / Preview",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(27, 34, 43),
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 4, 14, 0)
             };
 
             panel.Controls.Add(_btnToggleEncodeInfoHeader, 0, 0);
+            panel.Controls.Add(title, 1, 0);
 
             _collapsedQueueStatusLabel = new Label
             {
-                AutoSize = true,
-                Anchor = AnchorStyles.Left | AnchorStyles.Top,
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                AutoSize = false,
+                AutoEllipsis = true,
+                Dock = DockStyle.Fill,
+                Height = 24,
+                Font = new Font("Segoe UI", 9F, FontStyle.Regular),
                 ForeColor = Color.FromArgb(35, 35, 35),
-                Margin = new Padding(12, 6, 0, 0),
-                Text = "Ready",
-                Visible = false
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0, 4, 0, 0),
+                Text = "Ready"
             };
-            panel.Controls.Add(_collapsedQueueStatusLabel, 1, 0);
+            panel.Controls.Add(_collapsedQueueStatusLabel, 2, 0);
+
+            panel.Click += (_, __) => ToggleEncodeInfoHeaderCollapsed();
+            title.Click += (_, __) => ToggleEncodeInfoHeaderCollapsed();
+            _collapsedQueueStatusLabel.Click += (_, __) => ToggleEncodeInfoHeaderCollapsed();
 
             panel.SizeChanged += (_, __) => UpdateCollapsedQueueStatusLabelMaximumWidth();
             _btnToggleEncodeInfoHeader.SizeChanged += (_, __) => UpdateCollapsedQueueStatusLabelMaximumWidth();
 
             return panel;
+        }
+
+        private void ToggleEncodeInfoHeaderCollapsed()
+        {
+            bool collapse = _encodeInfoHeaderContent?.Visible == true;
+            ApplyEncodeInfoHeaderCollapsedState(collapse);
+
+            if (_config != null)
+            {
+                _config.EncodeInfoHeaderCollapsed = collapse;
+                _config.Save(_configPath);
+            }
         }
 
         private void ApplyEncodeInfoHeaderCollapsedState(bool collapsed)
@@ -615,12 +701,39 @@ namespace Encode
                 _encodeInfoHeaderContent.Visible = !collapsed;
 
             if (_btnToggleEncodeInfoHeader != null)
-                _btnToggleEncodeInfoHeader.Text = collapsed
-                    ? "Show Summary / Preview"
-                    : "Hide Summary / Preview";
+                _btnToggleEncodeInfoHeader.Text = collapsed ? ">" : "v";
+        }
 
-            if (_collapsedQueueStatusLabel != null)
-                _collapsedQueueStatusLabel.Visible = collapsed;
+        private void ApplyDuplicateFinderCollapsedState(bool collapsed)
+        {
+            if (_duplicateFinderBodyPanel != null)
+                _duplicateFinderBodyPanel.Visible = !collapsed;
+
+            if (_btnToggleDuplicateFinder != null)
+                _btnToggleDuplicateFinder.Text = collapsed ? ">" : "v";
+
+            UpdateDuplicateFinderHeaderStatus();
+        }
+
+        private void ToggleDuplicateFinderCollapsed()
+        {
+            bool collapsed = _duplicateFinderBodyPanel?.Visible == true;
+            ApplyDuplicateFinderCollapsedState(collapsed);
+
+            if (_config != null)
+            {
+                _config.DuplicateFinderCollapsed = collapsed;
+                _config.Save(_configPath);
+            }
+        }
+
+        private void UpdateDuplicateFinderHeaderStatus()
+        {
+            if (_duplicateFinderHeaderStatusLabel == null)
+                return;
+
+            _duplicateFinderHeaderStatusLabel.Text = lblDuplicateFinderStatus?.Text ?? "Duplicate Finder";
+            _duplicateFinderHeaderStatusLabel.ForeColor = lblDuplicateFinderStatus?.ForeColor ?? SystemColors.GrayText;
         }
 
         private Control CreateQueueSummaryGroup()
@@ -659,6 +772,11 @@ namespace Encode
             _summaryEstimatedCompletionValue = AddSummaryTile(_queueSummaryTable, "Estimated completion", "--", 0, 4);
             if (_summaryEstimatedCompletionValue.Parent is Control completionTile)
                 _queueSummaryTable.SetColumnSpan(completionTile, 2);
+            _summaryDuplicateGroupsValue = AddSummaryTile(_queueSummaryTable, "Duplicate groups", "--", 0, 5);
+            _summaryDuplicateFilesValue = AddSummaryTile(_queueSummaryTable, "Duplicate files", "--", 1, 5);
+            _summaryDuplicateRecoverableValue = AddSummaryTile(_queueSummaryTable, "Recoverable duplicate space", "--", 0, 6, Color.FromArgb(138, 75, 12));
+            if (_summaryDuplicateRecoverableValue.Parent is Control duplicateSpaceTile)
+                _queueSummaryTable.SetColumnSpan(duplicateSpaceTile, 2);
             group.Controls.Add(_queueSummaryTable);
             return group;
         }
@@ -1276,6 +1394,8 @@ namespace Encode
         private readonly object _activeEncodeQueueLock = new();
         private int _pendingEncodeImports = 0;
         private bool _suppressEncodeFolderSelectionScan = false;
+        private int _folderImportGeneration = 0;
+        private bool _duplicateRescanPending = false;
 
         // How many items in the active queue have finished
         private int _encodeProcessedCount = 0;
@@ -1293,6 +1413,14 @@ namespace Encode
             public string? CustomCompressionProfile = null;
             public double? CustomTargetMb = null;
             public bool AutoRetryScheduled = false;
+            public int? DuplicateGroupId = null;
+            public string DuplicateConfidence = "";
+            public int DuplicateConfidenceScore = 0;
+            public string DuplicateRecommendation = "";
+            public string DuplicateReason = "";
+            public bool ExcludedFromEncodeAsDuplicate = false;
+            public bool DuplicateExclusionOverridden = false;
+            public string StatusBeforeDuplicateExclusion = "Queued";
 
             public bool HasCustomSettings =>
                 CustomTargetMb.HasValue || !string.IsNullOrWhiteSpace(CustomCompressionProfile);
@@ -1775,13 +1903,29 @@ namespace Encode
             // restore filter settings
             chkFilterX264.Checked = _config.ShowX264Files;
             chkFilterX265.Checked = _config.ShowX265Files;
+            chkFilterAv1.Checked = _config.ShowAv1Files;
             chkFilterOtherCodecs.Checked = _config.ShowOtherCodecFiles;
+            chkFindDuplicates.Checked = _config.FindDuplicatesOnImport;
+            chkOnlyDuplicateCandidates.Checked = _config.OnlyQueueDuplicateCandidates;
+            chkAutoDisableDuplicateFinder.Checked = _config.AutoDisableDuplicateFinderAfterCleanup;
+            chkOnlyDuplicateCandidates.Enabled = chkFindDuplicates.Checked;
+            comboDuplicateScanMode.SelectedItem = DuplicateScanModes.Normalize(_config.DuplicateScanMode);
+            comboDuplicateScanMode.Enabled = chkFindDuplicates.Checked;
+            UpdateDuplicateFinderUiState();
             ResetCodecFilterCounts();
 
             const string codecFilterHelp = "Filters by the detected video codec. Supported file extensions are configured in Settings.";
             _uiToolTip.SetToolTip(chkFilterX264, codecFilterHelp);
             _uiToolTip.SetToolTip(chkFilterX265, codecFilterHelp);
+            _uiToolTip.SetToolTip(chkFilterAv1, codecFilterHelp);
             _uiToolTip.SetToolTip(chkFilterOtherCodecs, codecFilterHelp);
+            _uiToolTip.SetToolTip(chkFindDuplicates, "Checks all supported videos for duplicates before codec filtering and queue finalization.");
+            _uiToolTip.SetToolTip(chkOnlyDuplicateCandidates, "Temporarily hides nonduplicate rows for review. Hidden rows remain in the encoding queue.");
+            _uiToolTip.SetToolTip(chkAutoDisableDuplicateFinder, "After duplicate cleanup leaves no groups, prompts to turn Duplicate Finder off.");
+            _uiToolTip.SetToolTip(comboDuplicateScanMode, "Exact duplicates uses file hashes only. Strict visual finds actionable visual matches. Review similar videos includes inspect-only weak matches.");
+            _uiToolTip.SetToolTip(btnAnalyzeDuplicatesNow, "Analyze all supported videos in the selected Input Folder, ignoring codec show filters. Falls back to the current queue when no folder is selected.");
+            _uiToolTip.SetToolTip(btnOpenDuplicateManager, "Open duplicate review and cleanup tools for the latest scan results.");
+            _uiToolTip.SetToolTip(btnClearDuplicateResults, "Clear duplicate markings without removing files.");
 
             // when the user toggles, re‐save and re‐apply filter
             chkFilterX264.CheckedChanged += async (s, e) => {
@@ -1794,10 +1938,45 @@ namespace Encode
                 _config.Save(_configPath);
                 await ReapplyCodecFiltersAsync();
             };
+            chkFilterAv1.CheckedChanged += async (s, e) => {
+                _config.ShowAv1Files = chkFilterAv1.Checked;
+                _config.Save(_configPath);
+                await ReapplyCodecFiltersAsync();
+            };
             chkFilterOtherCodecs.CheckedChanged += async (s, e) => {
                 _config.ShowOtherCodecFiles = chkFilterOtherCodecs.Checked;
                 _config.Save(_configPath);
                 await ReapplyCodecFiltersAsync();
+            };
+            chkFindDuplicates.CheckedChanged += (s, e) => {
+                _config.FindDuplicatesOnImport = chkFindDuplicates.Checked;
+                chkOnlyDuplicateCandidates.Enabled = chkFindDuplicates.Checked;
+                comboDuplicateScanMode.Enabled = chkFindDuplicates.Checked;
+                _config.Save(_configPath);
+                UpdateDuplicateFinderUiState();
+                if (chkFindDuplicates.Checked)
+                    StartDuplicateScanIfEnabled();
+                else
+                    ClearDuplicateAnnotations();
+            };
+            chkOnlyDuplicateCandidates.CheckedChanged += (s, e) => {
+                _config.OnlyQueueDuplicateCandidates = chkOnlyDuplicateCandidates.Checked;
+                _config.Save(_configPath);
+                if (_lastDuplicateScanResult != null)
+                    ApplyDuplicateCandidateViewFilter();
+                else if (chkOnlyDuplicateCandidates.Checked && chkFindDuplicates.Checked)
+                    StartDuplicateScanIfEnabled();
+            };
+            chkAutoDisableDuplicateFinder.CheckedChanged += (s, e) => {
+                _config.AutoDisableDuplicateFinderAfterCleanup = chkAutoDisableDuplicateFinder.Checked;
+                _config.Save(_configPath);
+            };
+            comboDuplicateScanMode.SelectedIndexChanged += (s, e) => {
+                _config.DuplicateScanMode = DuplicateScanModes.Normalize(comboDuplicateScanMode.SelectedItem?.ToString());
+                _config.Save(_configPath);
+                UpdateDuplicateFinderUiState();
+                if (chkFindDuplicates.Checked)
+                    StartDuplicateScanIfEnabled();
             };
 
             chkProcessAll.Checked = _config.LastChkProcessAll;
@@ -1912,6 +2091,7 @@ namespace Encode
             _config.LastChkDeleteSource = chkDeleteSource.Checked;
             _config.LastChkFilterX264 = chkFilterX264.Checked;
             _config.LastChkFilterX265 = chkFilterX265.Checked;
+            _config.LastChkFilterAv1 = chkFilterAv1.Checked;
             _config.LastChkProcessAll = chkProcessAll.Checked;
         }
 
@@ -2397,7 +2577,8 @@ namespace Encode
                 string status = row.Cells["colStatus"].Value?.ToString() ?? "";
                 return status.Equals("Done", StringComparison.OrdinalIgnoreCase) ||
                        status.Equals("Failed", StringComparison.OrdinalIgnoreCase) ||
-                       status.Equals("Canceled", StringComparison.OrdinalIgnoreCase);
+                       status.Equals("Canceled", StringComparison.OrdinalIgnoreCase) ||
+                       status.Equals("Excluded - exact duplicate", StringComparison.OrdinalIgnoreCase);
             }
 
             int runningCount = Math.Max(activeRows.Count, runningJobs.Length);
@@ -2438,10 +2619,12 @@ namespace Encode
 
                 int h264Count = 0;
                 int h265Count = 0;
+                int av1Count = 0;
                 int otherCount = 0;
                 var fsFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 bool allowH264 = chkFilterX264.Checked;
                 bool allowHevc = chkFilterX265.Checked;
+                bool allowAv1 = chkFilterAv1.Checked;
                 bool allowOther = chkFilterOtherCodecs.Checked;
 
                 foreach (var file in Directory.EnumerateFiles(folder, "*.*", searchOpt))
@@ -2458,14 +2641,16 @@ namespace Encode
                         h264Count++;
                     else if (IsH265Codec(codec))
                         h265Count++;
+                    else if (IsAv1Codec(codec))
+                        av1Count++;
                     else
                         otherCount++;
 
-                    if (PassesCodecFilter(codec, allowH264, allowHevc, allowOther))
+                    if (PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther))
                         fsFiles.Add(file);
                 }
 
-                UpdateCodecFilterCounts(h264Count, h265Count, otherCount);
+                UpdateCodecFilterCounts(h264Count, h265Count, av1Count, otherCount);
 
                 // Add any new files that aren't already in the grid
                 foreach (var path in fsFiles)
@@ -2637,16 +2822,13 @@ namespace Encode
             if (dgvEncodeQueue.Rows.Count == 0)
                 yield break;
 
-            int rowIndex = dgvEncodeQueue.Rows.GetFirstRow(DataGridViewElementStates.Visible);
-            while (rowIndex >= 0)
+            // Rows hidden by "Show only duplicate candidates" remain part of the
+            // queue. DataGridView keeps the collection in the active sort order,
+            // so enumerate it directly instead of treating visibility as eligibility.
+            foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
             {
-                var row = dgvEncodeQueue.Rows[rowIndex];
                 if (!row.IsNewRow)
                     yield return row;
-
-                rowIndex = dgvEncodeQueue.Rows.GetNextRow(
-                    rowIndex,
-                    DataGridViewElementStates.Visible);
             }
         }
 
@@ -2984,6 +3166,7 @@ namespace Encode
         private void RecreateMediaServices()
         {
             _estimateService?.Dispose();
+            _duplicateScanCts?.Cancel();
             _mediaInfoService?.FlushCache();
 
             _encodingService = new EncodingService(
@@ -3005,6 +3188,11 @@ namespace Encode
 
             _sizeEstimateService = new SizeEstimateService(_mediaInfoService);
             _estimateService = new EstimateBackgroundService(_sizeEstimateService, _mediaInfoService);
+            _duplicateDetectionService = new DuplicateDetectionService(
+                _mediaInfoService,
+                AppDomain.CurrentDomain.BaseDirectory,
+                _config.FfmpegPath,
+                _config.EnableDuplicateSignatureCache);
         }
 
         private void SettingsToolStripMenuItem_Click(object? sender, EventArgs e)
@@ -3019,6 +3207,9 @@ namespace Encode
                 _config = dlg.Config;
                 _config.Save(_configPath);
                 RecreateMediaServices();
+                ApplyDuplicateConfigurationToUi();
+                UpdateDuplicateReferenceFolderUi();
+                RescoreDuplicateKeeperRecommendations();
 
                 RefreshEncodeGrid();
                 ApplyWatchFolderConfiguration();
@@ -3043,8 +3234,20 @@ namespace Encode
                     _config.UpdateFolderPath,
                     _config.AutomaticallyBackupBeforeUpdates,
                     _config.BackupFolderPath,
-                    _config.BackupsToKeep))
+                    _config.BackupsToKeep,
+                    reportStatus: ShowUpdateStatus))
                 return; // updater launched; app will exit from UpdateManager
+        }
+
+        private void ShowUpdateStatus(string status)
+        {
+            toolStripStatusLabel1.Text = status;
+            UpdateRelocatedEncodeStatus(status);
+
+            // Backup and update staging are synchronous. Force the status surfaces
+            // to paint before those phases begin so the user sees each transition.
+            statusStrip1.Refresh();
+            _summaryQueueStatusValue?.Refresh();
         }
 
         // If other code only needs the full path:
@@ -3145,6 +3348,7 @@ namespace Encode
                 _queueTotalsDirty = false;
                 ClearCompletedEncodePaths();
                 ResetCodecFilterCounts();
+                ClearDuplicateAnnotations();
                 ResetEncodeMetrics();
                 ClearEncodeInputFolder();
                 UpdateAnalyzeQueueButtonState();
@@ -3226,7 +3430,7 @@ namespace Encode
 
         private void scheduleEncodeStartToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            using var dlg = new Encode.Services.ScheduleForm();
+            using var dlg = new ScheduleForm();
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
             _encodeScheduledUtc = dlg.ScheduledUtc;
@@ -3377,7 +3581,10 @@ namespace Encode
             return list;
         }
 
-        private bool AddEncodeItemIfNotPresent(string path, bool refreshEstimates = true)
+        private bool AddEncodeItemIfNotPresent(
+            string path,
+            bool refreshEstimates = true,
+            bool appendToActiveQueue = true)
         {
             if (_rowsByPath.ContainsKey(path))
                 return false;
@@ -3437,7 +3644,7 @@ namespace Encode
             // Imports performed during an encode are automatically appended to the live queue.
             lock (_activeEncodeQueueLock)
             {
-                if (_encodingActive && _activeEncodeQueue != null && !_activeEncodeQueue.Contains(r))
+                if (appendToActiveQueue && _encodingActive && _activeEncodeQueue != null && !_activeEncodeQueue.Contains(r))
                     _activeEncodeQueue.Add(r);
             }
 
@@ -3723,6 +3930,12 @@ namespace Encode
                     back = Color.FromArgb(255, 251, 235);
                     statusBack = Color.FromArgb(253, 230, 138);
                     statusFore = Color.FromArgb(120, 53, 15);
+                    break;
+                case "excluded - exact duplicate":
+                    back = Color.FromArgb(248, 250, 252);
+                    fore = Color.FromArgb(100, 116, 139);
+                    statusBack = Color.FromArgb(226, 232, 240);
+                    statusFore = Color.FromArgb(71, 85, 105);
                     break;
             }
 

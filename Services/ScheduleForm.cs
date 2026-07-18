@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Windows.Forms;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public partial class ScheduleForm : Form
     {
