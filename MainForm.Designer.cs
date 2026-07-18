@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace Encode
+namespace MediaFlux
 {
     partial class MainForm
     {
@@ -73,11 +73,24 @@ namespace Encode
         private Button btnRefreshEncode;
         private CheckBox chkFilterX264;
         private CheckBox chkFilterX265;
+        private CheckBox chkFilterAv1;
         private CheckBox chkFilterOtherCodecs;
+        private CheckBox chkFindDuplicates;
+        private CheckBox chkOnlyDuplicateCandidates;
+        private CheckBox chkAutoDisableDuplicateFinder;
+        private ComboBox comboDuplicateScanMode;
+        private Label lblDuplicateFinderStatus;
+        private Label lblDuplicateReferenceStatus;
+        private Button btnAnalyzeDuplicatesNow;
+        private Button btnOpenDuplicateManager;
+        private Button btnClearDuplicateResults;
+        private Button btnSetDuplicateReferenceFolder;
+        private Button btnClearDuplicateReferenceFolder;
         private CheckBox chkProcessAll;
         private CheckBox chkRetryFailedJobs;
         private System.Windows.Forms.Button btnPauseQueue;
         private GroupBox grpOptions;
+        private TableLayoutPanel grpDuplicateFinder;
 
         private Label lblResolution = null!;
         private ComboBox comboResolution = null!;
@@ -208,7 +221,19 @@ namespace Encode
             comboCompressionProfile = new ComboBox();
             chkFilterX264 = new CheckBox();
             chkFilterX265 = new CheckBox();
+            chkFilterAv1 = new CheckBox();
             chkFilterOtherCodecs = new CheckBox();
+            chkFindDuplicates = new CheckBox();
+            chkOnlyDuplicateCandidates = new CheckBox();
+            chkAutoDisableDuplicateFinder = new CheckBox();
+            comboDuplicateScanMode = new ComboBox();
+            lblDuplicateFinderStatus = new Label();
+            lblDuplicateReferenceStatus = new Label();
+            btnAnalyzeDuplicatesNow = new Button();
+            btnOpenDuplicateManager = new Button();
+            btnClearDuplicateResults = new Button();
+            btnSetDuplicateReferenceFolder = new Button();
+            btnClearDuplicateReferenceFolder = new Button();
             chkProcessAll = new CheckBox();
             chkRetryFailedJobs = new CheckBox();
 
@@ -471,7 +496,7 @@ namespace Encode
             panelEncode.Dock = DockStyle.Fill;
             tlEncode.Dock = DockStyle.Fill;
             tlEncode.ColumnCount = 4;
-            tlEncode.RowCount = 13;
+            tlEncode.RowCount = 14;
             tlEncode.Padding = new Padding(10, 30, 10, 10);
 
             // UPDATED column layout: label | main input | secondary label | secondary input
@@ -482,7 +507,7 @@ namespace Encode
             tlEncode.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));   // secondary inputs
 
             tlEncode.RowStyles.Clear();
-            for (int i = 0; i < 12; i++)
+            for (int i = 0; i < 13; i++)
                 tlEncode.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             tlEncode.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
@@ -491,6 +516,7 @@ namespace Encode
             this.cmbEncodeOutput = new System.Windows.Forms.ComboBox();
             this.chkFilterX264 = new System.Windows.Forms.CheckBox();
             this.chkFilterX265 = new System.Windows.Forms.CheckBox();
+            this.chkFilterAv1 = new System.Windows.Forms.CheckBox();
             this.chkFilterOtherCodecs = new System.Windows.Forms.CheckBox();
 
             // Row 0: Input Folder
@@ -664,10 +690,10 @@ namespace Encode
             tlEncode.SetColumnSpan(lblEncodeStatus, 4);
             tlEncode.Controls.Add(lblEncodeStatus, 0, 9);
 
-            // Row 10: Options group (process-all + filters), neat 2-column layout
+            // Row 10: Encoding options group
             this.grpOptions = new GroupBox
             {
-                Text = "Options",
+                Text = "Encoding Options",
                 AutoSize = true,
                 Padding = new Padding(10, 8, 10, 10),
                 Anchor = AnchorStyles.Left | AnchorStyles.Right
@@ -678,10 +704,11 @@ namespace Encode
                 AutoSize = true,
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 3
+                RowCount = 4
             };
             tlOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             tlOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -701,6 +728,10 @@ namespace Encode
             chkFilterX265.AutoSize = true;
             chkFilterX265.Margin = new Padding(4, 2, 12, 2);
 
+            chkFilterAv1.Text = "Show av1";
+            chkFilterAv1.AutoSize = true;
+            chkFilterAv1.Margin = new Padding(4, 2, 12, 2);
+
             chkFilterOtherCodecs.Text = "Show other codecs";
             chkFilterOtherCodecs.AutoSize = true;
             chkFilterOtherCodecs.Margin = new Padding(4, 2, 12, 2);
@@ -710,6 +741,47 @@ namespace Encode
             chkRetryFailedJobs.Margin = new Padding(4, 2, 12, 2);
             chkRetryFailedJobs.Checked = false;
 
+            chkFindDuplicates.Text = "Check for duplicates before queueing";
+            chkFindDuplicates.AutoSize = true;
+            chkFindDuplicates.Margin = new Padding(4, 2, 12, 2);
+            chkFindDuplicates.Checked = false;
+
+            chkOnlyDuplicateCandidates.Text = "Show only duplicate candidates";
+            chkOnlyDuplicateCandidates.AutoSize = true;
+            chkOnlyDuplicateCandidates.Margin = new Padding(4, 2, 12, 2);
+            chkOnlyDuplicateCandidates.Checked = false;
+
+            chkAutoDisableDuplicateFinder.Text = "Turn off after cleanup";
+            chkAutoDisableDuplicateFinder.AutoSize = true;
+            chkAutoDisableDuplicateFinder.Margin = new Padding(4, 2, 12, 2);
+            chkAutoDisableDuplicateFinder.Checked = true;
+
+            comboDuplicateScanMode.DropDownStyle = ComboBoxStyle.DropDownList;
+            comboDuplicateScanMode.Items.AddRange(new object[]
+            {
+                "Exact duplicates",
+                "Strict visual duplicates",
+                "Review similar videos"
+            });
+            comboDuplicateScanMode.SelectedIndex = 1;
+            comboDuplicateScanMode.Width = 220;
+            comboDuplicateScanMode.Margin = new Padding(4, 0, 12, 2);
+
+            lblDuplicateReferenceStatus.Text = "Reference Folder: Not set";
+            lblDuplicateReferenceStatus.AutoSize = true;
+            lblDuplicateReferenceStatus.Margin = new Padding(4, 4, 12, 2);
+            lblDuplicateReferenceStatus.ForeColor = SystemColors.GrayText;
+
+            btnSetDuplicateReferenceFolder.Text = "Set Reference Folder";
+            btnSetDuplicateReferenceFolder.AutoSize = true;
+            btnSetDuplicateReferenceFolder.Margin = new Padding(4, 2, 4, 2);
+            btnSetDuplicateReferenceFolder.Click += SetDuplicateReferenceFolder_Click;
+
+            btnClearDuplicateReferenceFolder.Text = "Clear Reference";
+            btnClearDuplicateReferenceFolder.AutoSize = true;
+            btnClearDuplicateReferenceFolder.Margin = new Padding(4, 2, 4, 2);
+            btnClearDuplicateReferenceFolder.Click += ClearDuplicateReferenceFolder_Click;
+
             var lblExtensionFilterHint = new Label
             {
                 Text = "File extensions: Settings",
@@ -718,13 +790,34 @@ namespace Encode
                 ForeColor = SystemColors.GrayText
             };
 
+            lblDuplicateFinderStatus.Text = "Duplicate Finder is off";
+            lblDuplicateFinderStatus.AutoSize = true;
+            lblDuplicateFinderStatus.Margin = new Padding(22, 4, 12, 2);
+            lblDuplicateFinderStatus.ForeColor = SystemColors.GrayText;
+
+            btnAnalyzeDuplicatesNow.Text = "Run Duplicate Check Again";
+            btnAnalyzeDuplicatesNow.AutoSize = true;
+            btnAnalyzeDuplicatesNow.Margin = new Padding(4, 2, 4, 2);
+            btnAnalyzeDuplicatesNow.Click += AnalyzeDuplicatesNow_Click;
+
+            btnOpenDuplicateManager.Text = "Review Duplicates";
+            btnOpenDuplicateManager.AutoSize = true;
+            btnOpenDuplicateManager.Margin = new Padding(4, 2, 4, 2);
+            btnOpenDuplicateManager.Click += ShowDuplicateManager_Click;
+
+            btnClearDuplicateResults.Text = "Clear Results";
+            btnClearDuplicateResults.AutoSize = true;
+            btnClearDuplicateResults.Margin = new Padding(4, 2, 4, 2);
+            btnClearDuplicateResults.Click += ClearDuplicateResults_Click;
+
             // add controls row-major for alignment
             tlOptions.Controls.Add(chkProcessAll, 0, 0);
             tlOptions.Controls.Add(chkFilterX264, 1, 0);
             tlOptions.Controls.Add(chkRetryFailedJobs, 0, 1);
             tlOptions.Controls.Add(chkFilterX265, 1, 1);
             tlOptions.Controls.Add(lblExtensionFilterHint, 0, 2);
-            tlOptions.Controls.Add(chkFilterOtherCodecs, 1, 2);
+            tlOptions.Controls.Add(chkFilterAv1, 1, 2);
+            tlOptions.Controls.Add(chkFilterOtherCodecs, 1, 3);
 
             grpOptions.Controls.Add(tlOptions);
 
@@ -732,11 +825,149 @@ namespace Encode
             tlEncode.Controls.Add(grpOptions, 0, 10);
             tlEncode.SetColumnSpan(grpOptions, 4);
 
-            // Row 11: Progress Panel
-            tlEncode.SetColumnSpan(progressPanel, 4);
-            tlEncode.Controls.Add(progressPanel, 0, 11);
+            // Row 11: Duplicate Finder panel
+            this.grpDuplicateFinder = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+                ColumnCount = 1,
+                RowCount = 2,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
+                Margin = new Padding(0, 3, 0, 3),
+                Padding = Padding.Empty,
+                Dock = DockStyle.Top
+            };
+            grpDuplicateFinder.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            grpDuplicateFinder.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            grpDuplicateFinder.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            // Row 12: Encode Queue Grid
+            var duplicateHeader = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = new Padding(8, 5, 8, 5),
+                BackColor = Color.FromArgb(248, 249, 251),
+                Cursor = Cursors.Hand
+            };
+            duplicateHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            duplicateHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            duplicateHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            duplicateHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            _btnToggleDuplicateFinder = new Button
+            {
+                Text = "v",
+                Width = 26,
+                Height = 24,
+                FlatStyle = FlatStyle.System,
+                Margin = new Padding(0, 0, 8, 0)
+            };
+            _btnToggleDuplicateFinder.Click += (_, __) => ToggleDuplicateFinderCollapsed();
+
+            var duplicateTitle = new Label
+            {
+                Text = "Duplicate Finder",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(27, 34, 43),
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 4, 14, 0)
+            };
+
+            _duplicateFinderHeaderStatusLabel = new Label
+            {
+                Text = "Duplicate Finder is off",
+                AutoSize = false,
+                AutoEllipsis = true,
+                Dock = DockStyle.Fill,
+                Height = 24,
+                Font = new Font("Segoe UI", 9F, FontStyle.Regular),
+                ForeColor = SystemColors.GrayText,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0, 4, 0, 0)
+            };
+
+            duplicateHeader.Controls.Add(_btnToggleDuplicateFinder, 0, 0);
+            duplicateHeader.Controls.Add(duplicateTitle, 1, 0);
+            duplicateHeader.Controls.Add(_duplicateFinderHeaderStatusLabel, 2, 0);
+            duplicateHeader.Click += (_, __) => ToggleDuplicateFinderCollapsed();
+            duplicateTitle.Click += (_, __) => ToggleDuplicateFinderCollapsed();
+            _duplicateFinderHeaderStatusLabel.Click += (_, __) => ToggleDuplicateFinderCollapsed();
+
+            var tlDuplicateFinder = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 3,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
+                Margin = Padding.Empty,
+                Padding = new Padding(10, 8, 10, 10),
+                BackColor = Color.White
+            };
+            _duplicateFinderBodyPanel = tlDuplicateFinder;
+            tlDuplicateFinder.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tlDuplicateFinder.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240F));
+            tlDuplicateFinder.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            tlDuplicateFinder.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tlDuplicateFinder.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            tlDuplicateFinder.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            tlDuplicateFinder.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            var pnlDuplicateActions = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            pnlDuplicateActions.Controls.Add(btnAnalyzeDuplicatesNow);
+            pnlDuplicateActions.Controls.Add(btnOpenDuplicateManager);
+            pnlDuplicateActions.Controls.Add(btnClearDuplicateResults);
+
+            tlDuplicateFinder.Controls.Add(chkFindDuplicates, 0, 0);
+            tlDuplicateFinder.Controls.Add(comboDuplicateScanMode, 1, 0);
+            tlDuplicateFinder.Controls.Add(lblDuplicateFinderStatus, 2, 0);
+            tlDuplicateFinder.Controls.Add(pnlDuplicateActions, 3, 0);
+            tlDuplicateFinder.Controls.Add(chkOnlyDuplicateCandidates, 0, 1);
+            tlDuplicateFinder.SetColumnSpan(chkOnlyDuplicateCandidates, 2);
+            tlDuplicateFinder.Controls.Add(chkAutoDisableDuplicateFinder, 2, 1);
+            tlDuplicateFinder.SetColumnSpan(chkAutoDisableDuplicateFinder, 2);
+            var pnlDuplicateReferenceActions = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            pnlDuplicateReferenceActions.Controls.Add(btnSetDuplicateReferenceFolder);
+            pnlDuplicateReferenceActions.Controls.Add(btnClearDuplicateReferenceFolder);
+
+            tlDuplicateFinder.Controls.Add(lblDuplicateReferenceStatus, 0, 2);
+            tlDuplicateFinder.SetColumnSpan(lblDuplicateReferenceStatus, 3);
+            tlDuplicateFinder.Controls.Add(pnlDuplicateReferenceActions, 3, 2);
+
+            grpDuplicateFinder.Controls.Add(duplicateHeader, 0, 0);
+            grpDuplicateFinder.Controls.Add(tlDuplicateFinder, 0, 1);
+            tlEncode.Controls.Add(grpDuplicateFinder, 0, 11);
+            tlEncode.SetColumnSpan(grpDuplicateFinder, 4);
+
+            // Row 12: Progress Panel
+            tlEncode.SetColumnSpan(progressPanel, 4);
+            tlEncode.Controls.Add(progressPanel, 0, 12);
+
+            // Row 13: Encode Queue Grid
             dgvEncodeQueue = new DataGridView();
             dgvEncodeQueue.Dock = DockStyle.Fill;
             dgvEncodeQueue.Margin = new Padding(0);
@@ -818,6 +1049,27 @@ namespace Encode
                 Name = "colCustom",
                 HeaderText = "Custom",
                 Width = 72,
+                Resizable = DataGridViewTriState.True
+            });
+            dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "colDuplicate",
+                HeaderText = "Duplicate",
+                Width = 92,
+                Resizable = DataGridViewTriState.True
+            });
+            dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "colDuplicateConfidence",
+                HeaderText = "Confidence",
+                Width = 92,
+                Resizable = DataGridViewTriState.True
+            });
+            dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "colDuplicateAction",
+                HeaderText = "Recommendation",
+                Width = 130,
                 Resizable = DataGridViewTriState.True
             });
 
@@ -923,7 +1175,7 @@ namespace Encode
                 tabs.TabPages.Add(tabHistory);            
 
             tlEncode.SetColumnSpan(dgvEncodeQueue, 4);
-            tlEncode.Controls.Add(dgvEncodeQueue, 0, 12);
+            tlEncode.Controls.Add(dgvEncodeQueue, 0, 13);
 
             panelEncode.Controls.Add(tlEncode);
 
@@ -1271,7 +1523,7 @@ namespace Encode
 
             MainMenuStrip = menuStrip1;
 
-            Text = "GoEncode v0.8.17";
+            Text = "MediaFlux v0.10.6.1";
             ClientSize = new Size(800, 760);
         }
     }

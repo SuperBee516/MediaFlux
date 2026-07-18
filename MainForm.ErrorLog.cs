@@ -1,10 +1,10 @@
-using Encode.Services;
+using MediaFlux.Services;
 using System;
 using System.Diagnostics;
 using System.IO;
 using System.Windows.Forms;
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {

@@ -4,9 +4,9 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
-using Encode.Services;
+using MediaFlux.Services;
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {
@@ -341,6 +341,18 @@ namespace Encode
                 var meta = row.Tag as RowMeta;
                 string? path = meta?.Path ?? row.Tag as string;
 
+                if (meta?.ExcludedFromEncodeAsDuplicate == true)
+                {
+                    row.Cells["colEstimatedSize"].Value = "";
+                    SetEncodeRowState(
+                        row,
+                        "Excluded - exact duplicate",
+                        "",
+                        "",
+                        "Exact duplicate soft-excluded from encoding. The source file was not changed.");
+                    continue;
+                }
+
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                 {
                     row.Cells["colEstimatedSize"].Value = "";
@@ -451,6 +463,9 @@ namespace Encode
                 if (_summaryNewSizeValue != null) _summaryNewSizeValue.Text = "--";
                 if (_summaryEstimatedCompletionValue != null) _summaryEstimatedCompletionValue.Text = "--";
                 if (_summaryTotalEstimatedSavedValue != null) _summaryTotalEstimatedSavedValue.Text = "--";
+                if (_summaryDuplicateGroupsValue != null) _summaryDuplicateGroupsValue.Text = "--";
+                if (_summaryDuplicateFilesValue != null) _summaryDuplicateFilesValue.Text = "--";
+                if (_summaryDuplicateRecoverableValue != null) _summaryDuplicateRecoverableValue.Text = "--";
                 if (_summarySelectedCountValue != null) _summarySelectedCountValue.Text = "0";
                 if (_summarySelectedSavedValue != null) _summarySelectedSavedValue.Text = "--";
                 return;

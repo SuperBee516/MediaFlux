@@ -1,5 +1,5 @@
-﻿using Encode.Models;
-using Encode.Services;
+﻿using MediaFlux.Models;
+using MediaFlux.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -13,7 +13,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {

@@ -1,4 +1,4 @@
-namespace Encode.Models
+namespace MediaFlux.Models
 {
     public sealed class EncodingPreset
     {

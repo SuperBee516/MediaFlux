@@ -1,4 +1,4 @@
-using Encode.Services;
+using MediaFlux.Services;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -6,12 +6,13 @@ using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {
         private int _h264FileCount;
         private int _h265FileCount;
+        private int _av1FileCount;
         private int _otherCodecFileCount;
         private readonly HashSet<string> _codecCountedPaths = new(StringComparer.OrdinalIgnoreCase);
 
@@ -34,6 +35,7 @@ namespace Encode
             HashSet<string> AllowedExtensions,
             bool AllowH264,
             bool AllowH265,
+            bool AllowAv1,
             bool AllowOther);
 
         private void InitializeWatchFolderUi()
@@ -359,6 +361,7 @@ namespace Encode
                     GetAllowedExts(),
                     chkFilterX264.Checked,
                     chkFilterX265.Checked,
+                    chkFilterAv1.Checked,
                     chkFilterOtherCodecs.Checked);
             }, null);
         }
@@ -423,6 +426,7 @@ namespace Encode
                         codec,
                         settings.AllowH264,
                         settings.AllowH265,
+                        settings.AllowAv1,
                         settings.AllowOther))
                 {
                     // Keep it eligible for a future scan if the user later changes
@@ -644,6 +648,7 @@ namespace Encode
                 codec,
                 chkFilterX264.Checked,
                 chkFilterX265.Checked,
+                chkFilterAv1.Checked,
                 chkFilterOtherCodecs.Checked);
         }
 
@@ -651,14 +656,17 @@ namespace Encode
             string codec,
             bool allowH264,
             bool allowHevc,
+            bool allowAv1,
             bool allowOther)
         {
-            if (!allowH264 && !allowHevc && !allowOther)
+            if (!allowH264 && !allowHevc && !allowAv1 && !allowOther)
                 return false;
             if (IsH264Codec(codec))
                 return allowH264;
             if (IsH265Codec(codec))
                 return allowHevc;
+            if (IsAv1Codec(codec))
+                return allowAv1;
             return allowOther;
         }
 
@@ -669,20 +677,26 @@ namespace Encode
             string.Equals(codec, "hevc", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(codec, "h265", StringComparison.OrdinalIgnoreCase);
 
-        private void UpdateCodecFilterCounts(int h264Count, int h265Count, int otherCount)
+        private static bool IsAv1Codec(string codec) =>
+            string.Equals(codec, "av1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(codec, "av01", StringComparison.OrdinalIgnoreCase);
+
+        private void UpdateCodecFilterCounts(int h264Count, int h265Count, int av1Count, int otherCount)
         {
             _h264FileCount = h264Count;
             _h265FileCount = h265Count;
+            _av1FileCount = av1Count;
             _otherCodecFileCount = otherCount;
             chkFilterX264.Text = $"Show x264 / h.264 ({h264Count:N0})";
             chkFilterX265.Text = $"Show x265 / h.265 ({h265Count:N0})";
+            chkFilterAv1.Text = $"Show av1 ({av1Count:N0})";
             chkFilterOtherCodecs.Text = $"Show other codecs ({otherCount:N0})";
         }
 
         private void ResetCodecFilterCounts()
         {
             _codecCountedPaths.Clear();
-            UpdateCodecFilterCounts(0, 0, 0);
+            UpdateCodecFilterCounts(0, 0, 0, 0);
         }
 
         private void TrackCodecFilterCount(string path, string? codec)
@@ -692,11 +706,13 @@ namespace Encode
 
             codec ??= string.Empty;
             if (IsH264Codec(codec))
-                UpdateCodecFilterCounts(_h264FileCount + 1, _h265FileCount, _otherCodecFileCount);
+                UpdateCodecFilterCounts(_h264FileCount + 1, _h265FileCount, _av1FileCount, _otherCodecFileCount);
             else if (IsH265Codec(codec))
-                UpdateCodecFilterCounts(_h264FileCount, _h265FileCount + 1, _otherCodecFileCount);
+                UpdateCodecFilterCounts(_h264FileCount, _h265FileCount + 1, _av1FileCount, _otherCodecFileCount);
+            else if (IsAv1Codec(codec))
+                UpdateCodecFilterCounts(_h264FileCount, _h265FileCount, _av1FileCount + 1, _otherCodecFileCount);
             else
-                UpdateCodecFilterCounts(_h264FileCount, _h265FileCount, _otherCodecFileCount + 1);
+                UpdateCodecFilterCounts(_h264FileCount, _h265FileCount, _av1FileCount, _otherCodecFileCount + 1);
         }
     }
 }

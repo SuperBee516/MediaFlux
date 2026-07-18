@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Encode.Models
+namespace MediaFlux.Models
 {
     public enum AudioQuality
     {

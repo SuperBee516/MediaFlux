@@ -3,7 +3,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
-namespace Encode
+namespace MediaFlux
 {
     internal sealed record CompactQueueSnapshot(
         string FileName,
@@ -108,8 +108,21 @@ namespace Encode
                     var area = Screen.FromControl(_mainForm).WorkingArea;
                     Location = new Point(area.Right - Width - 16, area.Top + 16);
                 }
-                _refreshTimer.Start();
-                RefreshSnapshot();
+            };
+            VisibleChanged += (_, __) =>
+            {
+                if (Visible)
+                {
+                    // Shown only fires once for a Form. Compact mode reuses this
+                    // instance, so every Show() must restart live updates and
+                    // replace any values left from the previous session.
+                    RefreshSnapshot();
+                    _refreshTimer.Start();
+                }
+                else
+                {
+                    _refreshTimer.Stop();
+                }
             };
             FormClosing += CompactModeForm_FormClosing;
             Move += (_, __) =>

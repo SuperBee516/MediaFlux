@@ -1,134 +1,173 @@
-# 🎬 GoEncode
+# MediaFlux
 
-**GoEncode** is a Windows-based C# application designed to manage and automate **FFmpeg-driven video encoding workflows**.
+> **MediaFlux is the new name of GoEncode.** The application, repository, solution, project, assembly, and executable were recently renamed; some user-facing labels still use “Encode” to describe the video-encoding workflow.
 
-It is built for **reliability, repeatability, and transparency**, with a strong emphasis on **batch processing, hardware acceleration, deterministic encoding behavior, and explicit control** over how media is processed.
+MediaFlux is a Windows desktop application for managing FFmpeg-powered video and audio workflows. It is designed for predictable batch processing, detailed queue visibility, large media collections, and explicit control over how files are analyzed and encoded.
 
-This is not a one-click consumer encoder — it is a **power-user orchestration tool** for predictable, large-scale media processing.
+The application is intended for power users who want a graphical orchestration layer around FFmpeg and FFprobe without hiding the important encoding decisions.
 
----
+## Highlights
 
-## 🎯 Primary Goals
+- Batch video-encoding queue with pause, stop, refresh, scheduling, import, and export
+- NVIDIA NVENC, experimental Intel Quick Sync (QSV), and CPU encoding paths
+- H.264, H.265/HEVC, and AV1-oriented media inspection and filtering
+- Configurable quality/file-size profiles, output targets, encoder presets, scaling, bit depth, stream handling, and audio behavior
+- Live FFmpeg progress, speed, FPS, bitrate, elapsed time, projected output size, and queue ETA
+- Large-queue loading with progressive analysis, bounded background work, cancellation, and persistent metadata caching
+- Duplicate detection, review, keeper recommendations, reference-folder comparison, and guarded cleanup actions
+- Audio extraction/conversion with loudness normalization and optional RNNoise denoising
+- Persistent job history, requeue actions, diagnostics, and centralized error logging
+- Watch-folder automation, Windows Explorer context-menu integration, Discord completion notifications, and compact mode
+- Program backup/restore and install-folder update support
 
-- Orchestrate FFmpeg encoding jobs in a **structured, repeatable, and auditable** manner
-- Support **GPU and CPU-based** encoding pipelines
-- Provide **accurate progress tracking and job introspection**
-- Ensure **encoding output is deterministic** (no silent FFmpeg defaults)
-- Remain **maintainable and refactor-friendly** as the project evolves
+## Video queue
 
----
+MediaFlux can load files or folders into a sortable queue, including subfolders when requested. The order visible in the grid is the order captured when encoding starts. Files can also be appended safely while a queue is active.
 
-## 🧱 Technology Stack
+Queue controls include:
 
-- **Language:** C#
-- **Framework:** .NET (Windows)
-- **UI:** Windows Forms (WinForms)
-- **Encoding Backend:** FFmpeg / FFprobe
-- **Execution Model:** External process execution with managed orchestration
+- Process the full queue or selected rows
+- Pause and resume queue progression
+- Stop active processing
+- Schedule or cancel a future start
+- Retry failed jobs at the end of the current run
+- Add selected rows to an active queue
+- Export and import queue files
+- Apply global presets or per-row custom encode settings
+- Filter displayed files by H.264, H.265, AV1, or other codecs
+- Optionally delete incomplete output files from failed or canceled attempts
 
----
+The Queue Summary reports the current source size, projected new size, estimated reduction, progress, and an estimated completion time when enough duration and runtime data is available.
 
-## ⚙️ Core Capabilities
+## Encoding controls
 
-- 📦 **Batch encoding queue**
-- 🎥 **Explicit FFmpeg video pipeline construction**
-- 🚀 **Hardware acceleration support** (NVENC / QSV / AMF when available)
-- 🎚️ **8-bit and 10-bit encoding support**
-- 🔊 **Smart audio handling**
-  - Audio copy by default (no unnecessary re-encoding)
-  - Optional channel reconfiguration when requested
-- 📊 **Accurate target-size encoding**
-  - Video bitrate budgeted after audio + container overhead
-- 🧾 **Explicit stream mapping**
-  - Preserve or limit audio/subtitle streams by design
-- 📈 **Real-time job progress and structured logging**
-- 🔁 **Job history and re-queue support**
-- 🧩 **Modular, service-based internal architecture**
+The encoding interface exposes the decisions that materially affect output:
 
----
+- GPU (NVENC), GPU (QSV, experimental), and CPU modes
+- Video format, quality/file-size profile, speed preset, resolution, and bit depth
+- Automatic or manual target size
+- Optional output filename and codec suffixes
+- Audio copy or conversion behavior, channel selection, and stream controls
+- Subtitle preservation or exclusion
+- Explicit FFmpeg stream mapping and collision-safe output naming
 
-## 🖥️ Platform Support
+Actual codec and hardware availability depends on the installed FFmpeg build, GPU, and drivers. Failures are reported rather than silently changing to an unrelated encoding path.
 
-- **Operating System:** Windows 10 / Windows 11
-- **Architecture:** x64
+## Duplicate Finder
 
-> FFmpeg and FFprobe binaries are **not bundled** and must be supplied separately.
+Duplicate Finder can run during import or on demand. Available scan modes cover exact duplicates, strict visual duplicates, and broader similar-video review.
 
----
+The duplicate workflow includes:
 
-## 🔌 Hardware Acceleration
+- Optional comparison against a separate reference folder
+- Duplicate-only queue filtering
+- A review window with preview cards and keeper recommendations
+- Configurable keeper scoring profiles
+- Signature and preview caches
+- Report export and action auditing
+- Cleanup through the Recycle Bin, quarantine, or permanent deletion when those actions are enabled
+- Optional confirmation before cleanup
 
-GoEncode supports hardware-accelerated encoding **when supported by the installed FFmpeg build**, including:
+Potentially destructive cleanup options are disabled or confirmation-gated by default. Review the selected keeper and cleanup action before changing source files.
 
-- NVIDIA **NVENC**
-- Intel **Quick Sync (QSV)**
-- AMD **AMF**
+## Audio tools
 
-⚠️ Availability depends entirely on:
-- GPU capabilities
-- Installed drivers
-- FFmpeg build configuration
+The Audio mode supports batch extraction and conversion independently of the video queue. Options include:
 
-GoEncode performs **no silent fallbacks** — behavior is explicit and logged.
+- Output format and quality selection
+- Subfolder scanning
+- Loudness normalization
+- Optional RNNoise denoising with a selected model file
+- Progress reporting and job-history recording
 
----
+## Automation and integrations
 
-## 🧠 Design Philosophy
+### Watch folder
 
-- **Predictable execution over maximum throughput**
-- **Explicit configuration over hidden automation**
-- **Conservative automatic queue concurrency** to avoid:
-  - GPU saturation
-  - Disk I/O contention
-  - Process collisions
+A configured folder can be checked periodically for stable new files. Watch-folder imports can include subfolders and follow the current codec filters before automatically joining the encode workflow.
 
-GoEncode intentionally avoids:
-- Background services
-- Cloud dependencies
-- Implicit or opaque FFmpeg behavior
+### Windows Explorer
 
----
+Optional per-user Explorer commands can be installed from Settings:
 
-## 🚧 Project Status
+- Add a video file to the encode queue
+- Add a folder to the encode queue
+- Check a folder for duplicates
 
-🟢 **Stable / Active Development**
+Requests are forwarded to the running MediaFlux instance. Folder-import confirmation, recursive scanning, and queue-clearing prompts are configurable.
 
-- Core encoding pipeline is complete and validated
-- Architecture stabilized after major refactor
-- Future work focuses on UX improvements and optional features
+### Discord
 
-Breaking changes are now expected to be **intentional and documented**.
+MediaFlux can send a queue-completion message through a Discord webhook. The message supports status, totals, failures, retries, machine name, timestamps, and duration placeholders. A test-message action is available in Settings.
 
----
+## History, diagnostics, and recovery
 
-## 📝 Notes
+- Completed video and audio jobs are stored in persistent history.
+- History rows can be inspected and requeued.
+- FFmpeg failures and unexpected application errors are written to the central error log.
+- The error log is accessible from the application menu.
+- Optional program backups can run before updates.
+- Manual backup and restore actions are available in Settings.
 
-- This repository is currently **private**
-- Intended for **personal development and controlled environments**
-- Not licensed for public redistribution at this time
+## Requirements
 
----
+- Windows 10 or Windows 11 (x64)
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) to build from source
+- `ffmpeg.exe` and `ffprobe.exe`
+- A compatible GPU and FFmpeg build for NVENC or QSV acceleration
+- An RNNoise model only when audio denoising is enabled
 
-## 📸 Screenshots
+MediaFlux searches for FFmpeg and FFprobe in this order:
 
-<img width="802" height="792" alt="image" src="https://github.com/user-attachments/assets/c6924814-d391-4d17-a7e1-ee6cddb8a4d8" />
+1. Custom paths configured in Settings
+2. The application directory
+3. A `programs` or `Programs` directory beside the application
 
----
+## Build and run
 
-## 📄 License
+```powershell
+dotnet restore .\MediaFlux.sln
+dotnet build .\MediaFlux.sln
+dotnet run --project .\MediaFlux.csproj
+```
 
-**Private / Personal Use Only**
+The Debug executable is produced at:
 
----
+```text
+bin\Debug\net8.0-windows\MediaFlux.exe
+```
 
-## 🧭 Roadmap (High-Level)
+For normal use, place FFmpeg and FFprobe in one of the supported locations or configure their full paths under **Settings** before starting media analysis or encoding.
 
-- Encoding profile presets
-- Improved diagnostics and per-job breakdowns
-- Enhanced queue controls and scheduling
-- Additional media inspection tools
-- Architectural documentation
+## Configuration and application data
 
----
+MediaFlux stores its configuration and supporting data as JSON/JSONL files near the installed application. Depending on the enabled features, this includes settings, supported extensions, media-information caches, duplicate-signature caches, history, and logs.
 
-_If you’ve built media pipelines before, GoEncode will feel familiar — and predictable._
+When replacing or updating an existing installation, preserve these local data files. The built-in updater and backup workflow is designed to retain them.
+
+## Project structure
+
+- `MainForm*.cs` — WinForms UI, queue orchestration, progress, history, duplicate review, and integrations
+- `Models/` — configuration and persistent data models
+- `Services/EncodingService.cs` — FFmpeg video command construction and execution
+- `Services/AudioService.cs` — audio job execution
+- `Services/MediaInfoService.cs` — FFprobe-backed media inspection
+- `Services/EstimateBackgroundService.cs` — bounded background size estimation
+- `Services/Duplicate*.cs` — duplicate detection, scoring, and preview caching
+- `Services/Explorer*.cs` — Windows Explorer registration and request forwarding
+- `Services/HistoryService.cs` — persistent job history
+- `MediaFlux.sln` / `MediaFlux.csproj` — current solution and project files
+
+## Project status
+
+MediaFlux is stable and under active private development. The application is primarily focused on video encoding, with audio processing, duplicate management, monitoring, automation, and diagnostics maintained as supporting workflows.
+
+## Screenshot
+
+<img width="802" height="792" alt="GoEncode application screenshot from before the MediaFlux rename" src="https://github.com/user-attachments/assets/c6924814-d391-4d17-a7e1-ee6cddb8a4d8" />
+
+The screenshot predates the MediaFlux rename and may not show the latest interface.
+
+## License
+
+Private / Personal Use Only. This repository is not currently licensed for public redistribution.

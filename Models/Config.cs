@@ -1,6 +1,6 @@
 ﻿using System.Text.Json;
 
-namespace Encode.Models
+namespace MediaFlux.Models
 {
     public class Config
     {
@@ -50,9 +50,29 @@ namespace Encode.Models
         public bool RememberCheckboxStates { get; set; } = true;
         public bool PreventSleepDuringEncoding { get; set; } = false;
         public bool LimitGpuEncodingQueueToOneJob { get; set; } = false;
+        public bool DeleteFailedEncodeOutputs { get; set; } = false;
+        public bool DeleteCanceledEncodeOutputs { get; set; } = false;
         public int LargeQueueThreshold { get; set; } = 300;
         public bool AutoAnalyzeLargeQueues { get; set; } = false;
+        public bool FindDuplicatesOnImport { get; set; } = false;
+        public bool OnlyQueueDuplicateCandidates { get; set; } = false;
+        public string DuplicateScanMode { get; set; } = "Strict visual duplicates";
+        public string DuplicateReferenceFolder { get; set; } = "";
+        public string DuplicateQuarantineFolder { get; set; } = "";
+        public DuplicateKeeperPreferences DuplicateKeeperPreferences { get; set; } = new();
+        public bool EnableDuplicateSignatureCache { get; set; } = true;
+        public bool AutoDisableDuplicateFinderAfterCleanup { get; set; } = true;
+        public bool AllowDuplicateRecycleBin { get; set; } = true;
+        public bool AllowDuplicateQuarantine { get; set; } = false;
+        public bool AllowDuplicatePermanentDelete { get; set; } = false;
+        public bool RequireDuplicateCleanupConfirmation { get; set; } = true;
+        public bool ShowDuplicateReferenceFolderOnMain { get; set; } = true;
         public bool EnablePersistentMediaInfoCache { get; set; } = true;
+        public bool ExplorerFileContextMenuEnabled { get; set; } = false;
+        public bool ExplorerFolderContextMenuEnabled { get; set; } = false;
+        public bool ConfirmExplorerFolderImports { get; set; } = true;
+        public bool PromptToClearQueueOnExplorerFolderImport { get; set; } = true;
+        public bool ExplorerFolderIncludeSubfolders { get; set; } = true;
         public string FfmpegPath { get; set; } = "";
         public string FfprobePath { get; set; } = "";
 
@@ -78,6 +98,7 @@ namespace Encode.Models
         public bool LastChkDeleteSource { get; set; } = true;
         public bool LastChkFilterX264 { get; set; } = true;
         public bool LastChkFilterX265 { get; set; } = true;
+        public bool LastChkFilterAv1 { get; set; } = true;
         public bool LastChkDownloadPlaylist { get; set; } = false;
         public bool LastChkProcessAll { get; set; } = true;
 
@@ -92,6 +113,7 @@ namespace Encode.Models
         public int MainWindowHeight { get; set; } = 0;
         public bool MainWindowMaximized { get; set; } = false;
         public bool EncodeInfoHeaderCollapsed { get; set; } = false;
+        public bool DuplicateFinderCollapsed { get; set; } = false;
 
         // Compact floating queue window preferences.
         public bool CompactWindowAlwaysOnTop { get; set; } = false;
@@ -101,6 +123,7 @@ namespace Encode.Models
         // Persist which codecs to show
         public bool ShowX264Files { get; set; } = true;
         public bool ShowX265Files { get; set; } = true;
+        public bool ShowAv1Files { get; set; } = true;
         public bool ShowOtherCodecFiles { get; set; } = true;
 
         // Persist arbitrary main-form checkbox states keyed by a stable control path.
@@ -124,7 +147,18 @@ namespace Encode.Models
                 config.WatchFolderStabilizationSeconds = 60;
             if (config.BackupsToKeep < 1)
                 config.BackupsToKeep = 5;
-
+            if (!config.FindDuplicatesOnImport)
+                config.OnlyQueueDuplicateCandidates = false;
+            if (string.IsNullOrWhiteSpace(config.DuplicateScanMode))
+                config.DuplicateScanMode = "Strict visual duplicates";
+            config.DuplicateKeeperPreferences ??= new DuplicateKeeperPreferences();
+            config.DuplicateKeeperPreferences.Normalize();
+            if (!config.AllowDuplicateRecycleBin &&
+                !config.AllowDuplicateQuarantine &&
+                !config.AllowDuplicatePermanentDelete)
+            {
+                config.AllowDuplicateRecycleBin = true;
+            }
             // Older configs never persisted checkbox state unless the user opted in.
             // Treat missing settings as enabled so existing installs pick up the new behavior.
             if (!json.Contains("\"RememberCheckboxStates\"", StringComparison.OrdinalIgnoreCase))

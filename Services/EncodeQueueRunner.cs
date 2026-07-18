@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     /// <summary>
     /// Runs up to maxParallel workers over an append-only list.

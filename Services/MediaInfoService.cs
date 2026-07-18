@@ -6,10 +6,11 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public sealed class MediaInfoService
     {
+        private const int PersistentCacheVersion = 2;
         private readonly string _ffprobePath;
         private readonly string? _cachePath;
         private readonly bool _persistentCacheEnabled;
@@ -242,6 +243,16 @@ namespace Encode.Services
                             hProp.TryGetInt32(out var h) && h > 0)
                             info.Height = h;
 
+                        // Prefer the video stream bitrate over the container bitrate.
+                        // Container bitrate can include high-bitrate audio and is a
+                        // weaker quality proxy when comparing duplicate video encodes.
+                        if (s.TryGetProperty("bit_rate", out var videoBitrateProp) &&
+                            int.TryParse(videoBitrateProp.GetString(), out var videoBitsPerSec) &&
+                            videoBitsPerSec > 0)
+                        {
+                            info.BitrateKbps = videoBitsPerSec / 1000;
+                        }
+
                         // fps = r_frame_rate or avg_frame_rate like "30000/1001"
                         if (s.TryGetProperty("r_frame_rate", out var fpsProp) ||
                             s.TryGetProperty("avg_frame_rate", out fpsProp))
@@ -351,7 +362,9 @@ namespace Encode.Services
 
                 foreach (var item in entries)
                 {
-                    if (!string.IsNullOrWhiteSpace(item.Key) && item.Value.Info != null)
+                    if (!string.IsNullOrWhiteSpace(item.Key) &&
+                        item.Value.Version == PersistentCacheVersion &&
+                        item.Value.Info != null)
                     {
                         _cache[item.Key] = new CacheEntry(
                             item.Value.Info,
@@ -392,6 +405,7 @@ namespace Encode.Services
                             kvp => kvp.Key,
                             kvp => new PersistentCacheEntry
                             {
+                                Version = PersistentCacheVersion,
                                 Info = kvp.Value.Info,
                                 Length = kvp.Value.Length,
                                 LastWriteUtc = kvp.Value.LastWriteUtc
@@ -414,6 +428,7 @@ namespace Encode.Services
 
         private sealed class PersistentCacheEntry
         {
+            public int Version { get; set; }
             public MediaInfo? Info { get; set; }
             public long Length { get; set; }
             public DateTime LastWriteUtc { get; set; }

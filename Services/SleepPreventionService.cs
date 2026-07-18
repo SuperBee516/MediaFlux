@@ -1,6 +1,6 @@
 ﻿using System.Runtime.InteropServices;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public sealed class SleepPreventionService : IDisposable
     {

@@ -5,7 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {

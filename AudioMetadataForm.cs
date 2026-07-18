@@ -6,7 +6,7 @@ using System.Windows.Forms;
 // Alias TagLib.File so we don't clash with System.IO.File
 using TagFile = TagLib.File;
 
-namespace Encode
+namespace MediaFlux
 {
     public sealed class AudioMetadataForm : Form
     {

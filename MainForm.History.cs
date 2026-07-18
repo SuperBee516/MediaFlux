@@ -4,9 +4,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
-using Encode.Services;
+using MediaFlux.Services;
 
-namespace Encode
+namespace MediaFlux
 {
     public partial class MainForm : Form
     {
@@ -224,7 +224,7 @@ namespace Encode
                 row.Cells["colH_Notes"].Value = string.IsNullOrWhiteSpace(r.Notes) ? "" : r.Notes;
 
                 // Optional: color failed rows
-                if (r.Status != Encode.Services.JobStatus.Success)
+                if (r.Status != JobStatus.Success)
                 {
                     row.DefaultCellStyle.BackColor = Color.MistyRose;
                     row.DefaultCellStyle.SelectionBackColor = Color.MistyRose;
@@ -236,7 +236,7 @@ namespace Encode
         private void dgvHistory_SelectionChanged(object sender, EventArgs e)
         {
             if (dgvHistory.SelectedRows.Count == 0) { txtHistoryLog.Text = ""; return; }
-            var rec = dgvHistory.SelectedRows[0].Tag as Encode.Services.JobHistoryRecord;
+            var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord;
             txtHistoryLog.Text = rec?.Log ?? "";
         }
 
@@ -249,7 +249,7 @@ namespace Encode
             int added = 0;
             foreach (DataGridViewRow row in dgvHistory.SelectedRows)
             {
-                if (row.Tag is Encode.Services.JobHistoryRecord rec)
+                if (row.Tag is JobHistoryRecord rec)
                 {
                     var path = rec.SourcePath;
                     if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
@@ -270,7 +270,7 @@ namespace Encode
         private void btnHistoryOpenSrc_Click(object sender, EventArgs e)
         {
             if (dgvHistory.SelectedRows.Count == 0) return;
-            var rec = dgvHistory.SelectedRows[0].Tag as Encode.Services.JobHistoryRecord;
+            var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord;
             var p = rec?.SourcePath;
             if (string.IsNullOrWhiteSpace(p)) return;
             var dir = Path.GetDirectoryName(p);
@@ -281,7 +281,7 @@ namespace Encode
         private void btnHistoryOpenOut_Click(object sender, EventArgs e)
         {
             if (dgvHistory.SelectedRows.Count == 0) return;
-            var rec = dgvHistory.SelectedRows[0].Tag as Encode.Services.JobHistoryRecord;
+            var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord;
             var p = rec?.OutputPath;
             if (string.IsNullOrWhiteSpace(p)) return;
             var dir = Path.GetDirectoryName(p);
@@ -294,7 +294,7 @@ namespace Encode
             if (dgvHistory.SelectedRows.Count == 0) return;
             var ids = new List<string>();
             foreach (DataGridViewRow row in dgvHistory.SelectedRows)
-                if (row.Tag is Encode.Services.JobHistoryRecord rec)
+                if (row.Tag is JobHistoryRecord rec)
                     ids.Add(rec.Id);
 
             if (ids.Count == 0) return;

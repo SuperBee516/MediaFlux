@@ -4,7 +4,7 @@ using System.IO;
 using System.Text;
 using System.Windows.Forms;
 
-namespace Encode
+namespace MediaFlux
 {
     internal static class UpdateManager
     {
@@ -19,10 +19,14 @@ namespace Encode
             bool automaticallyBackupBeforeUpdates,
             string backupFolder,
             int backupsToKeep,
-            string? processNameOverride = null)
+            string? processNameOverride = null,
+            Action<string>? reportStatus = null)
         {
+            reportStatus?.Invoke("Checking for updates…");
+
             if (string.IsNullOrWhiteSpace(updateFolder) || !Directory.Exists(updateFolder))
             {
+                reportStatus?.Invoke("Update check could not be completed.");
                 MessageBox.Show(owner, "Please configure a valid update folder in Settings.", "Update Check",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return false;
@@ -32,6 +36,7 @@ namespace Encode
             var remoteExe = new FileInfo(Path.Combine(updateFolder, localExe.Name));
             if (!remoteExe.Exists)
             {
+                reportStatus?.Invoke("No update build was found.");
                 MessageBox.Show(owner, "No build found in update folder.", "Update Check",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return false;
@@ -39,6 +44,7 @@ namespace Encode
 
             if (remoteExe.LastWriteTime <= localExe.LastWriteTime)
             {
+                reportStatus?.Invoke("Encode is up to date.");
                 MessageBox.Show(owner, "You are already running the latest build.", "Update Check",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return false;
@@ -47,13 +53,20 @@ namespace Encode
             var prompt = $"New version detected (built {remoteExe.LastWriteTime:G}). Replace current build?";
             if (MessageBox.Show(owner, prompt, "Update Available", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
                 != DialogResult.Yes)
+            {
+                reportStatus?.Invoke("Update canceled.");
                 return false;
+            }
 
             try
             {
                 if (automaticallyBackupBeforeUpdates)
+                {
+                    reportStatus?.Invoke("Performing backup…");
                     BackupManager.CreateBackup(localExe.Directory!.FullName, backupFolder, backupsToKeep);
+                }
 
+                reportStatus?.Invoke("Upgrade in progress…");
                 StartExternalUpdaterAndExit(updateFolder, targetDir: localExe.Directory!.FullName,
                     exeName: localExe.Name,
                     processName: processNameOverride ?? Path.GetFileName(localExe.Name),
@@ -62,6 +75,7 @@ namespace Encode
             }
             catch (Exception ex)
             {
+                reportStatus?.Invoke("Update failed.");
                 MessageBox.Show(owner, "Failed to start updater:\r\n" + ex.Message,
                     "Update", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return false;

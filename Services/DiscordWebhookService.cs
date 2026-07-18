@@ -2,7 +2,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 
-namespace Encode.Services
+namespace MediaFlux.Services
 {
     public static class DiscordWebhookService
     {
