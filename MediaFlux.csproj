@@ -11,7 +11,7 @@
     <AssemblyName>MediaFlux</AssemblyName>
 
     <ApplicationIcon>images\mediaflux_icn.ico</ApplicationIcon>
-    <PackageIcon>goencode_icn128.png</PackageIcon>
+    <PackageIcon>mediaflux_icn.png</PackageIcon>
     <Version>0.1.0</Version>
   </PropertyGroup>
 
@@ -22,7 +22,7 @@
     <Content Include="folder-scan-animated.gif" Link="images\folder-scan-animated.gif" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="upscale-animated.gif" Link="images\upscale-animated.gif" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Update="compress128.png" Pack="True" PackagePath="\" />
-    <None Update="images\goencode_icn128.png">
+    <None Update="images\mediaflux_icn.png">
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>

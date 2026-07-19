@@ -168,6 +168,7 @@ namespace MediaFlux
         public MainForm()
         {
             InitializeComponent();
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             Text = $"MediaFlux v{UpdateManager.CurrentVersion}";
 
 
