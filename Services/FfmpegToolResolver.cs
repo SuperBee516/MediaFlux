@@ -7,6 +7,9 @@ namespace MediaFlux.Services
     {
         public string FfmpegPath { get; }
         public string FfprobePath { get; }
+        public bool HasFfmpeg => File.Exists(FfmpegPath);
+        public bool HasFfprobe => File.Exists(FfprobePath);
+        public bool AreAllAvailable => HasFfmpeg && HasFfprobe;
 
         public FfmpegToolPaths(string ffmpegPath, string ffprobePath)
         {

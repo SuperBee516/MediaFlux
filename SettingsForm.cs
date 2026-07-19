@@ -27,6 +27,8 @@ namespace MediaFlux
         private Button btnExplorerEnableRepair = null!;
         private Button btnExplorerRemove = null!;
         private Button btnDuplicateKeeperPreferences = null!;
+        private Label lblFfmpegStatus = null!;
+        private Label lblFfprobeStatus = null!;
         private DuplicateKeeperPreferences _duplicateKeeperPreferences = new();
         private readonly ToolTip _settingsToolTip = new();
 
@@ -34,9 +36,11 @@ namespace MediaFlux
             Config cfg,
             string supportedVideoExtsPath,
             IEnumerable<string> defaultVideoExts,
-            string currentOutputFolder)
+            string currentOutputFolder,
+            bool focusMediaTools = false)
         {
             InitializeComponent();
+            InitializeFfmpegStatusControls();
             InitializeExplorerIntegrationControls();
             Config = cfg;
             _duplicateKeeperPreferences = (cfg.DuplicateKeeperPreferences ?? new DuplicateKeeperPreferences()).Clone();
@@ -82,6 +86,8 @@ namespace MediaFlux
             chkEnablePersistentMediaInfoCache.Checked = cfg.EnablePersistentMediaInfoCache;
             txtFfmpegPath.Text = cfg.FfmpegPath;
             txtFfprobePath.Text = cfg.FfprobePath;
+            txtFfmpegPath.TextChanged += (_, __) => RefreshFfmpegStatus();
+            txtFfprobePath.TextChanged += (_, __) => RefreshFfmpegStatus();
             chkDiscordNotification.Checked = cfg.DiscordQueueNotificationEnabled;
             txtDiscordWebhookUrl.Text = cfg.DiscordWebhookUrl;
             txtDiscordUserMentionId.Text = cfg.DiscordUserMentionId;
@@ -101,6 +107,90 @@ namespace MediaFlux
             ToggleDiscordInputs();
 
             LoadSupportedExtensionsIntoUi();
+            RefreshFfmpegStatus();
+
+            if (focusMediaTools)
+            {
+                Shown += (_, __) =>
+                {
+                    txtFfmpegPath.Focus();
+                    txtFfmpegPath.SelectAll();
+                };
+            }
+        }
+
+        private void InitializeFfmpegStatusControls()
+        {
+            const int statusHeight = 20;
+
+            lblFfmpegStatus = new Label
+            {
+                AutoEllipsis = true,
+                Location = new Point(15, 621),
+                Name = "lblFfmpegStatus",
+                Size = new Size(380, statusHeight),
+                TabIndex = 18
+            };
+
+            lblFfprobePath.Top += 25;
+            txtFfprobePath.Top += 25;
+            btnBrowseFfprobe.Top += 25;
+
+            lblFfprobeStatus = new Label
+            {
+                AutoEllipsis = true,
+                Location = new Point(15, 696),
+                Name = "lblFfprobeStatus",
+                Size = new Size(380, statusHeight),
+                TabIndex = 21
+            };
+
+            grpIncompleteOutputCleanup.Top += 50;
+            Controls.Add(lblFfmpegStatus);
+            Controls.Add(lblFfprobeStatus);
+        }
+
+        private void RefreshFfmpegStatus()
+        {
+            UpdateToolStatusLabel(lblFfmpegStatus, txtFfmpegPath.Text, "ffmpeg.exe", configuredFfmpegPath: true);
+            UpdateToolStatusLabel(lblFfprobeStatus, txtFfprobePath.Text, "ffprobe.exe", configuredFfmpegPath: false);
+        }
+
+        private void UpdateToolStatusLabel(
+            Label label,
+            string configuredPath,
+            string fileName,
+            bool configuredFfmpegPath)
+        {
+            string expanded = Environment.ExpandEnvironmentVariables(configuredPath.Trim());
+            if (!string.IsNullOrWhiteSpace(expanded))
+            {
+                bool exists = File.Exists(expanded);
+                bool correctFile = string.Equals(
+                    Path.GetFileName(expanded),
+                    fileName,
+                    StringComparison.OrdinalIgnoreCase);
+                bool valid = exists && correctFile;
+                label.Text = !exists
+                    ? $"Not found: {expanded}"
+                    : correctFile
+                        ? $"Found: {expanded}"
+                        : $"Select {fileName}, not {Path.GetFileName(expanded)}.";
+                label.ForeColor = valid ? Color.DarkGreen : Color.Firebrick;
+                _settingsToolTip.SetToolTip(label, label.Text);
+                return;
+            }
+
+            var tools = configuredFfmpegPath
+                ? FfmpegToolResolver.Resolve(AppPaths.InstallDirectory, configuredFfmpegPath: configuredPath)
+                : FfmpegToolResolver.Resolve(AppPaths.InstallDirectory, configuredFfprobePath: configuredPath);
+            string resolvedPath = configuredFfmpegPath ? tools.FfmpegPath : tools.FfprobePath;
+            bool detected = File.Exists(resolvedPath);
+            label.Text = detected
+                ? $"Detected automatically: {resolvedPath}"
+                : $"Not detected. Add {fileName} to the Programs folder or browse to it.";
+            label.ForeColor = detected ? Color.DarkGreen : Color.Firebrick;
+            _settingsToolTip.SetToolTip(label, label.Text);
         }
 
 
@@ -519,10 +609,10 @@ namespace MediaFlux
             Config.DiscordUserMentionId = txtDiscordUserMentionId.Text.Trim();
             Config.DiscordQueueCompleteMessage = txtDiscordMessage.Text.Trim();
 
-            if (!ValidateOptionalToolPath(Config.FfmpegPath, "FFmpeg"))
+            if (!ValidateOptionalToolPath(Config.FfmpegPath, "FFmpeg", "ffmpeg.exe"))
                 return;
 
-            if (!ValidateOptionalToolPath(Config.FfprobePath, "FFprobe"))
+            if (!ValidateOptionalToolPath(Config.FfprobePath, "FFprobe", "ffprobe.exe"))
                 return;
 
             // Persist supported video extensions list
@@ -763,17 +853,18 @@ namespace MediaFlux
                 target.Text = dlg.FileName;
         }
 
-        private bool ValidateOptionalToolPath(string path, string label)
+        private bool ValidateOptionalToolPath(string path, string label, string expectedFileName)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return true;
 
             string expanded = Environment.ExpandEnvironmentVariables(path);
-            if (File.Exists(expanded))
+            if (File.Exists(expanded) &&
+                string.Equals(Path.GetFileName(expanded), expectedFileName, StringComparison.OrdinalIgnoreCase))
                 return true;
 
             MessageBox.Show(this,
-                $"{label} path does not exist. Leave it blank to auto-detect from the app folder.",
+                $"Choose {expectedFileName} for the {label} path, or leave it blank to auto-detect from the app folder.",
                 "Invalid tool path",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);

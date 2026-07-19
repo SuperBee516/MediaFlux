@@ -46,6 +46,9 @@ namespace MediaFlux
             if (roots.Length == 0)
                 return;
 
+            if (!EnsureFfmpegToolsAvailable())
+                return;
+
             int importGeneration = Interlocked.Increment(ref _folderImportGeneration);
             var previousDuplicateScan = _duplicateScanCts;
             _duplicateScanCts = null;

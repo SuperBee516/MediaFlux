@@ -184,6 +184,9 @@ namespace MediaFlux
 
         private async void btnStartAudio_Click(object? sender, EventArgs e)
         {
+            if (!EnsureFfmpegToolsAvailable())
+                return;
+
             if (dgvAudioQueue.Rows.Count == 0)
             {
                 MessageBox.Show("There are no files in the audio queue.", "Audio",

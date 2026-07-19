@@ -18,6 +18,9 @@ namespace MediaFlux
             if (_encodingActive)
                 return;
 
+            if (!EnsureFfmpegToolsAvailable())
+                return;
+
             if (!ValidateOutputFolderAgainstWatchFolder(cmbEncodeOutput.Text, showMessage: true))
                 return;
 

@@ -74,6 +74,12 @@ namespace MediaFlux
 
             if (chkWatchFolder.Checked)
             {
+                if (!EnsureFfmpegToolsAvailable())
+                {
+                    SetWatchFolderCheckbox(false);
+                    return;
+                }
+
                 if (!Directory.Exists(_config.WatchFolderPath))
                 {
                     string inputFolder = cmbInputFolder.Text?.Trim() ?? string.Empty;
@@ -139,6 +145,16 @@ namespace MediaFlux
 
         private void StartMonitoringFromConfig()
         {
+            if (!ResolveFfmpegTools().AreAllAvailable)
+            {
+                RefreshFfmpegToolAvailability();
+                _config.WatchFolderEnabled = false;
+                _config.Save(_configPath);
+                SetWatchFolderCheckbox(false);
+                ShowWatchStatus("Folder watching requires ffmpeg.exe and ffprobe.exe. See the warning above.");
+                return;
+            }
+
             string root = _config.WatchFolderPath?.Trim() ?? string.Empty;
             if (!Directory.Exists(root))
             {
@@ -617,6 +633,9 @@ namespace MediaFlux
 
         private void btnMonStart_Click(object? sender, EventArgs e)
         {
+            if (!EnsureFfmpegToolsAvailable())
+                return;
+
             if (Directory.Exists(cmbMonFolder.Text))
                 _config.WatchFolderPath = cmbMonFolder.Text.Trim();
             _config.WatchFolderIntervalMinutes = (int)nudMonMinutes.Value;
@@ -637,8 +656,13 @@ namespace MediaFlux
             StopMonitoring("Folder watching is off.");
         }
 
-        private void btnMonScanNow_Click(object? sender, EventArgs e) =>
+        private void btnMonScanNow_Click(object? sender, EventArgs e)
+        {
+            if (!EnsureFfmpegToolsAvailable())
+                return;
+
             _ = System.Threading.Tasks.Task.Run(MonitorTickSafe);
+        }
 
         private string GetVideoCodec(string path) => _mediaInfoService.GetVideoCodec(path);
 

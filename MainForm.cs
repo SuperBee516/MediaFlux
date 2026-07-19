@@ -188,6 +188,7 @@ namespace MediaFlux
             // load configuration before constructing FFmpeg-dependent services
             _configPath = AppPaths.ConfigFile;
             _config = Config.Load(_configPath);
+            InitializeFfmpegAvailabilityBanner();
 
             InitializeCompactModeControls();
 
@@ -3203,22 +3204,33 @@ namespace MediaFlux
 
         private void SettingsToolStripMenuItem_Click(object? sender, EventArgs e)
         {
+            ShowSettingsDialog(focusMediaTools: false);
+        }
+
+        private void ShowSettingsDialog(bool focusMediaTools)
+        {
             using var dlg = new SettingsForm(
                 _config,
                 _supportedVideoExtsPath,
                 DefaultVideoExts,
-                cmbEncodeOutput.Text);
-            if (dlg.ShowDialog() == DialogResult.OK)
+                cmbEncodeOutput.Text,
+                focusMediaTools);
+            if (dlg.ShowDialog(this) == DialogResult.OK)
             {
                 _config = dlg.Config;
                 _config.Save(_configPath);
                 RecreateMediaServices();
+                RefreshFfmpegToolAvailability();
                 ApplyDuplicateConfigurationToUi();
                 UpdateDuplicateReferenceFolderUi();
                 RescoreDuplicateKeeperRecommendations();
 
                 RefreshEncodeGrid();
                 ApplyWatchFolderConfiguration();
+            }
+            else
+            {
+                RefreshFfmpegToolAvailability();
             }
         }
 

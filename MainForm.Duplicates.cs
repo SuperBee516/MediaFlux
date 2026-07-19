@@ -43,6 +43,14 @@ namespace MediaFlux
                 return;
             }
 
+            if (!ResolveFfmpegTools().AreAllAvailable)
+            {
+                RefreshFfmpegToolAvailability();
+                ClearDuplicateAnnotations();
+                ShowStatusInfo("Duplicate checking requires ffmpeg.exe and ffprobe.exe. See the warning above.");
+                return;
+            }
+
             if (Volatile.Read(ref _pendingEncodeImports) > 0)
             {
                 _duplicateRescanPending = true;
@@ -69,6 +77,12 @@ namespace MediaFlux
             int totalSteps,
             CancellationToken token)
         {
+            if (!ResolveFfmpegTools().AreAllAvailable)
+            {
+                RefreshFfmpegToolAvailability();
+                return new DuplicateScanResult(Array.Empty<DuplicateGroup>(), 0, 0);
+            }
+
             string starting = $"Step {stepNumber} of {totalSteps} — Checking for duplicates";
             toolStripStatusLabel1.Text = starting;
             UpdateRelocatedEncodeStatus(starting);
@@ -108,6 +122,9 @@ namespace MediaFlux
         private async void AnalyzeDuplicatesNow_Click(object? sender, EventArgs e)
         {
             if (_duplicateDetectionService == null)
+                return;
+
+            if (!EnsureFfmpegToolsAvailable())
                 return;
 
             string inputFolder = cmbInputFolder?.Text?.Trim() ?? string.Empty;
