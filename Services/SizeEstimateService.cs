@@ -17,6 +17,16 @@ namespace MediaFlux.Services
         // ─────────────────────────────────────────────
 
         /// <summary>
+        /// Determines whether the profile-based estimator should be used. A positive
+        /// manual target overrides it only while Auto is disabled; an empty target
+        /// continues to use the selected Quality / File Size profile.
+        /// </summary>
+        public static bool ShouldUseProfileEstimate(bool autoRequested, double manualTargetMb)
+        {
+            return autoRequested || manualTargetMb <= 0;
+        }
+
+        /// <summary>
         /// Auto target size in MB for a file and the current encoding settings.
         /// Probes the metadata needed by the authoritative estimator.
         /// </summary>

@@ -93,9 +93,7 @@ namespace MediaFlux
                                 : null;
                             row.Cells["colEstimatedSize"].ToolTipText = hasEstimate
                                 ? "Calculated independently from this file's size, duration, resolution, frame rate, bitrate, codec, and the current encoding settings."
-                                : item.UnavailableReason == "Manual target required"
-                                    ? "Auto target sizing is off. Enter a target size in MB to calculate the manual estimate."
-                                    : "Required media metadata could not be determined. MediaFlux will not substitute a shared or fixed estimate.";
+                                : "Required media metadata could not be determined. MediaFlux will not substitute a shared or fixed estimate.";
                             if (_queueSourceSizeMap.TryGetValue(item.Path, out var previousSrc))
                                 _queueTotalSourceMb += srcMb - previousSrc;
                             else
@@ -264,10 +262,12 @@ namespace MediaFlux
             if (!autoRequested && double.TryParse(txtTargetSize.Text, out var m) && m > 0)
                 manualTargetMb = m;
 
-            // Auto mode uses metadata and the selected encoding settings. Manual mode
-            // only uses a valid target entered by the user; it must not silently fall
-            // back to the automatic formula, which made the checkbox appear inert.
-            bool useProfileEstimate = autoRequested;
+            // A valid manual target wins when Auto is off. If the field is blank,
+            // continue showing the metadata-based estimate for the selected Quality /
+            // File Size profile; the empty field is not an error state.
+            bool useProfileEstimate = SizeEstimateService.ShouldUseProfileEstimate(
+                autoRequested,
+                manualTargetMb);
 
             int queued = 0;
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)

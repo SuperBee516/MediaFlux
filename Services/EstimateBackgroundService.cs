@@ -258,7 +258,10 @@ namespace MediaFlux.Services
                     ? info.DurationSeconds.Value
                     : _mediaInfoService.GetDurationSeconds(item.Path);
 
-                double estMb = item.Auto
+                bool useProfileEstimate = SizeEstimateService.ShouldUseProfileEstimate(
+                    item.Auto,
+                    item.ManualTargetMb);
+                double estMb = useProfileEstimate
                     ? SizeEstimateService.EstimateAutoTargetMbSmart(
                         srcMb,
                         durSec,
@@ -275,8 +278,6 @@ namespace MediaFlux.Services
                 string? unavailableReason = null;
                 if (srcMb <= 0)
                     unavailableReason = "Source size unavailable";
-                else if (!item.Auto && item.ManualTargetMb <= 0)
-                    unavailableReason = "Manual target required";
                 else if (estMb <= 0)
                     unavailableReason = "Metadata unavailable";
 

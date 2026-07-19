@@ -5,6 +5,20 @@ namespace MediaFlux.Tests;
 
 public sealed class SizeEstimateServiceTests
 {
+    [Theory]
+    [InlineData(true, 0, true)]
+    [InlineData(false, 0, true)]
+    [InlineData(false, 750, false)]
+    public void ProfileEstimateMode_UsesProfileUnlessManualTargetIsPresent(
+        bool autoRequested,
+        double manualTargetMb,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            SizeEstimateService.ShouldUseProfileEstimate(autoRequested, manualTargetMb));
+    }
+
     [Fact]
     public void AutoEstimate_UsesEachFilesMetadataIndependently()
     {
