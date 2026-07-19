@@ -1,7 +1,5 @@
 # MediaFlux
 
-> **MediaFlux is the new name of GoEncode.** The application, repository, solution, project, assembly, and executable were recently renamed; some user-facing labels still use “Encode” to describe the video-encoding workflow.
-
 MediaFlux is a Windows desktop application for managing FFmpeg-powered video and audio workflows. It is designed for predictable batch processing, detailed queue visibility, large media collections, and explicit control over how files are analyzed and encoded.
 
 The application is intended for power users who want a graphical orchestration layer around FFmpeg and FFprobe without hiding the important encoding decisions.
@@ -175,9 +173,6 @@ MediaFlux is stable and under active private development. The application is pri
 <img width="1086" height="643" alt="screenshot2" src="https://github.com/user-attachments/assets/9433a897-8415-449c-aa3c-78b2fc1d596b" />
 
 <img width="1106" height="753" alt="screenshot3" src="https://github.com/user-attachments/assets/e4e74413-16f7-493b-870d-a5a461724749" />
-
-
-The screenshot predates the MediaFlux rename and may not show the latest interface.
 
 ## License
 
