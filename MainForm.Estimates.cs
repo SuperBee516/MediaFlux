@@ -338,12 +338,19 @@ namespace MediaFlux
                 return;
             }
 
-            bool auto = chkAutoTargetSize.Checked;
+            bool autoRequested = chkAutoTargetSize.Checked;
             string profile = comboCompressionProfile.SelectedItem?.ToString() ?? "Medium";
 
             double manualTargetMb = 0;
-            if (!auto && double.TryParse(txtTargetSize.Text, out var m) && m > 0)
+            if (!autoRequested && double.TryParse(txtTargetSize.Text, out var m) && m > 0)
                 manualTargetMb = m;
+
+            // A blank/invalid manual target means there is no manual size to display.
+            // Keep using the Quality / File Size profile for the estimate in that
+            // state, matching the encode runner's existing behavior. Previously this
+            // queued manual mode with a zero target, so every row was reported as
+            // "Metadata unavailable" even when FFprobe metadata was valid.
+            bool useProfileEstimate = autoRequested || manualTargetMb <= 0;
 
             int queued = 0;
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
@@ -384,7 +391,7 @@ namespace MediaFlux
                     SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
 
                 // Queue estimate work; UI pump will apply results
-                QueueEstimate(path, auto, profile, manualTargetMb);
+                QueueEstimate(path, useProfileEstimate, profile, manualTargetMb);
                 queued++;
             }
 
