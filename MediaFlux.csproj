@@ -37,4 +37,9 @@
     <Folder Include="Helpers\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="MediaFlux.Tests\**\*.cs" />
+    <None Remove="MediaFlux.Tests\**\*" />
+  </ItemGroup>
+
 </Project>

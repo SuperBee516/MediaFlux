@@ -373,10 +373,10 @@ namespace MediaFlux
                 var meta = EnsureRowMeta(row);
                 meta.CustomCompressionProfile = profile;
                 meta.CustomTargetMb = null;
-                ApplyCustomSettingsEstimate(row, meta);
+                UpdateRowCustomFlag(row);
             }
 
-            UpdateSizeTotals();
+            RunEstimatePass();
         }
 
         private void ApplyCustomTarget(double targetMb)
@@ -392,10 +392,10 @@ namespace MediaFlux
                 var meta = EnsureRowMeta(row);
                 meta.CustomTargetMb = targetMb;
                 meta.CustomCompressionProfile = null;
-                ApplyCustomSettingsEstimate(row, meta);
+                UpdateRowCustomFlag(row);
             }
 
-            UpdateSizeTotals();
+            RunEstimatePass();
         }
 
         private bool TryPromptTargetSize(double initialMb, out double targetMb)

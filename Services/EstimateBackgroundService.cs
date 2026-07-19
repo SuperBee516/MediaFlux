@@ -12,7 +12,6 @@ namespace MediaFlux.Services
     /// </summary>
     public sealed class EstimateBackgroundService : IDisposable
     {
-        private readonly SizeEstimateService _sizeEstimateService;
         private readonly MediaInfoService _mediaInfoService;
         private readonly object _resetLock = new();
         private readonly int _workerCount = Math.Max(1, Math.Min(4, Environment.ProcessorCount - 1));
@@ -23,58 +22,50 @@ namespace MediaFlux.Services
         private int _generation;
 
         private readonly ConcurrentQueue<SmartEstimateResult> _smartResults = new();
-        private readonly ConcurrentQueue<RangeEstimateResult> _rangeResults = new();
 
         private int _pendingEstimates;
 
-        public EstimateBackgroundService(
-            SizeEstimateService sizeEstimateService,
-            MediaInfoService mediaInfoService)
+        public EstimateBackgroundService(MediaInfoService mediaInfoService)
         {
-            _sizeEstimateService = sizeEstimateService ?? throw new ArgumentNullException(nameof(sizeEstimateService));
             _mediaInfoService = mediaInfoService ?? throw new ArgumentNullException(nameof(mediaInfoService));
             StartWorkers();
         }
 
         public readonly struct SmartEstimateResult
         {
+            public int Generation { get; }
             public string Path { get; }
             public double SourceMb { get; }
             public double EstimatedMb { get; }
             public double DurationSec { get; }
             public string? Resolution { get; }
             public string? VideoCodec { get; }
+            public double Fps { get; }
+            public bool IsCustom { get; }
+            public string? UnavailableReason { get; }
 
             public SmartEstimateResult(
+                int generation,
                 string path,
                 double sourceMb,
                 double estimatedMb,
                 double durationSec,
                 string? resolution,
-                string? videoCodec)
+                string? videoCodec,
+                double fps,
+                bool isCustom,
+                string? unavailableReason)
             {
+                Generation = generation;
                 Path = path;
                 SourceMb = sourceMb;
                 EstimatedMb = estimatedMb;
                 DurationSec = durationSec;
                 Resolution = resolution;
                 VideoCodec = videoCodec;
-            }
-        }
-
-        public readonly struct RangeEstimateResult
-        {
-            public string Path { get; }
-            public int MinKiB { get; }
-            public int MaxKiB { get; }
-            public int MidKiB { get; }
-
-            public RangeEstimateResult(string path, int minKiB, int maxKiB, int midKiB)
-            {
-                Path = path;
-                MinKiB = minKiB;
-                MaxKiB = maxKiB;
-                MidKiB = midKiB;
+                Fps = fps;
+                IsCustom = isCustom;
+                UnavailableReason = unavailableReason;
             }
         }
 
@@ -82,73 +73,79 @@ namespace MediaFlux.Services
         {
             public EstimateWorkItem(
                 int generation,
-                bool smart,
                 string path,
                 bool auto,
                 string profile,
                 double manualTargetMb,
                 string codec,
-                int quality)
+                int quality,
+                int? targetHeight,
+                bool isCustom)
             {
                 Generation = generation;
-                Smart = smart;
                 Path = path;
                 Auto = auto;
                 Profile = profile;
                 ManualTargetMb = manualTargetMb;
                 Codec = codec;
                 Quality = quality;
+                TargetHeight = targetHeight;
+                IsCustom = isCustom;
             }
 
             public int Generation { get; }
-            public bool Smart { get; }
             public string Path { get; }
             public bool Auto { get; }
             public string Profile { get; }
             public double ManualTargetMb { get; }
             public string Codec { get; }
             public int Quality { get; }
+            public int? TargetHeight { get; }
+            public bool IsCustom { get; }
         }
 
-        public int PendingEstimates => _pendingEstimates;
+        // Include completed-but-not-yet-applied results so the UI does not report
+        // analysis complete before the grid and item models have been refreshed.
+        public int PendingEstimates =>
+            Math.Max(0, Volatile.Read(ref _pendingEstimates)) + _smartResults.Count;
+        public int CurrentGeneration => Volatile.Read(ref _generation);
 
-        public void QueueSmartEstimate(string path, bool auto, string profile, double manualTargetMb)
+        public void QueueSmartEstimate(
+            string path,
+            bool auto,
+            string profile,
+            double manualTargetMb,
+            string targetCodec,
+            int quality,
+            int? targetHeight,
+            bool isCustom)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return;
 
             QueueWork(new EstimateWorkItem(
                 Volatile.Read(ref _generation),
-                smart: true,
                 path,
                 auto,
                 profile,
                 manualTargetMb,
-                codec: "",
-                quality: 0));
-        }
-
-        public void QueueRangeEstimate(string path, string codec, int quality)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-                return;
-
-            QueueWork(new EstimateWorkItem(
-                Volatile.Read(ref _generation),
-                smart: false,
-                path,
-                auto: false,
-                profile: "",
-                manualTargetMb: 0,
-                codec,
-                quality));
+                codec: targetCodec,
+                quality,
+                targetHeight,
+                isCustom));
         }
 
         public bool TryDequeueSmart(out SmartEstimateResult result)
-            => _smartResults.TryDequeue(out result);
+        {
+            while (_smartResults.TryDequeue(out result))
+            {
+                if (result.Generation == CurrentGeneration)
+                    return true;
+            }
 
-        public bool TryDequeueRange(out RangeEstimateResult result)
-            => _rangeResults.TryDequeue(out result);
+            result = default;
+            return false;
+        }
 
         public void ResetAndCancel()
         {
@@ -162,7 +159,6 @@ namespace MediaFlux.Services
                 _workItems = new BlockingCollection<EstimateWorkItem>();
                 Interlocked.Increment(ref _generation);
 
-                while (_rangeResults.TryDequeue(out _)) { }
                 while (_smartResults.TryDequeue(out _)) { }
 
                 _pendingEstimates = 0;
@@ -217,10 +213,7 @@ namespace MediaFlux.Services
                     {
                         if (item.Generation == Volatile.Read(ref _generation))
                         {
-                            if (item.Smart)
-                                ProcessSmartEstimate(item);
-                            else
-                                ProcessRangeEstimate(item);
+                            ProcessSmartEstimate(item);
                         }
                     }
                     finally
@@ -241,63 +234,65 @@ namespace MediaFlux.Services
             try
             {
                 double srcMb = GetMbOnDisk(item.Path);
-                if (srcMb <= 0) srcMb = 1.0;
-
-                double durSec = _mediaInfoService.GetDurationSeconds(item.Path);
+                var info = new MediaInfoService.MediaInfo();
                 string? res = null;
                 string? codec = null;
-                string resolutionBucket = "Unknown";
+                double fps = 0;
                 try
                 {
-                    var info = _mediaInfoService.GetInfo(item.Path);
+                    info = _mediaInfoService.GetInfo(item.Path);
                     int w = info.Width ?? 0;
                     int h = info.Height ?? 0;
                     if (w > 0 && h > 0)
-                    {
                         res = $"{w}x{h}";
-                        resolutionBucket = SizeEstimateService.GetResolutionBucket(w, h);
-                    }
 
                     codec = info.VideoCodec;
+                    fps = info.Fps ?? 0;
                 }
                 catch
                 {
                     // best-effort only
                 }
 
+                double durSec = info.DurationSeconds is > 0
+                    ? info.DurationSeconds.Value
+                    : _mediaInfoService.GetDurationSeconds(item.Path);
+
                 double estMb = item.Auto
-                    ? _sizeEstimateService.EstimateAutoTargetMbSmart(
+                    ? SizeEstimateService.EstimateAutoTargetMbSmart(
                         srcMb,
                         durSec,
-                        resolutionBucket,
-                        item.Profile)
+                        info.Width ?? 0,
+                        info.Height ?? 0,
+                        fps,
+                        info.BitrateKbps ?? 0,
+                        codec,
+                        item.Profile,
+                        item.Codec,
+                        item.Quality,
+                        item.TargetHeight)
                     : item.ManualTargetMb > 0 ? item.ManualTargetMb : 0;
+                string? unavailableReason = null;
+                if (srcMb <= 0)
+                    unavailableReason = "Source size unavailable";
+                else if (!item.Auto && item.ManualTargetMb <= 0)
+                    unavailableReason = "Manual target required";
+                else if (estMb <= 0)
+                    unavailableReason = "Metadata unavailable";
 
                 _smartResults.Enqueue(
-                    new SmartEstimateResult(item.Path, srcMb, estMb, durSec, res, codec));
+                    new SmartEstimateResult(
+                        item.Generation, item.Path, srcMb, estMb, durSec, res, codec, fps,
+                        item.IsCustom, unavailableReason));
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine(
                     $"Error in smart estimate for {item.Path}: {ex.Message}");
                 _smartResults.Enqueue(
-                    new SmartEstimateResult(item.Path, 0, 0, 0, null, null));
-            }
-        }
-
-        private void ProcessRangeEstimate(EstimateWorkItem item)
-        {
-            try
-            {
-                var r = _sizeEstimateService.EstimateSizeRangeKiB(item.Path, item.Codec, item.Quality);
-                _rangeResults.Enqueue(
-                    new RangeEstimateResult(item.Path, r.minKiB, r.maxKiB, r.midKiB));
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine(
-                    $"Error in range estimate for {item.Path}: {ex.Message}");
-                _rangeResults.Enqueue(new RangeEstimateResult(item.Path, 0, 0, 0));
+                    new SmartEstimateResult(
+                        item.Generation, item.Path, 0, 0, 0, null, null, 0,
+                        item.IsCustom, "Metadata unavailable"));
             }
         }
 

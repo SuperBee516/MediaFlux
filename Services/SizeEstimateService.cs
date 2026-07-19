@@ -17,155 +17,96 @@ namespace MediaFlux.Services
         // ─────────────────────────────────────────────
 
         /// <summary>
-        /// Estimate a size range based on codec, quality, resolution and fps.
-        /// Returns min/max/mid in KiB.
-        /// </summary>
-        public (int minKiB, int maxKiB, int midKiB) EstimateSizeRangeKiB(
-            string path,
-            string codec,
-            int quality)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-                throw new ArgumentException("Path must not be empty.", nameof(path));
-
-            // Duration
-            double durationSec = Math.Max(1.0, _mediaInfoService.GetDurationSeconds(path));
-
-            // Resolution and fps
-            var (w, h) = _mediaInfoService.GetResolutionPixels(path);
-            int fps = Math.Max(24, (int)Math.Round(_mediaInfoService.GetFps(path)));
-
-            long pix = (long)w * h;
-            string bucket = (pix >= 3840L * 2160) ? "UHD" :
-                            (pix >= 2560L * 1440) ? "QHD" :
-                            (pix >= 1920L * 1080) ? "FHD" :
-                            (pix >= 1280L * 720) ? "HD" : "SD";
-
-            // Bits-per-pixel bands per codec & resolution bucket
-            (double minBpp, double maxBpp) = codec.ToLowerInvariant() switch
-            {
-                var c when c.Contains("av1") =>
-                    bucket switch
-                    {
-                        "UHD" => (0.03, 0.08),
-                        "QHD" => (0.035, 0.09),
-                        "FHD" => (0.04, 0.10),
-                        "HD" => (0.05, 0.12),
-                        _ => (0.06, 0.14)
-                    },
-
-                var c when c.Contains("265") || c.Contains("hevc") =>
-                    bucket switch
-                    {
-                        "UHD" => (0.04, 0.10),
-                        "QHD" => (0.05, 0.12),
-                        "FHD" => (0.06, 0.14),
-                        "HD" => (0.08, 0.18),
-                        _ => (0.10, 0.22)
-                    },
-
-                _ => // h264-ish
-                    bucket switch
-                    {
-                        "UHD" => (0.05, 0.12),
-                        "QHD" => (0.06, 0.14),
-                        "FHD" => (0.08, 0.18),
-                        "HD" => (0.10, 0.22),
-                        _ => (0.12, 0.26)
-                    }
-            };
-
-            // Adjust for CRF/CQ: lower number => larger output
-            // 23 ~ neutral, one "step" ~= 5 units
-            double qNorm = Math.Clamp((quality - 23) / 5.0, -1.0, 1.0);
-            double scale = 1.0 + (qNorm * 0.25); // -25% … +25%
-            minBpp *= scale;
-            maxBpp *= scale;
-
-            double minbps = minBpp * w * h * fps;
-            double maxbps = maxBpp * w * h * fps;
-
-            double minBytes = minbps * durationSec / 8.0;
-            double maxBytes = maxbps * durationSec / 8.0;
-
-            // ~5% container/audio overhead
-            minBytes *= 1.05;
-            maxBytes *= 1.05;
-
-            int minKiB = (int)Math.Max(1, minBytes / 1024.0);
-            int maxKiB = (int)Math.Max(minKiB + 1, maxBytes / 1024.0);
-            int midKiB = (int)((minKiB + maxKiB) / 2.0);
-
-            return (minKiB, maxKiB, midKiB);
-        }
-
-        /// <summary>
-        /// Auto target size in MB based only on file path + compression profile.
-        /// Probes duration and resolution as needed.
-        /// </summary>
-        public double EstimateAutoTargetMbSmart(string path, string compressionProfile)
-        {
-            double srcMb = GetMbOnDisk(path);
-            if (srcMb <= 0) return 1.0;
-
-            double durSec = _mediaInfoService.GetDurationSeconds(path);
-            if (durSec <= 0) return 0;
-
-            var info = _mediaInfoService.GetInfo(path);
-            string res = info.Width is > 0 && info.Height is > 0
-                ? GetResolutionBucket(info.Width.Value, info.Height.Value)
-                : "Unknown";
-
-            return EstimateAutoTargetMbSmart(srcMb, durSec, res, compressionProfile);
-        }
-
-        /// <summary>
-        /// Core estimator that works purely on metadata (for when MainForm already has RowMeta).
+        /// Auto target size in MB for a file and the current encoding settings.
+        /// Probes the metadata needed by the authoritative estimator.
         /// </summary>
         public double EstimateAutoTargetMbSmart(
+            string path,
+            string compressionProfile,
+            string targetCodec = "libx265",
+            int quality = 23,
+            int? targetHeight = null)
+        {
+            double srcMb = GetMbOnDisk(path);
+            if (srcMb <= 0) return 0;
+
+            var info = _mediaInfoService.GetInfo(path);
+            double durSec = info.DurationSeconds is > 0
+                ? info.DurationSeconds.Value
+                : _mediaInfoService.GetDurationSeconds(path);
+            if (durSec <= 0) return 0;
+
+            return EstimateAutoTargetMbSmart(
+                srcMb,
+                durSec,
+                info.Width ?? 0,
+                info.Height ?? 0,
+                info.Fps ?? 0,
+                info.BitrateKbps ?? 0,
+                info.VideoCodec,
+                compressionProfile,
+                targetCodec,
+                quality,
+                targetHeight);
+        }
+
+        /// <summary>
+        /// Metadata-only auto estimator. The result is driven by the source's measured
+        /// bits-per-pixel, codec efficiency, frame rate and the selected output codec,
+        /// quality/profile and scale setting. Missing essential metadata returns zero.
+        /// </summary>
+        public static double EstimateAutoTargetMbSmart(
             double srcMb,
             double durationSec,
-            string? resolutionBucket,
-            string compressionProfile)
+            int width,
+            int height,
+            double fps,
+            int sourceVideoBitrateKbps,
+            string? sourceCodec,
+            string compressionProfile,
+            string targetCodec,
+            int quality,
+            int? targetHeight)
         {
-            if (srcMb <= 0) return 1.0;
-
-            if (durationSec <= 0)
+            if (srcMb <= 0 || durationSec <= 0 || width <= 0 || height <= 0 || fps <= 0)
                 return 0;
 
-            double avgKbps = (srcMb * 8192.0) / durationSec;
+            if (compressionProfile.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
+                return srcMb;
 
-            // Higher source bitrate => more room to compress
-            double mult = avgKbps switch
-            {
-                >= 12000 => 0.35, // very high bitrate
-                >= 8000 => 0.45, // high
-                >= 4000 => 0.55, // medium
-                >= 2000 => 0.65, // low
-                _ => 0.80  // already quite small/efficient
-            };
+            int outputHeight = targetHeight.GetValueOrDefault(height);
+            if (outputHeight <= 0)
+                outputHeight = height;
+            int outputWidth = Math.Max(2, (int)Math.Round(width * (outputHeight / (double)height)));
+            if ((outputWidth & 1) != 0)
+                outputWidth++;
 
-            string res = resolutionBucket ?? "Unknown";
-            double resAdj = res switch
-            {
-                "4K" => 0.90,
-                "1080p" => 1.00,
-                "720p" => 1.05,
-                "480p" => 1.10,
-                _ => 1.00
-            };
+            double sourceTotalKbps = srcMb * 8192.0 / durationSec;
+            double sourceVideoKbps = sourceVideoBitrateKbps > 0
+                ? Math.Min(sourceVideoBitrateKbps, sourceTotalKbps)
+                : sourceTotalKbps * 0.90;
 
-            double est = srcMb * mult * resAdj;
+            double sourcePixelsPerSecond = (double)width * height * fps;
+            double measuredSourceBpp = sourceVideoKbps * 1000.0 / sourcePixelsPerSecond;
+            double expectedSourceBpp = GetCodecBpp(sourceCodec);
+            double complexity = Math.Clamp(
+                Math.Sqrt(measuredSourceBpp / expectedSourceBpp),
+                0.55,
+                1.65);
 
-            est *= GetCompressionMultiplier(compressionProfile);
+            double profileScale = GetCompressionMultiplier(compressionProfile);
+            double qualityScale = Math.Pow(2.0, (23 - Math.Clamp(quality, 0, 51)) / 12.0);
+            double targetBpp = GetCodecBpp(targetCodec) * profileScale * qualityScale * complexity;
+            double targetVideoKbps = ((double)outputWidth * outputHeight * fps * targetBpp) / 1000.0;
 
-            // Guardrails: don't grow files; don't crush below ~30%
-            double minPct = 0.30;
-            double maxPct = 0.98;
-            est = Math.Max(srcMb * minPct, Math.Min(srcMb * maxPct, est));
+            // Preserve the measured non-video portion where possible. This avoids
+            // pretending audio/container bytes disappear and keeps short/low-bitrate
+            // files from receiving implausibly tiny targets.
+            double nonVideoKbps = Math.Clamp(sourceTotalKbps - sourceVideoKbps, 96, 384);
+            double targetTotalKbps = (targetVideoKbps + nonVideoKbps) * 1.02;
+            double estimateMb = targetTotalKbps * durationSec / 8192.0;
 
-            // Never return tiny or zero
-            return Math.Max(1.0, est);
+            return Math.Max(0.1, Math.Min(srcMb * 0.98, estimateMb));
         }
 
         // ─────────────────────────────────────────────
@@ -186,18 +127,8 @@ namespace MediaFlux.Services
             return 0;
         }
 
-        internal static string GetResolutionBucket(int w, int h)
-        {
-            long pix = (long)w * h;
-            if (pix >= 3840L * 2160) return "4K";
-            if (pix >= 1920L * 1080) return "1080p";
-            if (pix >= 1280L * 720) return "720p";
-            if (pix >= 720L * 480) return "480p";
-            return "Unknown";
-        }
-
         // Same mapping you currently have in MainForm
-        private double GetCompressionMultiplier(string profile)
+        private static double GetCompressionMultiplier(string profile)
         {
             switch (profile)
             {
@@ -236,6 +167,23 @@ namespace MediaFlux.Services
                     // Sensible default if we see an unknown string
                     return 0.75; // treat as Medium
             }
+        }
+
+        private static double GetCodecBpp(string? codec)
+        {
+            string value = codec ?? string.Empty;
+            if (value.Contains("av1", StringComparison.OrdinalIgnoreCase) ||
+                value.Contains("av01", StringComparison.OrdinalIgnoreCase))
+                return 0.045;
+            if (value.Contains("265", StringComparison.OrdinalIgnoreCase) ||
+                value.Contains("hevc", StringComparison.OrdinalIgnoreCase))
+                return 0.055;
+            if (value.Contains("264", StringComparison.OrdinalIgnoreCase) ||
+                value.Contains("avc", StringComparison.OrdinalIgnoreCase))
+                return 0.085;
+            if (value.Contains("mpeg2", StringComparison.OrdinalIgnoreCase))
+                return 0.14;
+            return 0.10;
         }
     }
 }

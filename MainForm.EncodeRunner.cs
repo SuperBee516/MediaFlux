@@ -331,6 +331,9 @@ namespace MediaFlux
                           ?? comboCompressionProfile.Text
                           ?? string.Empty,
                     string.Empty);
+            string estimateTargetCodec = UiGet(() => GetSelectedCodecInfo().codec, "libx265");
+            int estimateQuality = UiGet(GetDefaultQualityForSelection, 23);
+            int? estimateTargetHeight = UiGet(GetEstimateTargetHeight, null);
 
             if (hasCustomTarget)
             {
@@ -368,7 +371,12 @@ namespace MediaFlux
                     // Fallback to the metadata-aware estimator. If duration remains
                     // unavailable, leave targetMb unset so EncodingService safely uses
                     // quality-based encoding instead of inventing a fixed percentage.
-                    double fallbackEstimate = EstimateAutoTargetMbSmart(file, profileText);
+                    double fallbackEstimate = _sizeEstimateService.EstimateAutoTargetMbSmart(
+                        file,
+                        profileText,
+                        estimateTargetCodec,
+                        estimateQuality,
+                        estimateTargetHeight);
                     if (fallbackEstimate > 0)
                         targetMb = fallbackEstimate;
                 }

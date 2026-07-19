@@ -5,6 +5,8 @@ VisualStudioVersion = 18.7.11811.120 insiders
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MediaFlux", "MediaFlux.csproj", "{5243415C-0104-6D71-BEDD-F60BD7F6FB5A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MediaFlux.Tests", "MediaFlux.Tests\MediaFlux.Tests.csproj", "{B77A9D48-6C6A-4B9B-937C-35B9B7CB8DF1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,10 @@ Global
 		{5243415C-0104-6D71-BEDD-F60BD7F6FB5A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5243415C-0104-6D71-BEDD-F60BD7F6FB5A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5243415C-0104-6D71-BEDD-F60BD7F6FB5A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B77A9D48-6C6A-4B9B-937C-35B9B7CB8DF1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B77A9D48-6C6A-4B9B-937C-35B9B7CB8DF1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B77A9D48-6C6A-4B9B-937C-35B9B7CB8DF1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B77A9D48-6C6A-4B9B-937C-35B9B7CB8DF1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

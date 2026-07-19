@@ -53,6 +53,7 @@ namespace MediaFlux
         private int _encodeSucceededCount;
         private NumericUpDown? nudAutoQuality;
         private System.Windows.Forms.Timer? _estSmartUiTimer;
+        private System.Windows.Forms.Timer? _estimateRefreshTimer;
 
         private TableLayoutPanel? _encodeQueueLayout;
         private TableLayoutPanel? _encodeInfoHeaderContent;
@@ -109,9 +110,6 @@ namespace MediaFlux
         private ComboBox? comboAudioChannels;
         private CheckBox? chkWatchFolder;
         private Label? lblWatchFolderStatus;
-
-        // UI pump to apply results in small batches
-        private System.Windows.Forms.Timer? _estUiTimer;
 
         // Map row lookup by path (keep this in sync when you add/remove rows)
         private readonly ConcurrentDictionary<string, DataGridViewRow> _rowsByPath = new();
@@ -264,8 +262,13 @@ namespace MediaFlux
                 UpdateEncodePreview();
             };
 
-            chkAutoTargetSize.CheckedChanged += (_, __) => SafeRefreshEstimates();
-            comboCompressionProfile.SelectedIndexChanged += (_, __) => SafeRefreshEstimates();
+            chkAutoTargetSize.CheckedChanged += (_, __) => ScheduleEstimateRefresh();
+            comboCompressionProfile.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+            comboVideoFormat.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+            comboEncoderMode.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+            comboResolution.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+            txtTargetSize.TextChanged += (_, __) => ScheduleEstimateRefresh();
+            nudAutoQuality!.ValueChanged += (_, __) => ScheduleEstimateRefresh();
 
             chkIncludeSubfolders.CheckedChanged += (s, e) =>
             {
@@ -1486,7 +1489,13 @@ namespace MediaFlux
             }
             else if (!string.IsNullOrWhiteSpace(meta.CustomCompressionProfile))
             {
-                double estMb = EstimateAutoTargetMbSmart(path, meta.CustomCompressionProfile);
+                var (targetCodec, _) = GetSelectedCodecInfo();
+                double estMb = _sizeEstimateService.EstimateAutoTargetMbSmart(
+                    path,
+                    meta.CustomCompressionProfile,
+                    targetCodec,
+                    GetDefaultQualityForSelection(),
+                    GetEstimateTargetHeight());
                 if (estMb > 0)
                 {
                     _estimatedSizeMap[path] = estMb;
@@ -1497,7 +1506,7 @@ namespace MediaFlux
                     _estimatedSizeMap.Remove(path);
                     row.Cells["colEstimatedSize"].Value = "Metadata unavailable (custom profile)";
                     row.Cells["colEstimatedSize"].ToolTipText =
-                        "Duration metadata could not be determined. MediaFlux will not substitute a fixed target size.";
+                        "Required media metadata could not be determined. MediaFlux will not substitute a shared or fixed estimate.";
                 }
             }
 
@@ -3194,7 +3203,7 @@ namespace MediaFlux
                 AppPaths.DataDirectory);
 
             _sizeEstimateService = new SizeEstimateService(_mediaInfoService);
-            _estimateService = new EstimateBackgroundService(_sizeEstimateService, _mediaInfoService);
+            _estimateService = new EstimateBackgroundService(_mediaInfoService);
             _duplicateDetectionService = new DuplicateDetectionService(
                 _mediaInfoService,
                 AppPaths.InstallDirectory,

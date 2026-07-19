@@ -10,17 +10,6 @@ namespace MediaFlux
 {
     public partial class MainForm : Form
     {
-        private string GetVideoResolution(string path)
-        {
-            var (w, h) = ProbeResolutionPixels(path);
-            long pix = (long)w * h;
-            if (pix >= 3840L * 2160) return "4K";
-            if (pix >= 1920L * 1080) return "1080p";
-            if (pix >= 1280L * 720) return "720p";
-            if (pix >= 720L * 480) return "480p";
-            return "Unknown";
-        }
-
         private (int w, int h) ProbeResolutionPixels(string file)
         {
             return _mediaInfoService.GetResolutionPixels(file);
@@ -31,46 +20,16 @@ namespace MediaFlux
             return _mediaInfoService.GetFps(file);
         }
 
-        // Core: estimate a size range (min/max) using bpp bands adjusted by quality
-        private (int minKiB, int maxKiB, int midKiB)
-    EstimateSizeRangeKiB(string path, string codec, int quality)
-        {
-            return _sizeEstimateService.EstimateSizeRangeKiB(path, codec, quality);
-        }
-
-        private void SetRowEstimateRange(DataGridViewRow row, int minKiB, int maxKiB)
-        {
-            if (maxKiB <= 0)
-            {
-                row.Cells["colEstimatedSize"].Value = "—";
-                return;
-            }
-            double minMB = minKiB / 1024.0, maxMB = maxKiB / 1024.0;
-            row.Cells["colEstimatedSize"].Value = $"≈ {minMB:0.0}–{maxMB:0.0} MB";
-        }
-
         // Background Results UI
 
         private void StartEstimateUiPump()
         {
-            if (_estUiTimer == null)
-            {
-                _estUiTimer = new System.Windows.Forms.Timer { Interval = 100 };
-                _estUiTimer.Tick += EstUiTimer_Tick;
-                _estUiTimer.Start();
-            }
-
             if (_estSmartUiTimer == null)
             {
                 _estSmartUiTimer = new System.Windows.Forms.Timer { Interval = 100 };
                 _estSmartUiTimer.Tick += EstSmartUiTimer_Tick;
                 _estSmartUiTimer.Start();
             }
-        }
-
-        private void EstUiTimer_Tick(object? sender, EventArgs e)
-        {
-            ApplyEstimateResultsBatch();
         }
 
         private void EstSmartUiTimer_Tick(object? sender, EventArgs e)
@@ -83,12 +42,12 @@ namespace MediaFlux
             // Cancel workers and clear queues
             _estimateService.ResetAndCancel();
 
-            if (_estUiTimer != null)
+            if (_estimateRefreshTimer != null)
             {
-                _estUiTimer.Stop();
-                _estUiTimer.Tick -= EstUiTimer_Tick;
-                _estUiTimer.Dispose();
-                _estUiTimer = null;
+                _estimateRefreshTimer.Stop();
+                _estimateRefreshTimer.Tick -= EstimateRefreshTimer_Tick;
+                _estimateRefreshTimer.Dispose();
+                _estimateRefreshTimer = null;
             }
 
             if (_estSmartUiTimer != null)
@@ -97,52 +56,6 @@ namespace MediaFlux
                 _estSmartUiTimer.Tick -= EstSmartUiTimer_Tick;
                 _estSmartUiTimer.Dispose();
                 _estSmartUiTimer = null;
-            }
-        }
-
-        private void ApplyEstimateResultsBatch()
-        {
-            // Don’t touch the grid if the form is gone or we’re in auto-target mode
-            if (IsDisposed || !IsHandleCreated || chkAutoTargetSize.Checked)
-                return;
-
-            const int MaxPerTick = 64;
-            int applied = 0;
-
-            dgvEncodeQueue.SuspendLayout();
-            try
-            {
-                // Pull from the background service
-                while (applied < MaxPerTick &&
-                       _estimateService.TryDequeueRange(out var item))
-                {
-                    if (_rowsByPath.TryGetValue(item.Path, out var row) && row?.Cells != null)
-                    {
-                        var meta = row.Tag as RowMeta;
-                        if (RowHasCustomSettings(meta))
-                        {
-                            ApplyCustomSettingsEstimate(row, meta!);
-                            RestoreQueuedStateAfterEstimate(row);
-                            applied++;
-                            continue;
-                        }
-
-                        // Use the new property names
-                        SetRowEstimateRange(row, item.MinKiB, item.MaxKiB);
-                        RestoreQueuedStateAfterEstimate(row);
-                        applied++;
-                    }
-                }
-            }
-            finally
-            {
-                dgvEncodeQueue.ResumeLayout();
-                if (applied > 0)
-                {
-                    dgvEncodeQueue.Invalidate();
-                    UpdateSizeTotals();
-                }
-                UpdateEstimateProgressStatus();
             }
         }
 
@@ -165,20 +78,24 @@ namespace MediaFlux
                     {
                         try
                         {
-                            double srcMb = item.SourceMb > 0 ? item.SourceMb : 1.0;
+                            double srcMb = item.SourceMb;
                             double estMb = item.EstimatedMb;
-                            bool hasEstimate = estMb > 0;
+                            bool hasEstimate = srcMb > 0 && estMb > 0;
+                            string customSuffix = item.IsCustom ? " (custom)" : string.Empty;
 
                             row.Cells["colEstimatedSize"].Value = hasEstimate
-                                ? $"{FormatSize(estMb)}  {PercentReduction(srcMb, estMb)}"
-                                : "Metadata unavailable";
-                            row.Cells["colSize"].Value = FormatSize(srcMb);
+                                ? $"{FormatSize(estMb)}  {PercentReduction(srcMb, estMb)}{customSuffix}"
+                                : item.UnavailableReason ?? "Metadata unavailable";
+                            if (srcMb > 0)
+                                row.Cells["colSize"].Value = FormatSize(srcMb);
                             row.Cells["colEstimatedSize"].Tag = hasEstimate
                                 ? new Tuple<double, double>(srcMb, estMb)
                                 : null;
                             row.Cells["colEstimatedSize"].ToolTipText = hasEstimate
-                                ? "Calculated from source size, duration, resolution, and the selected Quality / File Size profile."
-                                : "Duration metadata could not be determined. MediaFlux will not substitute a fixed target size.";
+                                ? "Calculated independently from this file's size, duration, resolution, frame rate, bitrate, codec, and the current encoding settings."
+                                : item.UnavailableReason == "Manual target required"
+                                    ? "Auto target sizing is off. Enter a target size in MB to calculate the manual estimate."
+                                    : "Required media metadata could not be determined. MediaFlux will not substitute a shared or fixed estimate.";
                             if (_queueSourceSizeMap.TryGetValue(item.Path, out var previousSrc))
                                 _queueTotalSourceMb += srcMb - previousSrc;
                             else
@@ -223,6 +140,9 @@ namespace MediaFlux
 
                                 if (!string.IsNullOrWhiteSpace(codec))
                                     rm.VideoCodec = codec;
+
+                                if (item.Fps > 0)
+                                    rm.Fps = (int)Math.Round(item.Fps);
                             }
                             else
                             {
@@ -232,24 +152,16 @@ namespace MediaFlux
                                     DurationSec = durSec,
                                     Resolution = res,
                                     SrcMb = srcMb,
-                                    VideoCodec = codec
+                                    VideoCodec = codec,
+                                    Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0
                                 };
                             }
 
                             TrackCodecFilterCount(path, codec);
 
-                            var updatedMeta = row.Tag as RowMeta;
-                            if (RowHasCustomSettings(updatedMeta))
-                            {
-                                ApplyCustomSettingsEstimate(row, updatedMeta!);
-                                RestoreQueuedStateAfterEstimate(row);
-                                applied++;
-                            }
-                            else
-                            {
-                                RestoreQueuedStateAfterEstimate(row);
-                                applied++;
-                            }
+                            UpdateRowCustomFlag(row);
+                            RestoreQueuedStateAfterEstimate(row);
+                            applied++;
                         }
                         catch (Exception ex)
                         {
@@ -294,26 +206,30 @@ namespace MediaFlux
             }
         }
 
-        // Queueuing Hooks
-        private void AfterRowAdded(string path, DataGridViewRow row)
-        {
-            _rowsByPath[path] = row;
-            QueueEstimateForPath(path);
-        }
-
-        private void QueueEstimateForPath(string path)
-        {
-            var (codec, _) = GetSelectedCodecInfo();
-            int q = GetDefaultQualityForSelection();
-            _estimateService.QueueRangeEstimate(path, codec, q);
-        }
-
         private void SafeRefreshEstimates()
         {
             if (dgvEncodeQueue.Rows.Count == 0)
                 return;
 
             RunEstimatePass();
+        }
+
+        private void ScheduleEstimateRefresh()
+        {
+            if (IsDisposed || dgvEncodeQueue == null || dgvEncodeQueue.Rows.Count == 0)
+                return;
+
+            _estimateRefreshTimer ??= new System.Windows.Forms.Timer { Interval = 250 };
+            _estimateRefreshTimer.Stop();
+            _estimateRefreshTimer.Tick -= EstimateRefreshTimer_Tick;
+            _estimateRefreshTimer.Tick += EstimateRefreshTimer_Tick;
+            _estimateRefreshTimer.Start();
+        }
+
+        private void EstimateRefreshTimer_Tick(object? sender, EventArgs e)
+        {
+            _estimateRefreshTimer?.Stop();
+            SafeRefreshEstimates();
         }
 
         private void RunEstimatePass()
@@ -340,17 +256,18 @@ namespace MediaFlux
 
             bool autoRequested = chkAutoTargetSize.Checked;
             string profile = comboCompressionProfile.SelectedItem?.ToString() ?? "Medium";
+            var (targetCodec, _) = GetSelectedCodecInfo();
+            int quality = GetDefaultQualityForSelection();
+            int? targetHeight = GetEstimateTargetHeight();
 
             double manualTargetMb = 0;
             if (!autoRequested && double.TryParse(txtTargetSize.Text, out var m) && m > 0)
                 manualTargetMb = m;
 
-            // A blank/invalid manual target means there is no manual size to display.
-            // Keep using the Quality / File Size profile for the estimate in that
-            // state, matching the encode runner's existing behavior. Previously this
-            // queued manual mode with a zero target, so every row was reported as
-            // "Metadata unavailable" even when FFprobe metadata was valid.
-            bool useProfileEstimate = autoRequested || manualTargetMb <= 0;
+            // Auto mode uses metadata and the selected encoding settings. Manual mode
+            // only uses a valid target entered by the user; it must not silently fall
+            // back to the automatic formula, which made the checkbox appear inert.
+            bool useProfileEstimate = autoRequested;
 
             int queued = 0;
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
@@ -378,25 +295,43 @@ namespace MediaFlux
                     continue;
                 }
 
-                if (RowHasCustomSettings(meta))
-                {
-                    ApplyCustomSettingsEstimate(row, meta!);
-                    ApplyEncodeRowVisualState(row);
-                    continue;
-                }
-
                 // Keep the path → row map in sync for the UI pump
                 _rowsByPath[path] = row;
+                _estimatedSizeMap.Remove(path);
+                row.Cells["colEstimatedSize"].Value = "Analyzing…";
+                row.Cells["colEstimatedSize"].Tag = null;
+                row.Cells["colEstimatedSize"].ToolTipText = "Reading this file's metadata and recalculating with the current encoding settings.";
                 if (row.Cells["colStatus"].Value?.ToString() is not "Encoding" and not "Done" and not "Failed" and not "Canceled" and not "Retry Queued")
                     SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
 
                 // Queue estimate work; UI pump will apply results
-                QueueEstimate(path, useProfileEstimate, profile, manualTargetMb);
+                bool isCustom = RowHasCustomSettings(meta);
+                string rowProfile = !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile)
+                    ? meta!.CustomCompressionProfile!
+                    : profile;
+                double rowManualTargetMb = meta?.CustomTargetMb is > 0
+                    ? meta.CustomTargetMb.Value
+                    : manualTargetMb;
+                bool rowAuto = meta?.CustomTargetMb is > 0
+                    ? false
+                    : !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile) || useProfileEstimate;
+
+                QueueEstimate(
+                    path,
+                    rowAuto,
+                    rowProfile,
+                    rowManualTargetMb,
+                    targetCodec,
+                    quality,
+                    targetHeight,
+                    isCustom);
                 queued++;
             }
 
             _lastEstimateQueuedCount = queued;
             _estimatesDeferredForLargeQueue = false;
+            MarkQueueTotalsDirty();
+            UpdateSizeTotals(force: true);
             if (queued > 0)
             {
                 SetQueueWorkCancelVisible(true);
@@ -424,14 +359,30 @@ namespace MediaFlux
             }
         }
 
-        private void QueueEstimate(string path, bool auto, string profile, double manualTargetMb)
+        private void QueueEstimate(
+            string path,
+            bool auto,
+            string profile,
+            double manualTargetMb,
+            string targetCodec,
+            int quality,
+            int? targetHeight,
+            bool isCustom)
         {
-            _estimateService.QueueSmartEstimate(path, auto, profile, manualTargetMb);
+            _estimateService.QueueSmartEstimate(
+                path, auto, profile, manualTargetMb, targetCodec, quality, targetHeight, isCustom);
         }
 
-        private double EstimateAutoTargetMbSmart(string path, string prof)
+        private int? GetEstimateTargetHeight()
         {
-            return _sizeEstimateService.EstimateAutoTargetMbSmart(path, prof);
+            return GetSelectedScaleMode() switch
+            {
+                EncodingService.ScaleMode.To720p => 720,
+                EncodingService.ScaleMode.To1080p => 1080,
+                EncodingService.ScaleMode.To1440p => 1440,
+                EncodingService.ScaleMode.To4K => 2160,
+                _ => null
+            };
         }
 
         private bool IsNoCompressionSelected()
