@@ -792,7 +792,7 @@ namespace MediaFlux
                 dialog.Close();
             };
             openLocation.Click += (_, __) => OpenDuplicateManagerSelectedLocation(grid);
-            reviewGroup.Click += async (_, __) => await ShowDuplicateGroupReviewAsync(dialog, grid);
+            reviewGroup.Click += (_, __) => ShowDuplicateGroupReview(dialog, grid);
             exportReport.Click += (_, __) => ExportDuplicateReport();
 
             bar.Controls.Add(close);
@@ -886,7 +886,7 @@ namespace MediaFlux
             menu.Items.Add(new ToolStripSeparator());
             var deleteFile = menu.Items.Add("Delete File");
 
-            reviewGroup.Click += async (_, __) => await ShowDuplicateGroupReviewAsync(owner, grid);
+            reviewGroup.Click += (_, __) => ShowDuplicateGroupReview(owner, grid);
             openLocation.Click += (_, __) => OpenDuplicateManagerSelectedLocation(grid);
             openFile.Click += (_, __) => OpenDuplicateManagerSelectedFile(grid);
             deleteFile.Click += (_, __) => DeleteDuplicateManagerSelectedFile(owner, grid);
@@ -1443,7 +1443,7 @@ namespace MediaFlux
             frm.ShowDialog(this);
         }
 
-        private async Task ShowDuplicateGroupReviewAsync(IWin32Window owner, DataGridView grid)
+        private void ShowDuplicateGroupReview(IWin32Window owner, DataGridView grid)
         {
             string? path = GetSelectedDuplicateManagerPath(grid);
             if (string.IsNullOrWhiteSpace(path))
