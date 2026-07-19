@@ -243,27 +243,35 @@ namespace MediaFlux.Services
                 double srcMb = GetMbOnDisk(item.Path);
                 if (srcMb <= 0) srcMb = 1.0;
 
-                double estMb = item.Auto
-                    ? _sizeEstimateService.EstimateAutoTargetMbSmart(item.Path, item.Profile)
-                    : item.ManualTargetMb > 0 ? item.ManualTargetMb : srcMb * 0.5;
-
-                if (estMb <= 0) estMb = srcMb * 0.5;
-
                 double durSec = _mediaInfoService.GetDurationSeconds(item.Path);
                 string? res = null;
                 string? codec = null;
+                string resolutionBucket = "Unknown";
                 try
                 {
-                    var (w, h) = _mediaInfoService.GetResolutionPixels(item.Path);
+                    var info = _mediaInfoService.GetInfo(item.Path);
+                    int w = info.Width ?? 0;
+                    int h = info.Height ?? 0;
                     if (w > 0 && h > 0)
+                    {
                         res = $"{w}x{h}";
+                        resolutionBucket = SizeEstimateService.GetResolutionBucket(w, h);
+                    }
 
-                    codec = _mediaInfoService.GetVideoCodec(item.Path);
+                    codec = info.VideoCodec;
                 }
                 catch
                 {
                     // best-effort only
                 }
+
+                double estMb = item.Auto
+                    ? _sizeEstimateService.EstimateAutoTargetMbSmart(
+                        srcMb,
+                        durSec,
+                        resolutionBucket,
+                        item.Profile)
+                    : item.ManualTargetMb > 0 ? item.ManualTargetMb : 0;
 
                 _smartResults.Enqueue(
                     new SmartEstimateResult(item.Path, srcMb, estMb, durSec, res, codec));

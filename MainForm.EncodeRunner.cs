@@ -362,8 +362,12 @@ namespace MediaFlux
                 }
                 else
                 {
-                    // Fallback to auto estimator
-                    targetMb = EstimateAutoTargetMbSmart(file, profileText);
+                    // Fallback to the metadata-aware estimator. If duration remains
+                    // unavailable, leave targetMb unset so EncodingService safely uses
+                    // quality-based encoding instead of inventing a fixed percentage.
+                    double fallbackEstimate = EstimateAutoTargetMbSmart(file, profileText);
+                    if (fallbackEstimate > 0)
+                        targetMb = fallbackEstimate;
                 }
 
                 // Never “compress” to something basically the same size as source

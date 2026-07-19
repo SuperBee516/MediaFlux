@@ -1492,7 +1492,10 @@ namespace MediaFlux
                 }
                 else
                 {
-                    row.Cells["colEstimatedSize"].Value = "Custom";
+                    _estimatedSizeMap.Remove(path);
+                    row.Cells["colEstimatedSize"].Value = "Metadata unavailable (custom profile)";
+                    row.Cells["colEstimatedSize"].ToolTipText =
+                        "Duration metadata could not be determined. MediaFlux will not substitute a fixed target size.";
                 }
             }
 

@@ -109,10 +109,12 @@ namespace MediaFlux.Services
             if (srcMb <= 0) return 1.0;
 
             double durSec = _mediaInfoService.GetDurationSeconds(path);
-            if (durSec <= 0) return Math.Max(1.0, srcMb * 0.6);
+            if (durSec <= 0) return 0;
 
-            var (w, h) = _mediaInfoService.GetResolutionPixels(path);
-            string res = GetResolutionBucket(w, h);
+            var info = _mediaInfoService.GetInfo(path);
+            string res = info.Width is > 0 && info.Height is > 0
+                ? GetResolutionBucket(info.Width.Value, info.Height.Value)
+                : "Unknown";
 
             return EstimateAutoTargetMbSmart(srcMb, durSec, res, compressionProfile);
         }
@@ -129,7 +131,7 @@ namespace MediaFlux.Services
             if (srcMb <= 0) return 1.0;
 
             if (durationSec <= 0)
-                return Math.Max(1.0, srcMb * 0.6);
+                return 0;
 
             double avgKbps = (srcMb * 8192.0) / durationSec;
 
@@ -155,12 +157,12 @@ namespace MediaFlux.Services
 
             double est = srcMb * mult * resAdj;
 
+            est *= GetCompressionMultiplier(compressionProfile);
+
             // Guardrails: don't grow files; don't crush below ~30%
             double minPct = 0.30;
             double maxPct = 0.98;
             est = Math.Max(srcMb * minPct, Math.Min(srcMb * maxPct, est));
-
-            est *= GetCompressionMultiplier(compressionProfile);
 
             // Never return tiny or zero
             return Math.Max(1.0, est);
@@ -184,7 +186,7 @@ namespace MediaFlux.Services
             return 0;
         }
 
-        private static string GetResolutionBucket(int w, int h)
+        internal static string GetResolutionBucket(int w, int h)
         {
             long pix = (long)w * h;
             if (pix >= 3840L * 2160) return "4K";

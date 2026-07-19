@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -143,7 +144,25 @@ namespace MediaFlux.Services
         public double GetDurationSeconds(string path)
         {
             var info = GetInfo(path);
-            return info.DurationSeconds ?? 0;
+            if (info.DurationSeconds is > 0)
+                return info.DurationSeconds.Value;
+
+            // Some containers omit format.duration even though the video stream has
+            // a usable duration. A partially populated MediaInfo result may also be
+            // cached, so explicitly retry the duration-only probe before reporting
+            // that target-size estimation is unavailable.
+            double durationSeconds = ProbeDurationSeconds(path);
+            if (durationSeconds <= 0)
+                return 0;
+
+            info.DurationSeconds = durationSeconds;
+            if (TryGetFileSignature(path, out var length, out var lastWriteUtc))
+            {
+                _cache[path] = new CacheEntry(info, length, lastWriteUtc);
+                SavePersistentCacheIfDue(force: false);
+            }
+
+            return durationSeconds;
         }
 
         public TimeSpan GetDuration(string path)
@@ -200,7 +219,7 @@ namespace MediaFlux.Services
                 if (proc == null)
                     return info;
 
-                string output = ReadProcessOutputWithTimeout(proc, TimeSpan.FromSeconds(15));
+                string output = ReadProcessOutputWithTimeout(proc, TimeSpan.FromSeconds(30));
 
                 if (string.IsNullOrWhiteSpace(output))
                     return info;
@@ -212,7 +231,7 @@ namespace MediaFlux.Services
                 if (root.TryGetProperty("format", out var fmt))
                 {
                     if (fmt.TryGetProperty("duration", out var durProp) &&
-                        double.TryParse(durProp.GetString(), out var durSec) &&
+                        TryParsePositiveSeconds(durProp.GetString(), out var durSec) &&
                         durSec > 0)
                     {
                         info.DurationSeconds = durSec;
@@ -250,6 +269,13 @@ namespace MediaFlux.Services
                             hProp.TryGetInt32(out var h) && h > 0)
                             info.Height = h;
 
+                        if (info.DurationSeconds is not > 0 &&
+                            s.TryGetProperty("duration", out var streamDurationProp) &&
+                            TryParsePositiveSeconds(streamDurationProp.GetString(), out var streamDurationSec))
+                        {
+                            info.DurationSeconds = streamDurationSec;
+                        }
+
                         // Prefer the video stream bitrate over the container bitrate.
                         // Container bitrate can include high-bitrate audio and is a
                         // weaker quality proxy when comparing duplicate video encodes.
@@ -285,6 +311,53 @@ namespace MediaFlux.Services
             }
 
             return info;
+        }
+
+        private double ProbeDurationSeconds(string path)
+        {
+            if (!File.Exists(path) || !File.Exists(_ffprobePath))
+                return 0;
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = _ffprobePath,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    ErrorDialog = false,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+
+                psi.ArgumentList.Add("-v");
+                psi.ArgumentList.Add("error");
+                psi.ArgumentList.Add("-show_entries");
+                psi.ArgumentList.Add("format=duration:stream=duration");
+                psi.ArgumentList.Add("-of");
+                psi.ArgumentList.Add("default=noprint_wrappers=1:nokey=1");
+                psi.ArgumentList.Add(path);
+
+                using var proc = Process.Start(psi);
+                if (proc == null)
+                    return 0;
+
+                string output = ReadProcessOutputWithTimeout(proc, TimeSpan.FromSeconds(30));
+                double bestDuration = 0;
+                foreach (string line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (TryParsePositiveSeconds(line, out double seconds))
+                        bestDuration = Math.Max(bestDuration, seconds);
+                }
+
+                return bestDuration;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"ffprobe duration fallback failed for '{path}': {ex.Message}");
+                return 0;
+            }
         }
 
         private static string ReadProcessOutputWithTimeout(Process proc, TimeSpan timeout)
@@ -343,6 +416,18 @@ namespace MediaFlux.Services
             }
 
             return false;
+        }
+
+        private static bool TryParsePositiveSeconds(string? text, out double seconds)
+        {
+            return double.TryParse(
+                       text,
+                       NumberStyles.Float,
+                       CultureInfo.InvariantCulture,
+                       out seconds) &&
+                   seconds > 0 &&
+                   !double.IsNaN(seconds) &&
+                   !double.IsInfinity(seconds);
         }
 
         public sealed class MediaInfo

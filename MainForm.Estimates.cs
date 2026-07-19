@@ -166,14 +166,19 @@ namespace MediaFlux
                         try
                         {
                             double srcMb = item.SourceMb > 0 ? item.SourceMb : 1.0;
-                            double estMb = item.EstimatedMb > 0 ? item.EstimatedMb : srcMb * 0.5;
+                            double estMb = item.EstimatedMb;
+                            bool hasEstimate = estMb > 0;
 
-                            string percentText = PercentReduction(srcMb, estMb);
-                            string value = $"{FormatSize(estMb)}  {percentText}";
-
-                            row.Cells["colEstimatedSize"].Value = value;
+                            row.Cells["colEstimatedSize"].Value = hasEstimate
+                                ? $"{FormatSize(estMb)}  {PercentReduction(srcMb, estMb)}"
+                                : "Metadata unavailable";
                             row.Cells["colSize"].Value = FormatSize(srcMb);
-                            row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(srcMb, estMb);
+                            row.Cells["colEstimatedSize"].Tag = hasEstimate
+                                ? new Tuple<double, double>(srcMb, estMb)
+                                : null;
+                            row.Cells["colEstimatedSize"].ToolTipText = hasEstimate
+                                ? "Calculated from source size, duration, resolution, and the selected Quality / File Size profile."
+                                : "Duration metadata could not be determined. MediaFlux will not substitute a fixed target size.";
                             if (_queueSourceSizeMap.TryGetValue(item.Path, out var previousSrc))
                                 _queueTotalSourceMb += srcMb - previousSrc;
                             else
@@ -181,12 +186,19 @@ namespace MediaFlux
 
                             _queueSourceSizeMap[item.Path] = srcMb;
 
-                            if (_estimatedSizeMap.TryGetValue(item.Path, out var previousEst))
-                                _queueTotalEstimatedMb += estMb - previousEst;
-                            else
-                                _queueTotalEstimatedMb += estMb;
+                            if (hasEstimate)
+                            {
+                                if (_estimatedSizeMap.TryGetValue(item.Path, out var previousEst))
+                                    _queueTotalEstimatedMb += estMb - previousEst;
+                                else
+                                    _queueTotalEstimatedMb += estMb;
 
-                            _estimatedSizeMap[item.Path] = estMb;
+                                _estimatedSizeMap[item.Path] = estMb;
+                            }
+                            else if (_estimatedSizeMap.Remove(item.Path, out var previousEst))
+                            {
+                                _queueTotalEstimatedMb -= previousEst;
+                            }
                             _queueTotalsDirty = false;
 
                             // Update RowMeta on the UI thread so later consumers can avoid probing
