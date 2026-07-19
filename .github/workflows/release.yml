@@ -98,6 +98,29 @@ jobs:
             throw "Release payload contains user data or debug files: $($forbidden.FullName -join ', ')"
           }
 
+      - name: Smoke test packaged application startup
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path '.\artifacts\publish\MediaFlux.exe').Path
+          $process = Start-Process `
+            -FilePath $exe `
+            -WorkingDirectory (Split-Path $exe) `
+            -WindowStyle Hidden `
+            -PassThru
+
+          try {
+            Start-Sleep -Seconds 5
+            if ($process.HasExited) {
+              throw "Packaged MediaFlux exited during startup with code $($process.ExitCode)."
+            }
+          }
+          finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+              $process.WaitForExit()
+            }
+          }
+
       - name: Generate release notes
         shell: pwsh
         run: |

@@ -266,7 +266,11 @@ namespace MediaFlux
             comboCompressionProfile.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
             comboVideoFormat.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
             comboEncoderMode.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
-            comboResolution.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+            // Resolution is optional and is not created by every UI layout/version.
+            // Subscribe only when the control exists; dereferencing the designer's
+            // null-initialized compatibility field here prevented the app from starting.
+            if (comboResolution != null)
+                comboResolution.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
             txtTargetSize.TextChanged += (_, __) => ScheduleEstimateRefresh();
             nudAutoQuality!.ValueChanged += (_, __) => ScheduleEstimateRefresh();
 
