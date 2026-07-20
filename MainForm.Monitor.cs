@@ -711,10 +711,10 @@ namespace MediaFlux
             _h265FileCount = h265Count;
             _av1FileCount = av1Count;
             _otherCodecFileCount = otherCount;
-            chkFilterX264.Text = $"Show x264 / h.264 ({h264Count:N0})";
-            chkFilterX265.Text = $"Show x265 / h.265 ({h265Count:N0})";
-            chkFilterAv1.Text = $"Show av1 ({av1Count:N0})";
-            chkFilterOtherCodecs.Text = $"Show other codecs ({otherCount:N0})";
+            lblFilterX264Count.Text = h264Count.ToString("N0");
+            lblFilterX265Count.Text = h265Count.ToString("N0");
+            lblFilterAv1Count.Text = av1Count.ToString("N0");
+            lblFilterOtherCodecsCount.Text = otherCount.ToString("N0");
         }
 
         private void ResetCodecFilterCounts()

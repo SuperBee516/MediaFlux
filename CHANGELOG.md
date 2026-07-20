@@ -1,61 +1,75 @@
-# 📦 GoEncode — Changelog
+# MediaFlux Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to MediaFlux are documented in this file.
 
-The format is based on **Keep a Changelog**, and this project follows **semantic versioning** in spirit (even while private).
-
----
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
 ### Added
-- Deterministic stream mapping (`-map`) with configurable behavior
-- Subtitle preservation support (`-c:s copy` / `-sn`)
-- NVENC quality tuning (lookahead + adaptive quantization)
-- Accurate target-size encoding with:
-  - Audio bitrate budgeting
-  - Container overhead accounting
-- Audio bitrate probing and caching via FFprobe
+
+- Persistent FFmpeg/FFprobe availability guidance, including Settings status,
+  recovery actions, and fail-fast checks for operations that require the tools.
+- Automated tests for queue size estimation.
+- Release-workflow verification that launches the published application and
+  detects startup failures.
 
 ### Changed
-- Audio is now **copied by default**
-  - Re-encoding only occurs when channel changes are requested
-- 10-bit encoding pipeline hardened and validated
-- NVENC 10-bit path avoids unsafe hardware decode scenarios
-- EncodingService refactored for clarity and maintainability
-- Removed duplicate / conflicting FFmpeg argument generation
+
+- Queue size estimates now use each row's effective encoding settings and work
+  for profiles without a manually entered target size.
+- The application window and published executable now use the MediaFlux icon.
+- Duplicate review no longer uses an unnecessary asynchronous wrapper.
 
 ### Fixed
-- Multiple FFmpeg argument shadowing and duplication issues
-- Incorrect 10-bit validation caused by media player misreporting
-- Over-target output sizes when using target MB encoding
-- Ambiguous overload resolution in EncodingService
-- Variable scope and shadowing bugs (`tenBitPixFmt`, `scaleExpr`)
 
----
+- A startup crash caused by accessing the main window handle too early.
+- Missing or stale profile estimates when no manual target size is configured.
 
-## [0.9.0] — Internal Stabilization Release
+## [0.1.3] - 2026-07-18
 
-### Added
-- Structured progress parsing
-- Cancellation-safe FFmpeg execution
-- Collision-safe output file naming
-- Duration and audio bitrate caching
+### Fixed
+
+- Automatic target-size calculation now uses improved media metadata and
+  produces more accurate queue estimates.
+
+## [0.1.2] - 2026-07-18
 
 ### Changed
-- Encoding pipeline now fully explicit and logged
-- Improved error handling and diagnostic output
 
----
+- Expanded the README with additional MediaFlux screenshots.
 
-## [0.8.x] — Early Development
+## [0.1.1] - 2026-07-18
 
-- Initial batch queue implementation
-- FFmpeg process orchestration
-- Basic GPU/CPU encoding support
-- Job progress reporting
+### Added
 
----
+- GitHub Releases-based application updates with an in-app update prompt.
+- Automated Windows release packaging through GitHub Actions.
+- Release documentation for maintainers.
+- Dedicated application-data paths for durable settings, history, logs, and
+  other user data.
 
-> **Note:**  
-> This project is private. Version numbers are informational and used to track architectural milestones.
+### Changed
+
+- Replaced the network-folder, timestamp-based updater with versioned GitHub
+  releases.
+- Improved backup handling and migration of existing user data.
+
+## [0.1.0] - 2026-07-18
+
+### Added
+
+- Initial MediaFlux release, established as an independent project from
+  GoEncode.
+- Batch media encoding with CPU and GPU codec support, presets, progress
+  reporting, and target-size estimates.
+- Duplicate-media analysis and configurable keeper scoring.
+- Folder imports, watch folders, Explorer integration, audio tools, history,
+  backups, and configurable application settings.
+
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.3
+[0.1.2]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.2
+[0.1.1]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.1
+[0.1.0]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.0

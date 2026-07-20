@@ -89,7 +89,20 @@ namespace MediaFlux
         private CheckBox chkProcessAll;
         private CheckBox chkRetryFailedJobs;
         private System.Windows.Forms.Button btnPauseQueue;
+        private TableLayoutPanel pnlFolderSetupCard;
+        private TableLayoutPanel pnlEncodingProfileCard;
+        private TableLayoutPanel tlEncodingProfileFields;
+        private TableLayoutPanel pnlQueueControlsCard;
+        private FlowLayoutPanel pnlQueueBehavior;
+        private FlowLayoutPanel pnlQueueActionButtons;
         private GroupBox grpOptions;
+        private TableLayoutPanel tlEncodingOptions;
+        private TableLayoutPanel pnlEncodingBehaviorCard;
+        private TableLayoutPanel pnlCodecFiltersCard;
+        private Label lblFilterX264Count;
+        private Label lblFilterX265Count;
+        private Label lblFilterAv1Count;
+        private Label lblFilterOtherCodecsCount;
         private TableLayoutPanel grpDuplicateFinder;
 
         private Label lblResolution = null!;
@@ -519,16 +532,50 @@ namespace MediaFlux
             this.chkFilterAv1 = new System.Windows.Forms.CheckBox();
             this.chkFilterOtherCodecs = new System.Windows.Forms.CheckBox();
 
-            // Row 0: Input Folder
-            lblInputFolder.Text = "Input Folder:";
-            lblInputFolder.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblInputFolder, 0, 0);
+            // Rows 0-2: modern setup cards
+            this.pnlFolderSetupCard = new TableLayoutPanel
+            {
+                Name = "pnlFolderSetupCard",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.FromArgb(248, 249, 251),
+                BorderStyle = BorderStyle.FixedSingle,
+                ColumnCount = 3,
+                RowCount = 3,
+                Dock = DockStyle.Fill,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
+                Margin = new Padding(0, 0, 0, 6),
+                Padding = new Padding(12, 10, 12, 10)
+            };
+            pnlFolderSetupCard.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            pnlFolderSetupCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            pnlFolderSetupCard.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            pnlFolderSetupCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            pnlFolderSetupCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            pnlFolderSetupCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            var lblFoldersHeader = new Label
+            {
+                Text = "Folders",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(45, 62, 80),
+                Margin = new Padding(0, 0, 0, 7)
+            };
+            pnlFolderSetupCard.SetColumnSpan(lblFoldersHeader, 3);
+            pnlFolderSetupCard.Controls.Add(lblFoldersHeader, 0, 0);
+
+            lblInputFolder.Text = "Input folder";
+            lblInputFolder.AutoSize = true;
+            lblInputFolder.Anchor = AnchorStyles.Left;
+            lblInputFolder.Margin = new Padding(0, 5, 12, 4);
+            pnlFolderSetupCard.Controls.Add(lblInputFolder, 0, 1);
 
             cmbInputFolder.Dock = DockStyle.Fill;
             cmbInputFolder.Name = "cmbInputFolder";
             cmbInputFolder.DropDownStyle = ComboBoxStyle.DropDown;
-            tlEncode.SetColumnSpan(cmbInputFolder, 2);         // spans columns 1–2
-            tlEncode.Controls.Add(cmbInputFolder, 1, 0);
+            cmbInputFolder.Margin = new Padding(0, 2, 8, 3);
+            pnlFolderSetupCard.Controls.Add(cmbInputFolder, 1, 1);
 
             var pnlInputFolderButtons = new FlowLayoutPanel
             {
@@ -537,28 +584,31 @@ namespace MediaFlux
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Margin = Padding.Empty
+                Margin = new Padding(0, 0, 0, 2)
             };
             btnBrowseInput.Text = "Browse…";
             btnBrowseInput.AutoSize = true;
+            btnBrowseInput.Margin = new Padding(0, 0, 6, 0);
             btnBrowseInput.Click += btnBrowseInput_Click;
             btnClearInput.Text = "Clear";
             btnClearInput.AutoSize = true;
+            btnClearInput.Margin = Padding.Empty;
             btnClearInput.Click += btnClearInput_Click;
             pnlInputFolderButtons.Controls.Add(btnBrowseInput);
             pnlInputFolderButtons.Controls.Add(btnClearInput);
-            tlEncode.Controls.Add(pnlInputFolderButtons, 3, 0);
+            pnlFolderSetupCard.Controls.Add(pnlInputFolderButtons, 2, 1);
 
-            // Row 1: Output Folder
-            lblEncodeOutput.Text = "Output Folder:";
-            lblEncodeOutput.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblEncodeOutput, 0, 1);
+            lblEncodeOutput.Text = "Output folder";
+            lblEncodeOutput.AutoSize = true;
+            lblEncodeOutput.Anchor = AnchorStyles.Left;
+            lblEncodeOutput.Margin = new Padding(0, 5, 12, 2);
+            pnlFolderSetupCard.Controls.Add(lblEncodeOutput, 0, 2);
 
             cmbEncodeOutput.Dock = DockStyle.Fill;
             cmbEncodeOutput.Name = "cmbEncodeOutput";
             cmbEncodeOutput.DropDownStyle = ComboBoxStyle.DropDown;
-            tlEncode.SetColumnSpan(cmbEncodeOutput, 2);
-            tlEncode.Controls.Add(cmbEncodeOutput, 1, 1);
+            cmbEncodeOutput.Margin = new Padding(0, 2, 8, 1);
+            pnlFolderSetupCard.Controls.Add(cmbEncodeOutput, 1, 2);
 
             var pnlOutputFolderButtons = new FlowLayoutPanel
             {
@@ -571,30 +621,88 @@ namespace MediaFlux
             };
             btnBrowseOutputEncode.Text = "Browse…";
             btnBrowseOutputEncode.AutoSize = true;
+            btnBrowseOutputEncode.Margin = new Padding(0, 0, 6, 0);
             btnBrowseOutputEncode.Click += btnBrowseOutputEncode_Click;
             btnClearOutputEncode.Text = "Clear";
             btnClearOutputEncode.AutoSize = true;
+            btnClearOutputEncode.Margin = Padding.Empty;
             btnClearOutputEncode.Click += btnClearOutputEncode_Click;
             pnlOutputFolderButtons.Controls.Add(btnBrowseOutputEncode);
             pnlOutputFolderButtons.Controls.Add(btnClearOutputEncode);
-            tlEncode.Controls.Add(pnlOutputFolderButtons, 3, 1);
+            pnlFolderSetupCard.Controls.Add(pnlOutputFolderButtons, 2, 2);
 
-            // Row 2: Encoder
-            lblEncoderMode.Text = "Encoder:";
-            lblEncoderMode.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblEncoderMode, 0, 2);
+            tlEncode.Controls.Add(pnlFolderSetupCard, 0, 0);
+            tlEncode.SetColumnSpan(pnlFolderSetupCard, 4);
+
+            this.pnlEncodingProfileCard = new TableLayoutPanel
+            {
+                Name = "pnlEncodingProfileCard",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.FromArgb(248, 249, 251),
+                BorderStyle = BorderStyle.FixedSingle,
+                ColumnCount = 1,
+                RowCount = 2,
+                Dock = DockStyle.Fill,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
+                Margin = new Padding(0, 0, 0, 6),
+                Padding = new Padding(12, 10, 12, 10)
+            };
+            pnlEncodingProfileCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            pnlEncodingProfileCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            pnlEncodingProfileCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            var lblEncodingProfileHeader = new Label
+            {
+                Text = "Encoding Profile",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(45, 62, 80),
+                Margin = new Padding(0, 0, 0, 7)
+            };
+            pnlEncodingProfileCard.Controls.Add(lblEncodingProfileHeader, 0, 0);
+
+            this.tlEncodingProfileFields = new TableLayoutPanel
+            {
+                Name = "tlEncodingProfileFields",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 4,
+                RowCount = 4,
+                Dock = DockStyle.Top,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            for (int row = 0; row < 4; row++)
+                tlEncodingProfileFields.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            tlEncodingProfileFields.SizeChanged += (_, __) => UpdateEncodingProfileResponsiveLayout();
+            pnlEncodingProfileCard.Controls.Add(tlEncodingProfileFields, 0, 1);
+
+            lblEncoderMode.Text = "Encoder";
+            lblEncoderMode.AutoSize = true;
+            lblEncoderMode.Anchor = AnchorStyles.Left;
+            lblEncoderMode.Margin = new Padding(0, 5, 14, 3);
+            tlEncodingProfileFields.Controls.Add(lblEncoderMode, 0, 0);
 
             comboEncoderMode.Items.AddRange(new object[] { "GPU (NVENC)", "GPU (QSV) Experimental", "CPU (libx264)" });
             comboEncoderMode.DropDownStyle = ComboBoxStyle.DropDownList;
             comboEncoderMode.SelectedIndex = 0;
             comboEncoderMode.Dock = DockStyle.Fill;
-            tlEncode.Controls.Add(comboEncoderMode, 1, 2);
-            tlEncode.SetColumnSpan(comboEncoderMode, 2);
+            comboEncoderMode.Margin = new Padding(0, 2, 0, 3);
+            tlEncodingProfileFields.Controls.Add(comboEncoderMode, 1, 0);
 
             lblVideoFormat = new Label();
-            lblVideoFormat.Text = "Video Format:";
-            lblVideoFormat.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblVideoFormat, 0, 3);
+            lblVideoFormat.Text = "Video format";
+            lblVideoFormat.AutoSize = true;
+            lblVideoFormat.Anchor = AnchorStyles.Left;
+            lblVideoFormat.Margin = new Padding(0, 5, 14, 3);
+            lblVideoFormat.Margin = new Padding(18, 5, 14, 3);
+            tlEncodingProfileFields.Controls.Add(lblVideoFormat, 2, 0);
 
             comboVideoFormat = new ComboBox();
             comboVideoFormat.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -605,34 +713,38 @@ namespace MediaFlux
             });
             comboVideoFormat.SelectedIndex = 0; // default to H.265
             comboVideoFormat.Dock = DockStyle.Fill;
-            tlEncode.Controls.Add(comboVideoFormat, 1, 3);
-            tlEncode.SetColumnSpan(comboVideoFormat, 2);
+            comboVideoFormat.Margin = new Padding(0, 2, 0, 3);
+            tlEncodingProfileFields.Controls.Add(comboVideoFormat, 3, 0);
 
-            // Row 4: Target size + Auto-target
-            lblTargetSize.Text = "Target Size (MB):";
-            lblTargetSize.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblTargetSize, 0, 4);
+            lblTargetSize.Text = "Target size (MB)";
+            lblTargetSize.AutoSize = true;
+            lblTargetSize.Anchor = AnchorStyles.Left;
+            lblTargetSize.Margin = new Padding(0, 5, 14, 3);
+            tlEncodingProfileFields.Controls.Add(lblTargetSize, 0, 1);
 
-            txtTargetSize.Width = 80;
-            txtTargetSize.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-            tlEncode.Controls.Add(txtTargetSize, 1, 4);
+            txtTargetSize.Dock = DockStyle.Fill;
+            txtTargetSize.Margin = new Padding(0, 2, 0, 3);
+            tlEncodingProfileFields.Controls.Add(txtTargetSize, 1, 1);
 
             chkAutoTargetSize.Text = "Auto-determine best target size";
             chkAutoTargetSize.AutoSize = true;
             chkAutoTargetSize.Checked = false;
             chkAutoTargetSize.Anchor = AnchorStyles.Left;
+            chkAutoTargetSize.Margin = new Padding(0, 2, 0, 4);
             chkAutoTargetSize.CheckedChanged += (s, e) => {
                 txtTargetSize.Enabled = !chkAutoTargetSize.Checked;
             };
             txtTargetSize.Enabled = !chkAutoTargetSize.Checked;
-            tlEncode.Controls.Add(chkAutoTargetSize, 2, 4);
-            tlEncode.SetColumnSpan(chkAutoTargetSize, 2);
+            chkAutoTargetSize.Margin = new Padding(18, 5, 0, 4);
+            tlEncodingProfileFields.Controls.Add(chkAutoTargetSize, 2, 1);
+            tlEncodingProfileFields.SetColumnSpan(chkAutoTargetSize, 2);
 
-            // Row 5: Compression profile
             lblCompressionProfile = new Label();
-            lblCompressionProfile.Text = "Quality / File Size:";
-            lblCompressionProfile.Anchor = AnchorStyles.Right;
-            tlEncode.Controls.Add(lblCompressionProfile, 0, 5);
+            lblCompressionProfile.Text = "Quality / file size";
+            lblCompressionProfile.AutoSize = true;
+            lblCompressionProfile.Anchor = AnchorStyles.Left;
+            lblCompressionProfile.Margin = new Padding(0, 5, 14, 3);
+            tlEncodingProfileFields.Controls.Add(lblCompressionProfile, 0, 2);
 
             comboCompressionProfile = new ComboBox();
             comboCompressionProfile.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -645,100 +757,232 @@ namespace MediaFlux
                 "Very Low Quality (Smallest File)"
             });
             comboCompressionProfile.SelectedItem = "Medium Quality (Default)";
-            comboCompressionProfile.Width = 180;
-            tlEncode.Controls.Add(comboCompressionProfile, 1, 5);
-            tlEncode.SetColumnSpan(comboCompressionProfile, 3);
+            comboCompressionProfile.Dock = DockStyle.Fill;
+            comboCompressionProfile.Margin = new Padding(0, 2, 0, 3);
+            tlEncodingProfileFields.Controls.Add(comboCompressionProfile, 1, 2);
 
-            // Row 7: Delete Source + Include Subfolders
+            tlEncode.Controls.Add(pnlEncodingProfileCard, 0, 1);
+            tlEncode.SetColumnSpan(pnlEncodingProfileCard, 4);
+
+            this.pnlQueueControlsCard = new TableLayoutPanel
+            {
+                Name = "pnlQueueControlsCard",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.FromArgb(248, 249, 251),
+                BorderStyle = BorderStyle.FixedSingle,
+                ColumnCount = 1,
+                RowCount = 4,
+                Dock = DockStyle.Top,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
+                Margin = new Padding(0, 0, 0, 6),
+                Padding = new Padding(12, 10, 12, 10)
+            };
+            pnlQueueControlsCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            for (int row = 0; row < 4; row++)
+                pnlQueueControlsCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            var lblQueueControlsHeader = new Label
+            {
+                Text = "Queue Controls",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(45, 62, 80),
+                Margin = new Padding(0, 0, 0, 6)
+            };
+            pnlQueueControlsCard.Controls.Add(lblQueueControlsHeader, 0, 0);
+
+            this.pnlQueueBehavior = new FlowLayoutPanel
+            {
+                Name = "pnlQueueBehavior",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0, 0, 0, 6)
+            };
+
             chkDeleteSource.Text = "Delete source file after compression";
             chkDeleteSource.AutoSize = true;
             chkDeleteSource.Checked = true;
-            tlEncode.SetColumnSpan(chkDeleteSource, 2);
-            tlEncode.Controls.Add(chkDeleteSource, 0, 7);
+            chkDeleteSource.Margin = new Padding(0, 2, 28, 2);
+            pnlQueueBehavior.Controls.Add(chkDeleteSource);
 
             chkIncludeSubfolders = new CheckBox();
             chkIncludeSubfolders.Text = "Include subfolders";
             chkIncludeSubfolders.AutoSize = true;
             chkIncludeSubfolders.Checked = true; // default on, matches prior behavior
-            tlEncode.SetColumnSpan(chkIncludeSubfolders, 2);
-            tlEncode.Controls.Add(chkIncludeSubfolders, 2, 7);
+            chkIncludeSubfolders.Margin = new Padding(0, 2, 0, 2);
+            pnlQueueBehavior.Controls.Add(chkIncludeSubfolders);
+            pnlQueueControlsCard.Controls.Add(pnlQueueBehavior, 0, 1);
 
-            // Row 8: Buttons
             this.btnPauseQueue = new System.Windows.Forms.Button();
             this.btnPauseQueue.Name = "btnPauseQueue";
             this.btnPauseQueue.Text = "Pause Queue";
+            this.btnPauseQueue.AutoSize = true;
             this.btnPauseQueue.Click += new System.EventHandler(this.btnPauseQueue_Click);
-            tlEncode.Controls.Add(this.btnPauseQueue, 0, 8);
 
             btnStartEncode.Text = "Start Encoding";
+            btnStartEncode.AutoSize = true;
+            btnStartEncode.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
             btnStartEncode.Click += btnStartEncode_Click;
-            tlEncode.Controls.Add(btnStartEncode, 1, 8);
 
             btnStopEncode.Text = "Stop Encoding";
+            btnStopEncode.AutoSize = true;
             btnStopEncode.Enabled = false;
             btnStopEncode.Click += btnStopEncode_Click;
-            tlEncode.Controls.Add(btnStopEncode, 2, 8);
 
             btnRefreshEncode.Text = "Refresh";
+            btnRefreshEncode.AutoSize = true;
             btnRefreshEncode.Click += btnRefreshEncode_Click;
-            tlEncode.Controls.Add(btnRefreshEncode, 3, 8);
 
-            // Row 9: Status (full width again)
+            this.pnlQueueActionButtons = new FlowLayoutPanel
+            {
+                Name = "pnlQueueActionButtons",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = Padding.Empty
+            };
+            btnStartEncode.Margin = new Padding(0, 0, 8, 0);
+            btnPauseQueue.Margin = new Padding(0, 0, 8, 0);
+            btnStopEncode.Margin = new Padding(0, 0, 8, 0);
+            btnRefreshEncode.Margin = Padding.Empty;
+            pnlQueueActionButtons.Controls.Add(btnStartEncode);
+            pnlQueueActionButtons.Controls.Add(btnPauseQueue);
+            pnlQueueActionButtons.Controls.Add(btnStopEncode);
+            pnlQueueActionButtons.Controls.Add(btnRefreshEncode);
+            pnlQueueControlsCard.Controls.Add(pnlQueueActionButtons, 0, 2);
+
             lblEncodeStatus.Text = "";
             lblEncodeStatus.AutoSize = true;
             lblEncodeStatus.Anchor = AnchorStyles.Left;
-            tlEncode.SetColumnSpan(lblEncodeStatus, 4);
-            tlEncode.Controls.Add(lblEncodeStatus, 0, 9);
+            lblEncodeStatus.ForeColor = SystemColors.GrayText;
+            lblEncodeStatus.Margin = new Padding(0, 5, 0, 0);
+            pnlQueueControlsCard.Controls.Add(lblEncodeStatus, 0, 3);
+            pnlQueueControlsCard.SizeChanged += (_, __) => UpdateQueueControlsResponsiveLayout();
+
+            tlEncode.Controls.Add(pnlQueueControlsCard, 0, 2);
+            tlEncode.SetColumnSpan(pnlQueueControlsCard, 4);
 
             // Row 10: Encoding options group
             this.grpOptions = new GroupBox
             {
                 Text = "Encoding Options",
                 AutoSize = true,
-                Padding = new Padding(10, 8, 10, 10),
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(12, 10, 12, 12),
+                Margin = new Padding(0, 6, 0, 6),
                 Anchor = AnchorStyles.Left | AnchorStyles.Right
             };
 
-            var tlOptions = new TableLayoutPanel
+            this.tlEncodingOptions = new TableLayoutPanel
             {
+                Name = "tlEncodingOptions",
                 AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 4
+                RowCount = 2,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
             };
-            tlOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            tlOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            tlEncodingOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            tlEncodingOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            tlEncodingOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            tlEncodingOptions.RowStyles.Add(new RowStyle(SizeType.Absolute, 0F));
+
+            this.pnlEncodingBehaviorCard = new TableLayoutPanel
+            {
+                Name = "pnlEncodingBehaviorCard",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.FromArgb(248, 249, 251),
+                BorderStyle = BorderStyle.FixedSingle,
+                ColumnCount = 1,
+                RowCount = 3,
+                Dock = DockStyle.Fill,
+                GrowStyle = TableLayoutPanelGrowStyle.AddRows,
+                Margin = new Padding(0, 0, 6, 0),
+                Padding = new Padding(12, 10, 12, 10)
+            };
+            pnlEncodingBehaviorCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+
+            var lblProcessingHeader = new Label
+            {
+                Text = "Processing",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(45, 62, 80),
+                Margin = new Padding(0, 0, 0, 5)
+            };
+
+            this.pnlCodecFiltersCard = new TableLayoutPanel
+            {
+                Name = "pnlCodecFiltersCard",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.FromArgb(248, 249, 251),
+                BorderStyle = BorderStyle.FixedSingle,
+                ColumnCount = 2,
+                RowCount = 7,
+                Dock = DockStyle.Fill,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
+                Margin = new Padding(6, 0, 0, 0),
+                Padding = new Padding(12, 10, 12, 10)
+            };
+            pnlCodecFiltersCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            pnlCodecFiltersCard.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+            var lblCodecFiltersHeader = new Label
+            {
+                Text = "Codec Filters",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(45, 62, 80),
+                Margin = new Padding(0, 0, 0, 2)
+            };
+            pnlCodecFiltersCard.SetColumnSpan(lblCodecFiltersHeader, 2);
+
+            var lblCodecFiltersHint = new Label
+            {
+                Text = "Include files using:",
+                AutoSize = true,
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(0, 0, 0, 6)
+            };
+            pnlCodecFiltersCard.SetColumnSpan(lblCodecFiltersHint, 2);
 
             // ensure texts + margins are consistent
             if (chkProcessAll == null) chkProcessAll = new CheckBox();
             chkProcessAll.Text = "Process entire queue (ignore selection)";
             chkProcessAll.AutoSize = true;
-            chkProcessAll.Margin = new Padding(4, 2, 12, 2);
+            chkProcessAll.Margin = new Padding(0, 2, 0, 3);
             chkProcessAll.Checked = false;
 
-            chkFilterX264.Text = "Show x264 / h.264";
+            chkFilterX264.Text = "H.264 / x264";
             chkFilterX264.AutoSize = true;
-            chkFilterX264.Margin = new Padding(4, 2, 12, 2);
+            chkFilterX264.Margin = new Padding(0, 3, 8, 3);
 
-            chkFilterX265.Text = "Show x265 / h.265";
+            chkFilterX265.Text = "H.265 / x265";
             chkFilterX265.AutoSize = true;
-            chkFilterX265.Margin = new Padding(4, 2, 12, 2);
+            chkFilterX265.Margin = new Padding(0, 3, 8, 3);
 
-            chkFilterAv1.Text = "Show av1";
+            chkFilterAv1.Text = "AV1";
             chkFilterAv1.AutoSize = true;
-            chkFilterAv1.Margin = new Padding(4, 2, 12, 2);
+            chkFilterAv1.Margin = new Padding(0, 3, 8, 3);
 
-            chkFilterOtherCodecs.Text = "Show other codecs";
+            chkFilterOtherCodecs.Text = "Other codecs";
             chkFilterOtherCodecs.AutoSize = true;
-            chkFilterOtherCodecs.Margin = new Padding(4, 2, 12, 2);
+            chkFilterOtherCodecs.Margin = new Padding(0, 3, 8, 3);
 
             chkRetryFailedJobs.Text = "Retry failed jobs at end";
             chkRetryFailedJobs.AutoSize = true;
-            chkRetryFailedJobs.Margin = new Padding(4, 2, 12, 2);
+            chkRetryFailedJobs.Margin = new Padding(0, 2, 0, 3);
             chkRetryFailedJobs.Checked = false;
 
             chkFindDuplicates.Text = "Check for duplicates before queueing";
@@ -782,13 +1026,22 @@ namespace MediaFlux
             btnClearDuplicateReferenceFolder.Margin = new Padding(4, 2, 4, 2);
             btnClearDuplicateReferenceFolder.Click += ClearDuplicateReferenceFolder_Click;
 
-            var lblExtensionFilterHint = new Label
+            this.lblFilterX264Count = CreateCodecCountLabel();
+            this.lblFilterX265Count = CreateCodecCountLabel();
+            this.lblFilterAv1Count = CreateCodecCountLabel();
+            this.lblFilterOtherCodecsCount = CreateCodecCountLabel();
+
+            var lnkExtensionSettings = new LinkLabel
             {
-                Text = "File extensions: Settings",
+                Text = "Configure file extensions  ›",
                 AutoSize = true,
-                Margin = new Padding(4, 4, 12, 2),
-                ForeColor = SystemColors.GrayText
+                LinkColor = Color.FromArgb(0, 102, 180),
+                ActiveLinkColor = Color.FromArgb(0, 78, 140),
+                VisitedLinkColor = Color.FromArgb(0, 102, 180),
+                Margin = new Padding(0, 9, 0, 0)
             };
+            lnkExtensionSettings.LinkClicked += (_, __) => SettingsToolStripMenuItem_Click(lnkExtensionSettings, EventArgs.Empty);
+            pnlCodecFiltersCard.SetColumnSpan(lnkExtensionSettings, 2);
 
             lblDuplicateFinderStatus.Text = "Duplicate Finder is off";
             lblDuplicateFinderStatus.AutoSize = true;
@@ -810,16 +1063,27 @@ namespace MediaFlux
             btnClearDuplicateResults.Margin = new Padding(4, 2, 4, 2);
             btnClearDuplicateResults.Click += ClearDuplicateResults_Click;
 
-            // add controls row-major for alignment
-            tlOptions.Controls.Add(chkProcessAll, 0, 0);
-            tlOptions.Controls.Add(chkFilterX264, 1, 0);
-            tlOptions.Controls.Add(chkRetryFailedJobs, 0, 1);
-            tlOptions.Controls.Add(chkFilterX265, 1, 1);
-            tlOptions.Controls.Add(lblExtensionFilterHint, 0, 2);
-            tlOptions.Controls.Add(chkFilterAv1, 1, 2);
-            tlOptions.Controls.Add(chkFilterOtherCodecs, 1, 3);
+            pnlEncodingBehaviorCard.Controls.Add(lblProcessingHeader, 0, 0);
+            pnlEncodingBehaviorCard.Controls.Add(chkProcessAll, 0, 1);
+            pnlEncodingBehaviorCard.Controls.Add(chkRetryFailedJobs, 0, 2);
 
-            grpOptions.Controls.Add(tlOptions);
+            pnlCodecFiltersCard.Controls.Add(lblCodecFiltersHeader, 0, 0);
+            pnlCodecFiltersCard.Controls.Add(lblCodecFiltersHint, 0, 1);
+            pnlCodecFiltersCard.Controls.Add(chkFilterX264, 0, 2);
+            pnlCodecFiltersCard.Controls.Add(lblFilterX264Count, 1, 2);
+            pnlCodecFiltersCard.Controls.Add(chkFilterX265, 0, 3);
+            pnlCodecFiltersCard.Controls.Add(lblFilterX265Count, 1, 3);
+            pnlCodecFiltersCard.Controls.Add(chkFilterAv1, 0, 4);
+            pnlCodecFiltersCard.Controls.Add(lblFilterAv1Count, 1, 4);
+            pnlCodecFiltersCard.Controls.Add(chkFilterOtherCodecs, 0, 5);
+            pnlCodecFiltersCard.Controls.Add(lblFilterOtherCodecsCount, 1, 5);
+            pnlCodecFiltersCard.Controls.Add(lnkExtensionSettings, 0, 6);
+
+            tlEncodingOptions.Controls.Add(pnlEncodingBehaviorCard, 0, 0);
+            tlEncodingOptions.Controls.Add(pnlCodecFiltersCard, 1, 0);
+            tlEncodingOptions.SizeChanged += (_, __) => UpdateEncodingOptionsResponsiveLayout();
+
+            grpOptions.Controls.Add(tlEncodingOptions);
 
             // place the group across all 4 columns on row 10
             tlEncode.Controls.Add(grpOptions, 0, 10);
