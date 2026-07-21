@@ -1651,7 +1651,6 @@ namespace MediaFlux
                 comboNvencPreset.Margin = new Padding(0, 2, 0, 3);
                 tlEncodingProfileFields.Controls.Add(lblEncodingSpeed, 0, encodingSpeedRow);
                 tlEncodingProfileFields.Controls.Add(comboNvencPreset, 1, encodingSpeedRow);
-                tlEncodingProfileFields.SetColumnSpan(comboNvencPreset, 3);
                 UpdateEncodingProfileResponsiveLayout();
             }
 
@@ -1843,7 +1842,7 @@ namespace MediaFlux
                     if (comboNvencPreset != null)
                     {
                         tlEncodingProfileFields.SetCellPosition(comboNvencPreset, new TableLayoutPanelCellPosition(1, 3));
-                        tlEncodingProfileFields.SetColumnSpan(comboNvencPreset, 3);
+                        tlEncodingProfileFields.SetColumnSpan(comboNvencPreset, 1);
                     }
 
                     lblVideoFormat.Margin = new Padding(18, 5, 14, 3);
