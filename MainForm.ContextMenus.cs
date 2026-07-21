@@ -8,7 +8,7 @@ using System.Windows.Forms;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         // All context-menu setup + context-menu-only handlers will live here.
 
@@ -402,7 +402,7 @@ namespace MediaFlux
         {
             targetMb = 0;
 
-            using var dialog = new Form
+            using var dialog = new MediaFluxForm
             {
                 Text = "Set Target Size",
                 FormBorderStyle = FormBorderStyle.FixedDialog,

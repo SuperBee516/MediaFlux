@@ -3,7 +3,7 @@ using System.Windows.Forms;
 
 namespace MediaFlux
 {
-    internal sealed class UpdateAvailableForm : Form
+    internal sealed class UpdateAvailableForm : MediaFluxForm
     {
         public UpdateAvailableForm(string currentVersion, string targetVersion, string? releaseNotes)
         {

@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private readonly HashSet<string> _codecFilterImportRoots = new(StringComparer.OrdinalIgnoreCase);
 

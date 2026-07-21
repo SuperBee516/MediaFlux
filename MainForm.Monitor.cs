@@ -8,7 +8,7 @@ using System.Windows.Forms;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private int _h264FileCount;
         private int _h265FileCount;

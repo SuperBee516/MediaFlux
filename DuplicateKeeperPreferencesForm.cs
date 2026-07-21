@@ -8,7 +8,7 @@ using System.Windows.Forms;
 
 namespace MediaFlux
 {
-    internal sealed class DuplicateKeeperPreferencesForm : Form
+    internal sealed class DuplicateKeeperPreferencesForm : MediaFluxForm
     {
         private readonly ComboBox _profile = new();
         private readonly ComboBox _codecPreference = new();

@@ -15,7 +15,7 @@ namespace MediaFlux
         bool IsEncoding,
         bool IsPaused);
 
-    internal sealed class CompactModeForm : Form
+    internal sealed class CompactModeForm : MediaFluxForm
     {
         private readonly MainForm _mainForm;
         private readonly Label _fileLabel;

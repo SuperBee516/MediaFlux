@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         // =====================
         // Export/Import DTOs

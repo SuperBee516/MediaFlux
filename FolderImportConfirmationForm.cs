@@ -1,6 +1,6 @@
 namespace MediaFlux
 {
-    internal sealed class FolderImportConfirmationForm : Form
+    internal sealed class FolderImportConfirmationForm : MediaFluxForm
     {
         private readonly string _folder;
         private readonly HashSet<string> _allowedExtensions;

@@ -10,7 +10,7 @@ using static MediaFlux.Services.EncodingService;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private async void btnStartEncode_Click(object? sender, EventArgs e)
         {

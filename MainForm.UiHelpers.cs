@@ -7,7 +7,7 @@ using MediaFlux.Services;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         // ───────── UI thread helpers ─────────
         private void Ui(Action a)

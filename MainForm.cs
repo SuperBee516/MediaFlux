@@ -17,7 +17,7 @@ using System.Windows.Forms;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private readonly string _configPath;
         private Config _config;
@@ -77,6 +77,8 @@ namespace MediaFlux
         private Label? _summaryTotalEstimatedSavedValue;
         private readonly Dictionary<string, Label> _previewValueLabels = new(StringComparer.OrdinalIgnoreCase);
         private readonly ToolTip _uiToolTip = new();
+        private Button? _btnToggleEncodingOptions;
+        private Control? _encodingOptionsBodyPanel;
         private Button? _btnToggleDuplicateFinder;
         private Control? _duplicateFinderBodyPanel;
         private Label? _duplicateFinderHeaderStatusLabel;
@@ -168,7 +170,6 @@ namespace MediaFlux
         public MainForm()
         {
             InitializeComponent();
-            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             Text = $"MediaFlux v{UpdateManager.CurrentVersion}";
 
 
@@ -321,6 +322,7 @@ namespace MediaFlux
             WireCheckboxPersistence();
             ApplyRememberedCheckboxStates();
             ApplyEncodeInfoHeaderCollapsedState(_config.EncodeInfoHeaderCollapsed);
+            ApplyEncodingOptionsCollapsedState(_config.EncodingOptionsCollapsed);
             ApplyDuplicateFinderCollapsedState(_config.DuplicateFinderCollapsed);
 
             // Encode defaults
@@ -714,6 +716,27 @@ namespace MediaFlux
 
             if (_btnToggleEncodeInfoHeader != null)
                 _btnToggleEncodeInfoHeader.Text = collapsed ? ">" : "v";
+        }
+
+        private void ApplyEncodingOptionsCollapsedState(bool collapsed)
+        {
+            if (_encodingOptionsBodyPanel != null)
+                _encodingOptionsBodyPanel.Visible = !collapsed;
+
+            if (_btnToggleEncodingOptions != null)
+                _btnToggleEncodingOptions.Text = collapsed ? ">" : "v";
+        }
+
+        private void ToggleEncodingOptionsCollapsed()
+        {
+            bool collapsed = _encodingOptionsBodyPanel?.Visible == true;
+            ApplyEncodingOptionsCollapsedState(collapsed);
+
+            if (_config != null)
+            {
+                _config.EncodingOptionsCollapsed = collapsed;
+                _config.Save(_configPath);
+            }
         }
 
         private void ApplyDuplicateFinderCollapsedState(bool collapsed)
@@ -3169,7 +3192,7 @@ namespace MediaFlux
 
         private void ColumnSettingsToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            using var dlg = new Form
+            using var dlg = new MediaFluxForm
             {
                 Text = "Show / Hide Columns",
                 FormBorderStyle = FormBorderStyle.FixedDialog,

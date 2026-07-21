@@ -8,7 +8,7 @@ using MediaFlux.Services;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private void ViewHistoryToolStripMenuItem_Click(object? sender, EventArgs e)
         {
@@ -16,7 +16,7 @@ namespace MediaFlux
             var records = _historyService.LoadAll();
 
             // Build a viewer form with a split: grid (top) + log (bottom)
-            var frm = new Form
+            var frm = new MediaFluxForm
             {
                 Text = "Job History",
                 StartPosition = FormStartPosition.CenterParent,

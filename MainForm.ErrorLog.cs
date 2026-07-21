@@ -6,13 +6,13 @@ using System.Windows.Forms;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private void ViewErrorLogToolStripMenuItem_Click(object? sender, EventArgs e)
         {
             var logPath = ErrorLogService.GetDefaultLogPath(Application.StartupPath);
 
-            var frm = new Form
+            var frm = new MediaFluxForm
             {
                 Text = "Error Log",
                 StartPosition = FormStartPosition.CenterParent,

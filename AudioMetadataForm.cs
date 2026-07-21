@@ -8,7 +8,7 @@ using TagFile = TagLib.File;
 
 namespace MediaFlux
 {
-    public sealed class AudioMetadataForm : Form
+    public sealed class AudioMetadataForm : MediaFluxForm
     {
         private readonly string _path;
 

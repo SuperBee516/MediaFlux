@@ -6,7 +6,7 @@ using System.Windows.Forms;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private void InitializePresetMenu()
         {
@@ -56,7 +56,7 @@ namespace MediaFlux
 
         private void ManagePresets_Click(object? sender, EventArgs e)
         {
-            using var dlg = new Form
+            using var dlg = new MediaFluxForm
             {
                 Text = "Manage Encode Presets",
                 StartPosition = FormStartPosition.CenterParent,
@@ -188,7 +188,7 @@ namespace MediaFlux
         private bool TryPromptPresetName(out string name)
         {
             name = "";
-            using var dlg = new Form
+            using var dlg = new MediaFluxForm
             {
                 Text = "Save Encode Preset",
                 StartPosition = FormStartPosition.CenterParent,

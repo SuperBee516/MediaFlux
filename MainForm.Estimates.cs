@@ -8,7 +8,7 @@ using MediaFlux.Services;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private (int w, int h) ProbeResolutionPixels(string file)
         {

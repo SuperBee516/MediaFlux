@@ -14,7 +14,7 @@ using Microsoft.VisualBasic.FileIO;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private const string DuplicateRuleSuggested = "Suggested duplicate files";
         private const string DuplicateRuleLargest = "Largest file in each group";
@@ -705,7 +705,7 @@ namespace MediaFlux
                 return;
             }
 
-            using var dialog = new Form
+            using var dialog = new MediaFluxForm
             {
                 Text = "Duplicate Manager",
                 StartPosition = FormStartPosition.CenterParent,
@@ -1329,7 +1329,7 @@ namespace MediaFlux
         private void ViewDuplicateActionLogToolStripMenuItem_Click(object? sender, EventArgs e)
         {
             string logPath = GetDuplicateActionAuditPath();
-            using var frm = new Form
+            using var frm = new MediaFluxForm
             {
                 Text = "Duplicate Action Log",
                 StartPosition = FormStartPosition.CenterParent,
@@ -1462,7 +1462,7 @@ namespace MediaFlux
             var reviewGroups = _lastDuplicateScanResult?.Groups.ToList() ?? new List<DuplicateGroup>();
             int currentIndex = Math.Max(0, reviewGroups.FindIndex(group => group.Id == managed.Group.Id));
 
-            using var dialog = new Form
+            using var dialog = new MediaFluxForm
             {
                 Text = $"Review Duplicate Group {managed.Group.Id}",
                 StartPosition = FormStartPosition.CenterParent,

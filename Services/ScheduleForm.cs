@@ -3,7 +3,7 @@ using System.Windows.Forms;
 
 namespace MediaFlux.Services
 {
-    public partial class ScheduleForm : Form
+    public partial class ScheduleForm : MediaFluxForm
     {
         public DateTime ScheduledUtc { get; private set; }
 

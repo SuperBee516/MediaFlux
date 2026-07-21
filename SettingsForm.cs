@@ -10,7 +10,7 @@ using System.Windows.Forms;
 
 namespace MediaFlux
 {
-    public partial class SettingsForm : Form
+    public partial class SettingsForm : MediaFluxForm
     {
         public Config Config { get; }
 

@@ -112,6 +112,7 @@ namespace MediaFlux.Models
         public int MainWindowHeight { get; set; } = 0;
         public bool MainWindowMaximized { get; set; } = false;
         public bool EncodeInfoHeaderCollapsed { get; set; } = false;
+        public bool EncodingOptionsCollapsed { get; set; } = false;
         public bool DuplicateFinderCollapsed { get; set; } = false;
 
         // Compact floating queue window preferences.

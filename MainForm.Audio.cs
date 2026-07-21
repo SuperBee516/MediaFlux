@@ -15,7 +15,7 @@ using System.Windows.Forms;
 
 namespace MediaFlux
 {
-    public partial class MainForm : Form
+    public partial class MainForm : MediaFluxForm
     {
         private void chkAudioDenoise_CheckedChanged(object? sender, EventArgs e)
         {

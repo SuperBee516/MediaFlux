@@ -95,7 +95,7 @@ namespace MediaFlux
         private TableLayoutPanel pnlQueueControlsCard;
         private FlowLayoutPanel pnlQueueBehavior;
         private FlowLayoutPanel pnlQueueActionButtons;
-        private GroupBox grpOptions;
+        private TableLayoutPanel grpOptions;
         private TableLayoutPanel tlEncodingOptions;
         private TableLayoutPanel pnlEncodingBehaviorCard;
         private TableLayoutPanel pnlCodecFiltersCard;
@@ -869,15 +869,64 @@ namespace MediaFlux
             tlEncode.SetColumnSpan(pnlQueueControlsCard, 4);
 
             // Row 10: Encoding options group
-            this.grpOptions = new GroupBox
+            this.grpOptions = new TableLayoutPanel
+            {
+                Name = "grpOptions",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+                ColumnCount = 1,
+                RowCount = 2,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
+                Margin = new Padding(0, 3, 0, 3),
+                Padding = Padding.Empty,
+                Dock = DockStyle.Top
+            };
+            grpOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            grpOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            grpOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            var encodingOptionsHeader = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = new Padding(8, 5, 8, 5),
+                BackColor = Color.FromArgb(248, 249, 251),
+                Cursor = Cursors.Hand
+            };
+            encodingOptionsHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            encodingOptionsHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            encodingOptionsHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            _btnToggleEncodingOptions = new Button
+            {
+                Text = "v",
+                Width = 26,
+                Height = 24,
+                FlatStyle = FlatStyle.System,
+                Margin = new Padding(0, 0, 8, 0)
+            };
+            _btnToggleEncodingOptions.Click += (_, __) => ToggleEncodingOptionsCollapsed();
+
+            var encodingOptionsTitle = new Label
             {
                 Text = "Encoding Options",
                 AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Padding = new Padding(12, 10, 12, 12),
-                Margin = new Padding(0, 6, 0, 6),
-                Anchor = AnchorStyles.Left | AnchorStyles.Right
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(27, 34, 43),
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 4, 0, 0)
             };
+
+            encodingOptionsHeader.Controls.Add(_btnToggleEncodingOptions, 0, 0);
+            encodingOptionsHeader.Controls.Add(encodingOptionsTitle, 1, 0);
+            encodingOptionsHeader.Click += (_, __) => ToggleEncodingOptionsCollapsed();
+            encodingOptionsTitle.Click += (_, __) => ToggleEncodingOptionsCollapsed();
 
             this.tlEncodingOptions = new TableLayoutPanel
             {
@@ -889,8 +938,9 @@ namespace MediaFlux
                 RowCount = 2,
                 GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
                 Margin = Padding.Empty,
-                Padding = Padding.Empty
+                Padding = new Padding(12, 10, 12, 12)
             };
+            _encodingOptionsBodyPanel = tlEncodingOptions;
             tlEncodingOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             tlEncodingOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             tlEncodingOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1083,7 +1133,8 @@ namespace MediaFlux
             tlEncodingOptions.Controls.Add(pnlCodecFiltersCard, 1, 0);
             tlEncodingOptions.SizeChanged += (_, __) => UpdateEncodingOptionsResponsiveLayout();
 
-            grpOptions.Controls.Add(tlEncodingOptions);
+            grpOptions.Controls.Add(encodingOptionsHeader, 0, 0);
+            grpOptions.Controls.Add(tlEncodingOptions, 0, 1);
 
             // place the group across all 4 columns on row 10
             tlEncode.Controls.Add(grpOptions, 0, 10);
