@@ -9,6 +9,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Pre-encode sample comparisons for the beginning, middle, and end of a video,
+  with synchronized original/encoded playback, measured size and speed
+  projections, and one-click quality, compression, or codec adjustments.
 - Persistent FFmpeg/FFprobe availability guidance, including Settings status,
   recovery actions, and fail-fast checks for operations that require the tools.
 - Automated tests for queue size estimation.

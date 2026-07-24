@@ -10,6 +10,7 @@ The application is intended for power users who want a graphical orchestration l
 - NVIDIA NVENC, experimental Intel Quick Sync (QSV), and CPU encoding paths
 - H.264, H.265/HEVC, and AV1-oriented media inspection and filtering
 - Configurable quality/file-size profiles, output targets, encoder presets, scaling, bit depth, stream handling, and audio behavior
+- Pre-encode beginning/middle/end sample comparisons with side-by-side original and encoded playback
 - Live FFmpeg progress, speed, FPS, bitrate, elapsed time, projected output size, and queue ETA
 - Large-queue loading with progressive analysis, bounded background work, cancellation, and persistent metadata caching
 - Duplicate detection, review, keeper recommendations, reference-folder comparison, and guarded cleanup actions
@@ -50,6 +51,20 @@ The encoding interface exposes the decisions that materially affect output:
 - Explicit FFmpeg stream mapping and collision-safe output naming
 
 Actual codec and hardware availability depends on the installed FFmpeg build, GPU, and drivers. Failures are reported rather than silently changing to an unrelated encoding path.
+
+### Pre-encode sample comparison
+
+Select a video in the queue and choose **Compare Samples** to test the current
+settings before committing to the full encode. MediaFlux creates 25-second
+samples from the beginning, middle, and end, then provides synchronized
+side-by-side previews with the original on the left and encoded result on the
+right.
+
+The review window reports measured projected final size, bitrate, encode speed,
+and estimated completion time. The current settings can be accepted or adjusted
+for greater quality, greater compression, or another codec; adjusted samples are
+regenerated immediately. Sample generation remains separate from the encode
+queue and is unavailable while a queue encode is active.
 
 ## Duplicate Finder
 

@@ -66,6 +66,7 @@ namespace MediaFlux
         private Button btnBrowseOutputEncode;
         private Button btnClearOutputEncode;
         private Button btnStartEncode;
+        private Button btnSampleComparison;
         private Label lblEncodeStatus;
         private CheckBox chkDeleteSource;
         private CheckBox chkIncludeSubfolders;
@@ -224,6 +225,7 @@ namespace MediaFlux
             btnBrowseOutputEncode = new Button();
             btnClearOutputEncode = new Button();
             btnStartEncode = new Button();
+            btnSampleComparison = new Button();
             lblEncodeStatus = new Label();
             chkDeleteSource = new CheckBox();
             dgvEncodeQueue = new DataGridView();
@@ -828,6 +830,10 @@ namespace MediaFlux
             btnStartEncode.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
             btnStartEncode.Click += btnStartEncode_Click;
 
+            btnSampleComparison.Text = "Compare Samples";
+            btnSampleComparison.AutoSize = true;
+            btnSampleComparison.Click += btnSampleComparison_Click;
+
             btnStopEncode.Text = "Stop Encoding";
             btnStopEncode.AutoSize = true;
             btnStopEncode.Enabled = false;
@@ -848,10 +854,12 @@ namespace MediaFlux
                 Margin = Padding.Empty
             };
             btnStartEncode.Margin = new Padding(0, 0, 8, 0);
+            btnSampleComparison.Margin = new Padding(0, 0, 8, 0);
             btnPauseQueue.Margin = new Padding(0, 0, 8, 0);
             btnStopEncode.Margin = new Padding(0, 0, 8, 0);
             btnRefreshEncode.Margin = Padding.Empty;
             pnlQueueActionButtons.Controls.Add(btnStartEncode);
+            pnlQueueActionButtons.Controls.Add(btnSampleComparison);
             pnlQueueActionButtons.Controls.Add(btnPauseQueue);
             pnlQueueActionButtons.Controls.Add(btnStopEncode);
             pnlQueueActionButtons.Controls.Add(btnRefreshEncode);
