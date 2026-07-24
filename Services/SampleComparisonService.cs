@@ -74,6 +74,7 @@ namespace MediaFlux.Services
     /// </summary>
     public sealed class SampleComparisonService
     {
+        private const int MaxCapturedFfmpegCharacters = 256 * 1024;
         private readonly string _appPath;
         private readonly string _ffmpegPath;
         private readonly string? _configuredFfmpegPath;
@@ -134,9 +135,11 @@ namespace MediaFlux.Services
 
                     progress?.Report($"Preparing {position.Label.ToLowerInvariant()} sample ({i + 1} of {positions.Count})…");
                     await RunFfmpegAsync(
-                        $"-y -ss {Seconds(position.Start.TotalSeconds)} -i {Quote(sourcePath)} " +
+                        $"-hide_banner -nostats -loglevel error -y " +
+                        $"-ss {Seconds(position.Start.TotalSeconds)} -i {Quote(sourcePath)} " +
                         $"-t {Seconds(position.Duration.TotalSeconds)} -map 0:v:0 -map 0:a:0? " +
                         $"-c copy -avoid_negative_ts make_zero {Quote(originalPath)}",
+                        $"preparing the {position.Label.ToLowerInvariant()} source clip",
                         cancellationToken).ConfigureAwait(false);
 
                     double? sampleTargetMb = settings.ProjectedTargetMb.HasValue
@@ -245,14 +248,19 @@ namespace MediaFlux.Services
                 "[left][right]hstack=inputs=2[v]";
 
             return RunFfmpegAsync(
-                $"-y -i {Quote(originalPath)} -i {Quote(encodedPath)} " +
+                $"-hide_banner -nostats -loglevel error -y " +
+                $"-i {Quote(originalPath)} -i {Quote(encodedPath)} " +
                 $"-filter_complex {Quote(filter)} -map \"[v]\" -map 1:a:0? " +
                 $"-c:v libx264 -preset veryfast -crf 14 -c:a aac -b:a 192k " +
                 $"-shortest -movflags +faststart {Quote(outputPath)}",
+                "building the side-by-side preview",
                 cancellationToken);
         }
 
-        private async Task RunFfmpegAsync(string arguments, CancellationToken cancellationToken)
+        private async Task RunFfmpegAsync(
+            string arguments,
+            string operation,
+            CancellationToken cancellationToken)
         {
             var stderr = new StringBuilder();
             using var process = new Process
@@ -272,7 +280,7 @@ namespace MediaFlux.Services
             process.ErrorDataReceived += (_, e) =>
             {
                 if (e.Data != null)
-                    stderr.AppendLine(e.Data);
+                    AppendBounded(stderr, e.Data);
             };
 
             _log?.Invoke($"[SampleComparison] ffmpeg arguments: {arguments}");
@@ -297,8 +305,24 @@ namespace MediaFlux.Services
 
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(
-                    $"FFmpeg could not generate a comparison sample (exit code {process.ExitCode}).{Environment.NewLine}" +
+                    $"FFmpeg failed while {operation} (exit code {process.ExitCode}).{Environment.NewLine}" +
                     stderr.ToString().Trim());
+        }
+
+        private static void AppendBounded(StringBuilder builder, string line)
+        {
+            if (builder.Length >= MaxCapturedFfmpegCharacters)
+                return;
+
+            int available = MaxCapturedFfmpegCharacters - builder.Length;
+            if (line.Length <= available)
+                builder.AppendLine(line);
+            else
+            {
+                builder.Append(line.AsSpan(0, available));
+                builder.AppendLine();
+                builder.AppendLine("[Additional FFmpeg diagnostic output truncated by MediaFlux.]");
+            }
         }
 
         private static string Quote(string value) => $"\"{value.Replace("\"", "\\\"")}\"";

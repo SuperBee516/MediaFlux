@@ -8,6 +8,8 @@ namespace MediaFlux
 {
     public partial class MainForm : MediaFluxForm
     {
+        private const int ErrorLogViewerMaxBytes = 4 * 1024 * 1024;
+
         private void ViewErrorLogToolStripMenuItem_Click(object? sender, EventArgs e)
         {
             var logPath = ErrorLogService.GetDefaultLogPath(Application.StartupPath);
@@ -73,9 +75,13 @@ namespace MediaFlux
                 lblPath.Text = logPath;
                 try
                 {
-                    txtLog.Text = File.Exists(logPath)
-                        ? File.ReadAllText(logPath)
-                        : "No error log has been created yet.";
+                    txtLog.Text = ErrorLogService.ReadTail(
+                        logPath,
+                        ErrorLogViewerMaxBytes,
+                        out bool truncated);
+                    lblPath.Text = truncated
+                        ? $"{logPath}  (showing the most recent 4 MB)"
+                        : logPath;
                     txtLog.SelectionStart = txtLog.TextLength;
                     txtLog.ScrollToCaret();
                 }

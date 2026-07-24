@@ -27,6 +27,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Pre-encode sample comparisons and the error-log viewer no longer retain or
+  load unbounded FFmpeg diagnostics, preventing memory exhaustion during
+  comparison failures and keeping large logs readable.
 - A startup crash caused by accessing the main window handle too early.
 - Missing or stale profile estimates when no manual target size is configured.
 

@@ -15,6 +15,7 @@ namespace MediaFlux.Services
     /// </summary>
     public class EncodingService
     {
+        private const int MaxCapturedFfmpegCharacters = 512 * 1024;
         private readonly string _appPath;
         private readonly string _ffmpegPath;
         private readonly string _ffprobePath;
@@ -437,7 +438,7 @@ namespace MediaFlux.Services
                 if (e.Data != null)
                 {
                     HandleProgressLine(e.Data, callback, totalDuration);
-                    stderrBuilder.AppendLine(e.Data);
+                    AppendBounded(stderrBuilder, e.Data, MaxCapturedFfmpegCharacters);
                 }
             };
 
@@ -516,6 +517,22 @@ namespace MediaFlux.Services
 
             _log?.Invoke("[EncodingService] ffmpeg completed successfully.");
             return new EncodeResult(true, output);
+        }
+
+        private static void AppendBounded(StringBuilder builder, string line, int maxCharacters)
+        {
+            if (builder.Length >= maxCharacters)
+                return;
+
+            int available = maxCharacters - builder.Length;
+            if (line.Length <= available)
+                builder.AppendLine(line);
+            else
+            {
+                builder.Append(line.AsSpan(0, available));
+                builder.AppendLine();
+                builder.AppendLine("[Additional FFmpeg diagnostic output truncated by MediaFlux.]");
+            }
         }
 
         private async Task EnsureProcessExitedAfterCancellationAsync(Process proc)
