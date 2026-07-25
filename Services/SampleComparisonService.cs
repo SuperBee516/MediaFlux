@@ -80,6 +80,7 @@ namespace MediaFlux.Services
         private readonly string? _configuredFfmpegPath;
         private readonly string? _configuredFfprobePath;
         private readonly Action<string>? _log;
+        private readonly Func<string, string, CancellationToken, Task>? _runFfmpegOverride;
 
         public SampleComparisonService(
             string appPath,
@@ -95,6 +96,16 @@ namespace MediaFlux.Services
                 configuredFfmpegPath,
                 configuredFfprobePath).FfmpegPath;
             _log = log;
+        }
+
+        internal SampleComparisonService(
+            string appPath,
+            Func<string, string, CancellationToken, Task> runFfmpegOverride,
+            Action<string>? log = null)
+            : this(appPath, null, null, log)
+        {
+            _runFfmpegOverride = runFfmpegOverride
+                ?? throw new ArgumentNullException(nameof(runFfmpegOverride));
         }
 
         public async Task<SampleComparisonResult> GenerateAsync(
@@ -134,12 +145,13 @@ namespace MediaFlux.Services
                     string originalPath = Path.Combine(root, $"{stem}_original.mkv");
 
                     progress?.Report($"Preparing {position.Label.ToLowerInvariant()} sample ({i + 1} of {positions.Count})…");
-                    await RunFfmpegAsync(
-                        $"-hide_banner -nostats -loglevel error -y " +
-                        $"-ss {Seconds(position.Start.TotalSeconds)} -i {Quote(sourcePath)} " +
-                        $"-t {Seconds(position.Duration.TotalSeconds)} -map 0:v:0 -map 0:a:0? " +
-                        $"-c copy -avoid_negative_ts make_zero {Quote(originalPath)}",
-                        $"preparing the {position.Label.ToLowerInvariant()} source clip",
+                    await PrepareSourceClipAsync(
+                        sourcePath,
+                        position.Start,
+                        position.Duration,
+                        originalPath,
+                        position.Label,
+                        progress,
                         cancellationToken).ConfigureAwait(false);
 
                     double? sampleTargetMb = settings.ProjectedTargetMb.HasValue
@@ -236,6 +248,77 @@ namespace MediaFlux.Services
             };
         }
 
+        internal async Task PrepareSourceClipAsync(
+            string sourcePath,
+            TimeSpan start,
+            TimeSpan duration,
+            string outputPath,
+            string label,
+            IProgress<string>? progress,
+            CancellationToken cancellationToken)
+        {
+            string operation = $"preparing the {label.ToLowerInvariant()} source clip";
+            try
+            {
+                await RunFfmpegAsync(
+                    BuildStreamCopyClipArguments(sourcePath, start, duration, outputPath),
+                    operation,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException ex) when (IsUnknownTimestampFailure(ex))
+            {
+                string message =
+                    $"The {label.ToLowerInvariant()} sample has missing timestamps; " +
+                    "normalizing it for comparison…";
+                progress?.Report(message);
+                _log?.Invoke(
+                    $"[SampleComparison] {message} Retrying with lossless video normalization.");
+
+                await RunFfmpegAsync(
+                    BuildNormalizedClipArguments(sourcePath, start, duration, outputPath),
+                    $"normalizing timestamps for the {label.ToLowerInvariant()} source clip",
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        internal static string BuildStreamCopyClipArguments(
+            string sourcePath,
+            TimeSpan start,
+            TimeSpan duration,
+            string outputPath)
+        {
+            return
+                $"-hide_banner -nostats -loglevel error -y -fflags +genpts " +
+                $"-ss {Seconds(start.TotalSeconds)} -i {Quote(sourcePath)} " +
+                $"-t {Seconds(duration.TotalSeconds)} -map 0:v:0 -map 0:a:0? " +
+                $"-c copy -avoid_negative_ts make_zero {Quote(outputPath)}";
+        }
+
+        internal static string BuildNormalizedClipArguments(
+            string sourcePath,
+            TimeSpan start,
+            TimeSpan duration,
+            string outputPath)
+        {
+            return
+                $"-hide_banner -nostats -loglevel error -y -fflags +genpts " +
+                $"-ss {Seconds(start.TotalSeconds)} -i {Quote(sourcePath)} " +
+                $"-t {Seconds(duration.TotalSeconds)} -map 0:v:0 -map 0:a:0? " +
+                $"-c:v ffv1 -level 3 -c:a aac -b:a 192k " +
+                $"-avoid_negative_ts make_zero {Quote(outputPath)}";
+        }
+
+        internal static bool IsUnknownTimestampFailure(InvalidOperationException exception)
+        {
+            string message = exception.Message;
+            return message.Contains(
+                       "Can't write packet with unknown timestamp",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   message.Contains(
+                       "Timestamps are unset in a packet",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
         private Task BuildComparisonAsync(
             string originalPath,
             string encodedPath,
@@ -262,6 +345,13 @@ namespace MediaFlux.Services
             string operation,
             CancellationToken cancellationToken)
         {
+            if (_runFfmpegOverride != null)
+            {
+                await _runFfmpegOverride(arguments, operation, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+
             var stderr = new StringBuilder();
             using var process = new Process
             {
@@ -306,6 +396,7 @@ namespace MediaFlux.Services
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(
                     $"FFmpeg failed while {operation} (exit code {process.ExitCode}).{Environment.NewLine}" +
+                    $"Command: {Quote(_ffmpegPath)} {arguments}{Environment.NewLine}" +
                     stderr.ToString().Trim());
         }
 

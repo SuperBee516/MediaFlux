@@ -27,6 +27,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Pre-encode sample comparisons now generate missing packet timestamps when
+  clipping legacy AVI sources and retry timestamp-specific remux failures with
+  a lossless normalized video sample.
 - Pre-encode sample comparisons and the error-log viewer no longer retain or
   load unbounded FFmpeg diagnostics, preventing memory exhaustion during
   comparison failures and keeping large logs readable.
