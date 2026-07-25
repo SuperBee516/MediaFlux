@@ -27,6 +27,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- DVD title analysis now uses IFO navigation timing when VOB packet timestamps
+  wrap or reset, preventing valid remuxes and direct encodes from being rejected
+  or budgeted against an inflated duration.
 - Pre-encode sample comparisons now generate missing packet timestamps when
   clipping legacy AVI sources and retry timestamp-specific remux failures with
   a lossless normalized video sample.

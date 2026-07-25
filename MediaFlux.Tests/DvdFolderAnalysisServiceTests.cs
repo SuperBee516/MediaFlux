@@ -48,6 +48,30 @@ public sealed class DvdFolderAnalysisServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task IfoDurationOverridesWrappedVobTimestampDurations()
+    {
+        string videoTs = CreateVideoTs();
+        CreateFile(videoTs, "VTS_01_1.VOB");
+        CreateFile(videoTs, "VTS_01_2.VOB");
+        CreateTitleSetIfo(
+            videoTs,
+            "VTS_01",
+            (1, 1, 0u, 999u, TimeSpan.FromMinutes(60)),
+            (1, 2, 1_000u, 1_999u, TimeSpan.FromMinutes(40)),
+            (1, 2, 1_000u, 1_999u, TimeSpan.FromMinutes(40)));
+
+        DvdFolderAnalysisResult result = await AnalyzeAsync(
+            videoTs,
+            new RecordingProbeService(_ => CreateProbeResult(10_000)));
+
+        DvdTitleCandidate candidate = Assert.Single(result.Candidates);
+        Assert.Equal(6_000, candidate.CombinedDurationSeconds, precision: 1);
+        Assert.Contains(candidate.Warnings, warning =>
+            warning.Contains("wrapped VOB timestamps", StringComparison.OrdinalIgnoreCase));
+        Assert.True(candidate.IsValidForConversion);
+    }
+
+    [Fact]
     public async Task MultipleTitleSetsRemainSeparate()
     {
         string videoTs = CreateVideoTs();
@@ -369,6 +393,73 @@ public sealed class DvdFolderAnalysisServiceTests : IDisposable
         string path = Path.Combine(folder, name);
         File.WriteAllBytes(path, Enumerable.Repeat((byte)0x5A, byteCount).ToArray());
         return path;
+    }
+
+    private static void CreateTitleSetIfo(
+        string videoTs,
+        string titleSetId,
+        params (ushort VobId, byte CellId, uint FirstSector, uint LastSector, TimeSpan Duration)[] cells)
+    {
+        const int sectorSize = 2048;
+        const int tableOffset = sectorSize;
+        const int pgcOffset = 0x40;
+        const int pgcHeaderSize = 236;
+        const int cellPlaybackSize = 24;
+        byte[] data = new byte[sectorSize * 3];
+        "DVDVIDEO-VTS"u8.CopyTo(data);
+        WriteUInt32(data, 0xCC, 1);
+        WriteUInt16(data, tableOffset, 1);
+        WriteUInt32(data, tableOffset + 4, (uint)(data.Length - tableOffset - 1));
+        data[tableOffset + 8] = 0x81;
+        WriteUInt32(data, tableOffset + 12, pgcOffset);
+
+        int pgc = tableOffset + pgcOffset;
+        data[pgc + 2] = (byte)cells.Length;
+        data[pgc + 3] = (byte)cells.Length;
+        int playbackOffset = pgcHeaderSize;
+        int positionOffset = playbackOffset + (cells.Length * cellPlaybackSize);
+        WriteUInt16(data, pgc + 232, (ushort)playbackOffset);
+        WriteUInt16(data, pgc + 234, (ushort)positionOffset);
+
+        for (int index = 0; index < cells.Length; index++)
+        {
+            var cell = cells[index];
+            int playback = pgc + playbackOffset + (index * cellPlaybackSize);
+            WriteDvdTime(data, playback + 4, cell.Duration);
+            WriteUInt32(data, playback + 8, cell.FirstSector);
+            WriteUInt32(data, playback + 20, cell.LastSector);
+
+            int position = pgc + positionOffset + (index * 4);
+            WriteUInt16(data, position, cell.VobId);
+            data[position + 3] = cell.CellId;
+        }
+
+        File.WriteAllBytes(Path.Combine(videoTs, $"{titleSetId}_0.IFO"), data);
+    }
+
+    private static void WriteDvdTime(byte[] data, int offset, TimeSpan duration)
+    {
+        data[offset] = ToBcd((int)duration.TotalHours);
+        data[offset + 1] = ToBcd(duration.Minutes);
+        data[offset + 2] = ToBcd(duration.Seconds);
+        data[offset + 3] = 0xC0;
+    }
+
+    private static byte ToBcd(int value) =>
+        (byte)(((value / 10) << 4) | (value % 10));
+
+    private static void WriteUInt16(byte[] data, int offset, ushort value)
+    {
+        data[offset] = (byte)(value >> 8);
+        data[offset + 1] = (byte)value;
+    }
+
+    private static void WriteUInt32(byte[] data, int offset, uint value)
+    {
+        data[offset] = (byte)(value >> 24);
+        data[offset + 1] = (byte)(value >> 16);
+        data[offset + 2] = (byte)(value >> 8);
+        data[offset + 3] = (byte)value;
     }
 
     private static MediaProbeResult CreateProbeResult(

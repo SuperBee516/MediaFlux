@@ -364,9 +364,29 @@ namespace MediaFlux.Services
                 .Where(probe => probe?.Success == true)
                 .Cast<MediaProbeResult>()
                 .ToList();
-            candidate.CombinedDurationSeconds = validProbes
+            double segmentProbeDuration = validProbes
                 .Where(probe => probe.DurationSeconds is > 0)
                 .Sum(probe => probe.DurationSeconds!.Value);
+            candidate.CombinedDurationSeconds = segmentProbeDuration;
+            string videoTsFolder = Path.GetDirectoryName(
+                candidate.Segments.FirstOrDefault()?.Path ?? "") ?? "";
+            if (DvdIfoDurationReader.TryReadTitleSetDuration(
+                    videoTsFolder,
+                    candidate.TitleSetId,
+                    out double ifoDuration,
+                    out _))
+            {
+                candidate.CombinedDurationSeconds = ifoDuration;
+                if (segmentProbeDuration > 0 &&
+                    Math.Abs(segmentProbeDuration - ifoDuration) >
+                    Math.Max(10, ifoDuration * 0.05))
+                {
+                    candidate.Warnings.Add(
+                        $"{candidate.TitleSetId} contains discontinuous or wrapped VOB " +
+                        "timestamps. MediaFlux recovered the title duration from its DVD " +
+                        "navigation data.");
+                }
+            }
             candidate.ChapterCount = validProbes.Sum(probe => probe.Chapters.Count);
 
             MediaProbeResult? representative = validProbes.FirstOrDefault();
