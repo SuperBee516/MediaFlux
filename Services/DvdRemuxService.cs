@@ -13,14 +13,12 @@ namespace MediaFlux.Services
 
         private readonly string _ffmpegPath;
         private readonly IMediaToolProcessRunner _processRunner;
-        private readonly DvdConcatManifestBuilder _manifestBuilder;
         private readonly IDvdOutputValidationService _validationService;
         private readonly Action<string>? _diagnosticLog;
 
         public DvdRemuxService(
             string applicationDirectory,
             string? configuredFfmpegPath,
-            DvdConcatManifestBuilder manifestBuilder,
             IDvdOutputValidationService validationService,
             Action<string>? diagnosticLog = null,
             IMediaToolProcessRunner? processRunner = null)
@@ -29,7 +27,6 @@ namespace MediaFlux.Services
                     applicationDirectory,
                     configuredFfmpegPath: configuredFfmpegPath).FfmpegPath,
                 processRunner ?? new MediaToolProcessRunner(),
-                manifestBuilder,
                 validationService,
                 diagnosticLog)
         {
@@ -38,15 +35,12 @@ namespace MediaFlux.Services
         public DvdRemuxService(
             string ffmpegPath,
             IMediaToolProcessRunner processRunner,
-            DvdConcatManifestBuilder manifestBuilder,
             IDvdOutputValidationService validationService,
             Action<string>? diagnosticLog = null)
         {
             _ffmpegPath = ffmpegPath;
             _processRunner = processRunner ??
                 throw new ArgumentNullException(nameof(processRunner));
-            _manifestBuilder = manifestBuilder ??
-                throw new ArgumentNullException(nameof(manifestBuilder));
             _validationService = validationService ??
                 throw new ArgumentNullException(nameof(validationService));
             _diagnosticLog = diagnosticLog;
@@ -102,7 +96,6 @@ namespace MediaFlux.Services
             string stagingPath = OutputPathService.CreateStagingPath(finalOutputPath);
             string diagnosticCommand = "";
             string diagnosticOutput = "";
-            DvdConcatManifest? manifest = null;
             DvdRemuxResult? operationResult = null;
             try
             {
@@ -114,8 +107,9 @@ namespace MediaFlux.Services
                     TotalDuration = TimeSpan.FromSeconds(options.Candidate.CombinedDurationSeconds)
                 });
 
-                manifest = _manifestBuilder.Create(options.Candidate);
-                var streamSelection = BuildSelectedStreams(options, manifest);
+                DvdPhysicalInput physicalInput =
+                    DvdPhysicalInputBuilder.Create(options.Candidate);
+                var streamSelection = BuildSelectedStreams(options);
                 if (streamSelection.Video == null)
                 {
                     operationResult = Failed(
@@ -124,7 +118,7 @@ namespace MediaFlux.Services
                 }
 
                 var arguments = BuildArguments(
-                    manifest.ManifestPath,
+                    physicalInput.InputUrl,
                     stagingPath,
                     streamSelection);
                 diagnosticCommand = FormatCommand(_ffmpegPath, arguments);
@@ -264,19 +258,9 @@ namespace MediaFlux.Services
             {
                 progress?.Report(new DvdOperationProgress
                 {
-                    Status = "Cleaning temporary files"
+                    Status = "Cleaning incomplete output"
                 });
-                manifest?.Dispose();
                 var cleanupErrors = new List<string>();
-                if (manifest is { CleanupSucceeded: false })
-                {
-                    cleanupErrors.Add(
-                        $"Temporary manifest: {manifest.CleanupError}");
-                    _diagnosticLog?.Invoke(
-                        $"[DvdRemuxService] Temporary manifest cleanup failed: " +
-                        manifest.CleanupError);
-                }
-
                 string stagingCleanupError = TryDeleteStagingFile(stagingPath);
                 if (!string.IsNullOrWhiteSpace(stagingCleanupError))
                 {
@@ -291,15 +275,13 @@ namespace MediaFlux.Services
                 {
                     operationResult.CleanupSucceeded = cleanupErrors.Count == 0;
                     operationResult.CleanupMessage = cleanupErrors.Count == 0
-                        ? "Temporary files and incomplete output were removed."
+                        ? "No incomplete output remains."
                         : string.Join(" ", cleanupErrors);
                 }
             }
         }
 
-        private static SelectedStreams BuildSelectedStreams(
-            DvdImportOptions options,
-            DvdConcatManifest manifest)
+        private static SelectedStreams BuildSelectedStreams(DvdImportOptions options)
         {
             MediaProbeResult? representative = options.Candidate.Segments
                 .Select(segment => segment.ProbeResult)
@@ -313,33 +295,27 @@ namespace MediaFlux.Services
             var selectedSubtitles = options.SelectedSubtitleStreamIndexes.ToHashSet();
             return new SelectedStreams
             {
-                Video = video == null ? null : ToMappedStream(video, manifest),
+                Video = video == null ? null : ToInputStream(video),
                 Audio = representative.Streams
                     .Where(stream =>
                         stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
                         selectedAudio.Contains(stream.Index))
-                    .Select(stream => ToMappedStream(stream, manifest))
+                    .Select(ToInputStream)
                     .ToList(),
                 Subtitles = representative.Streams
                     .Where(stream =>
                         stream.CodecType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
                         selectedSubtitles.Contains(stream.Index))
-                    .Select(stream => ToMappedStream(stream, manifest))
+                    .Select(ToInputStream)
                     .ToList()
             };
         }
 
-        private static MappedStream ToMappedStream(
-            MediaProbeStreamInfo stream,
-            DvdConcatManifest manifest)
-        {
-            return new MappedStream(
-                stream,
-                manifest.GetConcatStreamIndex(stream.Index));
-        }
+        private static MappedStream ToInputStream(MediaProbeStreamInfo stream) =>
+            new(stream, stream.Index);
 
         private static IReadOnlyList<string> BuildArguments(
-            string manifestPath,
+            string inputUrl,
             string stagingPath,
             SelectedStreams streams)
         {
@@ -351,9 +327,7 @@ namespace MediaFlux.Services
                 "-stats_period", "0.5",
                 "-nostats",
                 "-fflags", "+genpts",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", manifestPath
+                "-i", inputUrl
             };
 
             AddMap(arguments, streams.Video!);
@@ -377,7 +351,7 @@ namespace MediaFlux.Services
         private static void AddMap(List<string> arguments, MappedStream stream)
         {
             arguments.Add("-map");
-            arguments.Add($"0:{stream.ConcatIndex}");
+            arguments.Add($"0:{stream.InputIndex}");
         }
 
         private static (int? SourceIndex, string Description) IdentifyFailedStream(
@@ -390,15 +364,15 @@ namespace MediaFlux.Services
                     match.Groups["index"].Value,
                     NumberStyles.None,
                     CultureInfo.InvariantCulture,
-                    out int concatIndex))
+                    out int inputIndex))
             {
                 return (null, "");
             }
 
             MappedStream? stream = selection.All.FirstOrDefault(item =>
-                item.ConcatIndex == concatIndex);
+                item.InputIndex == inputIndex);
             if (stream == null)
-                return (null, $"stream 0:{concatIndex}");
+                return (null, $"stream 0:{inputIndex}");
 
             string language = string.IsNullOrWhiteSpace(stream.Source.Language)
                 ? ""
@@ -481,7 +455,7 @@ namespace MediaFlux.Services
                     : new[] { Video }.Concat(Audio).Concat(Subtitles);
         }
 
-        private sealed record MappedStream(MediaProbeStreamInfo Source, int ConcatIndex);
+        private sealed record MappedStream(MediaProbeStreamInfo Source, int InputIndex);
 
         private sealed class RemuxProgressState
         {

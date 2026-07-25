@@ -22,44 +22,40 @@ public sealed class DvdEncodingInputFactoryTests : IDisposable
     public void CreatesDirectConcatInputWithSelectedStreamsAndLogicalOutputName()
     {
         DvdImportOptions options = CreateOptions();
-        var factory = new DvdEncodingInputFactory(
-            new DvdConcatManifestBuilder(Path.Combine(_root, "temp")));
+        var factory = new DvdEncodingInputFactory();
 
-        using DvdEncodingInputSession session = factory.Create(options);
-        EncodingInputSource input = session.Input;
+        EncodingInputSource input = factory.Create(options);
 
-        Assert.Equal(EncodingInputKind.ConcatManifest, input.Kind);
-        Assert.True(File.Exists(input.InputPath));
+        Assert.Equal(EncodingInputKind.DvdPhysicalConcat, input.Kind);
+        Assert.StartsWith("concat:", input.InputPath, StringComparison.Ordinal);
+        Assert.Equal(
+            options.Candidate.Segments.Select(segment => segment.Path),
+            input.SourceFiles);
         Assert.Equal(
             Path.GetDirectoryName(options.Candidate.Segments[0].Path),
             input.SourcePath);
         Assert.Equal("Movie Name", input.OutputBaseName);
         Assert.Equal(options.Candidate.CombinedDurationSeconds, input.KnownDurationSeconds);
-        Assert.Equal(new[] { 0 }, input.VideoStreamIndexes);
-        Assert.Equal(new[] { 1 }, input.AudioStreamIndexes);
+        Assert.Equal(new[] { 1 }, input.VideoStreamIndexes);
+        Assert.Equal(new[] { 2 }, input.AudioStreamIndexes);
         Assert.Empty(input.SubtitleStreamIndexes);
         Assert.False(input.AllowSourceDeletion);
         Assert.False(input.ShouldDeleteSource(deleteRequested: true));
     }
 
     [Fact]
-    public void DisposingSessionDeletesOnlyTheTemporaryManifestDirectory()
+    public void CreatingPhysicalInputDoesNotCreateTemporaryFilesOrModifySources()
     {
         DvdImportOptions options = CreateOptions();
         byte[][] sourceBefore = options.Candidate.Segments
             .Select(segment => File.ReadAllBytes(segment.Path))
             .ToArray();
-        var factory = new DvdEncodingInputFactory(
-            new DvdConcatManifestBuilder(Path.Combine(_root, "temp-cleanup")));
+        var factory = new DvdEncodingInputFactory();
 
-        string tempDirectory;
-        using (DvdEncodingInputSession session = factory.Create(options))
-        {
-            tempDirectory = session.TemporaryDirectory;
-            Assert.True(Directory.Exists(tempDirectory));
-        }
+        EncodingInputSource input = factory.Create(options);
 
-        Assert.False(Directory.Exists(tempDirectory));
+        Assert.StartsWith("concat:", input.InputPath, StringComparison.Ordinal);
+        Assert.Empty(Directory.EnumerateDirectories(_root, "dvd-*", SearchOption.AllDirectories));
         for (int index = 0; index < options.Candidate.Segments.Count; index++)
         {
             Assert.Equal(
@@ -72,20 +68,20 @@ public sealed class DvdEncodingInputFactoryTests : IDisposable
     public void DvdInputBuildsConcatArgumentsAndExplicitStreamMaps()
     {
         DvdImportOptions options = CreateOptions(includeSubtitle: true);
-        var factory = new DvdEncodingInputFactory(
-            new DvdConcatManifestBuilder(Path.Combine(_root, "temp-args")));
+        var factory = new DvdEncodingInputFactory();
 
-        using DvdEncodingInputSession session = factory.Create(options);
+        EncodingInputSource input = factory.Create(options);
         string arguments = EncodingService.BuildInputAndMappingArgumentsForTesting(
-            session.Input,
+            input,
             copySubtitles: true,
             copyDataStreams: false);
 
-        Assert.Contains("-fflags +genpts -f concat -safe 0", arguments);
-        Assert.Contains($"-i \"{session.Input.InputPath}\"", arguments);
-        Assert.Contains("-map 0:0", arguments);
+        Assert.Contains("-fflags +genpts", arguments);
+        Assert.DoesNotContain("-f concat", arguments);
+        Assert.Contains($"-i \"{input.InputPath}\"", arguments);
         Assert.Contains("-map 0:1", arguments);
         Assert.Contains("-map 0:2", arguments);
+        Assert.Contains("-map 0:3", arguments);
         Assert.Contains("-dn", arguments);
     }
 
@@ -119,8 +115,7 @@ public sealed class DvdEncodingInputFactoryTests : IDisposable
             OutputMode = DvdOutputMode.LosslessRemuxToMkv,
             OutputPath = encodeOptions.OutputPath
         };
-        var factory = new DvdEncodingInputFactory(
-            new DvdConcatManifestBuilder(Path.Combine(_root, "temp-reject")));
+        var factory = new DvdEncodingInputFactory();
 
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
             () => factory.Create(remuxOptions));
@@ -137,6 +132,13 @@ public sealed class DvdEncodingInputFactoryTests : IDisposable
             new()
             {
                 Index = 0,
+                Id = "0x1bf",
+                CodecType = "data",
+                CodecName = "dvd_nav_packet"
+            },
+            new()
+            {
+                Index = 1,
                 Id = "0x1e0",
                 CodecType = "video",
                 CodecName = "mpeg2video",
@@ -145,7 +147,7 @@ public sealed class DvdEncodingInputFactoryTests : IDisposable
             },
             new()
             {
-                Index = 1,
+                Index = 2,
                 Id = "0x80",
                 CodecType = "audio",
                 CodecName = "ac3",
@@ -153,7 +155,7 @@ public sealed class DvdEncodingInputFactoryTests : IDisposable
             },
             new()
             {
-                Index = 2,
+                Index = 3,
                 Id = "0x20",
                 CodecType = "subtitle",
                 CodecName = "dvd_subtitle",
@@ -201,9 +203,9 @@ public sealed class DvdEncodingInputFactoryTests : IDisposable
             Candidate = candidate,
             OutputMode = DvdOutputMode.EncodeUsingCurrentSettings,
             OutputPath = Path.Combine(_root, "output", "Movie Name.mp4"),
-            SelectedAudioStreamIndexes = new[] { 1 },
+            SelectedAudioStreamIndexes = new[] { 2 },
             SelectedSubtitleStreamIndexes = includeSubtitle
-                ? new[] { 2 }
+                ? new[] { 3 }
                 : Array.Empty<int>()
         };
     }

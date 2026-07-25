@@ -159,11 +159,9 @@ namespace MediaFlux
                 AppPaths.InstallDirectory,
                 _config.FfprobePath);
             var validator = new DvdOutputValidationService(probeService);
-            var manifestBuilder = new DvdConcatManifestBuilder(AppPaths.TempDirectory);
             var remuxService = new DvdRemuxService(
                 AppPaths.InstallDirectory,
                 _config.FfmpegPath,
-                manifestBuilder,
                 validator,
                 line =>
                 {
@@ -186,14 +184,14 @@ namespace MediaFlux
                     JobStatus.Canceled,
                     jobStartUtc,
                     options.OutputPath,
-                    "Canceled by user. Temporary files were cleaned up; source deletion was disabled.",
+                    "Canceled by user. Incomplete output was cleaned up; source deletion was disabled.",
                     diagnosticLog.ToString());
                 toolStripStatusLabel1.Text =
-                    "DVD remux canceled; incomplete output and temporary files were removed.";
+                    "DVD remux canceled; incomplete output was removed.";
                 MessageBox.Show(
                     this,
-                    "The operation was canceled. MediaFlux removed its incomplete output " +
-                    "and temporary manifest. The DVD source folder was not changed.",
+                    "The operation was canceled. MediaFlux removed its incomplete output. " +
+                    "The DVD source folder was not changed.",
                     "DVD Remux Canceled",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -243,13 +241,13 @@ namespace MediaFlux
                         result,
                         diagnosticLog.ToString()));
                 toolStripStatusLabel1.Text = result.CleanupSucceeded
-                    ? "DVD remux canceled; incomplete output and temporary files were removed."
-                    : "DVD remux canceled; temporary cleanup needs attention.";
+                    ? "DVD remux canceled; incomplete output was removed."
+                    : "DVD remux canceled; output cleanup needs attention.";
                 MessageBox.Show(
                     this,
                     result.CleanupSucceeded
-                        ? "The operation was canceled. MediaFlux removed its incomplete output " +
-                          "and temporary manifest. The DVD source folder was not changed."
+                        ? "The operation was canceled. MediaFlux removed its incomplete output. " +
+                          "The DVD source folder was not changed."
                         : "The operation was canceled and the DVD source folder was not changed." +
                           $"\r\n\r\nCleanup warning: {result.CleanupMessage}",
                     "DVD Remux Canceled",

@@ -5,11 +5,11 @@ using Xunit;
 
 namespace MediaFlux.Tests;
 
-public sealed class DvdOutputPathAndManifestTests : IDisposable
+public sealed class DvdOutputPathAndPhysicalInputTests : IDisposable
 {
     private readonly string _root;
 
-    public DvdOutputPathAndManifestTests()
+    public DvdOutputPathAndPhysicalInputTests()
     {
         _root = Path.Combine(
             Path.GetTempPath(),
@@ -125,48 +125,30 @@ public sealed class DvdOutputPathAndManifestTests : IDisposable
     }
 
     [Fact]
-    public void ManifestEscapesApostrophesSpacesAndUnicodeWithoutBom()
+    public void PhysicalInputSupportsApostrophesSpacesAndUnicodeWithoutTempFiles()
     {
         string source = Path.Combine(_root, "Movie O'Brien 日本", "VIDEO_TS");
         DvdTitleCandidate candidate = CreateCandidate(source, segmentCount: 2);
-        string tempRoot = Path.Combine(_root, "temp");
-        var builder = new DvdConcatManifestBuilder(tempRoot);
+        DvdPhysicalInput input = DvdPhysicalInputBuilder.Create(candidate);
 
-        string operationDirectory;
-        string manifestPath;
-        using (DvdConcatManifest manifest = builder.Create(candidate))
-        {
-            operationDirectory = manifest.OperationDirectory;
-            manifestPath = manifest.ManifestPath;
-            string text = File.ReadAllText(manifest.ManifestPath);
-            byte[] bytes = File.ReadAllBytes(manifest.ManifestPath);
-
-            Assert.StartsWith("ffconcat version 1.0", text, StringComparison.Ordinal);
-            Assert.Contains("Movie O'\\''Brien 日本", text, StringComparison.Ordinal);
-            Assert.Contains("VTS_01_1.VOB", text, StringComparison.Ordinal);
-            Assert.Contains("VTS_01_2.VOB", text, StringComparison.Ordinal);
-            Assert.Contains("exact_stream_id 0x1e0", text, StringComparison.Ordinal);
-            Assert.False(bytes.Length >= 3 &&
-                         bytes[0] == 0xEF &&
-                         bytes[1] == 0xBB &&
-                         bytes[2] == 0xBF);
-            Assert.Equal(0, manifest.GetConcatStreamIndex(0));
-            Assert.Equal(1, manifest.GetConcatStreamIndex(1));
-        }
-
-        Assert.False(File.Exists(manifestPath));
-        Assert.False(Directory.Exists(operationDirectory));
+        Assert.StartsWith("concat:file:", input.InputUrl, StringComparison.Ordinal);
+        Assert.Contains("Movie O'Brien 日本", input.InputUrl, StringComparison.Ordinal);
+        Assert.Contains("VTS_01_1.VOB", input.InputUrl, StringComparison.Ordinal);
+        Assert.Contains("|file:", input.InputUrl, StringComparison.Ordinal);
+        Assert.Contains("VTS_01_2.VOB", input.InputUrl, StringComparison.Ordinal);
+        Assert.Equal(2, input.SourceFiles.Count);
+        Assert.Empty(Directory.EnumerateDirectories(_root, "dvd-*", SearchOption.AllDirectories));
     }
 
     [Fact]
-    public void ManifestEscapingPreservesUncPaths()
+    public void PhysicalInputFileUrlPreservesUncPaths()
     {
-        string escaped = DvdConcatManifestBuilder.EscapeManifestPath(
+        string url = DvdPhysicalInputBuilder.ToFileUrl(
             @"\\server\share\Movie O'Brien 日本\VIDEO_TS\VTS_01_1.VOB");
 
         Assert.Equal(
-            "//server/share/Movie O'\\''Brien 日本/VIDEO_TS/VTS_01_1.VOB",
-            escaped);
+            "file://server/share/Movie O'Brien 日本/VIDEO_TS/VTS_01_1.VOB",
+            url);
     }
 
     [Fact]
@@ -181,35 +163,29 @@ public sealed class DvdOutputPathAndManifestTests : IDisposable
     }
 
     [Fact]
-    public void ManifestOrdersSegmentsNumerically()
+    public void PhysicalInputOrdersSegmentsNumerically()
     {
         string source = Path.Combine(_root, "Ordering", "VIDEO_TS");
         DvdTitleCandidate candidate = CreateCandidate(source, segmentNumbers: new[] { 10, 2, 1 });
-        var builder = new DvdConcatManifestBuilder(Path.Combine(_root, "temp-order"));
+        DvdPhysicalInput input = DvdPhysicalInputBuilder.Create(candidate);
 
-        using DvdConcatManifest manifest = builder.Create(candidate);
-        string text = File.ReadAllText(manifest.ManifestPath);
-
-        int first = text.IndexOf("VTS_01_1.VOB", StringComparison.Ordinal);
-        int second = text.IndexOf("VTS_01_2.VOB", StringComparison.Ordinal);
-        int tenth = text.IndexOf("VTS_01_10.VOB", StringComparison.Ordinal);
+        int first = input.InputUrl.IndexOf("VTS_01_1.VOB", StringComparison.Ordinal);
+        int second = input.InputUrl.IndexOf("VTS_01_2.VOB", StringComparison.Ordinal);
+        int tenth = input.InputUrl.IndexOf("VTS_01_10.VOB", StringComparison.Ordinal);
         Assert.True(first < second && second < tenth);
     }
 
     [Fact]
-    public void ManifestCreationAndCleanupDoNotModifySourceFiles()
+    public void PhysicalInputCreationDoesNotModifySourceFiles()
     {
         string source = Path.Combine(_root, "Immutable", "VIDEO_TS");
         DvdTitleCandidate candidate = CreateCandidate(source, segmentCount: 2);
         var before = candidate.Segments.ToDictionary(
             segment => segment.Path,
             segment => File.ReadAllBytes(segment.Path));
-        var builder = new DvdConcatManifestBuilder(Path.Combine(_root, "temp-safe"));
+        DvdPhysicalInput input = DvdPhysicalInputBuilder.Create(candidate);
 
-        using (builder.Create(candidate))
-        {
-        }
-
+        Assert.Equal(candidate.Segments.Count, input.SourceFiles.Count);
         foreach (DvdSegmentInfo segment in candidate.Segments)
             Assert.Equal(before[segment.Path], File.ReadAllBytes(segment.Path));
     }

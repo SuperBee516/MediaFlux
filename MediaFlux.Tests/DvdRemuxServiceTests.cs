@@ -11,7 +11,6 @@ public sealed class DvdRemuxServiceTests : IDisposable
     private readonly string _ffmpegPath;
     private readonly string _videoTs;
     private readonly string _outputFolder;
-    private readonly string _tempRoot;
     private readonly DvdTitleCandidate _candidate;
 
     public DvdRemuxServiceTests()
@@ -23,7 +22,6 @@ public sealed class DvdRemuxServiceTests : IDisposable
         _ffmpegPath = Path.Combine(_root, "ffmpeg.exe");
         _videoTs = Path.Combine(_root, "Movie", "VIDEO_TS");
         _outputFolder = Path.Combine(_root, "output");
-        _tempRoot = Path.Combine(_root, "temp");
         Directory.CreateDirectory(_videoTs);
         Directory.CreateDirectory(_outputFolder);
         File.WriteAllBytes(_ffmpegPath, new byte[] { 1 });
@@ -54,8 +52,12 @@ public sealed class DvdRemuxServiceTests : IDisposable
         Assert.True(File.Exists(output));
         Assert.Equal(1, validator.CallCount);
         Assert.NotNull(runner.LastRequest);
-        AssertArgumentPair(runner.LastRequest!.Arguments, "-f", "concat");
-        AssertArgumentPair(runner.LastRequest.Arguments, "-safe", "0");
+        Assert.Contains(
+            runner.LastRequest!.Arguments,
+            argument => argument.StartsWith("concat:file:", StringComparison.Ordinal));
+        Assert.DoesNotContain("-f", runner.LastRequest.Arguments);
+        Assert.DoesNotContain("-safe", runner.LastRequest.Arguments);
+        AssertArgumentPair(runner.LastRequest.Arguments, "-fflags", "+genpts");
         AssertArgumentPair(runner.LastRequest.Arguments, "-c", "copy");
         Assert.DoesNotContain(runner.LastRequest.Arguments, argument =>
             argument.Contains("libx", StringComparison.OrdinalIgnoreCase) ||
@@ -63,7 +65,6 @@ public sealed class DvdRemuxServiceTests : IDisposable
             argument.Equals("aac", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(3, runner.LastRequest.Arguments.Count(argument => argument == "-map"));
         Assert.Empty(Directory.EnumerateFiles(_outputFolder, "*.partial.mkv"));
-        AssertNoOperationTempDirectories();
         AssertSourcesUnchanged(sourceBefore);
     }
 
@@ -80,7 +81,7 @@ public sealed class DvdRemuxServiceTests : IDisposable
             {
                 ExitCode = 1,
                 StandardError =
-                    "Could not find tag for codec dvd_subtitle in stream #0:2"
+                    "Could not find tag for codec dvd_subtitle in stream #0:3"
             };
         });
         var validator = new FakeValidator(success: true);
@@ -90,17 +91,16 @@ public sealed class DvdRemuxServiceTests : IDisposable
         DvdRemuxResult result = await service.RemuxAsync(CreateOptions(output));
 
         Assert.False(result.Success);
-        Assert.Equal(2, result.FailedSourceStreamIndex);
+        Assert.Equal(3, result.FailedSourceStreamIndex);
         Assert.Contains("subtitle", result.FailedStreamDescription, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("did not automatically re-encode", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         Assert.False(File.Exists(output));
         Assert.Equal(0, validator.CallCount);
         Assert.Empty(Directory.EnumerateFiles(_outputFolder, "*.partial.mkv"));
-        AssertNoOperationTempDirectories();
     }
 
     [Fact]
-    public async Task CancellationRemovesManifestAndIncompleteStagingOutput()
+    public async Task CancellationRemovesIncompleteStagingOutput()
     {
         var runner = new FakeProcessRunner(async (request, cancellationToken) =>
         {
@@ -120,7 +120,6 @@ public sealed class DvdRemuxServiceTests : IDisposable
         Assert.True(result.CleanupSucceeded);
         Assert.False(File.Exists(output));
         Assert.Empty(Directory.EnumerateFiles(_outputFolder, "*.partial.mkv"));
-        AssertNoOperationTempDirectories();
     }
 
     [Fact]
@@ -139,7 +138,6 @@ public sealed class DvdRemuxServiceTests : IDisposable
         Assert.Contains("failed validation", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         Assert.False(File.Exists(output));
         Assert.Empty(Directory.EnumerateFiles(_outputFolder, "*.partial.mkv"));
-        AssertNoOperationTempDirectories();
     }
 
     [Fact]
@@ -218,7 +216,6 @@ public sealed class DvdRemuxServiceTests : IDisposable
         return new DvdRemuxService(
             _ffmpegPath,
             runner,
-            new DvdConcatManifestBuilder(_tempRoot),
             validator);
     }
 
@@ -239,8 +236,8 @@ public sealed class DvdRemuxServiceTests : IDisposable
         Candidate = _candidate,
         OutputMode = DvdOutputMode.LosslessRemuxToMkv,
         OutputPath = output,
-        SelectedAudioStreamIndexes = new[] { 1 },
-        SelectedSubtitleStreamIndexes = new[] { 2 },
+        SelectedAudioStreamIndexes = new[] { 2 },
+        SelectedSubtitleStreamIndexes = new[] { 3 },
         OverwriteExistingOutput = overwrite
     };
 
@@ -251,6 +248,14 @@ public sealed class DvdRemuxServiceTests : IDisposable
             new()
             {
                 Index = 0,
+                Id = "0x1bf",
+                CodecType = "data",
+                CodecName = "dvd_nav_packet",
+                TimeBase = "1/90000"
+            },
+            new()
+            {
+                Index = 1,
                 Id = "0x1e0",
                 CodecType = "video",
                 CodecName = "mpeg2video",
@@ -260,7 +265,7 @@ public sealed class DvdRemuxServiceTests : IDisposable
             },
             new()
             {
-                Index = 1,
+                Index = 2,
                 Id = "0x80",
                 CodecType = "audio",
                 CodecName = "ac3",
@@ -269,7 +274,7 @@ public sealed class DvdRemuxServiceTests : IDisposable
             },
             new()
             {
-                Index = 2,
+                Index = 3,
                 Id = "0x20",
                 CodecType = "subtitle",
                 CodecName = "dvd_subtitle",
@@ -323,12 +328,6 @@ public sealed class DvdRemuxServiceTests : IDisposable
     {
         foreach (DvdSegmentInfo segment in _candidate.Segments)
             Assert.Equal(before[segment.Path], File.ReadAllBytes(segment.Path));
-    }
-
-    private void AssertNoOperationTempDirectories()
-    {
-        if (Directory.Exists(_tempRoot))
-            Assert.Empty(Directory.EnumerateDirectories(_tempRoot, "dvd-*"));
     }
 
     private static void AssertArgumentPair(

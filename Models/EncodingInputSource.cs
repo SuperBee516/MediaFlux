@@ -3,19 +3,21 @@ namespace MediaFlux.Models
     public enum EncodingInputKind
     {
         File,
-        ConcatManifest
+        DvdPhysicalConcat
     }
 
     /// <summary>
     /// Describes the physical FFmpeg input separately from the logical source shown
     /// to the user. Normal files use the same path for both values; DVD titles use
-    /// a temporary concat manifest while retaining the VIDEO_TS folder as the source.
+    /// FFmpeg's physical concat protocol while retaining the VIDEO_TS folder as the
+    /// logical source.
     /// </summary>
     public sealed class EncodingInputSource
     {
         public EncodingInputKind Kind { get; init; } = EncodingInputKind.File;
         public string InputPath { get; init; } = "";
         public string SourcePath { get; init; } = "";
+        public IReadOnlyList<string> SourceFiles { get; init; } = Array.Empty<string>();
         public string OutputBaseName { get; init; } = "";
         public double? KnownDurationSeconds { get; init; }
         public double? KnownAudioBitrateKbps { get; init; }

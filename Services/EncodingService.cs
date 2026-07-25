@@ -424,8 +424,7 @@ namespace MediaFlux.Services
             string input = inputSource.InputPath;
             if (string.IsNullOrWhiteSpace(input))
                 throw new ArgumentException("Input file must be provided.", nameof(inputSource));
-            if (!File.Exists(input))
-                throw new FileNotFoundException("Input file does not exist.", input);
+            ValidateInputExists(inputSource);
 
             if (string.IsNullOrWhiteSpace(videoCodec))
                 throw new ArgumentException("Video codec must be provided.", nameof(videoCodec));
@@ -973,12 +972,36 @@ namespace MediaFlux.Services
 
         private static void AppendInput(StringBuilder builder, EncodingInputSource input)
         {
-            if (input.Kind == EncodingInputKind.ConcatManifest)
-                builder.Append("-fflags +genpts -f concat -safe 0 ");
+            if (input.Kind == EncodingInputKind.DvdPhysicalConcat)
+                builder.Append("-fflags +genpts ");
 
             builder.Append("-i \"");
             builder.Append(input.InputPath);
             builder.Append("\" ");
+        }
+
+        private static void ValidateInputExists(EncodingInputSource input)
+        {
+            if (input.Kind == EncodingInputKind.File)
+            {
+                if (!File.Exists(input.InputPath))
+                    throw new FileNotFoundException(
+                        "Input file does not exist.",
+                        input.InputPath);
+                return;
+            }
+
+            if (input.Kind != EncodingInputKind.DvdPhysicalConcat)
+                throw new InvalidOperationException($"Unsupported input kind: {input.Kind}.");
+            if (input.SourceFiles.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "The DVD physical input does not contain any source segments.");
+            }
+
+            string? missing = input.SourceFiles.FirstOrDefault(path => !File.Exists(path));
+            if (missing != null)
+                throw new FileNotFoundException("A DVD program segment is missing.", missing);
         }
 
         private static string ParseNvencPresetOrDefault(string? nvencPreset)

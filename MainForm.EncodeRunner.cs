@@ -451,7 +451,6 @@ namespace MediaFlux
                 ? dvdOptions!.OutputPath
                 : file;
             string attemptedOutputPath = string.Empty;
-            DvdEncodingInputSession? dvdInputSession = null;
             try
             {
                 // ==== CALL THE SERVICE ====
@@ -481,11 +480,9 @@ namespace MediaFlux
                         "Preparing DVD segments",
                         "0%",
                         "--:--:--",
-                        "Creating a temporary logical input for the selected DVD title."));
-                    var inputFactory = new DvdEncodingInputFactory(
-                        new DvdConcatManifestBuilder(AppPaths.TempDirectory));
-                    dvdInputSession = inputFactory.Create(dvdOptions!);
-                    inputSource = dvdInputSession.Input;
+                        "Opening the selected DVD title as one continuous program stream."));
+                    var inputFactory = new DvdEncodingInputFactory();
+                    inputSource = inputFactory.Create(dvdOptions!);
                     jobLog.AppendLine(
                         $"DVD logical source: {logicalSourcePath} ({dvdOptions!.Candidate.TitleSetId}, " +
                         $"{dvdOptions.Candidate.Segments.Count} segments)");
@@ -754,20 +751,6 @@ namespace MediaFlux
             }
             finally
             {
-                if (dvdInputSession != null)
-                {
-                    dvdInputSession.Dispose();
-                    if (!dvdInputSession.CleanupSucceeded)
-                    {
-                        ErrorLogService.Append(
-                            AppPaths.InstallDirectory,
-                            "DVD encode temporary cleanup failed",
-                            logicalSourcePath,
-                            details:
-                            $"Temporary directory: {dvdInputSession.TemporaryDirectory}" +
-                            $"{Environment.NewLine}Error: {dvdInputSession.CleanupError}");
-                    }
-                }
                 _runningEncodeJobs.TryRemove(row, out _);
                 if (ReferenceEquals(_activeJobLogSb, jobLog))
                     _activeJobLogSb = null; // stop log capture for this job
