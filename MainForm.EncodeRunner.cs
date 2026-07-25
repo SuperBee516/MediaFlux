@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaFlux.Models;
 using static MediaFlux.Services.EncodingService;
 
 namespace MediaFlux
@@ -21,8 +22,30 @@ namespace MediaFlux
             if (!EnsureFfmpegToolsAvailable())
                 return;
 
-            if (!ValidateOutputFolderAgainstWatchFolder(cmbEncodeOutput.Text, showMessage: true))
+            bool requestedAll = chkProcessAll?.Checked ?? true;
+            var requestedRows = (requestedAll
+                    ? dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
+                    : dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>())
+                .Where(row => !row.IsNewRow)
+                .ToList();
+            if (requestedRows.Any(row => row.Tag is not RowMeta { IsDvdEncode: true }) &&
+                !ValidateOutputFolderAgainstWatchFolder(cmbEncodeOutput.Text, showMessage: true))
+            {
                 return;
+            }
+            foreach (string dvdOutputFolder in requestedRows
+                         .Select(row => (row.Tag as RowMeta)?.DvdEncodeOptions?.OutputPath)
+                         .Where(path => !string.IsNullOrWhiteSpace(path))
+                         .Select(path => Path.GetDirectoryName(path!) ?? "")
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (!ValidateOutputFolderAgainstWatchFolder(
+                        dvdOutputFolder,
+                        showMessage: true))
+                {
+                    return;
+                }
+            }
 
             _encodingActive = true;
             SetStatusEncoding(true);
@@ -254,12 +277,27 @@ namespace MediaFlux
                 string.IsNullOrWhiteSpace(file))
                 return;
 
+            var meta = row.Tag as RowMeta;
+            DvdImportOptions? dvdOptions = meta?.IsDvdEncode == true
+                ? meta.DvdEncodeOptions
+                : null;
+            bool isDvdEncode = dvdOptions != null;
+            string logicalSourcePath = isDvdEncode
+                ? Path.GetDirectoryName(dvdOptions!.Candidate.Segments[0].Path) ?? file
+                : file;
+            string displayName = isDvdEncode
+                ? $"{Path.GetFileNameWithoutExtension(dvdOptions!.OutputPath)} ({dvdOptions.Candidate.TitleSetId})"
+                : Path.GetFileName(file);
+
             // Watched files can be queued and started before the background
             // estimate pass attaches metadata to the row. Resolve duration here
             // as a final pre-encode guarantee so percentage, ETA, elapsed media
             // time, and the main progress bar update exactly like manual imports.
             if (durationSec <= 0)
             {
+                if (isDvdEncode)
+                    durationSec = dvdOptions!.Candidate.CombinedDurationSeconds;
+
                 UiInvoke(() => SetEncodeRowState(
                     row,
                     "Reading metadata",
@@ -269,9 +307,12 @@ namespace MediaFlux
 
                 try
                 {
-                    durationSec = await Task.Run(
-                        () => ProbeDurationSeconds(file),
-                        cancellationToken);
+                    if (durationSec <= 0)
+                    {
+                        durationSec = await Task.Run(
+                            () => ProbeDurationSeconds(file),
+                            cancellationToken);
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -297,7 +338,7 @@ namespace MediaFlux
                     return;
 
                 lblEncodeStatus.Text =
-                    $"Encoding: {Path.GetFileName(file)} ({_encodeProcessedCount}/{totalNow}) – Queued: {remaining}";
+                    $"Encoding: {displayName} ({_encodeProcessedCount}/{totalNow}) – Queued: {remaining}";
 
                 _currentEncodeDuration = TimeSpan.Zero;
                 _currentEncodeTotalDuration = TimeSpan.FromSeconds(durationSec > 0 ? durationSec : 0);
@@ -320,7 +361,6 @@ namespace MediaFlux
 
             // ==== TARGET SIZE (MB) ====
             double? targetMb = null;
-            var meta = row.Tag as RowMeta;
             bool hasCustomTarget = meta?.CustomTargetMb.HasValue == true;
             bool hasCustomProfile = !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile);
 
@@ -342,12 +382,20 @@ namespace MediaFlux
             else if (profileText.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
             {
                 // Try to keep roughly the same bitrate (with a small safety bump)
-                int? srcKbps = ProbeSourceVideoBitrateKbps(file);
-                if (srcKbps.HasValue && durationSec > 0)
+                if (isDvdEncode)
                 {
-                    // bits = kbps * 1000 * seconds; MB ≈ bits / 8 / 1024 / 1024
-                    //  => MB ≈ (kbps * seconds) / 8192
-                    targetMb = ((srcKbps.Value * 1.15) * durationSec) / 8192.0;
+                    targetMb = dvdOptions!.Candidate.CombinedSizeBytes /
+                               (1024d * 1024d);
+                }
+                else
+                {
+                    int? srcKbps = ProbeSourceVideoBitrateKbps(file);
+                    if (srcKbps.HasValue && durationSec > 0)
+                    {
+                        // bits = kbps * 1000 * seconds; MB ≈ bits / 8 / 1024 / 1024
+                        //  => MB ≈ (kbps * seconds) / 8192
+                        targetMb = ((srcKbps.Value * 1.15) * durationSec) / 8192.0;
+                    }
                 }
             }
             else
@@ -371,18 +419,27 @@ namespace MediaFlux
                     // Fallback to the metadata-aware estimator. If duration remains
                     // unavailable, leave targetMb unset so EncodingService safely uses
                     // quality-based encoding instead of inventing a fixed percentage.
-                    double fallbackEstimate = _sizeEstimateService.EstimateAutoTargetMbSmart(
-                        file,
-                        profileText,
-                        estimateTargetCodec,
-                        estimateQuality,
-                        estimateTargetHeight);
+                    double fallbackEstimate = isDvdEncode
+                        ? EstimateDvdEncodeTargetMb(
+                            meta!,
+                            profileText,
+                            estimateTargetCodec,
+                            estimateQuality,
+                            estimateTargetHeight)
+                        : _sizeEstimateService.EstimateAutoTargetMbSmart(
+                            file,
+                            profileText,
+                            estimateTargetCodec,
+                            estimateQuality,
+                            estimateTargetHeight);
                     if (fallbackEstimate > 0)
                         targetMb = fallbackEstimate;
                 }
 
                 // Never “compress” to something basically the same size as source
-                var srcMb = GetMbOnDisk(file);
+                double srcMb = isDvdEncode
+                    ? dvdOptions!.Candidate.CombinedSizeBytes / (1024d * 1024d)
+                    : GetMbOnDisk(file);
                 if (srcMb > 0 && targetMb.HasValue && targetMb.Value >= srcMb * 0.98)
                 {
                     // force at least some reduction
@@ -390,8 +447,11 @@ namespace MediaFlux
                 }
             }
 
-            _runningEncodeJobs[row] = file;
+            _runningEncodeJobs[row] = isDvdEncode
+                ? dvdOptions!.OutputPath
+                : file;
             string attemptedOutputPath = string.Empty;
+            DvdEncodingInputSession? dvdInputSession = null;
             try
             {
                 // ==== CALL THE SERVICE ====
@@ -408,8 +468,37 @@ namespace MediaFlux
                 bool concurrentNvenc = UiGet(
                     () => IsNvencSelected(encoderText) && GetMaxConcurrentEncodes() > 1,
                     false);
-                string outputFolder = UiGet(() => cmbEncodeOutput.Text, string.Empty);
+                string outputFolder = isDvdEncode
+                    ? Path.GetDirectoryName(dvdOptions!.OutputPath) ?? string.Empty
+                    : UiGet(() => cmbEncodeOutput.Text, string.Empty);
                 string suffix = BuildOutputSuffix(formatChoice);
+
+                EncodingInputSource inputSource;
+                if (isDvdEncode)
+                {
+                    UiInvoke(() => SetEncodeRowState(
+                        row,
+                        "Preparing DVD segments",
+                        "0%",
+                        "--:--:--",
+                        "Creating a temporary logical input for the selected DVD title."));
+                    var inputFactory = new DvdEncodingInputFactory(
+                        new DvdConcatManifestBuilder(AppPaths.TempDirectory));
+                    dvdInputSession = inputFactory.Create(dvdOptions!);
+                    inputSource = dvdInputSession.Input;
+                    jobLog.AppendLine(
+                        $"DVD logical source: {logicalSourcePath} ({dvdOptions!.Candidate.TitleSetId}, " +
+                        $"{dvdOptions.Candidate.Segments.Count} segments)");
+                    jobLog.AppendLine(
+                        $"Selected audio streams: {string.Join(", ", dvdOptions.SelectedAudioStreamIndexes)}");
+                    jobLog.AppendLine(
+                        $"Selected subtitle streams: {string.Join(", ", dvdOptions.SelectedSubtitleStreamIndexes)}");
+                    jobLog.AppendLine("Source deletion: disabled");
+                }
+                else
+                {
+                    inputSource = EncodingInputSource.FromFile(file);
+                }
 
                 // Per-job ffmpeg output callback
                 Action<string> jobCallback = line =>
@@ -419,7 +508,7 @@ namespace MediaFlux
                 };
 
                 var result = await _encodingService.EncodeWithResultAsync(
-                    file,
+                    inputSource,
                     outputFolder,
                     suffix,
                     useGpu,
@@ -451,21 +540,48 @@ namespace MediaFlux
                 // append success to history – never let this kill the job
                 try
                 {
+                    long? outputSizeBytes = TryGetFileSizeBytes(result.OutputPath);
+
                     lock (_historyLock)
                     {
                         _historyService.Append(new JobHistoryRecord
                         {
-                            Type = JobType.Encode,
+                            Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
                             Status = JobStatus.Success,
                             StartUtc = jobStartUtc,
                             EndUtc = DateTime.UtcNow,
-                            SourcePath = file,
+                            SourcePath = logicalSourcePath,
                             OutputPath = result.OutputPath,
                             EncoderMode = encoderText,
                             TargetMb = targetMb,
                             DurationSec = durationSec,
-                            Log = jobLog.ToString(),
-                            Notes = $"Codec={videoCodec}"
+                            Log = isDvdEncode
+                                ? $"FFmpeg arguments: {result.DiagnosticArguments}{Environment.NewLine}" +
+                                  jobLog
+                                : jobLog.ToString(),
+                            Notes = isDvdEncode
+                                ? $"Codec={videoCodec}; TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
+                                  $"Segments={dvdOptions.Candidate.Segments.Count}; " +
+                                  $"Recommended={dvdOptions.Candidate.IsLikelyMainFeature}; Source deletion disabled"
+                                : $"Codec={videoCodec}",
+                            DvdTitleSet = isDvdEncode
+                                ? dvdOptions!.Candidate.TitleSetId
+                                : null,
+                            DvdSegmentCount = isDvdEncode
+                                ? dvdOptions!.Candidate.Segments.Count
+                                : null,
+                            DvdOutputMode = isDvdEncode
+                                ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
+                                : null,
+                            SourceSizeBytes = isDvdEncode
+                                ? dvdOptions!.Candidate.CombinedSizeBytes
+                                : null,
+                            OutputSizeBytes = isDvdEncode
+                                ? outputSizeBytes
+                                : null,
+                            WasRecommendedDvdTitle = isDvdEncode
+                                ? dvdOptions!.Candidate.IsLikelyMainFeature
+                                : null
                         });
                     }
                 }
@@ -478,7 +594,7 @@ namespace MediaFlux
                 try
                 {
                     bool deleteSource = UiGet(() => chkDeleteSource.Checked, false);
-                    if (deleteSource)
+                    if (inputSource.ShouldDeleteSource(deleteSource))
                         TryDelete(file);
                 }
                 catch (Exception delEx)
@@ -491,7 +607,15 @@ namespace MediaFlux
                 {
                     UiInvoke(() =>
                     {
-                        RememberCompletedEncodePaths(file, result.OutputPath);
+                        if (isDvdEncode)
+                        {
+                            _mediaInfoService.Invalidate(result.OutputPath);
+                            AddCompletedEncodePath(result.OutputPath);
+                        }
+                        else
+                        {
+                            RememberCompletedEncodePaths(file, result.OutputPath);
+                        }
                         RemoveRowAndCleanup(row);
 
                         // Re-scan the current input folder and merge any changes
@@ -521,11 +645,18 @@ namespace MediaFlux
                     ? _config.DeleteCanceledEncodeOutputs
                     : _config.DeleteFailedEncodeOutputs;
                 string cleanupResult = await CleanupIncompleteEncodeOutputAsync(
-                    file,
+                    logicalSourcePath,
                     attemptedOutputPath,
                     cleanupEnabled,
                     isCanceled ? "canceled" : "failed");
                 string historyNotes = $"{notes} Incomplete output cleanup: {cleanupResult}";
+                if (isDvdEncode)
+                {
+                    historyNotes +=
+                        $" TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
+                        $"Segments={dvdOptions.Candidate.Segments.Count}; " +
+                        "Source deletion disabled.";
+                }
 
                 try
                 {
@@ -533,19 +664,38 @@ namespace MediaFlux
                     {
                         _historyService.Append(new JobHistoryRecord
                         {
-                            Type = JobType.Encode,
+                            Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
                             Status = isCanceled
                                 ? JobStatus.Canceled
                                 : JobStatus.Failed,
                             StartUtc = jobStartUtc,
                             EndUtc = DateTime.UtcNow,
-                            SourcePath = file,
+                            SourcePath = logicalSourcePath,
                             OutputPath = attemptedOutputPath,
                             EncoderMode = encoderText,
                             TargetMb = targetMb,
                             DurationSec = durationSec,
                             Log = jobLog.ToString(),
-                            Notes = historyNotes
+                            Notes = historyNotes,
+                            DvdTitleSet = isDvdEncode
+                                ? dvdOptions!.Candidate.TitleSetId
+                                : null,
+                            DvdSegmentCount = isDvdEncode
+                                ? dvdOptions!.Candidate.Segments.Count
+                                : null,
+                            DvdOutputMode = isDvdEncode
+                                ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
+                                : null,
+                            SourceSizeBytes = isDvdEncode
+                                ? dvdOptions!.Candidate.CombinedSizeBytes
+                                : null,
+                            OutputSizeBytes = isDvdEncode
+                                ? TryGetFileSizeBytes(attemptedOutputPath)
+                                : null,
+                            WasRecommendedDvdTitle = isDvdEncode
+                                ? dvdOptions!.Candidate.IsLikelyMainFeature
+                                : null,
+                            ErrorSummary = isDvdEncode ? notes : null
                         });
                     }
                 }
@@ -558,7 +708,7 @@ namespace MediaFlux
                 var centralLogPath = ErrorLogService.Append(
                     Application.StartupPath,
                     isCanceled ? "Encode job cancelled" : "Encode job failed",
-                    file,
+                    logicalSourcePath,
                     ex,
                     $"Encoder Mode: {encoderText}{Environment.NewLine}" +
                     $"Target MB   : {(targetMb.HasValue ? targetMb.Value.ToString("0.##") : "auto")}{Environment.NewLine}" +
@@ -594,16 +744,30 @@ namespace MediaFlux
                     }
 
                     lblEncodeStatus.Text = isCanceled
-                        ? $"Canceled: {Path.GetFileName(file)}"
+                        ? $"Canceled: {displayName}"
                         : retryQueued
-                            ? $"Retry queued: {Path.GetFileName(file)}. Continuing queue."
-                        : $"Failed: {Path.GetFileName(file)}. Continuing queue.";
+                            ? $"Retry queued: {displayName}. Continuing queue."
+                        : $"Failed: {displayName}. Continuing queue.";
                     toolStripStatusLabel1.Text = $"Encode error logged: {centralLogPath}";
                 });
                 // leave the row so user can retry
             }
             finally
             {
+                if (dvdInputSession != null)
+                {
+                    dvdInputSession.Dispose();
+                    if (!dvdInputSession.CleanupSucceeded)
+                    {
+                        ErrorLogService.Append(
+                            AppPaths.InstallDirectory,
+                            "DVD encode temporary cleanup failed",
+                            logicalSourcePath,
+                            details:
+                            $"Temporary directory: {dvdInputSession.TemporaryDirectory}" +
+                            $"{Environment.NewLine}Error: {dvdInputSession.CleanupError}");
+                    }
+                }
                 _runningEncodeJobs.TryRemove(row, out _);
                 if (ReferenceEquals(_activeJobLogSb, jobLog))
                     _activeJobLogSb = null; // stop log capture for this job
@@ -638,6 +802,20 @@ namespace MediaFlux
 
             System.Threading.Interlocked.Increment(ref _encodeRetryCount);
             return true;
+        }
+
+        private static long? TryGetFileSizeBytes(string? path)
+        {
+            try
+            {
+                return !string.IsNullOrWhiteSpace(path) && File.Exists(path)
+                    ? new FileInfo(path).Length
+                    : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static async Task<string> CleanupIncompleteEncodeOutputAsync(

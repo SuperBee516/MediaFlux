@@ -6,6 +6,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
@@ -54,11 +55,16 @@ namespace MediaFlux.Services
         {
             public bool Success { get; }
             public string OutputPath { get; }
+            public string DiagnosticArguments { get; }
 
-            public EncodeResult(bool success, string outputPath)
+            public EncodeResult(
+                bool success,
+                string outputPath,
+                string diagnosticArguments = "")
             {
                 Success = success;
                 OutputPath = outputPath;
+                DiagnosticArguments = diagnosticArguments;
             }
         }
 
@@ -163,6 +169,43 @@ namespace MediaFlux.Services
 
         public Task<EncodeResult> EncodeWithResultAsync(
             string input,
+            string outputFolder,
+            string suffix,
+            bool useGpu,
+            double? targetMb,
+            string videoCodec,
+            ScaleMode scaleMode,
+            string? nvencPreset,
+            bool tenBit,
+            int? audioChannels,
+            Action<string>? progressCallback,
+            bool concurrentNvenc = false,
+            StreamMapMode mapMode = StreamMapMode.KeepAll,
+            bool copySubtitles = true,
+            CancellationToken cancellationToken = default,
+            Action<string>? outputPathCallback = null)
+        {
+            return EncodeInternalAsync(
+                input,
+                outputFolder,
+                suffix,
+                useGpu,
+                targetMb,
+                videoCodec,
+                scaleMode,
+                nvencPreset,
+                tenBit,
+                audioChannels,
+                progressCallback ?? _progressCallback,
+                concurrentNvenc,
+                mapMode,
+                copySubtitles,
+                cancellationToken,
+                outputPathCallback);
+        }
+
+        public Task<EncodeResult> EncodeWithResultAsync(
+            EncodingInputSource input,
             string outputFolder,
             string suffix,
             bool useGpu,
@@ -320,8 +363,45 @@ namespace MediaFlux.Services
             return (await task.ConfigureAwait(false)).Success;
         }
 
-        private async Task<EncodeResult> EncodeInternalAsync(
+        private Task<EncodeResult> EncodeInternalAsync(
             string input,
+            string outputFolder,
+            string suffix,
+            bool useGpu,
+            double? targetMb,
+            string videoCodec,
+            ScaleMode scaleMode,
+            string? nvencPreset,
+            bool tenBit,
+            int? audioChannels,
+            Action<string> callback,
+            bool concurrentNvenc,
+            StreamMapMode mapMode = StreamMapMode.KeepAll,
+            bool copySubtitles = true,
+            CancellationToken cancellationToken = default,
+            Action<string>? outputPathCallback = null)
+        {
+            return EncodeInternalAsync(
+                EncodingInputSource.FromFile(input),
+                outputFolder,
+                suffix,
+                useGpu,
+                targetMb,
+                videoCodec,
+                scaleMode,
+                nvencPreset,
+                tenBit,
+                audioChannels,
+                callback,
+                concurrentNvenc,
+                mapMode,
+                copySubtitles,
+                cancellationToken,
+                outputPathCallback);
+        }
+
+        private async Task<EncodeResult> EncodeInternalAsync(
+            EncodingInputSource inputSource,
             string outputFolder,
             string suffix,
             bool useGpu,
@@ -340,8 +420,10 @@ namespace MediaFlux.Services
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            ArgumentNullException.ThrowIfNull(inputSource);
+            string input = inputSource.InputPath;
             if (string.IsNullOrWhiteSpace(input))
-                throw new ArgumentException("Input file must be provided.", nameof(input));
+                throw new ArgumentException("Input file must be provided.", nameof(inputSource));
             if (!File.Exists(input))
                 throw new FileNotFoundException("Input file does not exist.", input);
 
@@ -349,18 +431,24 @@ namespace MediaFlux.Services
                 throw new ArgumentException("Video codec must be provided.", nameof(videoCodec));
 
             string outFolder = string.IsNullOrWhiteSpace(outputFolder)
-                ? (Path.GetDirectoryName(input) ?? Environment.CurrentDirectory)
+                ? (Path.GetDirectoryName(inputSource.SourcePath) ??
+                   Path.GetDirectoryName(input) ??
+                   Environment.CurrentDirectory)
                 : outputFolder;
 
             Directory.CreateDirectory(outFolder);
 
-            string name = Path.GetFileNameWithoutExtension(input);
+            string name = string.IsNullOrWhiteSpace(inputSource.OutputBaseName)
+                ? Path.GetFileNameWithoutExtension(input)
+                : inputSource.OutputBaseName;
             string actualSuffix = string.IsNullOrWhiteSpace(suffix) ? string.Empty : suffix;
 
             // Collision-safe output naming so we don't overwrite existing files
             string output = GetUniqueOutputPath(outFolder, name, actualSuffix, ".mp4");
             outputPathCallback?.Invoke(output);
-            bool isAsfFamilyInput = IsAsfFamilyInput(input);
+            bool isAsfFamilyInput =
+                inputSource.Kind == EncodingInputKind.File &&
+                IsAsfFamilyInput(inputSource.SourcePath);
 
             bool allowSubtitleCopy = copySubtitles;
             if (copySubtitles && string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase))
@@ -387,12 +475,14 @@ namespace MediaFlux.Services
             }
 
             // Total duration once for progress and target bitrate math
-            TimeSpan totalDuration = GetVideoDuration(input);
+            TimeSpan totalDuration = inputSource.KnownDurationSeconds is > 0
+                ? TimeSpan.FromSeconds(inputSource.KnownDurationSeconds.Value)
+                : GetVideoDuration(input);
             if (totalDuration <= TimeSpan.Zero)
                 _log?.Invoke("[EncodingService] Warning: could not determine duration, progress percent will be 0.");
 
             string ffArgs = BuildFfmpegArgs(
-                input,
+                inputSource,
                 output,
                 videoCodec,
                 useGpu,
@@ -405,9 +495,12 @@ namespace MediaFlux.Services
                 mapMode,
                 allowSubtitleCopy,
                 allowDataCopy,
-                forceMp4CompatibleAudio);
+                forceMp4CompatibleAudio,
+                totalDuration);
 
-            _log?.Invoke($"[EncodingService] Starting ffmpeg for '{input}' -> '{output}'");
+            _log?.Invoke(
+                $"[EncodingService] Starting ffmpeg for '{inputSource.SourcePath}' " +
+                $"using '{input}' -> '{output}'");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
 
             var stderrBuilder = new StringBuilder();
@@ -503,7 +596,7 @@ namespace MediaFlux.Services
                 string logPath = ErrorLogService.Append(
                     _appPath,
                     "FFmpeg encode failed",
-                    input,
+                    inputSource.SourcePath,
                     details:
                     $"Output     : {output}{Environment.NewLine}" +
                     $"Exit Code  : {proc.ExitCode}{Environment.NewLine}" +
@@ -516,7 +609,7 @@ namespace MediaFlux.Services
             }
 
             _log?.Invoke("[EncodingService] ffmpeg completed successfully.");
-            return new EncodeResult(true, output);
+            return new EncodeResult(true, output, ffArgs);
         }
 
         private static void AppendBounded(StringBuilder builder, string line, int maxCharacters)
@@ -702,7 +795,7 @@ namespace MediaFlux.Services
         // Argument builder (GPU optimizations + mapping + target-size budgeting)
         // --------------------------------------------------------------------
         private string BuildFfmpegArgs(
-            string input,
+            EncodingInputSource input,
             string output,
             string videoCodec,
             bool useGpu,
@@ -715,13 +808,16 @@ namespace MediaFlux.Services
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
             bool copyDataStreams = true,
-            bool forceMp4CompatibleAudio = false)
+            bool forceMp4CompatibleAudio = false,
+            TimeSpan knownDuration = default)
         {
             bool isNvenc = videoCodec.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase);
             bool isNvencAv1 = videoCodec.Equals("av1_nvenc", StringComparison.OrdinalIgnoreCase);
             bool isQsv = videoCodec.EndsWith("_qsv", StringComparison.OrdinalIgnoreCase);
             bool isQsvAv1 = videoCodec.Equals("av1_qsv", StringComparison.OrdinalIgnoreCase);
-            bool isAsfFamilyInput = IsAsfFamilyInput(input);
+            bool isAsfFamilyInput =
+                input.Kind == EncodingInputKind.File &&
+                IsAsfFamilyInput(input.SourcePath);
 
             bool wantsTenBit =
                 tenBit &&
@@ -790,9 +886,9 @@ namespace MediaFlux.Services
                 _log?.Invoke("[EncodingService] WMV/ASF input detected; using software decode before selected hardware encode.");
             }
 
-            sb.Append($"-i \"{input}\" ");
+            AppendInput(sb, input);
 
-            AppendStreamMapping(sb, mapMode, copySubtitles, copyDataStreams);
+            AppendStreamMapping(sb, input, mapMode, copySubtitles, copyDataStreams);
 
             // Subtitle codec handling
             if (copySubtitles)
@@ -808,6 +904,7 @@ namespace MediaFlux.Services
                 AppendVideoEncodeTargetSize(
                     sb,
                     input,
+                    knownDuration,
                     videoCodec,
                     isNvenc,
                     isNvencAv1,
@@ -857,6 +954,33 @@ namespace MediaFlux.Services
             return sb.ToString();
         }
 
+        internal static string BuildInputAndMappingArgumentsForTesting(
+            EncodingInputSource input,
+            StreamMapMode mapMode = StreamMapMode.KeepAll,
+            bool copySubtitles = true,
+            bool copyDataStreams = true)
+        {
+            var builder = new StringBuilder();
+            AppendInput(builder, input);
+            AppendStreamMapping(
+                builder,
+                input,
+                mapMode,
+                copySubtitles,
+                copyDataStreams);
+            return builder.ToString().Trim();
+        }
+
+        private static void AppendInput(StringBuilder builder, EncodingInputSource input)
+        {
+            if (input.Kind == EncodingInputKind.ConcatManifest)
+                builder.Append("-fflags +genpts -f concat -safe 0 ");
+
+            builder.Append("-i \"");
+            builder.Append(input.InputPath);
+            builder.Append("\" ");
+        }
+
         private static string ParseNvencPresetOrDefault(string? nvencPreset)
         {
             string presetForNvenc = "p5";
@@ -873,8 +997,30 @@ namespace MediaFlux.Services
                 : presetForNvenc;
         }
 
-        private static void AppendStreamMapping(StringBuilder sb, StreamMapMode mapMode, bool copySubtitles, bool copyDataStreams)
+        private static void AppendStreamMapping(
+            StringBuilder sb,
+            EncodingInputSource input,
+            StreamMapMode mapMode,
+            bool copySubtitles,
+            bool copyDataStreams)
         {
+            if (input.HasExplicitStreamSelection)
+            {
+                foreach (int streamIndex in input.VideoStreamIndexes)
+                    sb.Append($"-map 0:{streamIndex} ");
+                foreach (int streamIndex in input.AudioStreamIndexes)
+                    sb.Append($"-map 0:{streamIndex} ");
+                if (copySubtitles)
+                {
+                    foreach (int streamIndex in input.SubtitleStreamIndexes)
+                        sb.Append($"-map 0:{streamIndex} ");
+                }
+
+                if (!copyDataStreams)
+                    sb.Append("-dn ");
+                return;
+            }
+
             sb.Append("-map 0:v:0 ");
 
             if (mapMode == StreamMapMode.KeepAll)
@@ -932,7 +1078,8 @@ namespace MediaFlux.Services
 
         private void AppendVideoEncodeTargetSize(
             StringBuilder sb,
-            string input,
+            EncodingInputSource input,
+            TimeSpan duration,
             string videoCodec,
             bool isNvenc,
             bool isNvencAv1,
@@ -946,7 +1093,6 @@ namespace MediaFlux.Services
             bool concurrentNvenc,
             bool forceMp4CompatibleAudio)
         {
-            TimeSpan duration = GetVideoDuration(input);
             if (duration <= TimeSpan.Zero)
             {
                 _log?.Invoke("[EncodingService] Target-size bitrate budgeting skipped because input duration could not be determined; using quality-based encoding instead.");
@@ -979,7 +1125,9 @@ namespace MediaFlux.Services
             else
             {
                 // Audio is copied; use source bitrate when possible (fallback inside helper).
-                plannedAudioKbps = GetPrimaryAudioBitrateKbps(input);
+                plannedAudioKbps = input.KnownAudioBitrateKbps is > 0
+                    ? input.KnownAudioBitrateKbps.Value
+                    : GetPrimaryAudioBitrateKbps(input.InputPath);
             }
 
             double overheadKbps = Math.Max(16, totalKbps * 0.01);

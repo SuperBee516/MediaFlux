@@ -236,6 +236,7 @@ namespace MediaFlux
         {
             var paths = dgvEncodeQueue.Rows
                 .Cast<DataGridViewRow>()
+                .Where(row => row.Tag is not RowMeta { IsDvdEncode: true })
                 .Select(GetPathFromRow)
                 .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
                 .Cast<string>()

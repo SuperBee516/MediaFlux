@@ -17,6 +17,7 @@ namespace MediaFlux.Services
 
         public static string UserDataDirectory => Path.Combine(RootDirectory, "UserData");
         public static string DataDirectory => Path.Combine(UserDataDirectory, "data");
+        public static string TempDirectory => Path.Combine(UserDataDirectory, "temp");
         public static string ConfigFile => Path.Combine(UserDataDirectory, "config.json");
         public static string BackupDirectory => Path.Combine(RootDirectory, "Backups");
 
@@ -48,7 +49,11 @@ namespace MediaFlux.Services
         {
             Directory.CreateDirectory(UserDataDirectory);
             Directory.CreateDirectory(DataDirectory);
+            Directory.CreateDirectory(TempDirectory);
             Directory.CreateDirectory(BackupDirectory);
+            DvdTempCleanupService.CleanupStaleOperations(
+                TempDirectory,
+                TimeSpan.FromDays(7));
 
             string marker = Path.Combine(UserDataDirectory, MigrationMarkerName);
             if (File.Exists(marker))

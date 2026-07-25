@@ -29,6 +29,7 @@ namespace MediaFlux
         private Button btnDuplicateKeeperPreferences = null!;
         private Label lblFfmpegStatus = null!;
         private Label lblFfprobeStatus = null!;
+        private TextBox txtDvdOutputNamingPattern = null!;
         private DuplicateKeeperPreferences _duplicateKeeperPreferences = new();
         private readonly ToolTip _settingsToolTip = new();
 
@@ -43,6 +44,7 @@ namespace MediaFlux
             InitializeFfmpegStatusControls();
             InitializeExplorerIntegrationControls();
             Config = cfg;
+            InitializeDvdSettingsControls(cfg);
             _duplicateKeeperPreferences = (cfg.DuplicateKeeperPreferences ?? new DuplicateKeeperPreferences()).Clone();
             InitializeDuplicateKeeperPreferenceControls();
 
@@ -117,6 +119,46 @@ namespace MediaFlux
                     txtFfmpegPath.SelectAll();
                 };
             }
+        }
+
+        private void InitializeDvdSettingsControls(Config config)
+        {
+            var group = new GroupBox
+            {
+                Text = "DVD Output Naming",
+                Location = new Point(15, 775),
+                Size = new Size(790, 65),
+                TabIndex = 25
+            };
+            var label = new Label
+            {
+                Text = "Pattern:",
+                AutoSize = true,
+                Location = new Point(12, 29)
+            };
+            txtDvdOutputNamingPattern = new TextBox
+            {
+                Location = new Point(72, 25),
+                Size = new Size(300, 23),
+                Text = string.IsNullOrWhiteSpace(config.DvdOutputNamingPattern)
+                    ? "{MovieName}{TitleSetSuffix}"
+                    : config.DvdOutputNamingPattern
+            };
+            var hint = new Label
+            {
+                Text = "Tokens: {MovieName}, {TitleSet}, {TitleSetSuffix}",
+                AutoSize = true,
+                ForeColor = SystemColors.GrayText,
+                Location = new Point(385, 29)
+            };
+            group.Controls.Add(label);
+            group.Controls.Add(txtDvdOutputNamingPattern);
+            group.Controls.Add(hint);
+            Controls.Add(group);
+            group.BringToFront();
+            _settingsToolTip.SetToolTip(
+                txtDvdOutputNamingPattern,
+                "{TitleSetSuffix} is blank for a single strong main feature and adds the title-set identifier otherwise.");
         }
 
         private void InitializeFfmpegStatusControls()
@@ -519,6 +561,10 @@ namespace MediaFlux
             Config.BackupFolderPath = txtBackupFolder.Text.Trim();
             Config.BackupsToKeep = (int)nudBackupsToKeep.Value;
             Config.AutoNamingPattern = txtPattern.Text.Trim();
+            Config.DvdOutputNamingPattern =
+                string.IsNullOrWhiteSpace(txtDvdOutputNamingPattern.Text)
+                    ? "{MovieName}{TitleSetSuffix}"
+                    : txtDvdOutputNamingPattern.Text.Trim();
             Config.OutputSuffix = txtSuffix.Text.Trim();  // <-- NEW
             Config.EnableOutputSuffix = chkEnableSuffix.Checked;
             Config.EnableCodecSuffix = chkEnableCodecSuffix.Checked;

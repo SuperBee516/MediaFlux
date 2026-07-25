@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
+using MediaFlux.Models;
 using MediaFlux.Services;
 
 namespace MediaFlux
@@ -289,6 +290,52 @@ namespace MediaFlux
                     continue;
                 }
 
+                bool isCustom = RowHasCustomSettings(meta);
+                string rowProfile = !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile)
+                    ? meta!.CustomCompressionProfile!
+                    : profile;
+                double rowManualTargetMb = meta?.CustomTargetMb is > 0
+                    ? meta.CustomTargetMb.Value
+                    : manualTargetMb;
+                bool rowAuto = meta?.CustomTargetMb is > 0
+                    ? false
+                    : !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile) || useProfileEstimate;
+
+                if (meta?.IsDvdEncode == true)
+                {
+                    double sourceMb = meta.SrcMb;
+                    double estimateMb = !rowAuto && rowManualTargetMb > 0
+                        ? rowManualTargetMb
+                        : EstimateDvdEncodeTargetMb(
+                            meta,
+                            rowProfile,
+                            targetCodec,
+                            quality,
+                            targetHeight);
+                    if (estimateMb > 0)
+                    {
+                        _estimatedSizeMap[path!] = estimateMb;
+                        row.Cells["colEstimatedSize"].Value =
+                            $"{FormatSize(estimateMb)}  {PercentReduction(sourceMb, estimateMb)}" +
+                            (isCustom ? " (custom)" : "");
+                        row.Cells["colEstimatedSize"].Tag =
+                            new Tuple<double, double>(sourceMb, estimateMb);
+                    }
+                    else
+                    {
+                        _estimatedSizeMap.Remove(path!);
+                        row.Cells["colEstimatedSize"].Value = "Metadata unavailable";
+                        row.Cells["colEstimatedSize"].Tag = null;
+                    }
+
+                    row.Cells["colEstimatedSize"].ToolTipText =
+                        "Estimated from the combined DVD title size, duration, resolution, " +
+                        "frame rate, codec, and current encoding settings.";
+                    UpdateRowCustomFlag(row);
+                    RestoreQueuedStateAfterEstimate(row);
+                    continue;
+                }
+
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                 {
                     row.Cells["colEstimatedSize"].Value = "";
@@ -305,17 +352,6 @@ namespace MediaFlux
                     SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
 
                 // Queue estimate work; UI pump will apply results
-                bool isCustom = RowHasCustomSettings(meta);
-                string rowProfile = !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile)
-                    ? meta!.CustomCompressionProfile!
-                    : profile;
-                double rowManualTargetMb = meta?.CustomTargetMb is > 0
-                    ? meta.CustomTargetMb.Value
-                    : manualTargetMb;
-                bool rowAuto = meta?.CustomTargetMb is > 0
-                    ? false
-                    : !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile) || useProfileEstimate;
-
                 QueueEstimate(
                     path,
                     rowAuto,
@@ -343,6 +379,32 @@ namespace MediaFlux
 
             // Make sure timers are alive (constructor already calls this, but this is cheap)
             StartEstimateUiPump();
+        }
+
+        private static double EstimateDvdEncodeTargetMb(
+            RowMeta meta,
+            string compressionProfile,
+            string targetCodec,
+            int quality,
+            int? targetHeight)
+        {
+            DvdTitleCandidate? candidate = meta.DvdEncodeOptions?.Candidate;
+            if (candidate == null)
+                return 0;
+
+            double sourceMb = candidate.CombinedSizeBytes / (1024d * 1024d);
+            return SizeEstimateService.EstimateAutoTargetMbSmart(
+                sourceMb,
+                candidate.CombinedDurationSeconds,
+                candidate.VideoWidth ?? 0,
+                candidate.VideoHeight ?? 0,
+                candidate.FrameRate ?? 0,
+                sourceVideoBitrateKbps: 0,
+                candidate.VideoCodec,
+                compressionProfile,
+                targetCodec,
+                quality,
+                targetHeight);
         }
 
         private void RestoreQueuedStateAfterEstimate(DataGridViewRow row)

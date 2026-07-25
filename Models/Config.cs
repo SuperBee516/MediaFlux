@@ -39,6 +39,15 @@ namespace MediaFlux.Models
         public List<string> LastOutputFolders { get; set; } = new();
         public int FolderHistoryLimit { get; set; } = 5;
 
+        // DVD-folder workflow preferences. Strings keep config.json readable and
+        // allow older files to load without enum-conversion failures.
+        public string LastDvdInputFolder { get; set; } = "";
+        public string LastDvdOutputFolder { get; set; } = "";
+        public string LastDvdOutputMode { get; set; } =
+            nameof(DvdOutputMode.LosslessRemuxToMkv);
+        public string DvdOutputNamingPattern { get; set; } =
+            "{MovieName}{TitleSetSuffix}";
+
         public bool WarnOnDuplicate { get; set; } = true;
         public bool AutoFetchMetadata { get; set; } = true;
         public string ExternalPlayerPath { get; set; } = ""; // e.g. "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"
@@ -147,6 +156,12 @@ namespace MediaFlux.Models
                 config.WatchFolderStabilizationSeconds = 60;
             if (config.BackupsToKeep < 1)
                 config.BackupsToKeep = 5;
+            config.LastDvdInputFolder ??= "";
+            config.LastDvdOutputFolder ??= "";
+            config.LastDvdOutputMode = NormalizeDvdOutputMode(
+                config.LastDvdOutputMode);
+            if (string.IsNullOrWhiteSpace(config.DvdOutputNamingPattern))
+                config.DvdOutputNamingPattern = "{MovieName}{TitleSetSuffix}";
             if (!config.FindDuplicatesOnImport)
                 config.OnlyQueueDuplicateCandidates = false;
             if (string.IsNullOrWhiteSpace(config.DuplicateScanMode))
@@ -167,11 +182,59 @@ namespace MediaFlux.Models
             return config;
         }
 
+        public DvdOutputMode GetLastDvdOutputMode()
+        {
+            return Enum.TryParse(
+                    LastDvdOutputMode,
+                    ignoreCase: true,
+                    out DvdOutputMode mode)
+                ? mode
+                : DvdOutputMode.LosslessRemuxToMkv;
+        }
+
+        public void SetLastDvdOutputMode(DvdOutputMode mode)
+        {
+            LastDvdOutputMode = mode.ToString();
+        }
+
         public void Save(string path)
         {
             var options = new JsonSerializerOptions { WriteIndented = true };
             var json = JsonSerializer.Serialize(this, options);
-            File.WriteAllText(path, json);
+            string fullPath = Path.GetFullPath(path);
+            string? directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            string tempPath = fullPath + ".tmp-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.WriteAllText(tempPath, json);
+                File.Move(tempPath, fullPath, overwrite: true);
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(tempPath))
+                        File.Delete(tempPath);
+                }
+                catch
+                {
+                    // Preserve the original save exception. A uniquely named temp file
+                    // can be cleaned up manually without risking the active config.
+                }
+            }
+        }
+
+        private static string NormalizeDvdOutputMode(string? value)
+        {
+            return Enum.TryParse(
+                    value,
+                    ignoreCase: true,
+                    out DvdOutputMode mode)
+                ? mode.ToString()
+                : nameof(DvdOutputMode.LosslessRemuxToMkv);
         }
     }
 }

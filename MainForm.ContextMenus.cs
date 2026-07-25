@@ -208,12 +208,18 @@ namespace MediaFlux
 
             // Preferred: RowMeta
             if (row.Tag is RowMeta meta)
-                path = meta.Path;
+            {
+                path = meta.IsDvdEncode && meta.DvdEncodeOptions != null
+                    ? Path.GetDirectoryName(
+                        meta.DvdEncodeOptions.Candidate.Segments[0].Path)
+                    : meta.Path;
+            }
             else
                 path = row.Cells["colPath"]?.Value as string
                        ?? row.Cells["colSource"]?.Value as string;
 
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            if (string.IsNullOrWhiteSpace(path) ||
+                (!File.Exists(path) && !Directory.Exists(path)))
                 return;
 
             try
@@ -221,7 +227,9 @@ namespace MediaFlux
                 var psi = new ProcessStartInfo
                 {
                     FileName = "explorer.exe",
-                    Arguments = "/select,\"" + path + "\"",
+                    Arguments = Directory.Exists(path)
+                        ? "\"" + path + "\""
+                        : "/select,\"" + path + "\"",
                     UseShellExecute = true
                 };
                 Process.Start(psi);
@@ -258,14 +266,26 @@ namespace MediaFlux
                 return;
             }
 
+            var row = dgvEncodeQueue.SelectedRows[0];
             string outputFolder = cmbEncodeOutput?.Text ?? "";
+            if (row.Tag is RowMeta { IsDvdEncode: true } dvdMeta &&
+                dvdMeta.DvdEncodeOptions != null)
+            {
+                outputFolder = Path.GetDirectoryName(
+                    dvdMeta.DvdEncodeOptions.OutputPath) ?? outputFolder;
+            }
             if (string.IsNullOrWhiteSpace(outputFolder))
                 outputFolder = Path.GetDirectoryName(path) ?? "";
 
             string format = comboVideoFormat?.Text ?? "";
+            string outputBaseName =
+                row.Tag is RowMeta { IsDvdEncode: true } meta &&
+                meta.DvdEncodeOptions != null
+                    ? Path.GetFileNameWithoutExtension(meta.DvdEncodeOptions.OutputPath)
+                    : Path.GetFileNameWithoutExtension(path);
             string outputPreview = Path.Combine(
                 outputFolder,
-                Path.GetFileNameWithoutExtension(path) + BuildOutputSuffix(format) + ".mp4");
+                outputBaseName + BuildOutputSuffix(format) + ".mp4");
 
             Clipboard.SetText(outputPreview);
             ShowStatusInfo("Copied output preview path.");
@@ -278,7 +298,12 @@ namespace MediaFlux
 
             var row = dgvEncodeQueue.SelectedRows[0];
             if (row.Tag is RowMeta meta)
-                return meta.Path;
+            {
+                return meta.IsDvdEncode && meta.DvdEncodeOptions != null
+                    ? Path.GetDirectoryName(
+                        meta.DvdEncodeOptions.Candidate.Segments[0].Path)
+                    : meta.Path;
+            }
             if (row.Tag is string path)
                 return path;
 

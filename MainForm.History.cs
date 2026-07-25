@@ -97,7 +97,7 @@ namespace MediaFlux
                     var row = grid.Rows[idx];
                     row.Tag = r;
                     row.Cells["colWhen"].Value = r.EndUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-                    row.Cells["colType"].Value = r.Type.ToString();
+                    row.Cells["colType"].Value = FormatHistoryJobType(r.Type);
                     row.Cells["colStatus"].Value = r.Status.ToString();
                     row.Cells["colSource"].Value = r.SourcePath;
                     row.Cells["colOutput"].Value = r.OutputPath;
@@ -217,7 +217,7 @@ namespace MediaFlux
                 var row = dgvHistory.Rows[idx];
                 row.Tag = r; // keep full record on the row
                 row.Cells["colH_When"].Value = r.EndUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-                row.Cells["colH_Type"].Value = r.Type.ToString();
+                row.Cells["colH_Type"].Value = FormatHistoryJobType(r.Type);
                 row.Cells["colH_Status"].Value = r.Status.ToString();
                 row.Cells["colH_Source"].Value = r.SourcePath;
                 row.Cells["colH_Output"].Value = r.OutputPath;
@@ -231,6 +231,16 @@ namespace MediaFlux
                     row.DefaultCellStyle.SelectionForeColor = Color.Black;
                 }
             }
+        }
+
+        private static string FormatHistoryJobType(JobType type)
+        {
+            return type switch
+            {
+                JobType.DvdEncode => "DVD Encode",
+                JobType.DvdRemux => "DVD Remux",
+                _ => type.ToString()
+            };
         }
 
         private void dgvHistory_SelectionChanged(object sender, EventArgs e)
@@ -273,7 +283,7 @@ namespace MediaFlux
             var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord;
             var p = rec?.SourcePath;
             if (string.IsNullOrWhiteSpace(p)) return;
-            var dir = Path.GetDirectoryName(p);
+            var dir = Directory.Exists(p) ? p : Path.GetDirectoryName(p);
             if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
                 Process.Start("explorer.exe", dir);
         }

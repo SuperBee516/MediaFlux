@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace MediaFlux.Services
 {
-    public enum JobType { Encode, Download, Audio }
+    public enum JobType { Encode, Download, Audio, DvdEncode, DvdRemux }
     public enum JobStatus { Success, Failed, Canceled }
 
     public sealed class JobHistoryRecord
@@ -21,6 +21,13 @@ namespace MediaFlux.Services
         public string Log { get; set; } = "";
         public string LogPath { get; set; } = "";
         public string Notes { get; set; } = ""; // error text, etc.
+        public string? DvdTitleSet { get; set; }
+        public int? DvdSegmentCount { get; set; }
+        public string? DvdOutputMode { get; set; }
+        public long? SourceSizeBytes { get; set; }
+        public long? OutputSizeBytes { get; set; }
+        public bool? WasRecommendedDvdTitle { get; set; }
+        public string? ErrorSummary { get; set; }
     }
 
     public sealed class HistoryService

@@ -237,6 +237,7 @@ namespace MediaFlux
                 fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 1, viewDuplicateActionLogToolStripMenuItem);
                 fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 2, new ToolStripSeparator());
             }
+            InitializeDvdImportMenu();
 
             //History service init
             var historyPath = Path.Combine(AppPaths.DataDirectory, "history.json");
@@ -1456,9 +1457,13 @@ namespace MediaFlux
             public bool ExcludedFromEncodeAsDuplicate = false;
             public bool DuplicateExclusionOverridden = false;
             public string StatusBeforeDuplicateExclusion = "Queued";
+            public DvdImportOptions? DvdEncodeOptions = null;
 
             public bool HasCustomSettings =>
                 CustomTargetMb.HasValue || !string.IsNullOrWhiteSpace(CustomCompressionProfile);
+
+            public bool IsDvdEncode =>
+                DvdEncodeOptions?.OutputMode == DvdOutputMode.EncodeUsingCurrentSettings;
         }
 
         private RowMeta EnsureRowMeta(DataGridViewRow row)
@@ -1519,12 +1524,19 @@ namespace MediaFlux
             else if (!string.IsNullOrWhiteSpace(meta.CustomCompressionProfile))
             {
                 var (targetCodec, _) = GetSelectedCodecInfo();
-                double estMb = _sizeEstimateService.EstimateAutoTargetMbSmart(
-                    path,
-                    meta.CustomCompressionProfile,
-                    targetCodec,
-                    GetDefaultQualityForSelection(),
-                    GetEstimateTargetHeight());
+                double estMb = meta.IsDvdEncode
+                    ? EstimateDvdEncodeTargetMb(
+                        meta,
+                        meta.CustomCompressionProfile,
+                        targetCodec,
+                        GetDefaultQualityForSelection(),
+                        GetEstimateTargetHeight())
+                    : _sizeEstimateService.EstimateAutoTargetMbSmart(
+                        path,
+                        meta.CustomCompressionProfile,
+                        targetCodec,
+                        GetDefaultQualityForSelection(),
+                        GetEstimateTargetHeight());
                 if (estMb > 0)
                 {
                     _estimatedSizeMap[path] = estMb;
@@ -2864,6 +2876,9 @@ namespace MediaFlux
                 // Remove rows for files that no longer match / no longer exist
                 foreach (DataGridViewRow row in dgvEncodeQueue.Rows.Cast<DataGridViewRow>().ToList())
                 {
+                    if (row.Tag is RowMeta { IsDvdEncode: true })
+                        continue;
+
                     var path = GetPathFromRow(row);
                     if (string.IsNullOrWhiteSpace(path) || !fsFiles.Contains(path))
                         RemoveRowAndCleanup(row);
