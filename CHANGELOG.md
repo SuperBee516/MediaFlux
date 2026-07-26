@@ -39,6 +39,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   existing encoding workflow and defaulting upgraded configurations to NVENC.
 - Video output explicitly preserves input metadata and chapters through the
   shared FFmpeg command pipeline.
+- NVENC speed presets now use clear Fastest-to-Slowest labels while retaining
+  their native `p1` through `p7` values.
 
 ### Fixed
 

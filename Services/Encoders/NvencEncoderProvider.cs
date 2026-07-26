@@ -17,9 +17,16 @@ namespace MediaFlux.Services.Encoders
             SupportsConcurrentJobs = true,
             SupportedCodecs =
                 [VideoCodecFamily.H264, VideoCodecFamily.Hevc, VideoCodecFamily.Av1],
-            Presets = ValidPresets
-                .Select(value => new EncoderPresetOption(value, value))
-                .ToArray(),
+            Presets =
+            [
+                new EncoderPresetOption("p1", "Fastest (p1)"),
+                new EncoderPresetOption("p2", "Faster (p2)"),
+                new EncoderPresetOption("p3", "Fast (p3)"),
+                new EncoderPresetOption("p4", "Medium (p4)"),
+                new EncoderPresetOption("p5", "Slow (p5)"),
+                new EncoderPresetOption("p6", "Slower (p6)"),
+                new EncoderPresetOption("p7", "Slowest (p7)")
+            ],
             DefaultPreset = "p5",
             QualityRange = new EncoderQualityRange("CQ", 0, 51)
         };

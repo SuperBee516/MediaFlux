@@ -137,6 +137,17 @@ public sealed class EncoderRegistryTests
         Assert.Equal(
             ["p1", "p2", "p3", "p4", "p5", "p6", "p7"],
             nvenc.Presets.Select(item => item.Value));
+        Assert.Equal(
+            [
+                "Fastest (p1)",
+                "Faster (p2)",
+                "Fast (p3)",
+                "Medium (p4)",
+                "Slow (p5)",
+                "Slower (p6)",
+                "Slowest (p7)"
+            ],
+            nvenc.Presets.Select(item => item.DisplayName));
         Assert.Equal("p5", nvenc.DefaultPreset);
     }
 }
