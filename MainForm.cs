@@ -3664,12 +3664,20 @@ namespace MediaFlux
             }
         }
 
-        // Context menu → Start Encode
-        private void StartEncodeFromContextMenu_Click(object? sender, EventArgs e)
+        // Legacy designer context menu → use the standard Start behavior.
+        private async void StartEncodeFromContextMenu_Click(object? sender, EventArgs e)
         {
-            // Just behave exactly like pressing the Start button.
-            // Let btnStartEncode_Click handle _encodingActive, status, etc.
-            btnStartEncode_Click(btnStartEncode, EventArgs.Empty);
+            await StartEncodeAsync();
+        }
+
+        private async void StartFullEncodeQueueFromContextMenu_Click(object? sender, EventArgs e)
+        {
+            await StartEncodeAsync(processAllOverride: true);
+        }
+
+        private async void StartSelectedEncodeFilesFromContextMenu_Click(object? sender, EventArgs e)
+        {
+            await StartEncodeAsync(processAllOverride: false);
         }
 
         // Delete key context menu handler

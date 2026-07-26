@@ -32,7 +32,9 @@ namespace MediaFlux
         private void InitializeEncodeQueueContextMenu()
         {
             var menu = new ContextMenuStrip();
-            menu.Items.Add("Start", null, StartEncodeFromContextMenu_Click);
+            menu.Items.Add("Start Full Queue", null, StartFullEncodeQueueFromContextMenu_Click);
+            menu.Items.Add("Start Selected Files", null, StartSelectedEncodeFilesFromContextMenu_Click);
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Add to Encoding Queue", null, AddToEncodeQueueFromContextMenu_Click);
 
             var customSettings = new ToolStripMenuItem("Custom Encode Settings");

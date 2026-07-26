@@ -15,19 +15,31 @@ namespace MediaFlux
     {
         private async void btnStartEncode_Click(object? sender, EventArgs e)
         {
+            await StartEncodeAsync();
+        }
+
+        private async Task StartEncodeAsync(bool? processAllOverride = null)
+        {
             // prevent re-entry
             if (_encodingActive)
                 return;
 
-            if (!EnsureFfmpegToolsAvailable())
-                return;
-
-            bool requestedAll = chkProcessAll?.Checked ?? true;
+            bool requestedAll = processAllOverride ?? (chkProcessAll?.Checked ?? true);
             var requestedRows = (requestedAll
                     ? dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
                     : dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>())
                 .Where(row => !row.IsNewRow)
                 .ToList();
+
+            if (!requestedAll && requestedRows.Count == 0)
+            {
+                ShowStatusInfo("Select one or more files to encode.");
+                return;
+            }
+
+            if (!EnsureFfmpegToolsAvailable())
+                return;
+
             if (requestedRows.Any(row => row.Tag is not RowMeta { IsDvdEncode: true }) &&
                 !ValidateOutputFolderAgainstWatchFolder(cmbEncodeOutput.Text, showMessage: true))
             {
@@ -89,24 +101,9 @@ namespace MediaFlux
 
             var queueStartedUtc = DateTime.UtcNow;
 
-            // Determine whether to process all rows or only the selected ones
-            bool processAll = (chkProcessAll?.Checked ?? true);
-
-            HashSet<string> selectedPaths;
-            if (processAll)
-            {
-                // empty set → filter below treats this as "include all rows"
-                selectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            }
-            else
-            {
-                selectedPaths = dgvEncodeQueue.SelectedRows
-                    .Cast<DataGridViewRow>()
-                    .Select(r => r.Tag is RowMeta rm ? rm.Path : (r.Tag as string))
-                    .Where(p => !string.IsNullOrWhiteSpace(p))
-                    .Select(p => p!)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            }
+            // Snapshot the requested rows before a possible scheduled wait. An explicit
+            // context-menu choice must not be changed by the persisted checkbox setting.
+            var requestedRowSet = requestedRows.ToHashSet();
 
             int maxParallel = GetMaxConcurrentEncodes(); // Automatic NVENC parallelism, otherwise 1.
 
@@ -116,11 +113,8 @@ namespace MediaFlux
             var rowsToProcess = GetEncodeRowsInVisualOrder()
                 .Where(r =>
                 {
-                    var p = r.Tag is RowMeta rm ? rm.Path : (r.Tag as string);
-                    // If selectedPaths is empty → we include all rows
-                    bool selected = selectedPaths.Count == 0 || (p != null && selectedPaths.Contains(p));
                     bool duplicateExcluded = r.Tag is RowMeta meta && meta.ExcludedFromEncodeAsDuplicate;
-                    return selected && !duplicateExcluded;
+                    return (requestedAll || requestedRowSet.Contains(r)) && !duplicateExcluded;
                 })
                 .ToList();
 
