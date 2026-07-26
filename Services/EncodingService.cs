@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaFlux.Models;
+using MediaFlux.Services.Encoders;
 
 namespace MediaFlux.Services
 {
@@ -241,6 +242,55 @@ namespace MediaFlux.Services
                 outputPathCallback);
         }
 
+        /// <summary>
+        /// Preferred encoder-neutral API. Legacy overloads remain available while
+        /// existing UI and persisted settings migrate to stable encoder IDs.
+        /// </summary>
+        public Task<EncodeResult> EncodeWithResultAsync(EncodingRequest request)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            ArgumentNullException.ThrowIfNull(request.Input);
+            ArgumentNullException.ThrowIfNull(request.Encoder);
+
+            ValidatedEncoderSettings validated =
+                EncodingRequestValidator.ValidateAndNormalize(
+                    EncoderRegistry.Default,
+                    request.Encoder,
+                    request.UseGpu,
+                    request.TargetMb,
+                    request.EncoderPreset,
+                    request.QualityValue,
+                    request.TenBit,
+                    request.AudioChannels,
+                    request.ConcurrentEncoderSessions);
+            EnsureEncoderAvailable(validated.Resolved.Selection);
+
+            return EncodeInternalAsync(
+                request.Input,
+                request.OutputFolder,
+                request.Suffix,
+                validated.UseGpu,
+                request.TargetMb,
+                validated.Resolved.Selection.FfmpegCodec,
+                request.ScaleMode,
+                validated.Preset,
+                validated.TenBit,
+                request.AudioChannels,
+                request.ProgressCallback ?? _progressCallback,
+                validated.ConcurrentEncoderSessions,
+                request.MapMode,
+                request.CopySubtitles,
+                request.CancellationToken,
+                request.OutputPathCallback,
+                validated.QualityValue,
+                validated.Resolved.Selection);
+        }
+
+        public Task<bool> EncodeAsync(EncodingRequest request)
+        {
+            return EncodeSuccessAsync(EncodeWithResultAsync(request));
+        }
+
         // Compatibility overload (keeps existing call sites where CancellationToken was arg #12)
         public Task<bool> EncodeAsync(
             string input,
@@ -371,15 +421,17 @@ namespace MediaFlux.Services
             double? targetMb,
             string videoCodec,
             ScaleMode scaleMode,
-            string? nvencPreset,
+            string? encoderPreset,
             bool tenBit,
             int? audioChannels,
             Action<string> callback,
-            bool concurrentNvenc,
+            bool concurrentEncoderSessions,
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
             CancellationToken cancellationToken = default,
-            Action<string>? outputPathCallback = null)
+            Action<string>? outputPathCallback = null,
+            int? qualityValue = null,
+            VideoEncoderSelection? encoderSelection = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -389,15 +441,17 @@ namespace MediaFlux.Services
                 targetMb,
                 videoCodec,
                 scaleMode,
-                nvencPreset,
+                encoderPreset,
                 tenBit,
                 audioChannels,
                 callback,
-                concurrentNvenc,
+                concurrentEncoderSessions,
                 mapMode,
                 copySubtitles,
                 cancellationToken,
-                outputPathCallback);
+                outputPathCallback,
+                qualityValue,
+                encoderSelection);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -408,15 +462,17 @@ namespace MediaFlux.Services
             double? targetMb,
             string videoCodec,
             ScaleMode scaleMode,
-            string? nvencPreset,
+            string? encoderPreset,
             bool tenBit,
             int? audioChannels,
             Action<string> callback,
-            bool concurrentNvenc,
+            bool concurrentEncoderSessions,
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
             CancellationToken cancellationToken = default,
-            Action<string>? outputPathCallback = null)
+            Action<string>? outputPathCallback = null,
+            int? qualityValue = null,
+            VideoEncoderSelection? encoderSelection = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -487,15 +543,17 @@ namespace MediaFlux.Services
                 useGpu,
                 targetMb,
                 scaleMode,
-                nvencPreset,
+                encoderPreset,
                 tenBit,
                 audioChannels,
-                concurrentNvenc,
+                concurrentEncoderSessions,
                 mapMode,
                 allowSubtitleCopy,
                 allowDataCopy,
                 forceMp4CompatibleAudio,
-                totalDuration);
+                totalDuration,
+                qualityValue,
+                encoderSelection);
 
             _log?.Invoke(
                 $"[EncodingService] Starting ffmpeg for '{inputSource.SourcePath}' " +
@@ -800,157 +858,60 @@ namespace MediaFlux.Services
             bool useGpu,
             double? targetMb,
             ScaleMode scaleMode,
-            string? nvencPreset,
+            string? encoderPreset,
             bool tenBit,
             int? audioChannels,
-            bool concurrentNvenc,
+            bool concurrentEncoderSessions,
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
             bool copyDataStreams = true,
             bool forceMp4CompatibleAudio = false,
-            TimeSpan knownDuration = default)
+            TimeSpan knownDuration = default,
+            int? qualityValue = null,
+            VideoEncoderSelection? encoderSelection = null)
         {
-            bool isNvenc = videoCodec.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase);
-            bool isNvencAv1 = videoCodec.Equals("av1_nvenc", StringComparison.OrdinalIgnoreCase);
-            bool isQsv = videoCodec.EndsWith("_qsv", StringComparison.OrdinalIgnoreCase);
-            bool isQsvAv1 = videoCodec.Equals("av1_qsv", StringComparison.OrdinalIgnoreCase);
-            bool isAsfFamilyInput =
-                input.Kind == EncodingInputKind.File &&
-                IsAsfFamilyInput(input.SourcePath);
-
-            bool wantsTenBit =
-                tenBit &&
-                (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
-                 videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase) ||
-                 videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase));
-
-            string? tenBitPixFmt = wantsTenBit
-                ? (isNvenc || isQsv ? "p010le" : "yuv420p10le")
-                : null;
-
-            string presetForNvenc = ParseNvencPresetOrDefault(nvencPreset);
-
-            string scaleExpr = scaleMode switch
+            ResolvedVideoEncoder resolved =
+                encoderSelection == null
+                    ? EncoderRegistry.Default.ResolveLegacyCodec(videoCodec)
+                    : EncoderRegistry.Default.Resolve(
+                        encoderSelection.EncoderId,
+                        encoderSelection.CodecFamily);
+            EnsureEncoderAvailable(resolved.Selection);
+            var request = new FfmpegCommandRequest
             {
-                ScaleMode.To720p => "-2:720",
-                ScaleMode.To1080p => "-2:1080",
-                ScaleMode.To1440p => "-2:1440",
-                ScaleMode.To4K => "-2:2160",
-                _ => string.Empty
+                Input = input,
+                OutputPath = output,
+                Encoder = encoderSelection ?? resolved.Selection,
+                UseGpu = useGpu,
+                TargetMb = targetMb,
+                ScaleMode = scaleMode,
+                EncoderPreset = encoderPreset,
+                QualityValue = qualityValue,
+                TenBit = tenBit,
+                AudioChannels = audioChannels,
+                ConcurrentEncoderSessions = concurrentEncoderSessions,
+                MapMode = mapMode,
+                CopySubtitles = copySubtitles,
+                CopyDataStreams = copyDataStreams,
+                ForceMp4CompatibleAudio = forceMp4CompatibleAudio,
+                KnownDuration = knownDuration
             };
 
-            // QSV hwaccel decode (h264_qsv/hevc_qsv decoders) produces hardware frames.
-            // That breaks *CPU* filters like scale/format unless we explicitly hwdownload/vpp_qsv.
-            // For now, only enable QSV hwaccel decode when we are not inserting any video filters.
-            // (Encoding still uses *_qsv, so we still get hardware encode speed.)
-            bool qsvHwDecodeOk =
-                useGpu &&
-                isQsv &&
-                string.IsNullOrEmpty(scaleExpr) &&
-                !wantsTenBit;
+            var builder = new FfmpegCommandBuilder(
+                EncoderRegistry.Default,
+                GetPrimaryAudioBitrateKbps,
+                _log);
+            return builder.Build(request);
+        }
 
-            var sb = new StringBuilder();
-            sb.Append("-y ");
-
-            // GPU decode logic:
-            // - 8-bit NVENC: full GPU frames (cuda + hwaccel_output_format=cuda)
-            // - 10-bit NVENC: no hwaccel_output_format, so software filters can safely convert
-            // - QSV: use qsv hwaccel when requested.
-            // - Non-NVENC + GPU: plain hwaccel cuda.
-            if (useGpu && !isAsfFamilyInput)
-            {
-                if (isNvenc)
-                {
-                    if (wantsTenBit)
-                    {
-                        sb.Append("-hwaccel cuda ");
-                    }
-                    else
-                    {
-                        sb.Append("-hwaccel cuda -hwaccel_output_format cuda ");
-                    }
-                }
-                else if (isQsv)
-                {
-                    if (qsvHwDecodeOk)
-                        sb.Append("-hwaccel qsv ");
-                }
-                else
-                {
-                    sb.Append("-hwaccel cuda ");
-                }
-            }
-            else if (useGpu && isAsfFamilyInput)
-            {
-                _log?.Invoke("[EncodingService] WMV/ASF input detected; using software decode before selected hardware encode.");
-            }
-
-            AppendInput(sb, input);
-
-            AppendStreamMapping(sb, input, mapMode, copySubtitles, copyDataStreams);
-
-            // Subtitle codec handling
-            if (copySubtitles)
-                sb.Append("-c:s copy ");
-            else
-                sb.Append("-sn ");
-
-            AppendVideoFilters(sb, isNvenc, useGpu, wantsTenBit, tenBitPixFmt, scaleExpr);
-
-            // Video encode
-            if (targetMb.HasValue && targetMb > 0)
-            {
-                AppendVideoEncodeTargetSize(
-                    sb,
-                    input,
-                    knownDuration,
-                    videoCodec,
-                    isNvenc,
-                    isNvencAv1,
-                    isQsv,
-                    isQsvAv1,
-                    wantsTenBit,
-                    tenBitPixFmt,
-                    presetForNvenc,
-                    targetMb.Value,
-                    audioChannels,
-                    concurrentNvenc,
-                    forceMp4CompatibleAudio);
-            }
-            else
-            {
-                AppendVideoEncodeQualityDefault(
-                    sb,
-                    videoCodec,
-                    isNvenc,
-                    isQsv,
-                    wantsTenBit,
-                    tenBitPixFmt,
-                    presetForNvenc,
-                    concurrentNvenc);
-            }
-
-            // Audio handling (Phase A):
-            // Default is COPY audio to avoid unnecessary re-encoding.
-            // If the caller requests a specific channel count, we must re-encode (downmix/upmix).
-            if (audioChannels.HasValue && audioChannels.Value > 0)
-            {
-                sb.Append("-c:a aac -b:a 192k ");
-                sb.Append($"-ac {audioChannels.Value} ");
-            }
-            else if (forceMp4CompatibleAudio)
-            {
-                sb.Append("-c:a aac -b:a 192k ");
-            }
-            else
-            {
-                sb.Append("-c:a copy ");
-            }
-
-            sb.Append("-movflags +faststart ");
-            sb.Append($"\"{output}\"");
-
-            return sb.ToString();
+        private void EnsureEncoderAvailable(
+            VideoEncoderSelection selection)
+        {
+            FfmpegEncoderCapabilities capabilities =
+                FfmpegEncoderCapabilityService.GetCapabilities(_ffmpegPath);
+            EncodingRequestValidator.EnsureEncoderAvailable(
+                selection,
+                capabilities);
         }
 
         internal static string BuildInputAndMappingArgumentsForTesting(
@@ -959,25 +920,11 @@ namespace MediaFlux.Services
             bool copySubtitles = true,
             bool copyDataStreams = true)
         {
-            var builder = new StringBuilder();
-            AppendInput(builder, input);
-            AppendStreamMapping(
-                builder,
+            return FfmpegCommandBuilder.BuildInputAndMappingArguments(
                 input,
                 mapMode,
                 copySubtitles,
                 copyDataStreams);
-            return builder.ToString().Trim();
-        }
-
-        private static void AppendInput(StringBuilder builder, EncodingInputSource input)
-        {
-            if (input.Kind == EncodingInputKind.DvdPhysicalConcat)
-                builder.Append("-fflags +genpts ");
-
-            builder.Append("-i \"");
-            builder.Append(input.InputPath);
-            builder.Append("\" ");
         }
 
         private static void ValidateInputExists(EncodingInputSource input)
@@ -1002,313 +949,6 @@ namespace MediaFlux.Services
             string? missing = input.SourceFiles.FirstOrDefault(path => !File.Exists(path));
             if (missing != null)
                 throw new FileNotFoundException("A DVD program segment is missing.", missing);
-        }
-
-        private static string ParseNvencPresetOrDefault(string? nvencPreset)
-        {
-            string presetForNvenc = "p5";
-            if (string.IsNullOrWhiteSpace(nvencPreset))
-                return presetForNvenc;
-
-            string token = nvencPreset.Trim();
-            if (!token.StartsWith("p", StringComparison.OrdinalIgnoreCase))
-                return presetForNvenc;
-
-            string first = token.Split(' ')[0];
-            return first is "p1" or "p2" or "p3" or "p4" or "p5" or "p6" or "p7"
-                ? first
-                : presetForNvenc;
-        }
-
-        private static void AppendStreamMapping(
-            StringBuilder sb,
-            EncodingInputSource input,
-            StreamMapMode mapMode,
-            bool copySubtitles,
-            bool copyDataStreams)
-        {
-            if (input.HasExplicitStreamSelection)
-            {
-                foreach (int streamIndex in input.VideoStreamIndexes)
-                    sb.Append($"-map 0:{streamIndex} ");
-                foreach (int streamIndex in input.AudioStreamIndexes)
-                    sb.Append($"-map 0:{streamIndex} ");
-                if (copySubtitles)
-                {
-                    foreach (int streamIndex in input.SubtitleStreamIndexes)
-                        sb.Append($"-map 0:{streamIndex} ");
-                }
-
-                if (!copyDataStreams)
-                    sb.Append("-dn ");
-                return;
-            }
-
-            sb.Append("-map 0:v:0 ");
-
-            if (mapMode == StreamMapMode.KeepAll)
-            {
-                sb.Append("-map 0:a? ");
-                if (copySubtitles)
-                    sb.Append("-map 0:s? ");
-                if (copyDataStreams)
-                    sb.Append("-map 0:d? ");
-                else
-                    sb.Append("-dn ");
-            }
-            else
-            {
-                sb.Append("-map 0:a:0? ");
-                if (copySubtitles)
-                    sb.Append("-map 0:s? ");
-                if (copyDataStreams)
-                    sb.Append("-map 0:d? ");
-                else
-                    sb.Append("-dn ");
-            }
-        }
-
-        private static void AppendVideoFilters(
-            StringBuilder sb,
-            bool isNvenc,
-            bool useGpu,
-            bool wantsTenBit,
-            string? tenBitPixFmt,
-            string scaleExpr)
-        {
-            if (!string.IsNullOrEmpty(scaleExpr))
-            {
-                if (isNvenc && useGpu && !wantsTenBit)
-                {
-                    // GPU resizer (8-bit only)
-                    sb.Append($"-vf scale_cuda={scaleExpr}:interp_algo=lanczos ");
-                }
-                else
-                {
-                    // CPU scaling for 10-bit or non-NVENC paths
-                    if (wantsTenBit && !string.IsNullOrEmpty(tenBitPixFmt))
-                        sb.Append($"-vf scale={scaleExpr}:flags=lanczos,format={tenBitPixFmt} ");
-                    else
-                        sb.Append($"-vf scale={scaleExpr}:flags=lanczos ");
-                }
-            }
-            else if (wantsTenBit && !string.IsNullOrEmpty(tenBitPixFmt))
-            {
-                // No scaling, still force 10-bit pixel format
-                sb.Append($"-vf format={tenBitPixFmt} ");
-            }
-        }
-
-        private void AppendVideoEncodeTargetSize(
-            StringBuilder sb,
-            EncodingInputSource input,
-            TimeSpan duration,
-            string videoCodec,
-            bool isNvenc,
-            bool isNvencAv1,
-            bool isQsv,
-            bool isQsvAv1,
-            bool wantsTenBit,
-            string? tenBitPixFmt,
-            string presetForNvenc,
-            double targetMb,
-            int? audioChannels,
-            bool concurrentNvenc,
-            bool forceMp4CompatibleAudio)
-        {
-            if (duration <= TimeSpan.Zero)
-            {
-                _log?.Invoke("[EncodingService] Target-size bitrate budgeting skipped because input duration could not be determined; using quality-based encoding instead.");
-                AppendVideoEncodeQualityDefault(
-                    sb,
-                    videoCodec,
-                    isNvenc,
-                    isQsv,
-                    wantsTenBit,
-                    tenBitPixFmt,
-                    presetForNvenc,
-                    concurrentNvenc);
-                return;
-            }
-
-            double seconds = duration.TotalSeconds;
-
-            // Phase D: budget bitrate for audio + container overhead so target size is more accurate.
-            double totalKbps = (targetMb * 8192d) / seconds;
-
-            double plannedAudioKbps;
-            if (audioChannels.HasValue && audioChannels.Value > 0)
-            {
-                plannedAudioKbps = audioChannels.Value >= 6 ? 384 : 192;
-            }
-            else if (forceMp4CompatibleAudio)
-            {
-                plannedAudioKbps = 192;
-            }
-            else
-            {
-                // Audio is copied; use source bitrate when possible (fallback inside helper).
-                plannedAudioKbps = input.KnownAudioBitrateKbps is > 0
-                    ? input.KnownAudioBitrateKbps.Value
-                    : GetPrimaryAudioBitrateKbps(input.InputPath);
-            }
-
-            double overheadKbps = Math.Max(16, totalKbps * 0.01);
-
-            double videoKbps = totalKbps - plannedAudioKbps - overheadKbps;
-            if (videoKbps < 100)
-                videoKbps = 100;
-
-            double maxRate = Math.Round(videoKbps * 1.08);
-            double bufSize = Math.Round(videoKbps * 1.4);
-
-            _log?.Invoke(
-                $"[EncodingService] Target bitrate plan: target={targetMb:0.##} MB, duration={seconds:0.##} sec, " +
-                $"total={totalKbps:0} kbps, audio={plannedAudioKbps:0} kbps, video={videoKbps:0} kbps.");
-
-            sb.Append($"-c:v {videoCodec} ");
-
-            AppendTenBitFlags(sb, videoCodec, wantsTenBit, tenBitPixFmt);
-
-            if (isNvenc)
-            {
-                const string rcMode = "vbr";
-                sb.Append(
-                    $"-b:v {videoKbps:F0}k " +
-                    $"-maxrate {maxRate:F0}k " +
-                    $"-bufsize {bufSize:F0}k " +
-                    $"-rc {rcMode} " +
-                    $"-preset {presetForNvenc} ");
-
-                if (isNvencAv1)
-                    sb.Append("-cq 28 ");
-
-                AppendNvencTuningOptions(sb, videoCodec, videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase), concurrentNvenc);
-            }
-            else if (isQsv)
-            {
-                string rcMode = isQsvAv1 ? "vbr" : "vbr";
-                sb.Append(
-                    $"-b:v {videoKbps:F0}k " +
-                    $"-maxrate {maxRate:F0}k " +
-                    $"-bufsize {bufSize:F0}k " +
-                    $"-rc_mode {rcMode} " +
-                    "-preset slow ");
-
-                // Optional subjective quality improvement for HEVC QSV.
-                if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
-                    videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
-                {
-                    sb.Append("-mbbrc 1 ");
-                }
-            }
-            else
-            {
-                // CPU VBR (predictable size)
-                sb.Append($"-b:v {videoKbps:F0}k -preset slow ");
-            }
-        }
-
-        private static void AppendVideoEncodeQualityDefault(
-            StringBuilder sb,
-            string videoCodec,
-            bool isNvenc,
-            bool isQsv,
-            bool wantsTenBit,
-            string? tenBitPixFmt,
-            string presetForNvenc,
-            bool concurrentNvenc)
-        {
-            sb.Append($"-c:v {videoCodec} ");
-
-            AppendTenBitFlags(sb, videoCodec, wantsTenBit, tenBitPixFmt);
-
-            if (isNvenc)
-            {
-                if (videoCodec.Contains("h264", StringComparison.OrdinalIgnoreCase))
-                    sb.Append($"-rc vbr -cq 22 -preset {presetForNvenc} ");
-                else if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
-                         videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
-                    sb.Append($"-rc vbr -cq 24 -preset {presetForNvenc} ");
-                else
-                    sb.Append($"-rc vbr -cq 28 -preset {presetForNvenc} ");
-
-                AppendNvencTuningOptions(sb, videoCodec, videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase), concurrentNvenc);
-            }
-            else if (isQsv)
-            {
-                // QSV: global_quality behaves like a CRF-ish knob; lower generally means higher quality.
-                // Empirically, values around ~18-22 are reasonable defaults for hevc_qsv.
-                int quality = 20;
-                if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
-                    videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
-                    quality = 19;
-                else if (videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase))
-                    quality = 28;
-
-                // mbbrc can improve subjective quality on QSV at a small performance cost.
-                // (Only apply it to HEVC where it tends to be most noticeable.)
-                if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
-                    videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
-                    sb.Append($"-rc_mode icq -global_quality {quality} -preset slow -mbbrc 1 ");
-                else
-                    sb.Append($"-rc_mode icq -global_quality {quality} -preset slow ");
-            }
-            else
-            {
-                if (videoCodec.Equals("libx264", StringComparison.OrdinalIgnoreCase))
-                    sb.Append("-crf 23 -preset slow ");
-                else if (videoCodec.Equals("libx265", StringComparison.OrdinalIgnoreCase))
-                    sb.Append("-crf 24 -preset slow ");
-                else
-                    sb.Append("-crf 30 -preset 6 ");
-            }
-        }
-
-        private static void AppendNvencTuningOptions(StringBuilder sb, string videoCodec, bool isAv1Nvenc, bool concurrentNvenc)
-        {
-            sb.Append("-tune hq ");
-
-            if (concurrentNvenc)
-            {
-                // Dual-session mode needs a lighter frame buffer footprint to avoid NVENC OOM.
-                sb.Append("-rc-lookahead 12 -spatial_aq 1 -temporal_aq 1 -aq-strength 8 ");
-                sb.Append("-surfaces 24 ");
-            }
-            else
-            {
-                sb.Append("-rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 12 ");
-                sb.Append("-surfaces 48 ");
-
-                if (!isAv1Nvenc)
-                    sb.Append("-multipass fullres ");
-            }
-
-            if (videoCodec.Contains("h264", StringComparison.OrdinalIgnoreCase) ||
-                videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
-                videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
-            {
-                if (concurrentNvenc)
-                    sb.Append("-bf 3 -b_ref_mode middle -refs 3 ");
-                else
-                    sb.Append("-bf 4 -b_ref_mode middle -refs 4 ");
-            }
-        }
-
-        private static void AppendTenBitFlags(StringBuilder sb, string videoCodec, bool wantsTenBit, string? tenBitPixFmt)
-        {
-            if (!wantsTenBit || string.IsNullOrEmpty(tenBitPixFmt))
-                return;
-
-            if (videoCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
-                videoCodec.Contains("265", StringComparison.OrdinalIgnoreCase))
-            {
-                sb.Append($"-profile:v main10 -pix_fmt {tenBitPixFmt} ");
-            }
-            else if (videoCodec.Contains("av1", StringComparison.OrdinalIgnoreCase))
-            {
-                sb.Append($"-pix_fmt {tenBitPixFmt} ");
-            }
         }
 
         private static bool IsAsfFamilyInput(string path)

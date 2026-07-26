@@ -131,12 +131,16 @@ namespace MediaFlux
                 CompressionProfile = comboCompressionProfile.Text,
                 EncoderMode = comboEncoderMode.Text,
                 VideoFormat = comboVideoFormat.Text,
+                EncoderId = GetSelectedEncoderId(),
+                VideoCodec = GetSelectedVideoCodecFamily().ToString(),
                 ScaleMode = comboResolution?.Text ?? "",
-                NvencPreset = comboNvencPreset?.Text ?? "",
+                EncoderPreset = GetSelectedEncoderPreset(),
+                QualityValue = nudAutoQuality == null
+                    ? null
+                    : (int)nudAutoQuality.Value,
                 TenBit = chkTenBit?.Checked == true,
                 AudioChannels = comboAudioChannels?.Text ?? "",
                 LimitGpuEncodingQueueToOneJob = _config.LimitGpuEncodingQueueToOneJob,
-                DualNvenc = !_config.LimitGpuEncodingQueueToOneJob,
                 EnableOutputSuffix = _config.EnableOutputSuffix,
                 EnableCodecSuffix = _config.EnableCodecSuffix,
                 OutputSuffix = _config.OutputSuffix
@@ -153,14 +157,35 @@ namespace MediaFlux
                     txtTargetSize.Text = preset.ManualTargetMb.Value.ToString("0.##");
 
                 SelectComboText(comboCompressionProfile, preset.CompressionProfile);
-                SelectComboText(comboEncoderMode, preset.EncoderMode);
-                SelectComboText(comboVideoFormat, preset.VideoFormat);
+
+                VideoCodecFamily codecFamily =
+                    VideoEncoderCompatibility.ParseCodecFamily(
+                        string.IsNullOrWhiteSpace(preset.VideoCodec)
+                            ? preset.VideoFormat
+                            : preset.VideoCodec);
+                string encoderId =
+                    VideoEncoderCompatibility.ResolveEncoderId(
+                        string.IsNullOrWhiteSpace(preset.EncoderId)
+                            ? preset.EncoderMode
+                            : preset.EncoderId,
+                        codecFamily);
+                SelectEncoderById(encoderId);
+                RefreshVideoFormatItems(codecFamily);
+                RefreshEncoderPresetItems(
+                    string.IsNullOrWhiteSpace(preset.EncoderPreset)
+                        ? preset.NvencPreset
+                        : preset.EncoderPreset);
                 if (comboResolution != null)
                     SelectComboText(comboResolution, preset.ScaleMode);
-                if (comboNvencPreset != null)
-                    SelectComboText(comboNvencPreset, preset.NvencPreset);
                 if (comboAudioChannels != null)
                     SelectComboText(comboAudioChannels, preset.AudioChannels);
+                if (nudAutoQuality != null && preset.QualityValue.HasValue)
+                {
+                    nudAutoQuality.Value = Math.Clamp(
+                        preset.QualityValue.Value,
+                        (int)nudAutoQuality.Minimum,
+                        (int)nudAutoQuality.Maximum);
+                }
                 if (chkTenBit != null)
                     chkTenBit.Checked = preset.TenBit;
 
@@ -171,7 +196,15 @@ namespace MediaFlux
                 _config.EnableCodecSuffix = preset.EnableCodecSuffix;
                 _config.OutputSuffix = preset.OutputSuffix ?? "";
                 _config.LastCompressionProfile = comboCompressionProfile.Text;
-                _config.LastEncodingSpeedPreset = comboNvencPreset?.Text ?? _config.LastEncodingSpeedPreset;
+                _config.LastEncoderId = GetSelectedEncoderId();
+                _config.LastVideoCodec =
+                    GetSelectedVideoCodecFamily().ToString();
+                _config.LastEncoderPreset = GetSelectedEncoderPreset();
+                _config.LastEncodingSpeedPreset =
+                    comboEncoderPreset?.Text ??
+                    _config.LastEncodingSpeedPreset;
+                if (nudAutoQuality != null)
+                    _config.LastQualityValue = (int)nudAutoQuality.Value;
                 _config.Save(_configPath);
             }
             finally
@@ -179,7 +212,7 @@ namespace MediaFlux
                 _applyingEncodeDropdownSettings = false;
             }
 
-            UpdateNvencUiState();
+            UpdateEncoderUiState();
             UpdateEncodePreview();
             SafeRefreshEstimates();
             toolStripStatusLabel1.Text = $"Applied encode preset \"{preset.Name}\".";

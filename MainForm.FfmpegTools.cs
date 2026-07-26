@@ -1,4 +1,6 @@
+using MediaFlux.Models;
 using MediaFlux.Services;
+using MediaFlux.Services.Encoders;
 using System;
 using System.Diagnostics;
 using System.Drawing;
@@ -14,6 +16,8 @@ namespace MediaFlux
 
         private ToolStrip? _ffmpegWarningStrip;
         private ToolStripLabel? _ffmpegWarningLabel;
+        private FfmpegEncoderCapabilities? _ffmpegEncoderCapabilities;
+        private string? _encoderCapabilityWarning;
 
         private void InitializeFfmpegAvailabilityBanner()
         {
@@ -71,10 +75,34 @@ namespace MediaFlux
 
             var tools = ResolveFfmpegTools();
             var missing = GetMissingToolNames(tools);
-            _ffmpegWarningStrip.Visible = missing.Length > 0;
             if (missing.Length == 0)
-                return;
+            {
+                _ffmpegEncoderCapabilities =
+                    FfmpegEncoderCapabilityService.GetCapabilities(
+                        tools.FfmpegPath);
+                if (!_ffmpegEncoderCapabilities.InspectionSucceeded)
+                {
+                    _ffmpegWarningStrip.Visible = true;
+                    _ffmpegWarningLabel.Text =
+                        "MediaFlux could not inspect the FFmpeg encoder list. " +
+                        (_ffmpegEncoderCapabilities.ErrorMessage ??
+                         "Encoder availability is unknown.");
+                    _ffmpegWarningLabel.ToolTipText =
+                        $"FFmpeg: {tools.FfmpegPath}";
+                    return;
+                }
 
+                _ffmpegWarningStrip.Visible =
+                    !string.IsNullOrWhiteSpace(_encoderCapabilityWarning);
+                _ffmpegWarningLabel.Text =
+                    _encoderCapabilityWarning ?? string.Empty;
+                _ffmpegWarningLabel.ToolTipText =
+                    $"FFmpeg: {tools.FfmpegPath}";
+                return;
+            }
+
+            _ffmpegEncoderCapabilities = null;
+            _ffmpegWarningStrip.Visible = true;
             string subject = missing.Length == 1
                 ? $"{missing[0]} was not found."
                 : $"{string.Join(" and ", missing)} were not found.";
@@ -82,6 +110,94 @@ namespace MediaFlux
                 $"{subject} Add the file{(missing.Length == 1 ? string.Empty : "s")} to the MediaFlux Programs folder or choose paths in Settings.";
             _ffmpegWarningLabel.ToolTipText =
                 $"Expected FFmpeg: {tools.FfmpegPath}{Environment.NewLine}Expected FFprobe: {tools.FfprobePath}";
+        }
+
+        private FfmpegEncoderCapabilities GetFfmpegEncoderCapabilities()
+        {
+            FfmpegToolPaths tools = ResolveFfmpegTools();
+            _ffmpegEncoderCapabilities =
+                FfmpegEncoderCapabilityService.GetCapabilities(
+                    tools.FfmpegPath);
+            return _ffmpegEncoderCapabilities;
+        }
+
+        private bool IsEncoderCodecAvailable(
+            string encoderId,
+            VideoCodecFamily codecFamily)
+        {
+            FfmpegEncoderCapabilities capabilities =
+                GetFfmpegEncoderCapabilities();
+            if (!capabilities.InspectionSucceeded)
+                return true;
+
+            try
+            {
+                VideoEncoderSelection selection =
+                    EncoderRegistry.Default.Resolve(
+                        encoderId,
+                        codecFamily).Selection;
+                return capabilities.Contains(selection.FfmpegCodec);
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        private bool EnsureSelectedVideoEncoderAvailable(
+            bool showMessage = true)
+        {
+            ResolvedVideoEncoder selected = EncoderRegistry.Default.Resolve(
+                GetSelectedEncoderId(),
+                GetSelectedVideoCodecFamily());
+            FfmpegEncoderCapabilities capabilities =
+                GetFfmpegEncoderCapabilities();
+            if (!capabilities.InspectionSucceeded ||
+                capabilities.Contains(
+                    selected.Selection.FfmpegCodec))
+            {
+                return true;
+            }
+
+            if (showMessage)
+            {
+                MessageBox.Show(
+                    this,
+                    $"The configured FFmpeg build does not provide " +
+                    $"'{selected.Selection.FfmpegCodec}', which is required by " +
+                    $"{selected.Provider.Capabilities.DisplayName}.\r\n\r\n" +
+                    "Choose another encoder or configure a different FFmpeg build " +
+                    "under Tools > Settings.",
+                    "Encoder unavailable",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            return false;
+        }
+
+        private void SetEncoderCapabilityWarning(string? message)
+        {
+            _encoderCapabilityWarning =
+                string.IsNullOrWhiteSpace(message) ? null : message.Trim();
+            RefreshFfmpegToolAvailability();
+        }
+
+        private void RefreshSelectedEncoderCapabilityWarning()
+        {
+            FfmpegEncoderCapabilities capabilities =
+                GetFfmpegEncoderCapabilities();
+            if (!capabilities.InspectionSucceeded)
+                return;
+
+            ResolvedVideoEncoder selected = EncoderRegistry.Default.Resolve(
+                GetSelectedEncoderId(),
+                GetSelectedVideoCodecFamily());
+            SetEncoderCapabilityWarning(
+                capabilities.Contains(selected.Selection.FfmpegCodec)
+                    ? null
+                    : $"{selected.Provider.Capabilities.DisplayName} requires " +
+                      $"'{selected.Selection.FfmpegCodec}', which is not " +
+                      "available in the configured FFmpeg build.");
         }
 
         private bool EnsureFfmpegToolsAvailable(

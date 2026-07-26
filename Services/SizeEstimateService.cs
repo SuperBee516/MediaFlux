@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
@@ -56,6 +57,22 @@ namespace MediaFlux.Services
                 info.VideoCodec,
                 compressionProfile,
                 targetCodec,
+                quality,
+                targetHeight);
+        }
+
+        public double EstimateAutoTargetMbSmart(
+            string path,
+            string compressionProfile,
+            VideoEncoderSelection encoder,
+            int quality = 23,
+            int? targetHeight = null)
+        {
+            ArgumentNullException.ThrowIfNull(encoder);
+            return EstimateAutoTargetMbSmart(
+                path,
+                compressionProfile,
+                encoder.FfmpegCodec,
                 quality,
                 targetHeight);
         }
@@ -117,6 +134,34 @@ namespace MediaFlux.Services
             double estimateMb = targetTotalKbps * durationSec / 8192.0;
 
             return Math.Max(0.1, Math.Min(srcMb * 0.98, estimateMb));
+        }
+
+        public static double EstimateAutoTargetMbSmart(
+            double srcMb,
+            double durationSec,
+            int width,
+            int height,
+            double fps,
+            int sourceVideoBitrateKbps,
+            string? sourceCodec,
+            string compressionProfile,
+            VideoEncoderSelection encoder,
+            int quality,
+            int? targetHeight)
+        {
+            ArgumentNullException.ThrowIfNull(encoder);
+            return EstimateAutoTargetMbSmart(
+                srcMb,
+                durationSec,
+                width,
+                height,
+                fps,
+                sourceVideoBitrateKbps,
+                sourceCodec,
+                compressionProfile,
+                encoder.FfmpegCodec,
+                quality,
+                targetHeight);
         }
 
         // ─────────────────────────────────────────────

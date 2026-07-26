@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 using MediaFlux.Models;
 using MediaFlux.Services;
+using MediaFlux.Services.Encoders;
 
 namespace MediaFlux
 {
@@ -255,8 +256,12 @@ namespace MediaFlux
 
             bool autoRequested = chkAutoTargetSize.Checked;
             string profile = comboCompressionProfile.SelectedItem?.ToString() ?? "Medium";
-            var (targetCodec, _) = GetSelectedCodecInfo();
-            int quality = GetDefaultQualityForSelection();
+            ValidatedEncoderSettings encoderSettings =
+                GetValidatedEncoderSettingsFromUi(
+                    includeConcurrentSessions: false);
+            VideoEncoderSelection targetEncoder =
+                encoderSettings.Resolved.Selection;
+            int quality = encoderSettings.QualityValue;
             int? targetHeight = GetEstimateTargetHeight();
 
             double manualTargetMb = 0;
@@ -309,7 +314,7 @@ namespace MediaFlux
                         : EstimateDvdEncodeTargetMb(
                             meta,
                             rowProfile,
-                            targetCodec,
+                            targetEncoder,
                             quality,
                             targetHeight);
                     if (estimateMb > 0)
@@ -357,7 +362,7 @@ namespace MediaFlux
                     rowAuto,
                     rowProfile,
                     rowManualTargetMb,
-                    targetCodec,
+                    targetEncoder,
                     quality,
                     targetHeight,
                     isCustom);
@@ -384,7 +389,7 @@ namespace MediaFlux
         private static double EstimateDvdEncodeTargetMb(
             RowMeta meta,
             string compressionProfile,
-            string targetCodec,
+            VideoEncoderSelection targetEncoder,
             int quality,
             int? targetHeight)
         {
@@ -402,7 +407,7 @@ namespace MediaFlux
                 sourceVideoBitrateKbps: 0,
                 candidate.VideoCodec,
                 compressionProfile,
-                targetCodec,
+                targetEncoder,
                 quality,
                 targetHeight);
         }
@@ -426,13 +431,20 @@ namespace MediaFlux
             bool auto,
             string profile,
             double manualTargetMb,
-            string targetCodec,
+            VideoEncoderSelection targetEncoder,
             int quality,
             int? targetHeight,
             bool isCustom)
         {
             _estimateService.QueueSmartEstimate(
-                path, auto, profile, manualTargetMb, targetCodec, quality, targetHeight, isCustom);
+                path,
+                auto,
+                profile,
+                manualTargetMb,
+                targetEncoder,
+                quality,
+                targetHeight,
+                isCustom);
         }
 
         private int? GetEstimateTargetHeight()

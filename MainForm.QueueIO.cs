@@ -17,7 +17,7 @@ namespace MediaFlux
         // =====================
         private sealed class QueueSnapshot
         {
-            public string Version { get; set; } = "1.1";
+            public string Version { get; set; } = "1.2";
             public DateTime SavedUtc { get; set; } = DateTime.UtcNow;
             public QueueSettings Settings { get; set; } = new QueueSettings();
             public List<QueueItem> Items { get; set; } = new List<QueueItem>();
@@ -28,7 +28,14 @@ namespace MediaFlux
             public bool AutoTargetSize { get; set; }
             public double? ManualTargetMb { get; set; }  // null when auto
             public string CompressionProfile { get; set; } = "";
-            public string EncoderMode { get; set; } = "";        // "GPU (NVENC)", "GPU (QSV)", or "CPU (libx264)"
+            public string EncoderMode { get; set; } = "";
+            public string EncoderId { get; set; } = "";
+            public string VideoFormat { get; set; } = "";
+            public string VideoCodec { get; set; } = "";
+            public string EncoderPreset { get; set; } = "";
+            public int? QualityValue { get; set; }
+            public bool? TenBit { get; set; }
+            public string AudioChannels { get; set; } = "";
             public string OutputFolder { get; set; } = "";       // cmbEncodeOutput.Text
         }
 
@@ -67,6 +74,15 @@ namespace MediaFlux
                 ManualTargetMb = manualMb,
                 CompressionProfile = comboCompressionProfile.SelectedItem?.ToString() ?? "",
                 EncoderMode = comboEncoderMode.SelectedItem?.ToString() ?? "",
+                EncoderId = GetSelectedEncoderId(),
+                VideoFormat = comboVideoFormat.Text,
+                VideoCodec = GetSelectedVideoCodecFamily().ToString(),
+                EncoderPreset = GetSelectedEncoderPreset(),
+                QualityValue = nudAutoQuality == null
+                    ? null
+                    : (int)nudAutoQuality.Value,
+                TenBit = chkTenBit?.Checked,
+                AudioChannels = comboAudioChannels?.Text ?? "",
                 OutputFolder = cmbEncodeOutput.Text ?? ""
             };
         }

@@ -410,6 +410,9 @@ namespace MediaFlux
             DvdImportOptions options,
             bool showMessages = true)
         {
+            if (!EnsureSelectedVideoEncoderAvailable(showMessages))
+                return false;
+
             DvdTitleCandidate candidate = options.Candidate;
             string outputFolder = Path.GetDirectoryName(options.OutputPath) ?? "";
             string sourceFolder = candidate.Segments.Count > 0

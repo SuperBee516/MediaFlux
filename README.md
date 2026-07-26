@@ -7,7 +7,8 @@ The application is intended for power users who want a graphical orchestration l
 ## Highlights
 
 - Batch video-encoding queue with pause, stop, refresh, scheduling, import, and export
-- NVIDIA NVENC, experimental Intel Quick Sync (QSV), and CPU encoding paths
+- NVIDIA NVENC, experimental Intel Quick Sync (QSV), libx264, libx265,
+  and SVT-AV1 encoding paths
 - H.264, H.265/HEVC, and AV1-oriented media inspection and filtering
 - Configurable quality/file-size profiles, output targets, encoder presets, scaling, bit depth, stream handling, and audio behavior
 - Pre-encode beginning/middle/end sample comparisons with side-by-side original and encoded playback
@@ -42,7 +43,8 @@ The Queue Summary reports the current source size, projected new size, estimated
 
 The encoding interface exposes the decisions that materially affect output:
 
-- GPU (NVENC), GPU (QSV, experimental), and CPU modes
+- Encoder-aware GPU (NVENC), GPU (QSV, experimental), CPU (libx264),
+  CPU (libx265), and CPU (SVT-AV1) selections
 - Video format, quality/file-size profile, speed preset, resolution, and bit depth
 - Automatic or manual target size
 - Optional output filename and codec suffixes
@@ -51,6 +53,12 @@ The encoding interface exposes the decisions that materially affect output:
 - Explicit FFmpeg stream mapping and collision-safe output naming
 
 Actual codec and hardware availability depends on the installed FFmpeg build, GPU, and drivers. Failures are reported rather than silently changing to an unrelated encoding path.
+
+Selecting **CPU (libx265)** uses FFmpeg's `libx265` HEVC encoder. It generally
+offers better compression efficiency than NVENC, but software encoding is
+significantly slower and uses the CPU. Its speed list automatically changes to
+the native x265 presets from `ultrafast` through `placebo`; NVENC continues to
+use `p1` through `p7`.
 
 ### Pre-encode sample comparison
 
@@ -133,7 +141,8 @@ Legacy portable ZIP copies must run the installer once before automatic updates 
 - Windows 10 or Windows 11 (x64)
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) to build from source
 - `ffmpeg.exe` and `ffprobe.exe`
-- A compatible GPU and FFmpeg build for NVENC or QSV acceleration
+- An FFmpeg build containing the selected encoder (`libx265` for CPU HEVC)
+- A compatible GPU and current driver only when using NVENC or QSV acceleration
 - An RNNoise model only when audio denoising is enabled
 
 MediaFlux searches for FFmpeg and FFprobe in this order:
@@ -168,7 +177,9 @@ On first launch after upgrading from a legacy portable build, existing `config.j
 
 - `MainForm*.cs` — WinForms UI, queue orchestration, progress, history, duplicate review, and integrations
 - `Models/` — configuration and persistent data models
-- `Services/EncodingService.cs` — FFmpeg video command construction and execution
+- `Services/EncodingService.cs` — FFmpeg process execution, progress, and output handling
+- `Services/FfmpegCommandBuilder.cs` — shared stream, metadata, audio, and output pipeline
+- `Services/Encoders/` — encoder registry, validation, capabilities, and backend providers
 - `Services/AudioService.cs` — audio job execution
 - `Services/MediaInfoService.cs` — FFprobe-backed media inspection
 - `Services/EstimateBackgroundService.cs` — bounded background size estimation

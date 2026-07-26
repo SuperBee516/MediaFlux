@@ -17,6 +17,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Automated tests for queue size estimation.
 - Release-workflow verification that launches the published application and
   detects startup failures.
+- A provider-based video encoder architecture with stable encoder IDs and
+  shared validation for NVENC, QSV, libx264, libx265, and SVT-AV1.
+- Full CPU HEVC encoding through `libx265`, including CRF and target-size modes,
+  8-bit and 10-bit output, scaling, and all native x265 speed presets.
+- FFmpeg encoder capability detection for the configured executable, with
+  unavailable encoder/codec combinations removed from the UI.
+- Command-matrix and opt-in live workflow tests covering software and hardware
+  encoder paths.
 
 ### Changed
 
@@ -24,6 +32,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   for profiles without a manually entered target size.
 - The application window and published executable now use the MediaFlux icon.
 - Duplicate review no longer uses an unnecessary asynchronous wrapper.
+- Encoder, preset, queue, DVD, sample-comparison, preview, and estimate flows now
+  use one stable encoder selection instead of reconstructing backend choices
+  from UI display text.
+- Encoder changes refresh the codec and preset lists while preserving the
+  existing encoding workflow and defaulting upgraded configurations to NVENC.
+- Video output explicitly preserves input metadata and chapters through the
+  shared FFmpeg command pipeline.
 
 ### Fixed
 

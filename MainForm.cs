@@ -1,5 +1,6 @@
 using MediaFlux.Models;
 using MediaFlux.Services;
+using MediaFlux.Services.Encoders;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -83,6 +84,7 @@ namespace MediaFlux
         private Control? _duplicateFinderBodyPanel;
         private Label? _duplicateFinderHeaderStatusLabel;
         private bool _applyingEncodeDropdownSettings;
+        private bool _refreshingEncoderControls;
         private bool _applyingCheckboxStates;
         private bool _applyingRememberedSort;
         private CompactModeForm? _compactModeForm;
@@ -108,8 +110,9 @@ namespace MediaFlux
         private DateTime _lastQueueTotalsRefreshUtc = DateTime.MinValue;
         private readonly Dictionary<string, double> _queueSourceSizeMap = new(StringComparer.OrdinalIgnoreCase);
 
-        // Advanced video / GPU options
-        private ComboBox? comboNvencPreset;
+        // Advanced video / encoder options
+        private ComboBox? comboEncoderPreset;
+        private Label? lblEncoderInfo;
         private CheckBox? chkTenBit;
         private ComboBox? comboAudioChannels;
         private CheckBox? chkWatchFolder;
@@ -191,6 +194,7 @@ namespace MediaFlux
             _configPath = AppPaths.ConfigFile;
             _config = Config.Load(_configPath);
             InitializeFfmpegAvailabilityBanner();
+            InitializeEncoderSelectionControls();
 
             InitializeCompactModeControls();
 
@@ -247,9 +251,6 @@ namespace MediaFlux
 
             // Touch lblResolution so the field is considered "used" by the analyzer
             _ = lblResolution;
-
-            // Codec Selection
-            comboVideoFormat.SelectedIndex = 0; // H.265 / HEVC (x265)
 
             dgvEncodeQueue.RowsAdded += (_, __) => { if (!_suppressRowEvents) SafeRefreshEstimates(); };
             dgvEncodeQueue.RowsRemoved += (_, __) => { if (!_suppressRowEvents) SafeRefreshEstimates(); };
@@ -325,9 +326,6 @@ namespace MediaFlux
             ApplyEncodeInfoHeaderCollapsedState(_config.EncodeInfoHeaderCollapsed);
             ApplyEncodingOptionsCollapsedState(_config.EncodingOptionsCollapsed);
             ApplyDuplicateFinderCollapsedState(_config.DuplicateFinderCollapsed);
-
-            // Encode defaults
-            comboEncoderMode.SelectedItem = "GPU (NVENC)";
 
             WireEncodePreviewAndDropdownPersistence();
             ApplyRememberedEncodeDropdowns();
@@ -1070,24 +1068,49 @@ namespace MediaFlux
                 UpdateEncodePreview();
             };
 
-            if (comboNvencPreset != null)
+            if (comboEncoderPreset != null)
             {
-                comboNvencPreset.SelectedIndexChanged += (_, __) =>
+                comboEncoderPreset.SelectedIndexChanged += (_, __) =>
                 {
+                    if (_refreshingEncoderControls)
+                        return;
+
                     if (!_applyingEncodeDropdownSettings)
-                    {
-                        _config.LastEncodingSpeedPreset = comboNvencPreset.Text;
-                        _config.Save(_configPath);
-                    }
+                        PersistEncoderSelection();
 
                     UpdateEncodePreview();
                 };
             }
 
-            comboVideoFormat.SelectedIndexChanged += (_, __) => UpdateEncodePreview();
-            comboEncoderMode.SelectedIndexChanged += (_, __) => UpdateEncodePreview();
+            comboVideoFormat.SelectedIndexChanged += (_, __) =>
+            {
+                if (_refreshingEncoderControls)
+                    return;
+
+                if (!_applyingEncodeDropdownSettings)
+                    PersistEncoderSelection();
+                UpdateEncodePreview();
+            };
+            comboEncoderMode.SelectedIndexChanged += (_, __) =>
+            {
+                if (_refreshingEncoderControls)
+                    return;
+
+                if (!_applyingEncodeDropdownSettings)
+                    PersistEncoderSelection();
+                UpdateEncodePreview();
+            };
             txtTargetSize.TextChanged += (_, __) => UpdateEncodePreview();
             chkAutoTargetSize.CheckedChanged += (_, __) => UpdateEncodePreview();
+            if (nudAutoQuality != null)
+            {
+                nudAutoQuality.ValueChanged += (_, __) =>
+                {
+                    if (!_applyingEncodeDropdownSettings)
+                        PersistEncoderSelection();
+                    UpdateEncodePreview();
+                };
+            }
 
             if (comboAudioChannels != null)
                 comboAudioChannels.SelectedIndexChanged += (_, __) => UpdateEncodePreview();
@@ -1103,14 +1126,25 @@ namespace MediaFlux
             try
             {
                 SelectComboText(comboCompressionProfile, _config.LastCompressionProfile);
-                if (comboNvencPreset != null)
-                    SelectComboText(comboNvencPreset, _config.LastEncodingSpeedPreset);
+                SelectEncoderById(_config.LastEncoderId);
+                RefreshVideoFormatItems(
+                    VideoEncoderCompatibility.ParseCodecFamily(
+                        _config.LastVideoCodec));
+                RefreshEncoderPresetItems(_config.LastEncoderPreset);
+                if (nudAutoQuality != null)
+                {
+                    nudAutoQuality.Value = Math.Clamp(
+                        _config.LastQualityValue,
+                        (int)nudAutoQuality.Minimum,
+                        (int)nudAutoQuality.Maximum);
+                }
             }
             finally
             {
                 _applyingEncodeDropdownSettings = false;
             }
 
+            UpdateEncoderUiState();
             UpdateEncodePreview();
         }
 
@@ -1133,8 +1167,29 @@ namespace MediaFlux
         {
             if (comboCompressionProfile != null)
                 _config.LastCompressionProfile = comboCompressionProfile.Text;
-            if (comboNvencPreset != null)
-                _config.LastEncodingSpeedPreset = comboNvencPreset.Text;
+            PersistEncoderSelection(saveImmediately: false);
+        }
+
+        private void PersistEncoderSelection(bool saveImmediately = true)
+        {
+            if (_applyingEncodeDropdownSettings ||
+                _refreshingEncoderControls ||
+                comboEncoderMode.SelectedItem == null ||
+                comboVideoFormat.SelectedItem == null)
+            {
+                return;
+            }
+
+            _config.LastEncoderId = GetSelectedEncoderId();
+            _config.LastVideoCodec = GetSelectedVideoCodecFamily().ToString();
+            _config.LastEncoderPreset = GetSelectedEncoderPreset();
+            _config.LastEncodingSpeedPreset =
+                comboEncoderPreset?.Text ?? _config.LastEncodingSpeedPreset;
+            if (nudAutoQuality != null)
+                _config.LastQualityValue = (int)nudAutoQuality.Value;
+
+            if (saveImmediately)
+                _config.Save(_configPath);
         }
 
         private void SetPreviewValue(string key, string value)
@@ -1197,12 +1252,13 @@ namespace MediaFlux
                 ? Math.Max(0, (int)Math.Round(bitrateKbps - audioBitrate))
                 : 0;
 
-            var encoderText = comboEncoderMode?.Text ?? string.Empty;
-            var formatText = comboVideoFormat?.Text ?? string.Empty;
-            string codec = ResolveVideoCodec(encoderText, formatText);
-            if (chkTenBit?.Checked == true && (codec.Contains("265", StringComparison.OrdinalIgnoreCase) ||
-                                               codec.Contains("hevc", StringComparison.OrdinalIgnoreCase) ||
-                                               codec.Contains("av1", StringComparison.OrdinalIgnoreCase)))
+            ValidatedEncoderSettings encoderSettings =
+                GetValidatedEncoderSettingsFromUi(
+                    includeConcurrentSessions: false);
+            string codec =
+                encoderSettings.Resolved.Selection.FfmpegCodec;
+            string formatText = comboVideoFormat?.Text ?? string.Empty;
+            if (encoderSettings.TenBit)
             {
                 codec += " 10-bit";
             }
@@ -1523,19 +1579,23 @@ namespace MediaFlux
             }
             else if (!string.IsNullOrWhiteSpace(meta.CustomCompressionProfile))
             {
-                var (targetCodec, _) = GetSelectedCodecInfo();
+                ValidatedEncoderSettings encoderSettings =
+                    GetValidatedEncoderSettingsFromUi(
+                        includeConcurrentSessions: false);
+                VideoEncoderSelection targetEncoder =
+                    encoderSettings.Resolved.Selection;
                 double estMb = meta.IsDvdEncode
                     ? EstimateDvdEncodeTargetMb(
                         meta,
                         meta.CustomCompressionProfile,
-                        targetCodec,
-                        GetDefaultQualityForSelection(),
+                        targetEncoder,
+                        encoderSettings.QualityValue,
                         GetEstimateTargetHeight())
                     : _sizeEstimateService.EstimateAutoTargetMbSmart(
                         path,
                         meta.CustomCompressionProfile,
-                        targetCodec,
-                        GetDefaultQualityForSelection(),
+                        targetEncoder,
+                        encoderSettings.QualityValue,
                         GetEstimateTargetHeight());
                 if (estMb > 0)
                 {
@@ -1576,6 +1636,295 @@ namespace MediaFlux
             }
 
             return false;
+        }
+
+        private void InitializeEncoderSelectionControls()
+        {
+            string[] encoderOrder =
+            [
+                VideoEncoderIds.Nvenc,
+                VideoEncoderIds.Qsv,
+                VideoEncoderIds.Libx264,
+                VideoEncoderIds.Libx265,
+                VideoEncoderIds.SvtAv1
+            ];
+
+            IReadOnlyDictionary<string, EncoderCapabilities> capabilities =
+                EncoderRegistry.Default.GetCapabilities().ToDictionary(
+                    item => item.Id,
+                    StringComparer.OrdinalIgnoreCase);
+            FfmpegEncoderCapabilities ffmpegCapabilities =
+                GetFfmpegEncoderCapabilities();
+            bool availabilityKnown =
+                ffmpegCapabilities.InspectionSucceeded;
+            HashSet<string> availableEncoderIds =
+                EncoderAvailability.GetAvailableEncoders(
+                        EncoderRegistry.Default,
+                        ffmpegCapabilities)
+                    .Select(item => item.Id)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            List<EncoderCapabilities> selectable = encoderOrder
+                .Where(capabilities.ContainsKey)
+                .Select(encoderId => capabilities[encoderId])
+                .Where(item => availableEncoderIds.Contains(item.Id))
+                .ToList();
+
+            string requestedEncoderId = _config.LastEncoderId;
+            VideoCodecFamily requestedCodec =
+                VideoEncoderCompatibility.ParseCodecFamily(
+                    _config.LastVideoCodec);
+            string? warning = null;
+            if (availabilityKnown && selectable.Count == 0)
+            {
+                selectable = encoderOrder
+                    .Where(capabilities.ContainsKey)
+                    .Select(encoderId => capabilities[encoderId])
+                    .ToList();
+                warning =
+                    "The configured FFmpeg build does not provide any of " +
+                    "MediaFlux's supported video encoders.";
+            }
+
+            bool wasRefreshing = _refreshingEncoderControls;
+            _refreshingEncoderControls = true;
+            try
+            {
+                comboEncoderMode.Items.Clear();
+                foreach (EncoderCapabilities item in selectable)
+                    comboEncoderMode.Items.Add(item);
+
+                SelectEncoderById(requestedEncoderId);
+                if (comboEncoderMode.SelectedIndex < 0 &&
+                    comboEncoderMode.Items.Count > 0)
+                {
+                    comboEncoderMode.SelectedIndex = 0;
+                }
+            }
+            finally
+            {
+                _refreshingEncoderControls = wasRefreshing;
+            }
+
+            RefreshVideoFormatItems(
+                requestedCodec);
+
+            if (availabilityKnown &&
+                !selectable.Any(item => item.Id.Equals(
+                    requestedEncoderId,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                string requestedName =
+                    capabilities.TryGetValue(
+                        requestedEncoderId,
+                        out var requestedCapabilities)
+                        ? requestedCapabilities.DisplayName
+                        : requestedEncoderId;
+                warning =
+                    $"{requestedName} is not available in the configured " +
+                    $"FFmpeg build. MediaFlux selected " +
+                    $"{GetSelectedEncoderCapabilities().DisplayName} instead.";
+            }
+            else if (availabilityKnown &&
+                     !IsEncoderCodecAvailable(
+                         GetSelectedEncoderId(),
+                         requestedCodec))
+            {
+                warning =
+                    $"The saved {requestedCodec} format is not available for " +
+                    $"{GetSelectedEncoderCapabilities().DisplayName} in the " +
+                    $"configured FFmpeg build. MediaFlux selected " +
+                    $"{GetSelectedVideoCodecFamily()} instead.";
+            }
+
+            _config.LastEncoderId = GetSelectedEncoderId();
+            _config.LastVideoCodec =
+                GetSelectedVideoCodecFamily().ToString();
+            SetEncoderCapabilityWarning(warning);
+        }
+
+        private void SelectEncoderById(string? encoderId)
+        {
+            foreach (EncoderCapabilities item in comboEncoderMode.Items)
+            {
+                if (item.Id.Equals(
+                        encoderId,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    comboEncoderMode.SelectedItem = item;
+                    return;
+                }
+            }
+        }
+
+        private EncoderCapabilities GetSelectedEncoderCapabilities()
+        {
+            if (comboEncoderMode.SelectedItem is EncoderCapabilities selected)
+                return selected;
+
+            return EncoderRegistry.Default.GetCapabilities().First(
+                item => item.Id.Equals(
+                    VideoEncoderIds.Nvenc,
+                    StringComparison.OrdinalIgnoreCase));
+        }
+
+        private string GetSelectedEncoderId() =>
+            GetSelectedEncoderCapabilities().Id;
+
+        private VideoCodecFamily GetSelectedVideoCodecFamily()
+        {
+            if (comboVideoFormat.SelectedItem is VideoCodecDisplayOption selected)
+                return selected.Value;
+
+            return VideoEncoderCompatibility.ParseCodecFamily(
+                comboVideoFormat.Text);
+        }
+
+        private static VideoCodecDisplayOption CreateCodecDisplayOption(
+            VideoCodecFamily codecFamily) =>
+            codecFamily switch
+            {
+                VideoCodecFamily.H264 =>
+                    new(codecFamily, "H.264 (x264)"),
+                VideoCodecFamily.Hevc =>
+                    new(codecFamily, "H.265 / HEVC (x265)"),
+                VideoCodecFamily.Av1 =>
+                    new(codecFamily, "AV1"),
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(codecFamily))
+            };
+
+        private void RefreshVideoFormatItems(
+            VideoCodecFamily? preferredCodec = null)
+        {
+            EncoderCapabilities capabilities =
+                GetSelectedEncoderCapabilities();
+            IReadOnlyList<VideoCodecFamily> selectableCodecs =
+                EncoderAvailability.GetAvailableCodecs(
+                    EncoderRegistry.Default,
+                    capabilities,
+                    GetFfmpegEncoderCapabilities());
+            if (selectableCodecs.Count == 0)
+                selectableCodecs = capabilities.SupportedCodecs;
+
+            VideoCodecFamily current = preferredCodec ??
+                (comboVideoFormat.SelectedItem is VideoCodecDisplayOption selected
+                    ? selected.Value
+                    : selectableCodecs[0]);
+            VideoCodecFamily chosen = selectableCodecs.Contains(current)
+                ? current
+                : selectableCodecs[0];
+
+            bool wasRefreshing = _refreshingEncoderControls;
+            _refreshingEncoderControls = true;
+            try
+            {
+                comboVideoFormat.Items.Clear();
+                foreach (VideoCodecFamily codecFamily in
+                         selectableCodecs)
+                {
+                    comboVideoFormat.Items.Add(
+                        CreateCodecDisplayOption(codecFamily));
+                }
+
+                comboVideoFormat.SelectedItem =
+                    comboVideoFormat.Items
+                        .OfType<VideoCodecDisplayOption>()
+                        .First(item => item.Value == chosen);
+            }
+            finally
+            {
+                _refreshingEncoderControls = wasRefreshing;
+            }
+        }
+
+        private void RefreshEncoderPresetItems(string? preferredPreset = null)
+        {
+            if (comboEncoderPreset == null)
+                return;
+
+            EncoderCapabilities capabilities =
+                GetSelectedEncoderCapabilities();
+            VideoCodecFamily codecFamily = GetSelectedVideoCodecFamily();
+            ResolvedVideoEncoder resolved =
+                EncoderRegistry.Default.Resolve(capabilities.Id, codecFamily);
+            string normalizedPreset =
+                resolved.Provider.NormalizePreset(preferredPreset);
+
+            bool wasRefreshing = _refreshingEncoderControls;
+            _refreshingEncoderControls = true;
+            try
+            {
+                comboEncoderPreset.Items.Clear();
+                foreach (EncoderPresetOption preset in capabilities.Presets)
+                    comboEncoderPreset.Items.Add(preset);
+
+                comboEncoderPreset.SelectedItem =
+                    comboEncoderPreset.Items
+                        .OfType<EncoderPresetOption>()
+                        .First(item => item.Value.Equals(
+                            normalizedPreset,
+                            StringComparison.OrdinalIgnoreCase));
+            }
+            finally
+            {
+                _refreshingEncoderControls = wasRefreshing;
+            }
+        }
+
+        private void HandleEncoderSelectionChanged()
+        {
+            if (_refreshingEncoderControls)
+                return;
+
+            VideoCodecFamily preferred =
+                VideoEncoderCompatibility.ParseCodecFamily(
+                    _config.LastVideoCodec);
+            RefreshVideoFormatItems(preferred);
+            RefreshEncoderPresetItems(
+                GetSelectedEncoderId().Equals(
+                    _config.LastEncoderId,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? _config.LastEncoderPreset
+                    : null);
+            UpdateEncoderUiState();
+            RefreshSelectedEncoderCapabilityWarning();
+            PersistEncoderSelection();
+            UpdateEncodePreview();
+        }
+
+        private void InitializeEncoderInformationLabel()
+        {
+            if (pnlEncodingProfileCard == null)
+                return;
+
+            lblEncoderInfo = new Label
+            {
+                Name = "lblEncoderInfo",
+                AutoSize = true,
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(0, 5, 0, 0),
+                Text = "libx265 uses CPU software encoding. It generally " +
+                       "produces better compression efficiency, but encodes " +
+                       "significantly slower than NVENC.",
+                Visible = false
+            };
+            pnlEncodingProfileCard.RowCount = 3;
+            pnlEncodingProfileCard.RowStyles.Add(
+                new RowStyle(SizeType.AutoSize));
+            pnlEncodingProfileCard.Controls.Add(lblEncoderInfo, 0, 2);
+
+            void UpdateInformationWrapWidth()
+            {
+                int width = Math.Max(
+                    200,
+                    pnlEncodingProfileCard.ClientSize.Width -
+                    pnlEncodingProfileCard.Padding.Horizontal);
+                lblEncoderInfo.MaximumSize = new Size(width, 0);
+            }
+
+            pnlEncodingProfileCard.SizeChanged +=
+                (_, __) => UpdateInformationWrapWidth();
+            UpdateInformationWrapWidth();
         }
 
         private void CreateAutoQualityControl()
@@ -1628,7 +1977,7 @@ namespace MediaFlux
 
             // --- Create controls ---
 
-            // NVENC preset label + combo (placed under Quality / File Size)
+            // Encoder-aware preset label + combo (placed under Quality / File Size)
             lblEncodingSpeed = new Label
             {
                 Text = "Encoding Speed:",
@@ -1637,22 +1986,13 @@ namespace MediaFlux
                 Anchor = AnchorStyles.Right
             };
 
-            comboNvencPreset = new ComboBox
+            comboEncoderPreset = new ComboBox
             {
-                Name = "comboNvencPreset",
+                Name = "comboEncoderPreset",
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Margin = new Padding(4, 2, 4, 2),
                 Dock = DockStyle.Fill
             };
-            comboNvencPreset.Items.AddRange(new object[]
-            {
-                "Fastest (Lowest Quality)",   // p1
-                "Fast (Lower Quality)",       // p2
-                "Balanced (Recommended)",     // p5
-                "High Quality (Slower)",      // p6
-                "Max Quality (Slowest)"       // p7
-            });
-            comboNvencPreset.SelectedItem = "Balanced (Recommended)";
 
             if (tlEncodingProfileFields != null)
             {
@@ -1660,11 +2000,12 @@ namespace MediaFlux
                 lblEncodingSpeed.Text = "Encoding speed";
                 lblEncodingSpeed.Anchor = AnchorStyles.Left;
                 lblEncodingSpeed.Margin = new Padding(0, 5, 14, 3);
-                comboNvencPreset.Margin = new Padding(0, 2, 0, 3);
+                comboEncoderPreset.Margin = new Padding(0, 2, 0, 3);
                 tlEncodingProfileFields.Controls.Add(lblEncodingSpeed, 0, encodingSpeedRow);
-                tlEncodingProfileFields.Controls.Add(comboNvencPreset, 1, encodingSpeedRow);
+                tlEncodingProfileFields.Controls.Add(comboEncoderPreset, 1, encodingSpeedRow);
                 UpdateEncodingProfileResponsiveLayout();
             }
+            InitializeEncoderInformationLabel();
 
             // 10-bit toggle
             chkTenBit = new CheckBox
@@ -1761,9 +2102,21 @@ namespace MediaFlux
             tlOptions.SizeChanged += (_, __) => UpdateWatchStatusWrapWidth();
             UpdateWatchStatusWrapWidth();
 
-            // Tie preset enablement to GPU/CPU selection
-            comboEncoderMode.SelectedIndexChanged += (_, __) => UpdateNvencUiState();
-            UpdateNvencUiState();
+            comboEncoderMode.SelectedIndexChanged +=
+                (_, __) => HandleEncoderSelectionChanged();
+            comboVideoFormat.SelectedIndexChanged += (_, __) =>
+            {
+                if (_refreshingEncoderControls)
+                    return;
+
+                string currentPreset = GetSelectedEncoderPreset();
+                RefreshEncoderPresetItems(currentPreset);
+                UpdateEncoderUiState();
+                RefreshSelectedEncoderCapabilityWarning();
+                PersistEncoderSelection();
+            };
+            RefreshEncoderPresetItems(_config.LastEncoderPreset);
+            UpdateEncoderUiState();
         }
 
         private static Label CreateCodecCountLabel()
@@ -1810,10 +2163,10 @@ namespace MediaFlux
                         tlEncodingProfileFields.SetCellPosition(nudAutoQuality, new TableLayoutPanelCellPosition(1, 5));
                     if (lblEncodingSpeed != null)
                         tlEncodingProfileFields.SetCellPosition(lblEncodingSpeed, new TableLayoutPanelCellPosition(0, 6));
-                    if (comboNvencPreset != null)
+                    if (comboEncoderPreset != null)
                     {
-                        tlEncodingProfileFields.SetColumnSpan(comboNvencPreset, 1);
-                        tlEncodingProfileFields.SetCellPosition(comboNvencPreset, new TableLayoutPanelCellPosition(1, 6));
+                        tlEncodingProfileFields.SetColumnSpan(comboEncoderPreset, 1);
+                        tlEncodingProfileFields.SetCellPosition(comboEncoderPreset, new TableLayoutPanelCellPosition(1, 6));
                     }
 
                     tlEncodingProfileFields.SetCellPosition(lblTargetSize, new TableLayoutPanelCellPosition(0, 2));
@@ -1851,10 +2204,10 @@ namespace MediaFlux
                         tlEncodingProfileFields.SetCellPosition(nudAutoQuality, new TableLayoutPanelCellPosition(3, 2));
                     if (lblEncodingSpeed != null)
                         tlEncodingProfileFields.SetCellPosition(lblEncodingSpeed, new TableLayoutPanelCellPosition(0, 3));
-                    if (comboNvencPreset != null)
+                    if (comboEncoderPreset != null)
                     {
-                        tlEncodingProfileFields.SetCellPosition(comboNvencPreset, new TableLayoutPanelCellPosition(1, 3));
-                        tlEncodingProfileFields.SetColumnSpan(comboNvencPreset, 1);
+                        tlEncodingProfileFields.SetCellPosition(comboEncoderPreset, new TableLayoutPanelCellPosition(1, 3));
+                        tlEncodingProfileFields.SetColumnSpan(comboEncoderPreset, 1);
                     }
 
                     lblVideoFormat.Margin = new Padding(18, 5, 14, 3);
@@ -1937,33 +2290,38 @@ namespace MediaFlux
             }
         }
 
-        private void UpdateNvencUiState()
+        private void UpdateEncoderUiState()
         {
-            bool isHardware = IsHardwareEncoderSelected();
-            bool isNvenc = IsNvencSelected();
+            EncoderCapabilities capabilities =
+                GetSelectedEncoderCapabilities();
+            VideoCodecFamily codecFamily =
+                GetSelectedVideoCodecFamily();
 
-            // NVENC preset combo
-            var presetCombo = grpOptions.Controls
-                .Find("comboNvencPreset", true)
-                .OfType<ComboBox>()
-                .FirstOrDefault();
+            if (comboEncoderPreset != null)
+                comboEncoderPreset.Enabled = capabilities.Presets.Count > 1;
 
-            if (presetCombo != null)
+            if (lblAutoQuality != null)
             {
-                presetCombo.Enabled = isNvenc;
+                string qualityName =
+                    capabilities.QualityRange?.Name ?? "Quality";
+                lblAutoQuality.Text = $"Auto quality ({qualityName})";
             }
 
-            // Ten-bit checkbox
-            var tenBitCheck = grpOptions.Controls
-                .Find("chkTenBit", true)
-                .OfType<CheckBox>()
-                .FirstOrDefault();
-            if (tenBitCheck != null)
+            if (chkTenBit != null)
             {
-                tenBitCheck.Enabled = isHardware;
-                if (!isHardware) tenBitCheck.Checked = false;
+                bool supportsTenBit =
+                    capabilities.SupportsTenBit &&
+                    codecFamily != VideoCodecFamily.H264;
+                chkTenBit.Enabled = supportsTenBit;
+                if (!supportsTenBit)
+                    chkTenBit.Checked = false;
             }
 
+            if (lblEncoderInfo != null)
+                lblEncoderInfo.Visible =
+                    capabilities.Id.Equals(
+                        VideoEncoderIds.Libx265,
+                        StringComparison.OrdinalIgnoreCase);
         }
 
         private int GetDefaultQualityForSelection()
@@ -1992,39 +2350,41 @@ namespace MediaFlux
         // Return selected ffmpeg video encoder name + isHardware flag
         private (string codec, bool isHardware) GetSelectedCodecInfo()
         {
-            // Replace with your actual UI selectors.
-            // Examples:
-            // var fmt = cmbVideoFormat.SelectedItem?.ToString() ?? "H.264";
-            // var enc = cmbEncoder.SelectedItem?.ToString() ?? "CPU";
-            string fmt = GetSelectedFormatText();   // implement by reading your combo
-            string enc = GetSelectedEncoderText();  // implement by reading your combo
+            VideoEncoderSelection selection =
+                GetSelectedVideoEncoderSelection();
+            EncoderCapabilities capabilities =
+                GetSelectedEncoderCapabilities();
 
-            string codec = ResolveVideoCodec(enc, fmt);
-            bool isHardware = IsHardwareEncoderSelected(enc);
-
-            return (codec, isHardware);
+            return (
+                selection.FfmpegCodec,
+                capabilities.IsHardware);
         }
 
-        private string GetSelectedFormatText() => comboVideoFormat?.Text ?? "H.264";
-        private string GetSelectedEncoderText() => comboEncoderMode?.Text ?? "CPU";
+        private VideoEncoderSelection GetSelectedVideoEncoderSelection() =>
+            EncoderRegistry.Default.Resolve(
+                GetSelectedEncoderId(),
+                GetSelectedVideoCodecFamily()).Selection;
 
-        private bool IsHardwareEncoderSelected(string? encoderText = null)
+        private ValidatedEncoderSettings GetValidatedEncoderSettingsFromUi(
+            bool includeConcurrentSessions)
         {
-            encoderText ??= GetSelectedEncoderText();
-            return encoderText.StartsWith("GPU", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private bool IsNvencSelected(string? encoderText = null)
-        {
-            encoderText ??= GetSelectedEncoderText();
-            return encoderText.IndexOf("nvenc", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        private bool IsQsvSelected(string? encoderText = null)
-        {
-            encoderText ??= GetSelectedEncoderText();
-            return encoderText.IndexOf("qsv", StringComparison.OrdinalIgnoreCase) >= 0
-                   || encoderText.IndexOf("intel", StringComparison.OrdinalIgnoreCase) >= 0;
+            ResolvedVideoEncoder resolved = EncoderRegistry.Default.Resolve(
+                GetSelectedEncoderId(),
+                GetSelectedVideoCodecFamily());
+            return EncodingRequestValidator.ValidateAndNormalize(
+                EncoderRegistry.Default,
+                resolved.Selection,
+                resolved.Provider.Capabilities.IsHardware,
+                targetMb: null,
+                GetSelectedEncoderPreset(),
+                GetDefaultQualityForSelection(),
+                GetTenBitRequested(),
+                GetSelectedAudioChannels(),
+                includeConcurrentSessions &&
+                resolved.Provider.Capabilities.Id.Equals(
+                    VideoEncoderIds.Nvenc,
+                    StringComparison.OrdinalIgnoreCase) &&
+                GetMaxConcurrentEncodes() > 1);
         }
 
         private double ProbeDurationSeconds(string file)
@@ -3149,35 +3509,24 @@ namespace MediaFlux
             RefreshEncodeGrid();
         }
 
-        // Map NVENC preset combo → "p1" .. "p7"
-        private string GetSelectedNvencPreset()
+        private string GetSelectedEncoderPreset()
         {
-            // Default
-            string preset = "p5";
+            if (comboEncoderPreset?.SelectedItem is EncoderPresetOption selected)
+                return selected.Value;
 
-            var txt = comboNvencPreset?.SelectedItem?.ToString()
-                      ?? comboNvencPreset?.Text;
-
-            if (string.IsNullOrWhiteSpace(txt))
-                return preset;
-
-            txt = txt.Trim();
-
-            if (txt.StartsWith("p1", StringComparison.OrdinalIgnoreCase)) return "p1";
-            if (txt.StartsWith("p2", StringComparison.OrdinalIgnoreCase)) return "p2";
-            if (txt.StartsWith("p3", StringComparison.OrdinalIgnoreCase)) return "p3";
-            if (txt.StartsWith("p4", StringComparison.OrdinalIgnoreCase)) return "p4";
-            if (txt.StartsWith("p5", StringComparison.OrdinalIgnoreCase)) return "p5";
-            if (txt.StartsWith("p6", StringComparison.OrdinalIgnoreCase)) return "p6";
-            if (txt.StartsWith("p7", StringComparison.OrdinalIgnoreCase)) return "p7";
-
-            return preset;
+            EncoderCapabilities capabilities =
+                GetSelectedEncoderCapabilities();
+            return EncoderRegistry.Default.Resolve(
+                    capabilities.Id,
+                    GetSelectedVideoCodecFamily())
+                .Provider.NormalizePreset(comboEncoderPreset?.Text);
         }
         private int GetMaxConcurrentEncodes()
         {
             // Only ever use >1 when GPU NVENC is active.
-            string encoderText = comboEncoderMode.SelectedItem?.ToString() ?? string.Empty;
-            bool useNvenc = IsNvencSelected(encoderText);
+            bool useNvenc = GetSelectedEncoderId().Equals(
+                VideoEncoderIds.Nvenc,
+                StringComparison.OrdinalIgnoreCase);
 
             if (!useNvenc)
                 return 1;
@@ -3436,6 +3785,9 @@ namespace MediaFlux
                 _config.Save(_configPath);
                 RecreateMediaServices();
                 RefreshFfmpegToolAvailability();
+                InitializeEncoderSelectionControls();
+                RefreshEncoderPresetItems(_config.LastEncoderPreset);
+                UpdateEncoderUiState();
                 ApplyDuplicateConfigurationToUi();
                 UpdateDuplicateReferenceFolderUi();
                 RescoreDuplicateKeeperRecommendations();
@@ -3917,33 +4269,6 @@ namespace MediaFlux
             return true;
         }
 
-        // Map UI choice to ffmpeg encoder
-        private string ResolveVideoCodec(string encoderText, string formatChoice)
-        {
-            bool useNvenc = IsNvencSelected(encoderText);
-            bool useQsv = IsQsvSelected(encoderText);
-
-            if (useNvenc)
-            {
-                if (formatChoice.StartsWith("H.264")) return "h264_nvenc";
-                if (formatChoice.StartsWith("H.265") || formatChoice.StartsWith("H.265 / HEVC")) return "hevc_nvenc";
-                if (formatChoice.StartsWith("AV1")) return "av1_nvenc";
-            }
-            if (useQsv)
-            {
-                if (formatChoice.StartsWith("H.264")) return "h264_qsv";
-                if (formatChoice.StartsWith("H.265") || formatChoice.StartsWith("H.265 / HEVC")) return "hevc_qsv";
-                if (formatChoice.StartsWith("AV1")) return "av1_qsv";
-            }
-            if (formatChoice.StartsWith("H.264")) return "libx264";
-            if (formatChoice.StartsWith("H.265") || formatChoice.StartsWith("H.265 / HEVC")) return "libx265";
-            if (formatChoice.StartsWith("AV1")) return "libsvtav1";
-
-            return useNvenc ? "hevc_nvenc"
-                 : useQsv ? "hevc_qsv"
-                 : "libx265"; // safe fallback
-        }
-
         private string BuildOutputSuffix(string formatChoice)
         {
             var parts = new List<string>();
@@ -4010,11 +4335,47 @@ namespace MediaFlux
                 if (!string.IsNullOrWhiteSpace(s.CompressionProfile))
                     comboCompressionProfile.SelectedItem = s.CompressionProfile;
 
-                if (!string.IsNullOrWhiteSpace(s.EncoderMode))
-                    comboEncoderMode.SelectedItem = s.EncoderMode;
+                string codecValue = string.IsNullOrWhiteSpace(s.VideoCodec)
+                    ? s.VideoFormat
+                    : s.VideoCodec;
+                VideoCodecFamily codecFamily =
+                    VideoEncoderCompatibility.ParseCodecFamily(
+                        codecValue,
+                        GetSelectedVideoCodecFamily());
+                string encoderValue = string.IsNullOrWhiteSpace(s.EncoderId)
+                    ? s.EncoderMode
+                    : s.EncoderId;
+                if (!string.IsNullOrWhiteSpace(encoderValue))
+                {
+                    string encoderId =
+                        VideoEncoderCompatibility.ResolveEncoderId(
+                            encoderValue,
+                            codecFamily);
+                    SelectEncoderById(encoderId);
+                    RefreshVideoFormatItems(codecFamily);
+                    RefreshEncoderPresetItems(s.EncoderPreset);
+                }
+
+                if (nudAutoQuality != null && s.QualityValue.HasValue)
+                {
+                    nudAutoQuality.Value = Math.Clamp(
+                        s.QualityValue.Value,
+                        (int)nudAutoQuality.Minimum,
+                        (int)nudAutoQuality.Maximum);
+                }
+                if (comboAudioChannels != null &&
+                    !string.IsNullOrWhiteSpace(s.AudioChannels))
+                {
+                    SelectComboText(comboAudioChannels, s.AudioChannels);
+                }
+                if (chkTenBit != null && s.TenBit.HasValue)
+                    chkTenBit.Checked = s.TenBit.Value;
 
                 if (!string.IsNullOrWhiteSpace(s.OutputFolder))
                     cmbEncodeOutput.Text = s.OutputFolder;
+
+                UpdateEncoderUiState();
+                PersistEncoderSelection();
             }
             catch
             {

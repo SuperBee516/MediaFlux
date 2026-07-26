@@ -1,16 +1,20 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using MediaFlux.Models;
+using MediaFlux.Services.Encoders;
 
 namespace MediaFlux.Services
 {
     public sealed class SampleComparisonSettings
     {
+        public VideoEncoderSelection? Encoder { get; init; }
         public string VideoCodec { get; init; } = "libx265";
         public bool UseGpu { get; init; }
         public double? ProjectedTargetMb { get; init; }
         public EncodingService.ScaleMode ScaleMode { get; init; }
-        public string NvencPreset { get; init; } = string.Empty;
+        public string EncoderPreset { get; init; } = string.Empty;
+        public int QualityValue { get; init; } = 24;
         public bool TenBit { get; init; }
         public int? AudioChannels { get; init; }
         public int ClipSeconds { get; init; } = 25;
@@ -168,19 +172,30 @@ namespace MediaFlux.Services
                         _configuredFfprobePath);
 
                     encodeStopwatch.Start();
+                    ResolvedVideoEncoder selectedEncoder =
+                        settings.Encoder == null
+                            ? EncoderRegistry.Default.ResolveLegacyCodec(
+                                settings.VideoCodec)
+                            : EncoderRegistry.Default.Resolve(
+                                settings.Encoder.EncoderId,
+                                settings.Encoder.CodecFamily);
+                    var encodeRequest = new EncodingRequest
+                    {
+                        Input = EncodingInputSource.FromFile(originalPath),
+                        OutputFolder = root,
+                        Suffix = $"_{stem}_encoded",
+                        Encoder = selectedEncoder.Selection,
+                        UseGpu = settings.UseGpu,
+                        TargetMb = sampleTargetMb,
+                        ScaleMode = settings.ScaleMode,
+                        EncoderPreset = settings.EncoderPreset,
+                        QualityValue = settings.QualityValue,
+                        TenBit = settings.TenBit,
+                        AudioChannels = settings.AudioChannels,
+                        CancellationToken = cancellationToken
+                    };
                     var encoded = await encoder.EncodeWithResultAsync(
-                        originalPath,
-                        root,
-                        $"_{stem}_encoded",
-                        settings.UseGpu,
-                        sampleTargetMb,
-                        settings.VideoCodec,
-                        settings.ScaleMode,
-                        settings.NvencPreset,
-                        settings.TenBit,
-                        settings.AudioChannels,
-                        progressCallback: null,
-                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                        encodeRequest).ConfigureAwait(false);
                     encodeStopwatch.Stop();
 
                     string comparisonPath = Path.Combine(root, $"{stem}_comparison.mp4");

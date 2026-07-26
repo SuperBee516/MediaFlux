@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaFlux.Models;
+using MediaFlux.Services.Encoders;
 using static MediaFlux.Services.EncodingService;
 
 namespace MediaFlux
@@ -38,6 +39,8 @@ namespace MediaFlux
             }
 
             if (!EnsureFfmpegToolsAvailable())
+                return;
+            if (!EnsureSelectedVideoEncoderAvailable())
                 return;
 
             if (requestedRows.Any(row => row.Tag is not RowMeta { IsDvdEncode: true }) &&
@@ -349,9 +352,49 @@ namespace MediaFlux
             _activeJobLogSb = jobLog;
             var jobStartUtc = DateTime.UtcNow;
 
-            // Encoder mode (GPU/CPU)
-            string encoderText = UiGet(() => comboEncoderMode.SelectedItem?.ToString() ?? string.Empty, string.Empty);
-            bool useGpu = encoderText.StartsWith("GPU", StringComparison.OrdinalIgnoreCase);
+            // Capture encoder + codec as one immutable selection for this job.
+            // This prevents a UI change between reads from producing an invalid
+            // cross-backend combination.
+            ResolvedVideoEncoder fallbackEncoder =
+                EncoderRegistry.Default.Resolve(
+                    VideoEncoderIds.Nvenc,
+                    VideoCodecFamily.Hevc);
+            ValidatedEncoderSettings fallbackSettings =
+                EncodingRequestValidator.ValidateAndNormalize(
+                    EncoderRegistry.Default,
+                    fallbackEncoder.Selection,
+                    useGpu: true,
+                    targetMb: null,
+                    preset: "p5",
+                    qualityValue: 24,
+                    tenBit: false,
+                    audioChannels: null,
+                    concurrentEncoderSessions: false);
+            var encoderSnapshot = UiGet(
+                () =>
+                {
+                    EncoderCapabilities capabilities =
+                        GetSelectedEncoderCapabilities();
+                    int? audioChannels =
+                        GetSelectedAudioChannels();
+                    ValidatedEncoderSettings validated =
+                        GetValidatedEncoderSettingsFromUi(
+                            includeConcurrentSessions: true);
+                    return (
+                        DisplayText: capabilities.DisplayName,
+                        FormatText: comboVideoFormat.Text,
+                        Validated: validated,
+                        AudioChannels: audioChannels);
+                },
+                (
+                    DisplayText: "GPU (NVENC)",
+                    FormatText: "H.265 / HEVC (x265)",
+                    Validated: fallbackSettings,
+                    AudioChannels: (int?)null));
+            string encoderText = encoderSnapshot.DisplayText;
+            string videoCodec =
+                encoderSnapshot.Validated.Resolved.Selection.FfmpegCodec;
+            bool useGpu = encoderSnapshot.Validated.UseGpu;
 
             // ==== TARGET SIZE (MB) ====
             double? targetMb = null;
@@ -365,8 +408,10 @@ namespace MediaFlux
                           ?? comboCompressionProfile.Text
                           ?? string.Empty,
                     string.Empty);
-            string estimateTargetCodec = UiGet(() => GetSelectedCodecInfo().codec, "libx265");
-            int estimateQuality = UiGet(GetDefaultQualityForSelection, 23);
+            VideoEncoderSelection estimateTargetEncoder =
+                encoderSnapshot.Validated.Resolved.Selection;
+            int estimateQuality =
+                encoderSnapshot.Validated.QualityValue;
             int? estimateTargetHeight = UiGet(GetEstimateTargetHeight, null);
 
             if (hasCustomTarget)
@@ -417,13 +462,13 @@ namespace MediaFlux
                         ? EstimateDvdEncodeTargetMb(
                             meta!,
                             profileText,
-                            estimateTargetCodec,
+                            estimateTargetEncoder,
                             estimateQuality,
                             estimateTargetHeight)
                         : _sizeEstimateService.EstimateAutoTargetMbSmart(
                             file,
                             profileText,
-                            estimateTargetCodec,
+                            estimateTargetEncoder,
                             estimateQuality,
                             estimateTargetHeight);
                     if (fallbackEstimate > 0)
@@ -448,19 +493,15 @@ namespace MediaFlux
             try
             {
                 // ==== CALL THE SERVICE ====
-                string formatChoice = UiGet(
-                    () => comboVideoFormat.SelectedItem?.ToString() ?? "H.265 / HEVC (x265)",
-                    "H.265 / HEVC (x265)");
-                string videoCodec = ResolveVideoCodec(encoderText, formatChoice);
+                string formatChoice = encoderSnapshot.FormatText;
                 var scaleMode = UiGet(() => GetSelectedScaleMode(), ScaleMode.None);
 
-                // Advanced options from UI
-                string nvencPreset = UiGet(() => GetSelectedNvencPreset(), string.Empty);
-                bool tenBit = UiGet(() => GetTenBitRequested(), false);
-                int? audioChannels = UiGet(() => GetSelectedAudioChannels(), null);
-                bool concurrentNvenc = UiGet(
-                    () => IsNvencSelected(encoderText) && GetMaxConcurrentEncodes() > 1,
-                    false);
+                string encoderPreset =
+                    encoderSnapshot.Validated.Preset;
+                bool tenBit = encoderSnapshot.Validated.TenBit;
+                int? audioChannels = encoderSnapshot.AudioChannels;
+                bool concurrentEncoderSessions =
+                    encoderSnapshot.Validated.ConcurrentEncoderSessions;
                 string outputFolder = isDvdEncode
                     ? Path.GetDirectoryName(dvdOptions!.OutputPath) ?? string.Empty
                     : UiGet(() => cmbEncodeOutput.Text, string.Empty);
@@ -498,22 +539,32 @@ namespace MediaFlux
                     HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
                 };
 
+                ResolvedVideoEncoder selectedEncoder =
+                    encoderSnapshot.Validated.Resolved;
+                var encodeRequest = new EncodingRequest
+                {
+                    Input = inputSource,
+                    OutputFolder = outputFolder,
+                    Suffix = suffix,
+                    Encoder = selectedEncoder.Selection,
+                    UseGpu = useGpu,
+                    TargetMb = targetMb,
+                    ScaleMode = scaleMode,
+                    EncoderPreset = encoderPreset,
+                    QualityValue =
+                        estimateQuality,
+                    TenBit = tenBit,
+                    AudioChannels = audioChannels,
+                    ProgressCallback = jobCallback,
+                    ConcurrentEncoderSessions =
+                        concurrentEncoderSessions,
+                    CancellationToken = cancellationToken,
+                    OutputPathCallback =
+                        path => attemptedOutputPath = path
+                };
+
                 var result = await _encodingService.EncodeWithResultAsync(
-                    inputSource,
-                    outputFolder,
-                    suffix,
-                    useGpu,
-                    targetMb,
-                    videoCodec,
-                    scaleMode,
-                    nvencPreset,
-                    tenBit,
-                    audioChannels,
-                    jobCallback,
-                    concurrentNvenc,
-                    cancellationToken: cancellationToken,
-                    outputPathCallback: path => attemptedOutputPath = path
-                );
+                    encodeRequest);
 
                 if (!result.Success)
                     throw new InvalidOperationException("Encoding returned failure.");

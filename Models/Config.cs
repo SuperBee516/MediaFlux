@@ -112,7 +112,12 @@ namespace MediaFlux.Models
 
         // Per-dropdown "last used" values.
         public string LastCompressionProfile { get; set; } = "Medium Quality (Default)";
+        // Legacy JSON field retained to migrate NVENC-only configuration files.
         public string LastEncodingSpeedPreset { get; set; } = "Balanced (Recommended)";
+        public string LastEncoderId { get; set; } = VideoEncoderIds.Nvenc;
+        public string LastVideoCodec { get; set; } = nameof(VideoCodecFamily.Hevc);
+        public string LastEncoderPreset { get; set; } = "p5";
+        public int LastQualityValue { get; set; } = 22;
 
         // Persist the main window's last usable size and position.
         public int MainWindowX { get; set; } = 0;
@@ -178,6 +183,38 @@ namespace MediaFlux.Models
             // Treat missing settings as enabled so existing installs pick up the new behavior.
             if (!json.Contains("\"RememberCheckboxStates\"", StringComparison.OrdinalIgnoreCase))
                 config.RememberCheckboxStates = true;
+
+            VideoCodecFamily codecFamily =
+                VideoEncoderCompatibility.ParseCodecFamily(config.LastVideoCodec);
+            config.LastVideoCodec = codecFamily.ToString();
+
+            string[] knownEncoderIds =
+            [
+                VideoEncoderIds.Nvenc,
+                VideoEncoderIds.Qsv,
+                VideoEncoderIds.Libx264,
+                VideoEncoderIds.Libx265,
+                VideoEncoderIds.SvtAv1
+            ];
+            if (!knownEncoderIds.Contains(
+                    config.LastEncoderId,
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                config.LastEncoderId = VideoEncoderIds.Nvenc;
+            }
+
+            if (!json.Contains("\"LastEncoderId\"", StringComparison.OrdinalIgnoreCase))
+                config.LastEncoderId = VideoEncoderIds.Nvenc;
+            if (!json.Contains("\"LastVideoCodec\"", StringComparison.OrdinalIgnoreCase))
+                config.LastVideoCodec = nameof(VideoCodecFamily.Hevc);
+            if (!json.Contains("\"LastEncoderPreset\"", StringComparison.OrdinalIgnoreCase))
+            {
+                config.LastEncoderPreset =
+                    VideoEncoderCompatibility.NormalizeLegacyNvencPreset(
+                        config.LastEncodingSpeedPreset);
+            }
+
+            config.LastQualityValue = Math.Clamp(config.LastQualityValue, 12, 35);
 
             return config;
         }

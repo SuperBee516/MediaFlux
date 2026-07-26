@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
@@ -77,7 +78,7 @@ namespace MediaFlux.Services
                 bool auto,
                 string profile,
                 double manualTargetMb,
-                string codec,
+                VideoEncoderSelection encoder,
                 int quality,
                 int? targetHeight,
                 bool isCustom)
@@ -87,7 +88,7 @@ namespace MediaFlux.Services
                 Auto = auto;
                 Profile = profile;
                 ManualTargetMb = manualTargetMb;
-                Codec = codec;
+                Encoder = encoder;
                 Quality = quality;
                 TargetHeight = targetHeight;
                 IsCustom = isCustom;
@@ -98,7 +99,7 @@ namespace MediaFlux.Services
             public bool Auto { get; }
             public string Profile { get; }
             public double ManualTargetMb { get; }
-            public string Codec { get; }
+            public VideoEncoderSelection Encoder { get; }
             public int Quality { get; }
             public int? TargetHeight { get; }
             public bool IsCustom { get; }
@@ -115,7 +116,7 @@ namespace MediaFlux.Services
             bool auto,
             string profile,
             double manualTargetMb,
-            string targetCodec,
+            VideoEncoderSelection encoder,
             int quality,
             int? targetHeight,
             bool isCustom)
@@ -129,7 +130,7 @@ namespace MediaFlux.Services
                 auto,
                 profile,
                 manualTargetMb,
-                codec: targetCodec,
+                encoder,
                 quality,
                 targetHeight,
                 isCustom));
@@ -271,7 +272,7 @@ namespace MediaFlux.Services
                         info.BitrateKbps ?? 0,
                         codec,
                         item.Profile,
-                        item.Codec,
+                        item.Encoder,
                         item.Quality,
                         item.TargetHeight)
                     : item.ManualTargetMb > 0 ? item.ManualTargetMb : 0;

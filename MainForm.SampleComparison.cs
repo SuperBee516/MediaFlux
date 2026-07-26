@@ -1,4 +1,6 @@
+using MediaFlux.Models;
 using MediaFlux.Services;
+using MediaFlux.Services.Encoders;
 
 namespace MediaFlux
 {
@@ -17,6 +19,11 @@ namespace MediaFlux
             if (_encodingActive)
             {
                 ShowStatusInfo("Finish or stop the active encode before generating comparison samples.");
+                return;
+            }
+            if (!EnsureFfmpegToolsAvailable() ||
+                !EnsureSelectedVideoEncoderAvailable())
+            {
                 return;
             }
 
@@ -138,8 +145,12 @@ namespace MediaFlux
             string sourcePath,
             double durationSeconds)
         {
-            string encoderText = comboEncoderMode.SelectedItem?.ToString() ?? string.Empty;
-            string formatChoice = comboVideoFormat.SelectedItem?.ToString() ?? "H.265 / HEVC (x265)";
+            int? audioChannels = GetSelectedAudioChannels();
+            ValidatedEncoderSettings validated =
+                GetValidatedEncoderSettingsFromUi(
+                    includeConcurrentSessions: false);
+            string videoCodec =
+                validated.Resolved.Selection.FfmpegCodec;
             string profileText = (row.Tag as RowMeta)?.CustomCompressionProfile
                 ?? comboCompressionProfile.SelectedItem?.ToString()
                 ?? comboCompressionProfile.Text;
@@ -167,7 +178,7 @@ namespace MediaFlux
                 double estimated = _sizeEstimateService.EstimateAutoTargetMbSmart(
                     sourcePath,
                     profileText,
-                    ResolveVideoCodec(encoderText, formatChoice),
+                    validated.Resolved.Selection,
                     GetDefaultQualityForSelection(),
                     GetEstimateTargetHeight());
                 if (estimated > 0)
@@ -179,13 +190,15 @@ namespace MediaFlux
 
             return new SampleComparisonSettings
             {
-                VideoCodec = ResolveVideoCodec(encoderText, formatChoice),
-                UseGpu = IsHardwareEncoderSelected(encoderText),
+                Encoder = validated.Resolved.Selection,
+                VideoCodec = videoCodec,
+                UseGpu = validated.UseGpu,
                 ProjectedTargetMb = targetMb,
                 ScaleMode = GetSelectedScaleMode(),
-                NvencPreset = GetSelectedNvencPreset(),
-                TenBit = GetTenBitRequested(),
-                AudioChannels = GetSelectedAudioChannels(),
+                EncoderPreset = validated.Preset,
+                QualityValue = validated.QualityValue,
+                TenBit = validated.TenBit,
+                AudioChannels = audioChannels,
                 ClipSeconds = 25
             };
         }

@@ -691,9 +691,7 @@ namespace MediaFlux
             lblEncoderMode.Margin = new Padding(0, 5, 14, 3);
             tlEncodingProfileFields.Controls.Add(lblEncoderMode, 0, 0);
 
-            comboEncoderMode.Items.AddRange(new object[] { "GPU (NVENC)", "GPU (QSV) Experimental", "CPU (libx264)" });
             comboEncoderMode.DropDownStyle = ComboBoxStyle.DropDownList;
-            comboEncoderMode.SelectedIndex = 0;
             comboEncoderMode.Dock = DockStyle.Fill;
             comboEncoderMode.Margin = new Padding(0, 2, 0, 3);
             tlEncodingProfileFields.Controls.Add(comboEncoderMode, 1, 0);
@@ -708,12 +706,6 @@ namespace MediaFlux
 
             comboVideoFormat = new ComboBox();
             comboVideoFormat.DropDownStyle = ComboBoxStyle.DropDownList;
-            comboVideoFormat.Items.AddRange(new object[] {
-                "H.265 / HEVC (x265)",
-                "H.264 (x264)",
-                "AV1"
-            });
-            comboVideoFormat.SelectedIndex = 0; // default to H.265
             comboVideoFormat.Dock = DockStyle.Fill;
             comboVideoFormat.Margin = new Padding(0, 2, 0, 3);
             tlEncodingProfileFields.Controls.Add(comboVideoFormat, 3, 0);
