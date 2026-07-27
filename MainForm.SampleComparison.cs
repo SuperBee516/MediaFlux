@@ -21,6 +21,11 @@ namespace MediaFlux
                 ShowStatusInfo("Finish or stop the active encode before generating comparison samples.");
                 return;
             }
+            if (_mediaRemuxCts != null)
+            {
+                ShowStatusInfo("Finish or cancel the active remux before generating comparison samples.");
+                return;
+            }
             if (!EnsureFfmpegToolsAvailable() ||
                 !EnsureSelectedVideoEncoderAvailable())
             {

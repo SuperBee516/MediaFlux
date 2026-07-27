@@ -71,6 +71,26 @@ namespace MediaFlux.Services
         }
     }
 
+    public sealed class SampleProjectionResult
+    {
+        internal SampleProjectionResult(
+            double projectedFinalMb,
+            double averageBitrateKbps,
+            double encodeSpeed,
+            TimeSpan estimatedCompletion)
+        {
+            ProjectedFinalMb = projectedFinalMb;
+            AverageBitrateKbps = averageBitrateKbps;
+            EncodeSpeed = encodeSpeed;
+            EstimatedCompletion = estimatedCompletion;
+        }
+
+        public double ProjectedFinalMb { get; }
+        public double AverageBitrateKbps { get; }
+        public double EncodeSpeed { get; }
+        public TimeSpan EstimatedCompletion { get; }
+    }
+
     /// <summary>
     /// Generates short beginning/middle/end source clips, encodes them with the
     /// current MediaFlux settings, and builds synchronized side-by-side previews.
@@ -117,6 +137,45 @@ namespace MediaFlux.Services
             TimeSpan sourceDuration,
             SampleComparisonSettings settings,
             IProgress<string>? progress,
+            CancellationToken cancellationToken)
+        {
+            return await GenerateCoreAsync(
+                sourcePath,
+                sourceDuration,
+                settings,
+                progress,
+                buildComparisonVideos: true,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<SampleProjectionResult> GenerateProjectionAsync(
+            string sourcePath,
+            TimeSpan sourceDuration,
+            SampleComparisonSettings settings,
+            IProgress<string>? progress,
+            CancellationToken cancellationToken)
+        {
+            using SampleComparisonResult result = await GenerateCoreAsync(
+                sourcePath,
+                sourceDuration,
+                settings,
+                progress,
+                buildComparisonVideos: false,
+                cancellationToken).ConfigureAwait(false);
+
+            return new SampleProjectionResult(
+                result.ProjectedFinalMb,
+                result.AverageBitrateKbps,
+                result.EncodeSpeed,
+                result.EstimatedCompletion);
+        }
+
+        private async Task<SampleComparisonResult> GenerateCoreAsync(
+            string sourcePath,
+            TimeSpan sourceDuration,
+            SampleComparisonSettings settings,
+            IProgress<string>? progress,
+            bool buildComparisonVideos,
             CancellationToken cancellationToken)
         {
             if (!File.Exists(sourcePath))
@@ -198,13 +257,17 @@ namespace MediaFlux.Services
                         encodeRequest).ConfigureAwait(false);
                     encodeStopwatch.Stop();
 
-                    string comparisonPath = Path.Combine(root, $"{stem}_comparison.mp4");
-                    progress?.Report($"Building side-by-side {position.Label.ToLowerInvariant()} preview…");
-                    await BuildComparisonAsync(
-                        originalPath,
-                        encoded.OutputPath,
-                        comparisonPath,
-                        cancellationToken).ConfigureAwait(false);
+                    string comparisonPath = string.Empty;
+                    if (buildComparisonVideos)
+                    {
+                        comparisonPath = Path.Combine(root, $"{stem}_comparison.mp4");
+                        progress?.Report($"Building side-by-side {position.Label.ToLowerInvariant()} preview…");
+                        await BuildComparisonAsync(
+                            originalPath,
+                            encoded.OutputPath,
+                            comparisonPath,
+                            cancellationToken).ConfigureAwait(false);
+                    }
 
                     long encodedBytes = new FileInfo(encoded.OutputPath).Length;
                     encodedSizes.Add(encodedBytes);
@@ -230,7 +293,10 @@ namespace MediaFlux.Services
                     ? TimeSpan.FromSeconds(sourceDuration.TotalSeconds / speed)
                     : TimeSpan.Zero;
 
-                progress?.Report("Sample comparison ready.");
+                progress?.Report(
+                    buildComparisonVideos
+                        ? "Sample comparison ready."
+                        : "Sample projection ready.");
                 return new SampleComparisonResult(
                     root,
                     clips,

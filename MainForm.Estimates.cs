@@ -159,6 +159,7 @@ namespace MediaFlux
 
                             TrackCodecFilterCount(path, codec);
 
+                            ApplySmartRecommendation(row, item.Recommendation);
                             UpdateRowCustomFlag(row);
                             RestoreQueuedStateAfterEstimate(row);
                             applied++;
@@ -168,6 +169,9 @@ namespace MediaFlux
                             System.Diagnostics.Debug.WriteLine(
                                 $"Smart Estimate UI Update Error for {item.Path}: {ex.Message}\n{ex.StackTrace}");
                             row.Cells["colEstimatedSize"].Value = "Error";
+                            SetRecommendationUnavailable(
+                                row,
+                                "Queue analysis failed for this file.");
                         }
                     }
                 }
@@ -286,6 +290,9 @@ namespace MediaFlux
                 if (meta?.ExcludedFromEncodeAsDuplicate == true)
                 {
                     row.Cells["colEstimatedSize"].Value = "";
+                    SetRecommendationUnavailable(
+                        row,
+                        "Exact duplicate is excluded from encoding.");
                     SetEncodeRowState(
                         row,
                         "Excluded - exact duplicate",
@@ -336,6 +343,9 @@ namespace MediaFlux
                     row.Cells["colEstimatedSize"].ToolTipText =
                         "Estimated from the combined DVD title size, duration, resolution, " +
                         "frame rate, codec, and current encoding settings.";
+                    SetRecommendationUnavailable(
+                        row,
+                        "DVD title recommendations remain in the DVD import workflow.");
                     UpdateRowCustomFlag(row);
                     RestoreQueuedStateAfterEstimate(row);
                     continue;
@@ -344,6 +354,9 @@ namespace MediaFlux
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                 {
                     row.Cells["colEstimatedSize"].Value = "";
+                    SetRecommendationUnavailable(
+                        row,
+                        "The source file is unavailable.");
                     continue;
                 }
 
@@ -353,6 +366,7 @@ namespace MediaFlux
                 row.Cells["colEstimatedSize"].Value = "Analyzing…";
                 row.Cells["colEstimatedSize"].Tag = null;
                 row.Cells["colEstimatedSize"].ToolTipText = "Reading this file's metadata and recalculating with the current encoding settings.";
+                SetRecommendationAnalyzing(row);
                 if (row.Cells["colStatus"].Value?.ToString() is not "Encoding" and not "Done" and not "Failed" and not "Canceled" and not "Retry Queued")
                     SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
 
@@ -365,6 +379,7 @@ namespace MediaFlux
                     targetEncoder,
                     quality,
                     targetHeight,
+                    GetSelectedAudioChannels(),
                     isCustom);
                 queued++;
             }
@@ -434,6 +449,7 @@ namespace MediaFlux
             VideoEncoderSelection targetEncoder,
             int quality,
             int? targetHeight,
+            int? targetAudioChannels,
             bool isCustom)
         {
             _estimateService.QueueSmartEstimate(
@@ -444,7 +460,10 @@ namespace MediaFlux
                 targetEncoder,
                 quality,
                 targetHeight,
-                isCustom);
+                targetAudioChannels,
+                isCustom,
+                _config.SmartRecommendationsEnabled,
+                _config.MinimumExpectedSavingsPercent);
         }
 
         private int? GetEstimateTargetHeight()

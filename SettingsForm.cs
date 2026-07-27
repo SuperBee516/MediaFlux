@@ -30,6 +30,10 @@ namespace MediaFlux
         private Label lblFfmpegStatus = null!;
         private Label lblFfprobeStatus = null!;
         private TextBox txtDvdOutputNamingPattern = null!;
+        private GroupBox grpSmartRecommendations = null!;
+        private CheckBox chkSmartRecommendations = null!;
+        private NumericUpDown nudMinimumExpectedSavings = null!;
+        private CheckBox chkWarnBeforeEncodingRecommendations = null!;
         private DuplicateKeeperPreferences _duplicateKeeperPreferences = new();
         private readonly ToolTip _settingsToolTip = new();
 
@@ -44,6 +48,7 @@ namespace MediaFlux
             InitializeFfmpegStatusControls();
             InitializeExplorerIntegrationControls();
             Config = cfg;
+            InitializeSmartRecommendationControls(cfg);
             InitializeDvdSettingsControls(cfg);
             _duplicateKeeperPreferences = (cfg.DuplicateKeeperPreferences ?? new DuplicateKeeperPreferences()).Clone();
             InitializeDuplicateKeeperPreferenceControls();
@@ -119,6 +124,81 @@ namespace MediaFlux
                     txtFfmpegPath.SelectAll();
                 };
             }
+        }
+
+        private void InitializeSmartRecommendationControls(Config config)
+        {
+            grpSmartRecommendations = new GroupBox
+            {
+                Text = "Smart Encode Recommendations",
+                Location = new Point(820, 730),
+                Size = new Size(390, 105),
+                TabStop = false
+            };
+
+            chkSmartRecommendations = new CheckBox
+            {
+                Text = "Analyze whether queued files should be encoded",
+                AutoSize = true,
+                Location = new Point(15, 23),
+                Checked = config.SmartRecommendationsEnabled
+            };
+
+            var minimumLabel = new Label
+            {
+                Text = "Minimum worthwhile saving:",
+                AutoSize = true,
+                Location = new Point(15, 52)
+            };
+            nudMinimumExpectedSavings = new NumericUpDown
+            {
+                Minimum = 0,
+                Maximum = 90,
+                DecimalPlaces = 1,
+                Increment = 1,
+                Value = (decimal)Math.Clamp(
+                    config.MinimumExpectedSavingsPercent,
+                    0,
+                    90),
+                Location = new Point(230, 49),
+                Size = new Size(70, 23)
+            };
+            var percentLabel = new Label
+            {
+                Text = "%",
+                AutoSize = true,
+                Location = new Point(306, 52)
+            };
+
+            chkWarnBeforeEncodingRecommendations = new CheckBox
+            {
+                Text = "Warn before encoding Skip, Review, or unavailable files",
+                AutoSize = true,
+                Location = new Point(15, 78),
+                Checked = config.WarnBeforeEncodingSkippedOrReviewItems
+            };
+
+            chkSmartRecommendations.CheckedChanged += (_, __) =>
+            {
+                nudMinimumExpectedSavings.Enabled = chkSmartRecommendations.Checked;
+                minimumLabel.Enabled = chkSmartRecommendations.Checked;
+                percentLabel.Enabled = chkSmartRecommendations.Checked;
+                chkWarnBeforeEncodingRecommendations.Enabled =
+                    chkSmartRecommendations.Checked;
+            };
+
+            grpSmartRecommendations.Controls.Add(chkSmartRecommendations);
+            grpSmartRecommendations.Controls.Add(minimumLabel);
+            grpSmartRecommendations.Controls.Add(nudMinimumExpectedSavings);
+            grpSmartRecommendations.Controls.Add(percentLabel);
+            grpSmartRecommendations.Controls.Add(chkWarnBeforeEncodingRecommendations);
+            Controls.Add(grpSmartRecommendations);
+
+            nudMinimumExpectedSavings.Enabled = chkSmartRecommendations.Checked;
+            minimumLabel.Enabled = chkSmartRecommendations.Checked;
+            percentLabel.Enabled = chkSmartRecommendations.Checked;
+            chkWarnBeforeEncodingRecommendations.Enabled =
+                chkSmartRecommendations.Checked;
         }
 
         private void InitializeDvdSettingsControls(Config config)
@@ -575,6 +655,11 @@ namespace MediaFlux
             Config.DeleteCanceledEncodeOutputs = chkDeleteCanceledEncodeOutputs.Checked;
             Config.LargeQueueThreshold = (int)nudLargeQueueThreshold.Value;
             Config.AutoAnalyzeLargeQueues = chkAutoAnalyzeLargeQueues.Checked;
+            Config.SmartRecommendationsEnabled = chkSmartRecommendations.Checked;
+            Config.MinimumExpectedSavingsPercent =
+                (double)nudMinimumExpectedSavings.Value;
+            Config.WarnBeforeEncodingSkippedOrReviewItems =
+                chkWarnBeforeEncodingRecommendations.Checked;
             Config.FindDuplicatesOnImport = chkFindDuplicatesOnImport.Checked;
             Config.OnlyQueueDuplicateCandidates = chkOnlyQueueDuplicateCandidates.Checked;
             Config.DuplicateScanMode = NormalizeDuplicateScanMode(comboDuplicateScanMode.SelectedItem?.ToString());

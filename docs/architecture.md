@@ -68,6 +68,58 @@ the structured request API.
 `EncoderRegistry.ResolveLegacyCodec` and the existing `EncodingService`
 overloads remain available for callers that still supply FFmpeg codec names.
 
+## Smart Encode recommendations
+
+`EstimateBackgroundService` obtains cached media facts from `MediaInfoService`,
+calculates the row-specific output estimate, and then evaluates it through the
+UI-independent `SmartEncodeDecisionService`. The decision service compares the
+source against the current `VideoEncoderSelection`, target height, aggregate
+audio cost, and configured minimum savings.
+
+Recommendations are explainable values rather than automatic commands. Each
+result includes a category, confidence, projected savings, and ordered reasons.
+Interlacing, upscaling, multiple video streams, likely animation, unusually
+audio-heavy files, and conversion to a less efficient codec produce Review
+results. Otherwise, projected savings produce Strong candidate, Moderate
+candidate, or Skip.
+
+The queue keeps recommendation state in `RowMeta` only for the current file and
+settings. Queue exports do not persist derived recommendations, sample
+projections, or frame-analysis results; they do persist the user's explicit
+per-row content hint. Changing a decision-relevant encoding option starts a new
+analysis generation, cancels stale work, and replaces the row result when the
+current generation completes. The pre-encode prompt applies after the explicit
+full-queue or selected-file scope is captured and retains exact-duplicate
+exclusions.
+
+`DeepMediaAnalysisService` is an optional selected-row path. It reuses
+`SampleComparisonService` in projection-only mode so temporary original and
+encoded clips are cleaned without building preview videos. Samples run in
+quality mode rather than target-size mode, which keeps the observed projection
+independent from the metadata estimate. FFmpeg `idet` scans the same
+beginning/middle/end regions, while small RGB samples feed a deliberately
+conservative color/edge heuristic for possible animation or screen content.
+`SmartEncodeDecisionService.RefineWithDeepAnalysis` preserves the baseline
+savings calculation and only raises confidence, lowers confidence, or moves
+questionable evidence to Review. Deep analysis never changes a row's encode
+target or selected profile.
+
+Phase 3 adds a narrow `RemuxOnly` decision and an explicit execution path.
+`SmartEncodeDecisionService` emits it only when a single efficient video stream
+is in a recognized legacy container, projected encoding savings are below the
+configured minimum, and no higher-priority Review condition exists. Modern MP4,
+Matroska, and WebM containers are not labeled for remux solely because their
+video is efficient.
+
+`MediaRemuxService` copies video, audio, subtitle, and attachment streams into
+MKV while retaining metadata and chapters. It never invokes an encoder or
+retries with transcoding. Output is written to a uniquely named partial file,
+probed after FFmpeg exits, and promoted only when the video/audio/subtitle codec
+sets, attachment set, chapter count, and duration agree with the source.
+Cancellation or failure removes the partial file and leaves the source
+untouched. Ordinary remux jobs are recorded separately from Encode and DVD
+Remux history entries.
+
 ## Capability validation
 
 `FfmpegEncoderCapabilityService` inspects the exact `ffmpeg.exe` resolved by

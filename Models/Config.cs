@@ -18,6 +18,7 @@ namespace MediaFlux.Models
         public bool ShowSizeColumn { get; set; } = true;
         public bool ShowCreatedColumn { get; set; } = false;
         public bool ShowCustomColumn { get; set; } = true;
+        public bool ShowRecommendationColumn { get; set; } = true;
 
         // Persist the Encode queue's last selected sort.
         public string EncodeQueueSortColumn { get; set; } = "";
@@ -62,6 +63,9 @@ namespace MediaFlux.Models
         public bool DeleteCanceledEncodeOutputs { get; set; } = false;
         public int LargeQueueThreshold { get; set; } = 300;
         public bool AutoAnalyzeLargeQueues { get; set; } = false;
+        public bool SmartRecommendationsEnabled { get; set; } = true;
+        public double MinimumExpectedSavingsPercent { get; set; } = 15;
+        public bool WarnBeforeEncodingSkippedOrReviewItems { get; set; } = true;
         public bool FindDuplicatesOnImport { get; set; } = false;
         public bool OnlyQueueDuplicateCandidates { get; set; } = false;
         public string DuplicateScanMode { get; set; } = "Strict visual duplicates";
@@ -155,6 +159,8 @@ namespace MediaFlux.Models
             config.EnabledVideoExtensions ??= new List<string>();
             if (config.LargeQueueThreshold < 1)
                 config.LargeQueueThreshold = 300;
+            config.MinimumExpectedSavingsPercent =
+                Math.Clamp(config.MinimumExpectedSavingsPercent, 0, 90);
             if (config.WatchFolderIntervalMinutes < 1)
                 config.WatchFolderIntervalMinutes = 5;
             if (config.WatchFolderStabilizationSeconds < 0)

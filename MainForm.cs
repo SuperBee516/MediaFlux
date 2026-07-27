@@ -276,6 +276,10 @@ namespace MediaFlux
             // null-initialized compatibility field here prevented the app from starting.
             if (comboResolution != null)
                 comboResolution.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+            if (comboAudioChannels != null)
+                comboAudioChannels.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+            if (chkTenBit != null)
+                chkTenBit.CheckedChanged += (_, __) => ScheduleEstimateRefresh();
             txtTargetSize.TextChanged += (_, __) => ScheduleEstimateRefresh();
             nudAutoQuality!.ValueChanged += (_, __) => ScheduleEstimateRefresh();
 
@@ -527,6 +531,8 @@ namespace MediaFlux
             try { _importCts?.Cancel(); } catch { }
             try { _codecFilterCts?.Cancel(); } catch { }
             try { _duplicateScanCts?.Cancel(); } catch { }
+            try { _deepAnalysisCts?.Cancel(); } catch { }
+            try { _mediaRemuxCts?.Cancel(); } catch { }
             _estimateService?.ResetAndCancel();
             _estimatesDeferredForLargeQueue = false;
             SetQueueProgress(0, 0, visible: false);
@@ -865,6 +871,13 @@ namespace MediaFlux
             AddPreviewStackedMetric(audioMetrics, "Channels", "--", 1);
             AddPreviewStackedMetric(audioMetrics, "Audio sample rate", "Keep source", 2);
             AddPreviewControl(_encodePreviewTable, audioMetrics);
+
+            AddPreviewSection(_encodePreviewTable, "SMART ENCODE");
+            var recommendationMetrics = CreatePreviewMetricGrid(3);
+            AddPreviewStackedMetric(recommendationMetrics, "Recommendation", "--", 0);
+            AddPreviewStackedMetric(recommendationMetrics, "Expected saving", "--", 1);
+            AddPreviewStackedMetric(recommendationMetrics, "Confidence", "--", 2);
+            AddPreviewControl(_encodePreviewTable, recommendationMetrics);
             group.Controls.Add(_encodePreviewTable);
             return group;
         }
@@ -1297,6 +1310,23 @@ namespace MediaFlux
             SetPreviewValue("Bit rate", audioBitrate > 0 ? $"{audioBitrate:0}kbps" : "Keep source");
             SetPreviewValue("Channels", GetPreviewAudioChannelsText());
             SetPreviewValue("Audio sample rate", "Keep source");
+
+            SmartEncodeRecommendation? recommendation =
+                (row?.Tag as RowMeta)?.EncodeRecommendation;
+            SetPreviewValue(
+                "Recommendation",
+                _config.SmartRecommendationsEnabled
+                    ? recommendation?.DisplayName ?? "Analyzing…"
+                    : "Disabled");
+            SetPreviewValue(
+                "Expected saving",
+                recommendation?.EstimatedSavingsPercent is double savingsPercent &&
+                recommendation.EstimatedSavingsMb is double savingsMb
+                    ? $"{savingsPercent:0.#}% ({savingsMb:0.#} MB)"
+                    : "--");
+            SetPreviewValue(
+                "Confidence",
+                recommendation?.Confidence.ToString() ?? "--");
         }
 
         private (int width, int height) GetPreviewOutputDimensions(int sourceWidth, int sourceHeight)
@@ -1510,13 +1540,19 @@ namespace MediaFlux
             public int DuplicateConfidenceScore = 0;
             public string DuplicateRecommendation = "";
             public string DuplicateReason = "";
+            public SmartEncodeRecommendation? EncodeRecommendation = null;
+            public SmartEncodeRecommendation? BaselineEncodeRecommendation = null;
+            public DeepMediaAnalysisResult? DeepAnalysis = null;
+            public SmartEncodeContentHint ContentHint = SmartEncodeContentHint.Auto;
             public bool ExcludedFromEncodeAsDuplicate = false;
             public bool DuplicateExclusionOverridden = false;
             public string StatusBeforeDuplicateExclusion = "Queued";
             public DvdImportOptions? DvdEncodeOptions = null;
 
             public bool HasCustomSettings =>
-                CustomTargetMb.HasValue || !string.IsNullOrWhiteSpace(CustomCompressionProfile);
+                CustomTargetMb.HasValue ||
+                !string.IsNullOrWhiteSpace(CustomCompressionProfile) ||
+                ContentHint != SmartEncodeContentHint.Auto;
 
             public bool IsDvdEncode =>
                 DvdEncodeOptions?.OutputMode == DvdOutputMode.EncodeUsingCurrentSettings;
@@ -1561,6 +1597,9 @@ namespace MediaFlux
 
             if (meta.CustomTargetMb.HasValue)
                 parts.Add($"Target: {meta.CustomTargetMb.Value:0.#} MB");
+
+            if (meta.ContentHint != SmartEncodeContentHint.Auto)
+                parts.Add($"Content: {GetContentHintDisplayName(meta.ContentHint)}");
 
             return string.Join(" | ", parts);
         }
@@ -2418,6 +2457,11 @@ namespace MediaFlux
                 dgvEncodeQueue.Columns["colCreated"].Visible = _config.ShowCreatedColumn;
             if (dgvEncodeQueue.Columns.Contains("colCustom"))
                 dgvEncodeQueue.Columns["colCustom"].Visible = _config.ShowCustomColumn;
+            if (dgvEncodeQueue.Columns.Contains("colEncodeRecommendation"))
+            {
+                dgvEncodeQueue.Columns["colEncodeRecommendation"].Visible =
+                    _config.ShowRecommendationColumn;
+            }
 
             // restore column widths if previously saved (> 0)
             if (dgvEncodeQueue.Columns.Contains("colName"))
@@ -2730,6 +2774,12 @@ namespace MediaFlux
                 e.SortResult = val1.CompareTo(val2);
                 e.Handled = true; // we handled sorting
             }
+            else if (e.Column.Name == "colEncodeRecommendation")
+            {
+                e.SortResult = RecommendationSortRank(e.CellValue1)
+                    .CompareTo(RecommendationSortRank(e.CellValue2));
+                e.Handled = true;
+            }
         }
 
         #region Download Tab
@@ -2995,6 +3045,9 @@ namespace MediaFlux
 
                 StopEstimateUiPump();
                 _mediaInfoService?.FlushCache();
+                _sampleComparisonCts?.Cancel();
+                _deepAnalysisCts?.Cancel();
+                _mediaRemuxCts?.Cancel();
 
                 lock (_monLock)
                 {
@@ -3569,7 +3622,7 @@ namespace MediaFlux
             {
                 AutoSize = true,
                 ColumnCount = 1,
-                RowCount = 6,
+                RowCount = 7,
                 Dock = DockStyle.Fill,
                 Padding = new Padding(0),
                 Margin = new Padding(0)
@@ -3579,13 +3632,15 @@ namespace MediaFlux
             var chkSize = new CheckBox { Text = "Size", Checked = _config.ShowSizeColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkCreated = new CheckBox { Text = "Created", Checked = _config.ShowCreatedColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
             var chkCustom = new CheckBox { Text = "Custom", Checked = _config.ShowCustomColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
+            var chkRecommendation = new CheckBox { Text = "Encode Recommendation", Checked = _config.ShowRecommendationColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
             var btnOK = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80, Anchor = AnchorStyles.Left };
 
             layout.Controls.Add(chkName, 0, 0);
             layout.Controls.Add(chkSize, 0, 1);
             layout.Controls.Add(chkCreated, 0, 2);
             layout.Controls.Add(chkCustom, 0, 3);
-            layout.Controls.Add(btnOK, 0, 4);
+            layout.Controls.Add(chkRecommendation, 0, 4);
+            layout.Controls.Add(btnOK, 0, 5);
             dlg.Controls.Add(layout);
             dlg.AcceptButton = btnOK;
 
@@ -3595,10 +3650,13 @@ namespace MediaFlux
                 dgvEncodeQueue.Columns["colSize"].Visible = chkSize.Checked;
                 dgvEncodeQueue.Columns["colCreated"].Visible = chkCreated.Checked;
                 dgvEncodeQueue.Columns["colCustom"].Visible = chkCustom.Checked;
+                dgvEncodeQueue.Columns["colEncodeRecommendation"].Visible =
+                    chkRecommendation.Checked;
 
                 _config.ShowSizeColumn = chkSize.Checked;
                 _config.ShowCreatedColumn = chkCreated.Checked;
                 _config.ShowCustomColumn = chkCustom.Checked;
+                _config.ShowRecommendationColumn = chkRecommendation.Checked;
                 _config.Save(_configPath);
                 ApplyEncodeGridColumnLayout();
             }
@@ -3619,6 +3677,7 @@ namespace MediaFlux
 
             SetFixedGridColumn("colSize", 92);
             SetFixedGridColumn("colEstimatedSize", 150);
+            SetFixedGridColumn("colEncodeRecommendation", 142);
             SetFixedGridColumn("colStatus", 86);
             SetFixedGridColumn("colProgress", 78);
             SetFixedGridColumn("colETA", 76);
@@ -3791,8 +3850,15 @@ namespace MediaFlux
                 ApplyDuplicateConfigurationToUi();
                 UpdateDuplicateReferenceFolderUi();
                 RescoreDuplicateKeeperRecommendations();
+                if (dgvEncodeQueue.Columns.Contains("colEncodeRecommendation"))
+                {
+                    dgvEncodeQueue.Columns["colEncodeRecommendation"].Visible =
+                        _config.ShowRecommendationColumn;
+                }
 
                 RefreshEncodeGrid();
+                if (dgvEncodeQueue.Rows.Count > 0)
+                    RunEstimatePass();
                 ApplyWatchFolderConfiguration();
             }
             else
@@ -4237,6 +4303,8 @@ namespace MediaFlux
             r.Cells["colName"].Value = fi.Name;
             r.Cells["colSize"].Value = FormatSize(sourceMb);
             r.Cells["colEstimatedSize"].Value = "";
+            if (dgvEncodeQueue.Columns.Contains("colEncodeRecommendation"))
+                r.Cells["colEncodeRecommendation"].Value = "";
             r.Cells["colCreated"].Value = fi.CreationTime.ToString("yyyy-MM-dd HH:mm");
             if (dgvEncodeQueue.Columns.Contains("colStatus"))
                 SetEncodeRowState(r, "Queued", "");

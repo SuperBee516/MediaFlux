@@ -164,11 +164,13 @@ namespace MediaFlux.Services
             if (request.AudioChannels is > 0)
             {
                 plannedAudioKbps =
-                    request.AudioChannels.Value >= 6 ? 384 : 192;
+                    (request.AudioChannels.Value >= 6 ? 384 : 192) *
+                    Math.Max(1, request.Input.KnownAudioStreamCount);
             }
             else if (request.ForceMp4CompatibleAudio)
             {
-                plannedAudioKbps = 192;
+                plannedAudioKbps =
+                    192 * Math.Max(1, request.Input.KnownAudioStreamCount);
             }
             else
             {

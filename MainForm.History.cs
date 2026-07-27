@@ -239,6 +239,7 @@ namespace MediaFlux
             {
                 JobType.DvdEncode => "DVD Encode",
                 JobType.DvdRemux => "DVD Remux",
+                JobType.Remux => "Remux",
                 _ => type.ToString()
             };
         }

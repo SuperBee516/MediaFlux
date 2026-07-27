@@ -9,6 +9,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Explainable Smart Encode recommendations for queued videos, including Strong,
+  Moderate, Skip, Review, confidence, estimated savings, and detailed reasons.
+- Configurable minimum worthwhile savings and a pre-encode review prompt that
+  can restrict work to Strong and Moderate candidates without changing the
+  user's saved full-queue or selected-file scope.
+- Optional, cancellable deep analysis for selected rows, including independent
+  beginning/middle/end size projection, sampled interlace detection,
+  conservative animation/screen-content review, and persistent per-row content
+  hints.
+- Conservative Remux only recommendations for efficient video in legacy
+  containers, plus explicit batch remux-to-MKV execution with stream copy,
+  staged outputs, FFprobe validation, collision-safe names, cancellation,
+  cleanup, and dedicated history records.
 - Pre-encode sample comparisons for the beginning, middle, and end of a video,
   with synchronized original/encoded playback, measured size and speed
   projections, and one-click quality, compression, or codec adjustments.
@@ -28,6 +41,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
+- Queue analysis now accounts for aggregate audio bitrate and mapped audio
+  streams instead of assuming a small fixed non-video allowance.
 - Queue size estimates now use each row's effective encoding settings and work
   for profiles without a manually entered target size.
 - The application window and published executable now use the MediaFlux icon.

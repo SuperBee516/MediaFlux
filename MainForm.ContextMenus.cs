@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
+using MediaFlux.Models;
 
 
 namespace MediaFlux
@@ -70,6 +71,27 @@ namespace MediaFlux
 
             customSettings.DropDownItems.Add(customProfileMenu);
             customSettings.DropDownItems.Add("Set Target Size…", null, SetCustomTargetSize_Click);
+            var contentHintMenu = new ToolStripMenuItem("Content Hint");
+            foreach (SmartEncodeContentHint hint in Enum.GetValues<SmartEncodeContentHint>())
+            {
+                var hintItem = new ToolStripMenuItem(GetContentHintDisplayName(hint))
+                {
+                    Tag = hint
+                };
+                hintItem.Click += ContentHintMenuItem_Click;
+                contentHintMenu.DropDownItems.Add(hintItem);
+            }
+            contentHintMenu.DropDownOpening += (_, __) =>
+            {
+                SmartEncodeContentHint? selectedHint = dgvEncodeQueue.SelectedRows.Count == 1
+                    ? (dgvEncodeQueue.SelectedRows[0].Tag as RowMeta)?.ContentHint
+                    : null;
+                foreach (ToolStripMenuItem item in contentHintMenu.DropDownItems)
+                    item.Checked = selectedHint.HasValue &&
+                                   item.Tag is SmartEncodeContentHint hint &&
+                                   hint == selectedHint.Value;
+            };
+            customSettings.DropDownItems.Add(contentHintMenu);
             customSettings.DropDownItems.Add(new ToolStripSeparator());
             customSettings.DropDownItems.Add("Clear Custom Settings", null, ClearCustomSettings_Click);
             menu.Items.Add(customSettings);
@@ -82,6 +104,9 @@ namespace MediaFlux
             menu.Items.Add("Open Location", null, OpenLocationFromContextMenu_Click);
             menu.Items.Add("Copy Source Path", null, CopySourcePathFromContextMenu_Click);
             menu.Items.Add("Copy Output Preview", null, CopyOutputPreviewFromContextMenu_Click);
+            menu.Items.Add("View Smart Encode Recommendation…", null, ViewRecommendationDetails_Click);
+            menu.Items.Add("Deep Analyze Selected", null, DeepAnalyzeSelected_Click);
+            menu.Items.Add("Remux Selected to MKV (Stream Copy)", null, RemuxSelectedToMkv_Click);
             menu.Items.Add("Open Duplicate Manager", null, ShowDuplicateManager_Click);
             menu.Items.Add("Include Selected Exact Duplicate(s) in Encode", null, IncludeSelectedDuplicateRowsInEncode_Click);
             menu.Items.Add(new ToolStripSeparator());
@@ -370,6 +395,7 @@ namespace MediaFlux
                 var meta = EnsureRowMeta(row);
                 meta.CustomCompressionProfile = null;
                 meta.CustomTargetMb = null;
+                meta.ContentHint = SmartEncodeContentHint.Auto;
                 var path = GetPathFromRow(row);
                 if (!string.IsNullOrWhiteSpace(path))
                     _estimatedSizeMap.Remove(path);

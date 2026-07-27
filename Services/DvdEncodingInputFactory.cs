@@ -50,6 +50,7 @@ namespace MediaFlux.Services
                 SourceFiles = physicalInput.SourceFiles,
                 OutputBaseName = OutputPathService.SanitizeFileName(outputBaseName),
                 KnownDurationSeconds = options.Candidate.CombinedDurationSeconds,
+                KnownAudioStreamCount = options.SelectedAudioStreamIndexes.Count,
                 VideoStreamIndexes = new[] { video.Index },
                 AudioStreamIndexes = representative.Streams
                     .Where(stream =>

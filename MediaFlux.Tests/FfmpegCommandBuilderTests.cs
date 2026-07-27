@@ -342,6 +342,29 @@ public sealed class FfmpegCommandBuilderTests
                 StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void TargetSizeBudgetsConvertedAudioForEveryMappedStream()
+    {
+        var log = new List<string>();
+        FfmpegCommandRequest request = CreateRequest(
+            "libx265",
+            useGpu: false,
+            targetMb: 100,
+            knownDuration: TimeSpan.FromSeconds(100),
+            audioChannels: 2,
+            knownAudioStreamCount: 3);
+        var builder = new FfmpegCommandBuilder(
+            EncoderRegistry.Default,
+            _ => 160,
+            log.Add);
+
+        _ = builder.Build(request);
+
+        Assert.Contains(
+            log,
+            message => message.Contains("audio=576 kbps", StringComparison.Ordinal));
+    }
+
     private static FfmpegCommandBuilder CreateBuilder() =>
         new(EncoderRegistry.Default, _ => 160);
 
@@ -358,6 +381,7 @@ public sealed class FfmpegCommandBuilderTests
         int? audioChannels = null,
         bool copySubtitles = true,
         bool copyDataStreams = true,
+        int knownAudioStreamCount = 0,
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None)
     {
@@ -377,6 +401,7 @@ public sealed class FfmpegCommandBuilderTests
             audioChannels,
             copySubtitles,
             copyDataStreams,
+            knownAudioStreamCount,
             scaleMode);
     }
 
@@ -393,6 +418,7 @@ public sealed class FfmpegCommandBuilderTests
         int? audioChannels = null,
         bool copySubtitles = true,
         bool copyDataStreams = true,
+        int knownAudioStreamCount = 0,
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None)
     {
@@ -405,7 +431,8 @@ public sealed class FfmpegCommandBuilderTests
                 InputPath = "C:\\Media\\source.mkv",
                 SourcePath = "C:\\Media\\source.mkv",
                 OutputBaseName = "source",
-                KnownAudioBitrateKbps = knownAudioBitrateKbps
+                KnownAudioBitrateKbps = knownAudioBitrateKbps,
+                KnownAudioStreamCount = knownAudioStreamCount
             },
             OutputPath = "C:\\Output\\source.mp4",
             Encoder = selection,

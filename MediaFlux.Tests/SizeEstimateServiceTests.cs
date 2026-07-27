@@ -71,6 +71,78 @@ public sealed class SizeEstimateServiceTests
         Assert.Equal(750, estimate);
     }
 
+    [Fact]
+    public void AutoEstimatePreservesMeasuredAudioInsteadOfCappingIt()
+    {
+        double ordinaryAudio = SizeEstimateService.EstimateAutoTargetMbSmart(
+            srcMb: 1_200,
+            durationSec: 3_600,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            sourceVideoBitrateKbps: 2_600,
+            sourceCodec: "h264",
+            compressionProfile: "Medium Quality (Default)",
+            targetCodec: "libx265",
+            quality: 22,
+            targetHeight: null,
+            sourceAudioBitrateKbps: 192,
+            sourceAudioStreamCount: 1);
+        double audioHeavy = SizeEstimateService.EstimateAutoTargetMbSmart(
+            srcMb: 1_200,
+            durationSec: 3_600,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            sourceVideoBitrateKbps: 2_600,
+            sourceCodec: "h264",
+            compressionProfile: "Medium Quality (Default)",
+            targetCodec: "libx265",
+            quality: 22,
+            targetHeight: null,
+            sourceAudioBitrateKbps: 1_200,
+            sourceAudioStreamCount: 3);
+
+        Assert.True(audioHeavy > ordinaryAudio);
+    }
+
+    [Fact]
+    public void AudioConversionBudgetsEveryMappedAudioStream()
+    {
+        double oneStream = SizeEstimateService.EstimateAutoTargetMbSmart(
+            srcMb: 1_200,
+            durationSec: 3_600,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            sourceVideoBitrateKbps: 2_600,
+            sourceCodec: "h264",
+            compressionProfile: "Medium Quality (Default)",
+            targetCodec: "libx265",
+            quality: 22,
+            targetHeight: null,
+            sourceAudioBitrateKbps: 1_200,
+            sourceAudioStreamCount: 1,
+            targetAudioChannels: 2);
+        double threeStreams = SizeEstimateService.EstimateAutoTargetMbSmart(
+            srcMb: 1_200,
+            durationSec: 3_600,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            sourceVideoBitrateKbps: 2_600,
+            sourceCodec: "h264",
+            compressionProfile: "Medium Quality (Default)",
+            targetCodec: "libx265",
+            quality: 22,
+            targetHeight: null,
+            sourceAudioBitrateKbps: 1_200,
+            sourceAudioStreamCount: 3,
+            targetAudioChannels: 2);
+
+        Assert.True(threeStreams > oneStream);
+    }
+
     private static double Estimate(
         double srcMb = 1_200,
         double durationSec = 3_600,

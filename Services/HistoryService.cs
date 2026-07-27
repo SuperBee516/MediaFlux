@@ -3,7 +3,15 @@ using System.Text.Json.Serialization;
 
 namespace MediaFlux.Services
 {
-    public enum JobType { Encode, Download, Audio, DvdEncode, DvdRemux }
+    public enum JobType
+    {
+        Encode = 0,
+        Download = 1,
+        Audio = 2,
+        DvdEncode = 3,
+        DvdRemux = 4,
+        Remux = 5
+    }
     public enum JobStatus { Success, Failed, Canceled }
 
     public sealed class JobHistoryRecord

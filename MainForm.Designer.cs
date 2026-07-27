@@ -1333,6 +1333,13 @@ namespace MediaFlux
             });
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
             {
+                Name = "colEncodeRecommendation",
+                HeaderText = "Encode Recommendation",
+                Width = 142,
+                Resizable = DataGridViewTriState.True
+            });
+            dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
+            {
                 Name = "colCreated",
                 HeaderText = "Created",
                 Width = 140,
@@ -1383,7 +1390,7 @@ namespace MediaFlux
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "colDuplicateAction",
-                HeaderText = "Recommendation",
+                HeaderText = "Duplicate Action",
                 Width = 130,
                 Resizable = DataGridViewTriState.True
             });

@@ -13,6 +13,13 @@ The application is intended for power users who want a graphical orchestration l
 - Configurable quality/file-size profiles, output targets, encoder presets, scaling, bit depth, stream handling, and audio behavior
 - Pre-encode beginning/middle/end sample comparisons with side-by-side original and encoded playback
 - Live FFmpeg progress, speed, FPS, bitrate, elapsed time, projected output size, and queue ETA
+- Explainable Smart Encode recommendations that flag strong candidates, smaller
+  opportunities, low-value re-encodes, interlaced/upscaled sources, unusual
+  streams, animation hints, and audio-heavy files
+- Optional deep analysis of selected rows using beginning/middle/end sample
+  encodes, sampled interlace detection, and conservative visual-content hints
+- Verified lossless remux-to-MKV execution for legacy containers when video
+  encoding would provide little benefit
 - Large-queue loading with progressive analysis, bounded background work, cancellation, and persistent metadata caching
 - Duplicate detection, review, keeper recommendations, reference-folder comparison, and guarded cleanup actions
 - Audio extraction/conversion with loudness normalization and optional RNNoise denoising
@@ -33,6 +40,36 @@ Queue controls include:
 - Retry failed jobs at the end of the current run
 - Add selected rows to an active queue
 - Export and import queue files
+
+Smart Encode evaluates each file against the current codec, quality, target
+size, resolution, and audio settings. The recommendation column shows Strong
+candidate, Moderate candidate, Skip, or Review, while its tooltip and the
+Output Preview explain the likely savings and confidence. Before encoding,
+MediaFlux can offer to run only Strong and Moderate candidates. Recommendations
+are advisory and never silently remove files or change their settings.
+
+For additional confidence, select one or more rows and choose **Deep Analyze
+Selected** from the queue context menu. This performs short quality-based sample
+encodes at the beginning, middle, and end, compares the observed projection with
+the normal estimate, and samples frames for interlacing. Large disagreements,
+interlaced or mixed samples, and possible animation or screen content are moved
+to Review. The operation is optional, cancellable, and does not change the
+row's target size.
+
+The per-row **Content Hint** can be Auto, Live action, Animation, or Screen
+content. Explicit hints override only the conservative content classifier; they
+do not silently select a different encoder profile. Content hints are retained
+when a queue is exported and imported.
+
+When an efficient H.264, HEVC, AV1, or VP9 stream is already stored in a clearly
+legacy container and encoding would not meet the minimum-savings threshold,
+Smart Encode can recommend **Remux only**. Select the row and choose **Remux
+Selected to MKV (Stream Copy)** to copy the normal media streams, attachments,
+metadata, and chapters without video or audio encoding. MediaFlux writes to a
+temporary staged file, validates stream codecs, chapters, and duration with
+FFprobe, then promotes it to a collision-safe final name. It never deletes the
+source or falls back to encoding when remuxing fails.
+
 - Apply global presets or per-row custom encode settings
 - Filter displayed files by H.264, H.265, AV1, or other codecs
 - Optionally delete incomplete output files from failed or canceled attempts

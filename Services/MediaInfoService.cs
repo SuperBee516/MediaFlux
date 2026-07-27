@@ -11,7 +11,7 @@ namespace MediaFlux.Services
 {
     public sealed class MediaInfoService
     {
-        private const int PersistentCacheVersion = 2;
+        private const int PersistentCacheVersion = 3;
         private readonly string _ffprobePath;
         private readonly string? _cachePath;
         private readonly bool _persistentCacheEnabled;
@@ -120,11 +120,13 @@ namespace MediaFlux.Services
         private static bool HasUsefulMetadata(MediaInfo info)
         {
             return !string.IsNullOrWhiteSpace(info.VideoCodec) ||
+                   !string.IsNullOrWhiteSpace(info.FormatName) ||
                    info.Width.HasValue ||
                    info.Height.HasValue ||
                    info.Fps.HasValue ||
                    info.DurationSeconds.HasValue ||
-                   info.BitrateKbps.HasValue;
+                   info.BitrateKbps.HasValue ||
+                   info.TotalBitrateKbps.HasValue;
         }
 
         public (int width, int height) GetResolutionPixels(string path)
@@ -230,6 +232,9 @@ namespace MediaFlux.Services
                 // Format section (duration, bitrate)
                 if (root.TryGetProperty("format", out var fmt))
                 {
+                    if (fmt.TryGetProperty("format_name", out var formatNameProp))
+                        info.FormatName = formatNameProp.GetString();
+
                     if (fmt.TryGetProperty("duration", out var durProp) &&
                         TryParsePositiveSeconds(durProp.GetString(), out var durSec) &&
                         durSec > 0)
@@ -241,25 +246,52 @@ namespace MediaFlux.Services
                         int.TryParse(brProp.GetString(), out var bitsPerSec) &&
                         bitsPerSec > 0)
                     {
-                        info.BitrateKbps = bitsPerSec / 1000;
+                        info.TotalBitrateKbps = bitsPerSec / 1000;
                     }
                 }
 
-                // Streams: look for the first video stream
+                // Streams: retain the primary video's properties while also
+                // aggregating stream counts and audio bitrate for recommendation work.
                 if (root.TryGetProperty("streams", out var streams) &&
                     streams.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var s in streams.EnumerateArray())
                     {
-                        if (!s.TryGetProperty("codec_type", out var typeProp) ||
-                            !string.Equals(typeProp.GetString(), "video",
-                                StringComparison.OrdinalIgnoreCase))
+                        if (!s.TryGetProperty("codec_type", out var typeProp))
+                            continue;
+
+                        string streamType = typeProp.GetString() ?? "";
+                        if (streamType.Equals("audio", StringComparison.OrdinalIgnoreCase))
                         {
+                            info.AudioStreamCount++;
+                            if (s.TryGetProperty("bit_rate", out var audioBitrateProp) &&
+                                int.TryParse(audioBitrateProp.GetString(), out var audioBitsPerSec) &&
+                                audioBitsPerSec > 0)
+                            {
+                                info.AudioBitrateKbps =
+                                    (info.AudioBitrateKbps ?? 0) + audioBitsPerSec / 1000;
+                            }
                             continue;
                         }
 
+                        if (streamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase))
+                        {
+                            info.SubtitleStreamCount++;
+                            continue;
+                        }
+
+                        if (!streamType.Equals("video", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        info.VideoStreamCount++;
+                        if (info.VideoStreamCount > 1)
+                            continue;
+
                         if (s.TryGetProperty("codec_name", out var codecProp))
                             info.VideoCodec = codecProp.GetString();
+
+                        if (s.TryGetProperty("field_order", out var fieldOrderProp))
+                            info.FieldOrder = fieldOrderProp.GetString();
 
                         if (s.TryGetProperty("width", out var wProp) &&
                             wProp.TryGetInt32(out var w) && w > 0)
@@ -276,9 +308,8 @@ namespace MediaFlux.Services
                             info.DurationSeconds = streamDurationSec;
                         }
 
-                        // Prefer the video stream bitrate over the container bitrate.
-                        // Container bitrate can include high-bitrate audio and is a
-                        // weaker quality proxy when comparing duplicate video encodes.
+                        // Keep video bitrate separate from container bitrate. The
+                        // recommendation engine needs both to detect audio-heavy files.
                         if (s.TryGetProperty("bit_rate", out var videoBitrateProp) &&
                             int.TryParse(videoBitrateProp.GetString(), out var videoBitsPerSec) &&
                             videoBitsPerSec > 0)
@@ -286,22 +317,34 @@ namespace MediaFlux.Services
                             info.BitrateKbps = videoBitsPerSec / 1000;
                         }
 
-                        // fps = r_frame_rate or avg_frame_rate like "30000/1001"
-                        if (s.TryGetProperty("r_frame_rate", out var fpsProp) ||
-                            s.TryGetProperty("avg_frame_rate", out fpsProp))
+                        // Prefer average frame rate, falling back to nominal rate.
+                        string? fpsText = null;
+                        if (s.TryGetProperty("avg_frame_rate", out var averageFpsProp))
+                            fpsText = averageFpsProp.GetString();
+                        if ((!TryParseFraction(fpsText, out var parsedFps) ||
+                             parsedFps <= 0) &&
+                            s.TryGetProperty("r_frame_rate", out var nominalFpsProp))
                         {
-                            var fpsStr = fpsProp.GetString();
-                            if (!string.IsNullOrWhiteSpace(fpsStr) &&
-                                TryParseFraction(fpsStr, out var fps) &&
-                                fps > 0)
-                            {
-                                info.Fps = fps;
-                            }
+                            fpsText = nominalFpsProp.GetString();
                         }
 
-                        // we only care about the first video stream
-                        break;
+                        if (!string.IsNullOrWhiteSpace(fpsText) &&
+                            TryParseFraction(fpsText, out var fps) &&
+                            fps > 0)
+                        {
+                            info.Fps = fps;
+                        }
                     }
+                }
+
+                if (info.AudioStreamCount > 0 &&
+                    info.AudioBitrateKbps is not > 0 &&
+                    info.TotalBitrateKbps is > 0 &&
+                    info.BitrateKbps is > 0)
+                {
+                    int remaining = info.TotalBitrateKbps.Value - info.BitrateKbps.Value;
+                    if (remaining > 0)
+                        info.AudioBitrateKbps = remaining;
                 }
             }
             catch (Exception ex)
@@ -432,12 +475,20 @@ namespace MediaFlux.Services
 
         public sealed class MediaInfo
         {
+            public string? FormatName { get; set; }
             public string? VideoCodec { get; set; }
+            public string? FieldOrder { get; set; }
             public int? Width { get; set; }
             public int? Height { get; set; }
             public double? Fps { get; set; }
             public double? DurationSeconds { get; set; }
+            // Primary video stream bitrate.
             public int? BitrateKbps { get; set; }
+            public int? TotalBitrateKbps { get; set; }
+            public int? AudioBitrateKbps { get; set; }
+            public int VideoStreamCount { get; set; }
+            public int AudioStreamCount { get; set; }
+            public int SubtitleStreamCount { get; set; }
         }
 
         private void LoadPersistentCache()

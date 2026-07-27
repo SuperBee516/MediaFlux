@@ -24,6 +24,11 @@ namespace MediaFlux
             // prevent re-entry
             if (_encodingActive)
                 return;
+            if (_mediaRemuxCts != null)
+            {
+                ShowStatusInfo("Wait for the active remux to finish or cancel it before encoding.");
+                return;
+            }
 
             bool requestedAll = processAllOverride ?? (chkProcessAll?.Checked ?? true);
             var requestedRows = (requestedAll
@@ -58,6 +63,26 @@ namespace MediaFlux
                         dvdOutputFolder,
                         showMessage: true))
                 {
+                    return;
+                }
+            }
+
+            RecommendationStartChoice recommendationChoice =
+                ReviewRecommendationsBeforeStart(requestedRows);
+            if (recommendationChoice == RecommendationStartChoice.Cancel)
+                return;
+            if (recommendationChoice == RecommendationStartChoice.CandidatesOnly)
+            {
+                requestedRows = requestedRows
+                    .Where(row =>
+                        row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true } &&
+                        IsSmartEncodeCandidate(row))
+                    .ToList();
+                requestedAll = false;
+                if (requestedRows.Count == 0)
+                {
+                    ShowStatusInfo(
+                        "No Strong or Moderate candidates remain in the requested queue scope.");
                     return;
                 }
             }
@@ -470,7 +495,8 @@ namespace MediaFlux
                             profileText,
                             estimateTargetEncoder,
                             estimateQuality,
-                            estimateTargetHeight);
+                            estimateTargetHeight,
+                            encoderSnapshot.AudioChannels);
                     if (fallbackEstimate > 0)
                         targetMb = fallbackEstimate;
                 }
@@ -529,7 +555,12 @@ namespace MediaFlux
                 }
                 else
                 {
-                    inputSource = EncodingInputSource.FromFile(file);
+                    MediaInfoService.MediaInfo mediaInfo =
+                        _mediaInfoService.GetInfo(file);
+                    inputSource = EncodingInputSource.FromFile(
+                        file,
+                        mediaInfo.AudioBitrateKbps,
+                        mediaInfo.AudioStreamCount);
                 }
 
                 // Per-job ffmpeg output callback

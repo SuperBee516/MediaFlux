@@ -14,6 +14,7 @@ namespace MediaFlux.Services
     public sealed class EstimateBackgroundService : IDisposable
     {
         private readonly MediaInfoService _mediaInfoService;
+        private readonly SmartEncodeDecisionService _decisionService = new();
         private readonly object _resetLock = new();
         private readonly int _workerCount = Math.Max(1, Math.Min(4, Environment.ProcessorCount - 1));
 
@@ -44,6 +45,7 @@ namespace MediaFlux.Services
             public double Fps { get; }
             public bool IsCustom { get; }
             public string? UnavailableReason { get; }
+            public SmartEncodeRecommendation? Recommendation { get; }
 
             public SmartEstimateResult(
                 int generation,
@@ -55,7 +57,8 @@ namespace MediaFlux.Services
                 string? videoCodec,
                 double fps,
                 bool isCustom,
-                string? unavailableReason)
+                string? unavailableReason,
+                SmartEncodeRecommendation? recommendation)
             {
                 Generation = generation;
                 Path = path;
@@ -67,6 +70,7 @@ namespace MediaFlux.Services
                 Fps = fps;
                 IsCustom = isCustom;
                 UnavailableReason = unavailableReason;
+                Recommendation = recommendation;
             }
         }
 
@@ -81,7 +85,10 @@ namespace MediaFlux.Services
                 VideoEncoderSelection encoder,
                 int quality,
                 int? targetHeight,
-                bool isCustom)
+                int? targetAudioChannels,
+                bool isCustom,
+                bool recommendationsEnabled,
+                double minimumSavingsPercent)
             {
                 Generation = generation;
                 Path = path;
@@ -91,7 +98,10 @@ namespace MediaFlux.Services
                 Encoder = encoder;
                 Quality = quality;
                 TargetHeight = targetHeight;
+                TargetAudioChannels = targetAudioChannels;
                 IsCustom = isCustom;
+                RecommendationsEnabled = recommendationsEnabled;
+                MinimumSavingsPercent = minimumSavingsPercent;
             }
 
             public int Generation { get; }
@@ -102,7 +112,10 @@ namespace MediaFlux.Services
             public VideoEncoderSelection Encoder { get; }
             public int Quality { get; }
             public int? TargetHeight { get; }
+            public int? TargetAudioChannels { get; }
             public bool IsCustom { get; }
+            public bool RecommendationsEnabled { get; }
+            public double MinimumSavingsPercent { get; }
         }
 
         // Include completed-but-not-yet-applied results so the UI does not report
@@ -119,7 +132,10 @@ namespace MediaFlux.Services
             VideoEncoderSelection encoder,
             int quality,
             int? targetHeight,
-            bool isCustom)
+            int? targetAudioChannels,
+            bool isCustom,
+            bool recommendationsEnabled,
+            double minimumSavingsPercent)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return;
@@ -133,7 +149,10 @@ namespace MediaFlux.Services
                 encoder,
                 quality,
                 targetHeight,
-                isCustom));
+                targetAudioChannels,
+                isCustom,
+                recommendationsEnabled,
+                minimumSavingsPercent));
         }
 
         public bool TryDequeueSmart(out SmartEstimateResult result)
@@ -274,7 +293,10 @@ namespace MediaFlux.Services
                         item.Profile,
                         item.Encoder,
                         item.Quality,
-                        item.TargetHeight)
+                        item.TargetHeight,
+                        info.AudioBitrateKbps ?? 0,
+                        info.AudioStreamCount,
+                        item.TargetAudioChannels)
                     : item.ManualTargetMb > 0 ? item.ManualTargetMb : 0;
                 string? unavailableReason = null;
                 if (srcMb <= 0)
@@ -282,10 +304,58 @@ namespace MediaFlux.Services
                 else if (estMb <= 0)
                     unavailableReason = "Metadata unavailable";
 
+                SmartEncodeRecommendation? recommendation = null;
+                if (item.RecommendationsEnabled)
+                {
+                    int totalBitrateKbps = info.TotalBitrateKbps ??
+                        (durSec > 0 && srcMb > 0
+                            ? (int)Math.Round(srcMb * 8192d / durSec)
+                            : 0);
+                    int videoBitrateKbps = info.BitrateKbps ?? 0;
+                    int audioBitrateKbps = info.AudioBitrateKbps ??
+                        (videoBitrateKbps > 0
+                            ? Math.Max(0, totalBitrateKbps - videoBitrateKbps)
+                            : 0);
+                    string extension = Path.GetExtension(item.Path);
+                    bool likelyAnimation =
+                        extension.Equals(".gif", StringComparison.OrdinalIgnoreCase) ||
+                        extension.Equals(".apng", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(codec, "gif", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(codec, "apng", StringComparison.OrdinalIgnoreCase);
+
+                    recommendation = _decisionService.Evaluate(
+                        new SmartEncodeSourceInfo
+                        {
+                            Path = item.Path,
+                            SourceMb = srcMb,
+                            DurationSeconds = durSec,
+                            Width = info.Width ?? 0,
+                            Height = info.Height ?? 0,
+                            FramesPerSecond = fps,
+                            VideoBitrateKbps = videoBitrateKbps,
+                            TotalBitrateKbps = totalBitrateKbps,
+                            AudioBitrateKbps = audioBitrateKbps,
+                            VideoStreamCount = info.VideoStreamCount,
+                            AudioStreamCount = info.AudioStreamCount,
+                            SubtitleStreamCount = info.SubtitleStreamCount,
+                            VideoCodec = codec ?? "",
+                            FormatName = info.FormatName ?? "",
+                            FieldOrder = info.FieldOrder ?? "",
+                            IsLikelyAnimation = likelyAnimation
+                        },
+                        new SmartEncodeIntent
+                        {
+                            TargetCodec = item.Encoder.FfmpegCodec,
+                            TargetHeight = item.TargetHeight,
+                            EstimatedOutputMb = estMb,
+                            MinimumSavingsPercent = item.MinimumSavingsPercent
+                        });
+                }
+
                 _smartResults.Enqueue(
                     new SmartEstimateResult(
                         item.Generation, item.Path, srcMb, estMb, durSec, res, codec, fps,
-                        item.IsCustom, unavailableReason));
+                        item.IsCustom, unavailableReason, recommendation));
             }
             catch (Exception ex)
             {
@@ -294,7 +364,7 @@ namespace MediaFlux.Services
                 _smartResults.Enqueue(
                     new SmartEstimateResult(
                         item.Generation, item.Path, 0, 0, 0, null, null, 0,
-                        item.IsCustom, "Metadata unavailable"));
+                        item.IsCustom, "Metadata unavailable", null));
             }
         }
 

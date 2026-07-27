@@ -21,6 +21,7 @@ namespace MediaFlux.Models
         public string OutputBaseName { get; init; } = "";
         public double? KnownDurationSeconds { get; init; }
         public double? KnownAudioBitrateKbps { get; init; }
+        public int KnownAudioStreamCount { get; init; }
         public IReadOnlyList<int> VideoStreamIndexes { get; init; } = Array.Empty<int>();
         public IReadOnlyList<int> AudioStreamIndexes { get; init; } = Array.Empty<int>();
         public IReadOnlyList<int> SubtitleStreamIndexes { get; init; } = Array.Empty<int>();
@@ -34,7 +35,10 @@ namespace MediaFlux.Models
         public bool ShouldDeleteSource(bool deleteRequested) =>
             deleteRequested && AllowSourceDeletion;
 
-        public static EncodingInputSource FromFile(string path) => new()
+        public static EncodingInputSource FromFile(
+            string path,
+            double? knownAudioBitrateKbps = null,
+            int knownAudioStreamCount = 0) => new()
         {
             Kind = EncodingInputKind.File,
             InputPath = path,
@@ -42,6 +46,8 @@ namespace MediaFlux.Models
             OutputBaseName = string.IsNullOrWhiteSpace(path)
                 ? ""
                 : Path.GetFileNameWithoutExtension(path),
+            KnownAudioBitrateKbps = knownAudioBitrateKbps,
+            KnownAudioStreamCount = Math.Max(0, knownAudioStreamCount),
             AllowSourceDeletion = true
         };
     }

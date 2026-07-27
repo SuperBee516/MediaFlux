@@ -36,7 +36,8 @@ namespace MediaFlux.Services
             string compressionProfile,
             string targetCodec = "libx265",
             int quality = 23,
-            int? targetHeight = null)
+            int? targetHeight = null,
+            int? targetAudioChannels = null)
         {
             double srcMb = GetMbOnDisk(path);
             if (srcMb <= 0) return 0;
@@ -58,7 +59,10 @@ namespace MediaFlux.Services
                 compressionProfile,
                 targetCodec,
                 quality,
-                targetHeight);
+                targetHeight,
+                info.AudioBitrateKbps ?? 0,
+                info.AudioStreamCount,
+                targetAudioChannels);
         }
 
         public double EstimateAutoTargetMbSmart(
@@ -66,7 +70,8 @@ namespace MediaFlux.Services
             string compressionProfile,
             VideoEncoderSelection encoder,
             int quality = 23,
-            int? targetHeight = null)
+            int? targetHeight = null,
+            int? targetAudioChannels = null)
         {
             ArgumentNullException.ThrowIfNull(encoder);
             return EstimateAutoTargetMbSmart(
@@ -74,7 +79,8 @@ namespace MediaFlux.Services
                 compressionProfile,
                 encoder.FfmpegCodec,
                 quality,
-                targetHeight);
+                targetHeight,
+                targetAudioChannels);
         }
 
         /// <summary>
@@ -93,7 +99,10 @@ namespace MediaFlux.Services
             string compressionProfile,
             string targetCodec,
             int quality,
-            int? targetHeight)
+            int? targetHeight,
+            int sourceAudioBitrateKbps = 0,
+            int sourceAudioStreamCount = 0,
+            int? targetAudioChannels = null)
         {
             if (srcMb <= 0 || durationSec <= 0 || width <= 0 || height <= 0 || fps <= 0)
                 return 0;
@@ -126,10 +135,19 @@ namespace MediaFlux.Services
             double targetBpp = GetCodecBpp(targetCodec) * profileScale * qualityScale * complexity;
             double targetVideoKbps = ((double)outputWidth * outputHeight * fps * targetBpp) / 1000.0;
 
-            // Preserve the measured non-video portion where possible. This avoids
-            // pretending audio/container bytes disappear and keeps short/low-bitrate
-            // files from receiving implausibly tiny targets.
-            double nonVideoKbps = Math.Clamp(sourceTotalKbps - sourceVideoKbps, 96, 384);
+            // Preserve all measured audio when it will be copied. If the user selected
+            // channel conversion, FFmpeg encodes each mapped audio stream at the
+            // configured AAC rate, so budget for every stream instead of only one.
+            double inferredNonVideoKbps = Math.Max(0, sourceTotalKbps - sourceVideoKbps);
+            double measuredAudioKbps = sourceAudioBitrateKbps > 0
+                ? Math.Min(sourceAudioBitrateKbps, sourceTotalKbps)
+                : inferredNonVideoKbps;
+            double plannedAudioKbps = targetAudioChannels is > 0
+                ? (targetAudioChannels.Value >= 6 ? 384 : 192) *
+                  Math.Max(1, sourceAudioStreamCount)
+                : measuredAudioKbps;
+            double containerKbps = Math.Max(16, sourceTotalKbps * 0.01);
+            double nonVideoKbps = Math.Max(containerKbps, plannedAudioKbps + containerKbps);
             double targetTotalKbps = (targetVideoKbps + nonVideoKbps) * 1.02;
             double estimateMb = targetTotalKbps * durationSec / 8192.0;
 
@@ -147,7 +165,10 @@ namespace MediaFlux.Services
             string compressionProfile,
             VideoEncoderSelection encoder,
             int quality,
-            int? targetHeight)
+            int? targetHeight,
+            int sourceAudioBitrateKbps = 0,
+            int sourceAudioStreamCount = 0,
+            int? targetAudioChannels = null)
         {
             ArgumentNullException.ThrowIfNull(encoder);
             return EstimateAutoTargetMbSmart(
@@ -161,7 +182,10 @@ namespace MediaFlux.Services
                 compressionProfile,
                 encoder.FfmpegCodec,
                 quality,
-                targetHeight);
+                targetHeight,
+                sourceAudioBitrateKbps,
+                sourceAudioStreamCount,
+                targetAudioChannels);
         }
 
         // ─────────────────────────────────────────────

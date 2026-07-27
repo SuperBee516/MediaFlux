@@ -17,7 +17,7 @@ namespace MediaFlux
         // =====================
         private sealed class QueueSnapshot
         {
-            public string Version { get; set; } = "1.2";
+            public string Version { get; set; } = "1.3";
             public DateTime SavedUtc { get; set; } = DateTime.UtcNow;
             public QueueSettings Settings { get; set; } = new QueueSettings();
             public List<QueueItem> Items { get; set; } = new List<QueueItem>();
@@ -42,6 +42,7 @@ namespace MediaFlux
         private sealed class QueueItem
         {
             public string Path { get; set; } = "";
+            public string? ContentHint { get; set; }
             public DvdQueueItem? Dvd { get; set; }
         }
 
@@ -116,6 +117,11 @@ namespace MediaFlux
                     items.Add(new QueueItem
                     {
                         Path = path,
+                        ContentHint = (row.Tag as RowMeta)?.ContentHint is
+                            SmartEncodeContentHint hint &&
+                            hint != SmartEncodeContentHint.Auto
+                                ? hint.ToString()
+                                : null,
                         Dvd = dvdOptions == null
                             ? null
                             : new DvdQueueItem
@@ -267,6 +273,17 @@ namespace MediaFlux
                     {
                         if (AddEncodeItemIfNotPresent(qi.Path))
                             added++;
+
+                        if (Enum.TryParse(
+                                qi.ContentHint,
+                                ignoreCase: true,
+                                out SmartEncodeContentHint savedHint) &&
+                            _rowsByPath.TryGetValue(qi.Path, out DataGridViewRow? importedRow))
+                        {
+                            RowMeta meta = EnsureRowMeta(importedRow);
+                            meta.ContentHint = savedHint;
+                            UpdateRowCustomFlag(importedRow);
+                        }
                     }
                     else
                     {
