@@ -365,6 +365,59 @@ public sealed class FfmpegCommandBuilderTests
             message => message.Contains("audio=576 kbps", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void TargetSizeBudgetsMappedSubtitleAndDataStreams()
+    {
+        var log = new List<string>();
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            targetMb: 100,
+            knownDuration: TimeSpan.FromSeconds(100),
+            knownAudioBitrateKbps: 160,
+            knownMappedAncillaryBitrateKbps: 40);
+        var builder = new FfmpegCommandBuilder(
+            EncoderRegistry.Default,
+            _ => 160,
+            log.Add);
+
+        string arguments = builder.Build(request);
+
+        Assert.Contains("-b:v 7910k", arguments);
+        Assert.Contains(
+            log,
+            message => message.Contains(
+                "subtitles/data=40 kbps",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void EstimatorTargetTotalProducesSameFfmpegVideoBitrate()
+    {
+        const double durationSeconds = 3_600;
+        const double targetVideoKbps = 2_500;
+        const double audioKbps = 192;
+        const double subtitleKbps = 20;
+        double targetTotalKbps =
+            SizeEstimateService.CalculateTargetTotalBitrateKbps(
+                targetVideoKbps,
+                audioKbps + subtitleKbps);
+        double targetMb =
+            targetTotalKbps * durationSeconds / 8192d;
+
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            targetMb: targetMb,
+            knownDuration: TimeSpan.FromSeconds(durationSeconds),
+            knownAudioBitrateKbps: audioKbps,
+            knownMappedAncillaryBitrateKbps: subtitleKbps);
+
+        string arguments = CreateBuilder().Build(request);
+
+        Assert.Contains("-b:v 2500k", arguments);
+    }
+
     private static FfmpegCommandBuilder CreateBuilder() =>
         new(EncoderRegistry.Default, _ => 160);
 
@@ -382,6 +435,7 @@ public sealed class FfmpegCommandBuilderTests
         bool copySubtitles = true,
         bool copyDataStreams = true,
         int knownAudioStreamCount = 0,
+        double knownMappedAncillaryBitrateKbps = 0,
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None)
     {
@@ -402,6 +456,7 @@ public sealed class FfmpegCommandBuilderTests
             copySubtitles,
             copyDataStreams,
             knownAudioStreamCount,
+            knownMappedAncillaryBitrateKbps,
             scaleMode);
     }
 
@@ -419,6 +474,7 @@ public sealed class FfmpegCommandBuilderTests
         bool copySubtitles = true,
         bool copyDataStreams = true,
         int knownAudioStreamCount = 0,
+        double knownMappedAncillaryBitrateKbps = 0,
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None)
     {
@@ -432,7 +488,9 @@ public sealed class FfmpegCommandBuilderTests
                 SourcePath = "C:\\Media\\source.mkv",
                 OutputBaseName = "source",
                 KnownAudioBitrateKbps = knownAudioBitrateKbps,
-                KnownAudioStreamCount = knownAudioStreamCount
+                KnownAudioStreamCount = knownAudioStreamCount,
+                KnownMappedAncillaryBitrateKbps =
+                    knownMappedAncillaryBitrateKbps
             },
             OutputPath = "C:\\Output\\source.mp4",
             Encoder = selection,

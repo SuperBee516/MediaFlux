@@ -143,6 +143,10 @@ namespace MediaFlux
 
                                 if (item.Fps > 0)
                                     rm.Fps = (int)Math.Round(item.Fps);
+
+                                rm.EstimateDiagnostic = item.EstimateDiagnostic;
+                                rm.EstimatedPlannedAudioBitrateKbps =
+                                    item.PlannedAudioBitrateKbps;
                             }
                             else
                             {
@@ -153,7 +157,10 @@ namespace MediaFlux
                                     Resolution = res,
                                     SrcMb = srcMb,
                                     VideoCodec = codec,
-                                    Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0
+                                    Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0,
+                                    EstimateDiagnostic = item.EstimateDiagnostic,
+                                    EstimatedPlannedAudioBitrateKbps =
+                                        item.PlannedAudioBitrateKbps
                                 };
                             }
 
@@ -371,6 +378,13 @@ namespace MediaFlux
                     SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
 
                 // Queue estimate work; UI pump will apply results
+                StorageSavingsOptions rowStorageSavings =
+                    _config.StorageSavings.CloneNormalized();
+                if (meta?.CustomTargetMb is > 0 ||
+                    !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile))
+                {
+                    rowStorageSavings.Enabled = false;
+                }
                 QueueEstimate(
                     path,
                     rowAuto,
@@ -380,7 +394,8 @@ namespace MediaFlux
                     quality,
                     targetHeight,
                     GetSelectedAudioChannels(),
-                    isCustom);
+                    isCustom,
+                    rowStorageSavings);
                 queued++;
             }
 
@@ -450,7 +465,8 @@ namespace MediaFlux
             int quality,
             int? targetHeight,
             int? targetAudioChannels,
-            bool isCustom)
+            bool isCustom,
+            StorageSavingsOptions storageSavings)
         {
             _estimateService.QueueSmartEstimate(
                 path,
@@ -463,7 +479,8 @@ namespace MediaFlux
                 targetAudioChannels,
                 isCustom,
                 _config.SmartRecommendationsEnabled,
-                _config.MinimumExpectedSavingsPercent);
+                _config.MinimumExpectedSavingsPercent,
+                storageSavings);
         }
 
         private int? GetEstimateTargetHeight()

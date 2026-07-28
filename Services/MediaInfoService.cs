@@ -11,7 +11,7 @@ namespace MediaFlux.Services
 {
     public sealed class MediaInfoService
     {
-        private const int PersistentCacheVersion = 3;
+        private const int PersistentCacheVersion = 4;
         private readonly string _ffprobePath;
         private readonly string? _cachePath;
         private readonly bool _persistentCacheEnabled;
@@ -277,6 +277,35 @@ namespace MediaFlux.Services
                         if (streamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase))
                         {
                             info.SubtitleStreamCount++;
+                            AddStreamBitrate(
+                                s,
+                                bitrate => info.SubtitleBitrateKbps =
+                                    (info.SubtitleBitrateKbps ?? 0) + bitrate);
+                            continue;
+                        }
+
+                        if (streamType.Equals("data", StringComparison.OrdinalIgnoreCase))
+                        {
+                            info.DataStreamCount++;
+                            AddStreamBitrate(
+                                s,
+                                bitrate => info.DataBitrateKbps =
+                                    (info.DataBitrateKbps ?? 0) + bitrate);
+                            continue;
+                        }
+
+                        if (streamType.Equals("attachment", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // The normal encode command intentionally does not map
+                            // attachment streams, so track them for diagnostics but do
+                            // not budget them into the projected output.
+                            info.AttachmentStreamCount++;
+                            if (s.TryGetProperty("extradata_size", out var sizeProperty) &&
+                                sizeProperty.TryGetInt64(out long attachmentBytes) &&
+                                attachmentBytes > 0)
+                            {
+                                info.AttachmentSizeBytes += attachmentBytes;
+                            }
                             continue;
                         }
 
@@ -354,6 +383,18 @@ namespace MediaFlux.Services
             }
 
             return info;
+        }
+
+        private static void AddStreamBitrate(
+            JsonElement stream,
+            Action<int> addBitrateKbps)
+        {
+            if (stream.TryGetProperty("bit_rate", out var bitrateProperty) &&
+                int.TryParse(bitrateProperty.GetString(), out int bitsPerSecond) &&
+                bitsPerSecond > 0)
+            {
+                addBitrateKbps(bitsPerSecond / 1000);
+            }
         }
 
         private double ProbeDurationSeconds(string path)
@@ -486,9 +527,14 @@ namespace MediaFlux.Services
             public int? BitrateKbps { get; set; }
             public int? TotalBitrateKbps { get; set; }
             public int? AudioBitrateKbps { get; set; }
+            public int? SubtitleBitrateKbps { get; set; }
+            public int? DataBitrateKbps { get; set; }
             public int VideoStreamCount { get; set; }
             public int AudioStreamCount { get; set; }
             public int SubtitleStreamCount { get; set; }
+            public int DataStreamCount { get; set; }
+            public int AttachmentStreamCount { get; set; }
+            public long AttachmentSizeBytes { get; set; }
         }
 
         private void LoadPersistentCache()

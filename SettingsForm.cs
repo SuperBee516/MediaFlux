@@ -34,6 +34,7 @@ namespace MediaFlux
         private CheckBox chkSmartRecommendations = null!;
         private NumericUpDown nudMinimumExpectedSavings = null!;
         private CheckBox chkWarnBeforeEncodingRecommendations = null!;
+        private StorageSavingsOptions _storageSavingsOptions = new();
         private DuplicateKeeperPreferences _duplicateKeeperPreferences = new();
         private readonly ToolTip _settingsToolTip = new();
 
@@ -45,6 +46,7 @@ namespace MediaFlux
             bool focusMediaTools = false)
         {
             InitializeComponent();
+            AutoScroll = true;
             InitializeFfmpegStatusControls();
             InitializeExplorerIntegrationControls();
             Config = cfg;
@@ -128,6 +130,9 @@ namespace MediaFlux
 
         private void InitializeSmartRecommendationControls(Config config)
         {
+            _storageSavingsOptions =
+                (config.StorageSavings ?? new StorageSavingsOptions())
+                .CloneNormalized();
             grpSmartRecommendations = new GroupBox
             {
                 Text = "Smart Encode Recommendations",
@@ -138,11 +143,42 @@ namespace MediaFlux
 
             chkSmartRecommendations = new CheckBox
             {
-                Text = "Analyze whether queued files should be encoded",
+                Text = "Analyze encode candidates",
                 AutoSize = true,
                 Location = new Point(15, 23),
                 Checked = config.SmartRecommendationsEnabled
             };
+            var storageSavingsButton = new Button
+            {
+                Text = "Storage savings…",
+                Location = new Point(225, 18),
+                Size = new Size(145, 27)
+            };
+            storageSavingsButton.Click += (_, __) =>
+            {
+                using var dialog =
+                    new StorageSavingsSettingsForm(_storageSavingsOptions);
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    _storageSavingsOptions =
+                        dialog.Options.CloneNormalized();
+                    UpdateStorageSavingsButton();
+                }
+            };
+
+            void UpdateStorageSavingsButton()
+            {
+                storageSavingsButton.Text = _storageSavingsOptions.Enabled
+                    ? "Storage savings: On"
+                    : "Storage savings…";
+                _settingsToolTip.SetToolTip(
+                    storageSavingsButton,
+                    _storageSavingsOptions.Enabled
+                        ? _storageSavingsOptions.UsesQualityTarget
+                            ? $"HEVC storage mode enabled: quality {_storageSavingsOptions.QualityValue}. Stronger compression can reduce visual quality."
+                            : $"HEVC storage mode enabled: {_storageSavingsOptions.SourceVideoBitratePercent:0.#}% of source video bitrate. Stronger compression can reduce visual quality."
+                        : "Configure an optional aggressive HEVC quality or bitrate target. Conservative behavior remains the default.");
+            }
 
             var minimumLabel = new Label
             {
@@ -188,6 +224,7 @@ namespace MediaFlux
             };
 
             grpSmartRecommendations.Controls.Add(chkSmartRecommendations);
+            grpSmartRecommendations.Controls.Add(storageSavingsButton);
             grpSmartRecommendations.Controls.Add(minimumLabel);
             grpSmartRecommendations.Controls.Add(nudMinimumExpectedSavings);
             grpSmartRecommendations.Controls.Add(percentLabel);
@@ -199,6 +236,7 @@ namespace MediaFlux
             percentLabel.Enabled = chkSmartRecommendations.Checked;
             chkWarnBeforeEncodingRecommendations.Enabled =
                 chkSmartRecommendations.Checked;
+            UpdateStorageSavingsButton();
         }
 
         private void InitializeDvdSettingsControls(Config config)
@@ -660,6 +698,8 @@ namespace MediaFlux
                 (double)nudMinimumExpectedSavings.Value;
             Config.WarnBeforeEncodingSkippedOrReviewItems =
                 chkWarnBeforeEncodingRecommendations.Checked;
+            Config.StorageSavings =
+                _storageSavingsOptions.CloneNormalized();
             Config.FindDuplicatesOnImport = chkFindDuplicatesOnImport.Checked;
             Config.OnlyQueueDuplicateCandidates = chkOnlyQueueDuplicateCandidates.Checked;
             Config.DuplicateScanMode = NormalizeDuplicateScanMode(comboDuplicateScanMode.SelectedItem?.ToString());
@@ -816,7 +856,10 @@ namespace MediaFlux
             grpExplorerIntegration = new GroupBox
             {
                 Text = "Windows Explorer Integration",
-                Location = new Point(415, 725),
+                // Keep this below Smart Encode Recommendations. The smart settings
+                // group was added later and otherwise covered the right half of these
+                // Explorer controls.
+                Location = new Point(415, 850),
                 Size = new Size(795, 110),
                 TabStop = false
             };

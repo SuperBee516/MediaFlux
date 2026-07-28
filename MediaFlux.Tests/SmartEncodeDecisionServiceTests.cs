@@ -35,6 +35,61 @@ public sealed class SmartEncodeDecisionServiceTests
         Assert.Contains("25", result.PrimaryReason);
     }
 
+    [Fact]
+    public void MissingH264StreamBitrateStillProducesUsefulHevcCandidate()
+    {
+        const double durationSeconds = 3_600;
+        const int totalKbps = 3_940;
+        double sourceMb = totalKbps * durationSeconds / 8192d;
+        SizeEstimateBreakdown estimate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                sourceMb,
+                durationSeconds,
+                width: 1920,
+                height: 1080,
+                fps: 24,
+                sourceVideoBitrateKbps: 0,
+                sourceCodec: "h264",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: 900,
+                sourceAudioStreamCount: 2,
+                sourceTotalBitrateKbps: totalKbps);
+
+        SmartEncodeRecommendation result = Evaluate(
+            new SmartEncodeSourceInfo
+            {
+                Path = @"C:\Videos\source.mkv",
+                SourceMb = sourceMb,
+                DurationSeconds = durationSeconds,
+                Width = 1920,
+                Height = 1080,
+                FramesPerSecond = 24,
+                VideoBitrateKbps =
+                    (int)Math.Round(estimate.SourceVideoBitrateKbps),
+                TotalBitrateKbps = totalKbps,
+                AudioBitrateKbps = 900,
+                VideoStreamCount = 1,
+                AudioStreamCount = 2,
+                VideoCodec = "h264",
+                FormatName = "matroska",
+                FieldOrder = "progressive"
+            },
+            new SmartEncodeIntent
+            {
+                TargetCodec = "hevc_nvenc",
+                EstimatedOutputMb = estimate.EstimatedOutputMb,
+                MinimumSavingsPercent = 20
+            });
+
+        Assert.Equal(
+            SmartEncodeRecommendationKind.ModerateCandidate,
+            result.Kind);
+        Assert.True(result.EstimatedSavingsPercent >= 20);
+    }
+
     [Theory]
     [InlineData("tt")]
     [InlineData("bb")]
@@ -201,7 +256,14 @@ public sealed class SmartEncodeDecisionServiceTests
                 SmartRecommendationsEnabled = false,
                 MinimumExpectedSavingsPercent = 22.5,
                 WarnBeforeEncodingSkippedOrReviewItems = false,
-                ShowRecommendationColumn = false
+                ShowRecommendationColumn = false,
+                StorageSavings = new StorageSavingsOptions
+                {
+                    Enabled = true,
+                    TargetMode = StorageSavingsOptions.QualityTarget,
+                    QualityValue = 30,
+                    SourceVideoBitratePercent = 45
+                }
             };
 
             config.Save(path);
@@ -211,6 +273,10 @@ public sealed class SmartEncodeDecisionServiceTests
             Assert.Equal(22.5, loaded.MinimumExpectedSavingsPercent);
             Assert.False(loaded.WarnBeforeEncodingSkippedOrReviewItems);
             Assert.False(loaded.ShowRecommendationColumn);
+            Assert.True(loaded.StorageSavings.Enabled);
+            Assert.True(loaded.StorageSavings.UsesQualityTarget);
+            Assert.Equal(30, loaded.StorageSavings.QualityValue);
+            Assert.Equal(45, loaded.StorageSavings.SourceVideoBitratePercent);
         }
         finally
         {

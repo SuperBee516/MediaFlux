@@ -182,8 +182,13 @@ namespace MediaFlux.Services
             }
 
             double overheadKbps = Math.Max(16, totalKbps * 0.01);
+            double mappedAncillaryKbps =
+                request.Input.KnownMappedAncillaryBitrateKbps;
             double videoKbps =
-                totalKbps - plannedAudioKbps - overheadKbps;
+                totalKbps -
+                plannedAudioKbps -
+                mappedAncillaryKbps -
+                overheadKbps;
             if (videoKbps < 100)
                 videoKbps = 100;
 
@@ -195,6 +200,7 @@ namespace MediaFlux.Services
                 $"target={request.TargetMb.Value:0.##} MB, " +
                 $"duration={seconds:0.##} sec, total={totalKbps:0} kbps, " +
                 $"audio={plannedAudioKbps:0} kbps, " +
+                $"subtitles/data={mappedAncillaryKbps:0} kbps, " +
                 $"video={videoKbps:0} kbps.");
 
             provider.AppendTargetSizeArguments(

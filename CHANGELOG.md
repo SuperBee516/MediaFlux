@@ -38,6 +38,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   unavailable encoder/codec combinations removed from the UI.
 - Command-matrix and opt-in live workflow tests covering software and hardware
   encoder paths.
+- Optional HEVC storage-savings mode with configurable CQ/CRF or source-video
+  bitrate targets and an explicit visual-quality warning.
 
 ### Changed
 
@@ -59,6 +61,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- H.264 estimates no longer double-count measured audio when FFprobe omits the
+  primary video stream bitrate; mapped subtitles are budgeted while MP4-excluded
+  data and attachment streams are removed from the source-video derivation.
+- Target-size estimates and FFmpeg bitrate planning now use the same audio,
+  mapped-stream, and container-overhead budget.
 - DVD title analysis now uses IFO navigation timing when VOB packet timestamps
   wrap or reset, preventing valid remuxes and direct encodes from being rejected
   or budgeted against an inflated duration.

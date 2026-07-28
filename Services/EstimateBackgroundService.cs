@@ -46,6 +46,8 @@ namespace MediaFlux.Services
             public bool IsCustom { get; }
             public string? UnavailableReason { get; }
             public SmartEncodeRecommendation? Recommendation { get; }
+            public string EstimateDiagnostic { get; }
+            public double PlannedAudioBitrateKbps { get; }
 
             public SmartEstimateResult(
                 int generation,
@@ -58,7 +60,9 @@ namespace MediaFlux.Services
                 double fps,
                 bool isCustom,
                 string? unavailableReason,
-                SmartEncodeRecommendation? recommendation)
+                SmartEncodeRecommendation? recommendation,
+                string estimateDiagnostic,
+                double plannedAudioBitrateKbps)
             {
                 Generation = generation;
                 Path = path;
@@ -71,6 +75,8 @@ namespace MediaFlux.Services
                 IsCustom = isCustom;
                 UnavailableReason = unavailableReason;
                 Recommendation = recommendation;
+                EstimateDiagnostic = estimateDiagnostic;
+                PlannedAudioBitrateKbps = plannedAudioBitrateKbps;
             }
         }
 
@@ -88,7 +94,8 @@ namespace MediaFlux.Services
                 int? targetAudioChannels,
                 bool isCustom,
                 bool recommendationsEnabled,
-                double minimumSavingsPercent)
+                double minimumSavingsPercent,
+                StorageSavingsOptions storageSavings)
             {
                 Generation = generation;
                 Path = path;
@@ -102,6 +109,7 @@ namespace MediaFlux.Services
                 IsCustom = isCustom;
                 RecommendationsEnabled = recommendationsEnabled;
                 MinimumSavingsPercent = minimumSavingsPercent;
+                StorageSavings = storageSavings.CloneNormalized();
             }
 
             public int Generation { get; }
@@ -116,6 +124,7 @@ namespace MediaFlux.Services
             public bool IsCustom { get; }
             public bool RecommendationsEnabled { get; }
             public double MinimumSavingsPercent { get; }
+            public StorageSavingsOptions StorageSavings { get; }
         }
 
         // Include completed-but-not-yet-applied results so the UI does not report
@@ -135,7 +144,8 @@ namespace MediaFlux.Services
             int? targetAudioChannels,
             bool isCustom,
             bool recommendationsEnabled,
-            double minimumSavingsPercent)
+            double minimumSavingsPercent,
+            StorageSavingsOptions storageSavings)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return;
@@ -152,7 +162,8 @@ namespace MediaFlux.Services
                 targetAudioChannels,
                 isCustom,
                 recommendationsEnabled,
-                minimumSavingsPercent));
+                minimumSavingsPercent,
+                storageSavings));
         }
 
         public bool TryDequeueSmart(out SmartEstimateResult result)
@@ -281,8 +292,8 @@ namespace MediaFlux.Services
                 bool useProfileEstimate = SizeEstimateService.ShouldUseProfileEstimate(
                     item.Auto,
                     item.ManualTargetMb);
-                double estMb = useProfileEstimate
-                    ? SizeEstimateService.EstimateAutoTargetMbSmart(
+                SizeEstimateBreakdown? estimateBreakdown = useProfileEstimate
+                    ? SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
                         srcMb,
                         durSec,
                         info.Width ?? 0,
@@ -291,13 +302,29 @@ namespace MediaFlux.Services
                         info.BitrateKbps ?? 0,
                         codec,
                         item.Profile,
-                        item.Encoder,
+                        item.Encoder.FfmpegCodec,
                         item.Quality,
                         item.TargetHeight,
                         info.AudioBitrateKbps ?? 0,
                         info.AudioStreamCount,
-                        item.TargetAudioChannels)
-                    : item.ManualTargetMb > 0 ? item.ManualTargetMb : 0;
+                        item.TargetAudioChannels,
+                        info.TotalBitrateKbps ?? 0,
+                        info.SubtitleBitrateKbps ?? 0,
+                        info.SubtitleStreamCount,
+                        info.DataBitrateKbps ?? 0,
+                        info.DataStreamCount,
+                        info.AttachmentStreamCount,
+                        info.AttachmentSizeBytes,
+                        item.StorageSavings)
+                    : null;
+                double estMb = estimateBreakdown?.EstimatedOutputMb ??
+                    (item.ManualTargetMb > 0 ? item.ManualTargetMb : 0);
+                string estimateDiagnostic = estimateBreakdown?.Diagnostic ??
+                    (item.ManualTargetMb > 0
+                        ? $"Manual target selected: {item.ManualTargetMb:0.##} MB."
+                        : "Required metadata is unavailable.");
+                System.Diagnostics.Debug.WriteLine(
+                    $"[SizeEstimate] {item.Path}: {estimateDiagnostic}");
                 string? unavailableReason = null;
                 if (srcMb <= 0)
                     unavailableReason = "Source size unavailable";
@@ -355,7 +382,8 @@ namespace MediaFlux.Services
                 _smartResults.Enqueue(
                     new SmartEstimateResult(
                         item.Generation, item.Path, srcMb, estMb, durSec, res, codec, fps,
-                        item.IsCustom, unavailableReason, recommendation));
+                        item.IsCustom, unavailableReason, recommendation, estimateDiagnostic,
+                        estimateBreakdown?.PlannedAudioBitrateKbps ?? 0));
             }
             catch (Exception ex)
             {
@@ -364,7 +392,8 @@ namespace MediaFlux.Services
                 _smartResults.Enqueue(
                     new SmartEstimateResult(
                         item.Generation, item.Path, 0, 0, 0, null, null, 0,
-                        item.IsCustom, "Metadata unavailable", null));
+                        item.IsCustom, "Metadata unavailable", null,
+                        $"Estimate failed: {ex.Message}", 0));
             }
         }
 

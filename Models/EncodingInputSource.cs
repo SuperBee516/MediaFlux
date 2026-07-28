@@ -22,6 +22,7 @@ namespace MediaFlux.Models
         public double? KnownDurationSeconds { get; init; }
         public double? KnownAudioBitrateKbps { get; init; }
         public int KnownAudioStreamCount { get; init; }
+        public double KnownMappedAncillaryBitrateKbps { get; init; }
         public IReadOnlyList<int> VideoStreamIndexes { get; init; } = Array.Empty<int>();
         public IReadOnlyList<int> AudioStreamIndexes { get; init; } = Array.Empty<int>();
         public IReadOnlyList<int> SubtitleStreamIndexes { get; init; } = Array.Empty<int>();
@@ -38,7 +39,8 @@ namespace MediaFlux.Models
         public static EncodingInputSource FromFile(
             string path,
             double? knownAudioBitrateKbps = null,
-            int knownAudioStreamCount = 0) => new()
+            int knownAudioStreamCount = 0,
+            double knownMappedAncillaryBitrateKbps = 0) => new()
         {
             Kind = EncodingInputKind.File,
             InputPath = path,
@@ -48,6 +50,8 @@ namespace MediaFlux.Models
                 : Path.GetFileNameWithoutExtension(path),
             KnownAudioBitrateKbps = knownAudioBitrateKbps,
             KnownAudioStreamCount = Math.Max(0, knownAudioStreamCount),
+            KnownMappedAncillaryBitrateKbps =
+                Math.Max(0, knownMappedAncillaryBitrateKbps),
             AllowSourceDeletion = true
         };
     }

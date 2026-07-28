@@ -170,23 +170,12 @@ namespace MediaFlux
             if (skip == 0 && review == 0 && remuxOnly == 0 && unavailable == 0)
                 return RecommendationStartChoice.EncodeAll;
 
-            string message =
-                "Smart Encode found files that may not be good candidates for the current settings.\r\n\r\n" +
-                $"Skip: {skip:N0}\r\n" +
-                $"Review: {review:N0}\r\n" +
-                $"Remux only: {remuxOnly:N0}\r\n" +
-                $"Analysis unavailable: {unavailable:N0}\r\n\r\n" +
-                "Yes: encode only Strong and Moderate candidates\r\n" +
-                "No: encode every requested file anyway\r\n" +
-                "Cancel: return to the queue";
-
-            DialogResult choice = MessageBox.Show(
+            DialogResult choice = RecommendationStartForm.ShowRecommendationChoice(
                 this,
-                message,
-                "Review Smart Encode Recommendations",
-                MessageBoxButtons.YesNoCancel,
-                MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button1);
+                skip,
+                review,
+                remuxOnly,
+                unavailable);
 
             return choice switch
             {
@@ -241,6 +230,11 @@ namespace MediaFlux
                 BackColor = SystemColors.Window,
                 Text =
                     recommendation.BuildTooltip() +
+                    (string.IsNullOrWhiteSpace(meta?.EstimateDiagnostic)
+                        ? string.Empty
+                        : Environment.NewLine + Environment.NewLine +
+                          "Estimate diagnostic" + Environment.NewLine +
+                          meta.EstimateDiagnostic) +
                     (meta?.DeepAnalysis == null
                         ? string.Empty
                         : Environment.NewLine + Environment.NewLine +

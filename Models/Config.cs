@@ -66,6 +66,7 @@ namespace MediaFlux.Models
         public bool SmartRecommendationsEnabled { get; set; } = true;
         public double MinimumExpectedSavingsPercent { get; set; } = 15;
         public bool WarnBeforeEncodingSkippedOrReviewItems { get; set; } = true;
+        public StorageSavingsOptions StorageSavings { get; set; } = new();
         public bool FindDuplicatesOnImport { get; set; } = false;
         public bool OnlyQueueDuplicateCandidates { get; set; } = false;
         public string DuplicateScanMode { get; set; } = "Strict visual duplicates";
@@ -161,6 +162,8 @@ namespace MediaFlux.Models
                 config.LargeQueueThreshold = 300;
             config.MinimumExpectedSavingsPercent =
                 Math.Clamp(config.MinimumExpectedSavingsPercent, 0, 90);
+            config.StorageSavings ??= new StorageSavingsOptions();
+            config.StorageSavings.Normalize();
             if (config.WatchFolderIntervalMinutes < 1)
                 config.WatchFolderIntervalMinutes = 5;
             if (config.WatchFolderStabilizationSeconds < 0)

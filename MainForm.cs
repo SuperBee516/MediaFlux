@@ -1542,6 +1542,8 @@ namespace MediaFlux
             public string DuplicateReason = "";
             public SmartEncodeRecommendation? EncodeRecommendation = null;
             public SmartEncodeRecommendation? BaselineEncodeRecommendation = null;
+            public string EstimateDiagnostic = "";
+            public double EstimatedPlannedAudioBitrateKbps = 0;
             public DeepMediaAnalysisResult? DeepAnalysis = null;
             public SmartEncodeContentHint ContentHint = SmartEncodeContentHint.Auto;
             public bool ExcludedFromEncodeAsDuplicate = false;

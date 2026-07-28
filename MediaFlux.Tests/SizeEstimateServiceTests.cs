@@ -143,6 +143,211 @@ public sealed class SizeEstimateServiceTests
         Assert.True(threeStreams > oneStream);
     }
 
+    [Fact]
+    public void H264ToHevcRepresentativeSourceProjectsHistoricalSavingsRange()
+    {
+        const double durationSeconds = 3_600;
+        const int videoKbps = 5_000;
+        const int audioKbps = 192;
+        double sourceMb =
+            (videoKbps + audioKbps) * durationSeconds / 8192d;
+
+        SizeEstimateBreakdown estimate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                sourceMb,
+                durationSeconds,
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                sourceVideoBitrateKbps: videoKbps,
+                sourceCodec: "h264",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: audioKbps,
+                sourceAudioStreamCount: 1,
+                sourceTotalBitrateKbps: videoKbps + audioKbps);
+
+        double savingsPercent =
+            (sourceMb - estimate.EstimatedOutputMb) / sourceMb * 100d;
+        Assert.InRange(savingsPercent, 40, 60);
+        Assert.Equal(videoKbps, estimate.SourceVideoBitrateKbps, precision: 0);
+    }
+
+    [Fact]
+    public void MissingVideoStreamBitrateDoesNotDoubleCountMeasuredAudio()
+    {
+        const double durationSeconds = 3_600;
+        const int derivedVideoKbps = 3_000;
+        const int audioKbps = 900;
+        const int containerKbps = 40;
+        const int totalKbps = derivedVideoKbps + audioKbps + containerKbps;
+        double sourceMb = totalKbps * durationSeconds / 8192d;
+
+        SizeEstimateBreakdown missingVideoBitrate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                sourceMb,
+                durationSeconds,
+                width: 1920,
+                height: 1080,
+                fps: 24,
+                sourceVideoBitrateKbps: 0,
+                sourceCodec: "h264",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: audioKbps,
+                sourceAudioStreamCount: 2,
+                sourceTotalBitrateKbps: totalKbps);
+
+        Assert.InRange(
+            missingVideoBitrate.SourceVideoBitrateKbps,
+            2_950,
+            3_050);
+        Assert.False(missingVideoBitrate.UsedMeasuredVideoBitrate);
+        Assert.Contains(
+            "derived total minus mapped streams",
+            missingVideoBitrate.Diagnostic);
+    }
+
+    [Fact]
+    public void AudioHeavySourceRetainsCopiedAudioFloor()
+    {
+        const double durationSeconds = 3_600;
+        const int videoKbps = 2_600;
+        const int audioKbps = 1_200;
+        double sourceMb =
+            (videoKbps + audioKbps) * durationSeconds / 8192d;
+
+        SizeEstimateBreakdown estimate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                sourceMb,
+                durationSeconds,
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                sourceVideoBitrateKbps: videoKbps,
+                sourceCodec: "h264",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: audioKbps,
+                sourceAudioStreamCount: 3);
+
+        Assert.Equal(audioKbps, estimate.PlannedAudioBitrateKbps, precision: 0);
+        Assert.True(estimate.TargetTotalBitrateKbps >
+                    estimate.TargetVideoBitrateKbps + 1_100);
+    }
+
+    [Fact]
+    public void StreamBudgetCopiesSubtitlesButExcludesDataAndAttachments()
+    {
+        const double durationSeconds = 3_600;
+        const int totalKbps = 4_000;
+        double sourceMb = totalKbps * durationSeconds / 8192d;
+        long attachmentBytes =
+            (long)Math.Round(100d * 1000d * durationSeconds / 8d);
+
+        SizeEstimateBreakdown estimate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                sourceMb,
+                durationSeconds,
+                width: 1920,
+                height: 1080,
+                fps: 24,
+                sourceVideoBitrateKbps: 0,
+                sourceCodec: "h264",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: 200,
+                sourceAudioStreamCount: 1,
+                sourceTotalBitrateKbps: totalKbps,
+                sourceSubtitleBitrateKbps: 20,
+                sourceSubtitleStreamCount: 2,
+                sourceDataBitrateKbps: 100,
+                sourceDataStreamCount: 1,
+                sourceAttachmentStreamCount: 1,
+                sourceAttachmentSizeBytes: attachmentBytes);
+
+        Assert.InRange(estimate.SourceVideoBitrateKbps, 3_500, 3_580);
+        Assert.Equal(
+            20,
+            estimate.PlannedMappedAncillaryBitrateKbps,
+            precision: 0);
+        Assert.Contains("data excluded=1/100 kbps", estimate.Diagnostic);
+        Assert.Contains("attachments excluded=1/", estimate.Diagnostic);
+    }
+
+    [Fact]
+    public void StorageBitrateModeTargetsConfiguredShareOfSourceVideo()
+    {
+        var storage = new MediaFlux.Models.StorageSavingsOptions
+        {
+            Enabled = true,
+            TargetMode =
+                MediaFlux.Models.StorageSavingsOptions.SourceBitrateTarget,
+            SourceVideoBitratePercent = 45
+        };
+
+        SizeEstimateBreakdown estimate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                srcMb: 2_300,
+                durationSec: 3_600,
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                sourceVideoBitrateKbps: 5_000,
+                sourceCodec: "h264",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: 192,
+                sourceAudioStreamCount: 1,
+                storageSavings: storage);
+
+        Assert.Equal(2_250, estimate.TargetVideoBitrateKbps, precision: 0);
+        Assert.Contains("storage bitrate target 45%", estimate.Diagnostic);
+    }
+
+    [Fact]
+    public void StorageQualityModeUsesConfiguredCqProjection()
+    {
+        var storage = new MediaFlux.Models.StorageSavingsOptions
+        {
+            Enabled = true,
+            TargetMode = MediaFlux.Models.StorageSavingsOptions.QualityTarget,
+            QualityValue = 30
+        };
+
+        SizeEstimateBreakdown estimate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                srcMb: 2_300,
+                durationSec: 3_600,
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                sourceVideoBitrateKbps: 5_000,
+                sourceCodec: "h264",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "libx265",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: 192,
+                sourceAudioStreamCount: 1,
+                storageSavings: storage);
+
+        Assert.True(estimate.UsesStorageQualityTarget);
+        Assert.Contains(
+            "quality target 30 (CQ/CRF/ICQ)",
+            estimate.Diagnostic);
+    }
+
     private static double Estimate(
         double srcMb = 1_200,
         double durationSec = 3_600,

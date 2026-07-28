@@ -425,6 +425,8 @@ namespace MediaFlux
             double? targetMb = null;
             bool hasCustomTarget = meta?.CustomTargetMb.HasValue == true;
             bool hasCustomProfile = !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile);
+            StorageSavingsOptions storageSavings =
+                _config.StorageSavings.CloneNormalized();
 
             string profileText = hasCustomProfile
                 ? meta!.CustomCompressionProfile!
@@ -438,6 +440,27 @@ namespace MediaFlux
             int estimateQuality =
                 encoderSnapshot.Validated.QualityValue;
             int? estimateTargetHeight = UiGet(GetEstimateTargetHeight, null);
+            string targetText = hasCustomProfile
+                ? string.Empty
+                : UiGet(() => txtTargetSize.Text, string.Empty);
+            double manualTargetMb = 0;
+            bool hasManualTarget =
+                !hasCustomProfile &&
+                double.TryParse(targetText, out manualTargetMb) &&
+                manualTargetMb > 0;
+            bool storageSavingsApplies =
+                storageSavings.Enabled &&
+                SizeEstimateService.IsHevcCodec(videoCodec) &&
+                !hasCustomTarget &&
+                !hasCustomProfile &&
+                !hasManualTarget &&
+                !profileText.Equals(
+                    "No Compression",
+                    StringComparison.OrdinalIgnoreCase);
+            bool useStorageQualityTarget =
+                storageSavingsApplies && storageSavings.UsesQualityTarget;
+            if (useStorageQualityTarget)
+                estimateQuality = storageSavings.QualityValue;
 
             if (hasCustomTarget)
             {
@@ -465,14 +488,16 @@ namespace MediaFlux
             else
             {
                 // Manual override from UI?
-                var targetText = hasCustomProfile
-                    ? string.Empty
-                    : UiGet(() => txtTargetSize.Text, string.Empty);
-                if (!hasCustomProfile &&
-                    double.TryParse(targetText, out var manualMb) &&
-                    manualMb > 0)
+                if (hasManualTarget)
                 {
-                    targetMb = manualMb;
+                    targetMb = manualTargetMb;
+                }
+                else if (useStorageQualityTarget)
+                {
+                    // Quality-target storage mode must reach the encoder as CQ/CRF.
+                    // The queue estimate is a projection only and must not be turned
+                    // back into a fixed target-size command.
+                    targetMb = null;
                 }
                 else if (_estimatedSizeMap.TryGetValue(file, out var est) && est > 0)
                 {
@@ -496,7 +521,8 @@ namespace MediaFlux
                             estimateTargetEncoder,
                             estimateQuality,
                             estimateTargetHeight,
-                            encoderSnapshot.AudioChannels);
+                            encoderSnapshot.AudioChannels,
+                            storageSavingsApplies ? storageSavings : null);
                     if (fallbackEstimate > 0)
                         targetMb = fallbackEstimate;
                 }
@@ -559,8 +585,16 @@ namespace MediaFlux
                         _mediaInfoService.GetInfo(file);
                     inputSource = EncodingInputSource.FromFile(
                         file,
-                        mediaInfo.AudioBitrateKbps,
-                        mediaInfo.AudioStreamCount);
+                        mediaInfo.AudioBitrateKbps is > 0
+                            ? mediaInfo.AudioBitrateKbps.Value
+                            : meta?.EstimatedPlannedAudioBitrateKbps is > 0
+                                ? meta.EstimatedPlannedAudioBitrateKbps
+                                : null,
+                        mediaInfo.AudioStreamCount,
+                        (mediaInfo.SubtitleBitrateKbps ?? 0) +
+                        (mediaInfo.SubtitleBitrateKbps is > 0
+                            ? 0
+                            : mediaInfo.SubtitleStreamCount * 8d));
                 }
 
                 // Per-job ffmpeg output callback
@@ -593,6 +627,19 @@ namespace MediaFlux
                     OutputPathCallback =
                         path => attemptedOutputPath = path
                 };
+
+                if (!string.IsNullOrWhiteSpace(meta?.EstimateDiagnostic))
+                    jobLog.AppendLine(meta.EstimateDiagnostic);
+                if (storageSavingsApplies)
+                {
+                    jobLog.AppendLine(
+                        useStorageQualityTarget
+                            ? $"Storage savings mode: HEVC quality target {estimateQuality} (CQ/CRF/ICQ). " +
+                              "Output size is a projection and visual quality may be reduced."
+                            : $"Storage savings mode: HEVC video bitrate target " +
+                              $"{storageSavings.SourceVideoBitratePercent:0.#}% of source. " +
+                              "Visual quality may be reduced.");
+                }
 
                 var result = await _encodingService.EncodeWithResultAsync(
                     encodeRequest);
