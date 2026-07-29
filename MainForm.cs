@@ -200,6 +200,8 @@ namespace MediaFlux
 
             // supported extension list storage (managed via Settings)
             _supportedVideoExtsPath = Path.Combine(AppPaths.DataDirectory, "supported_video_extensions.json");
+            _encodingStatisticsService = new EncodingStatisticsService(
+                Path.Combine(AppPaths.DataDirectory, "encoding-statistics.jsonl"));
             RepairConfiguredExplorerIntegration();
 
             InitializeLargeQueueControls();
@@ -612,6 +614,12 @@ namespace MediaFlux
 
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Queue Summary", CreateQueueSummaryGroup()));
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Output Preview", CreateEncodePreviewGroup()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Statistics", CreateEncodingStatisticsGroup()));
+            _encodeInfoTabs.SelectedIndexChanged += (_, __) =>
+            {
+                if (_encodeInfoTabs.SelectedTab?.Text == "Statistics")
+                    RefreshEncodingStatistics();
+            };
             return _encodeInfoTabs;
         }
 
@@ -1550,6 +1558,9 @@ namespace MediaFlux
             public bool DuplicateExclusionOverridden = false;
             public string StatusBeforeDuplicateExclusion = "Queued";
             public DvdImportOptions? DvdEncodeOptions = null;
+            public string StatisticsOperationId = "";
+            public DateTime StatisticsStartUtc;
+            public double StatisticsProcessingSeconds;
 
             public bool HasCustomSettings =>
                 CustomTargetMb.HasValue ||

@@ -36,6 +36,7 @@ namespace MediaFlux
                     : dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>())
                 .Where(row => !row.IsNewRow)
                 .ToList();
+            var initiallyRequestedRows = requestedRows.ToList();
 
             if (!requestedAll && requestedRows.Count == 0)
             {
@@ -146,6 +147,18 @@ namespace MediaFlux
                 })
                 .ToList();
 
+            DateTime statisticsRunStartedUtc = DateTime.UtcNow;
+            foreach (var row in initiallyRequestedRows)
+            {
+                if (row == null || row.IsNewRow)
+                    continue;
+
+                RowMeta meta = EnsureRowMeta(row);
+                meta.StatisticsOperationId = Guid.NewGuid().ToString("N");
+                meta.StatisticsStartUtc = statisticsRunStartedUtc;
+                meta.StatisticsProcessingSeconds = 0;
+            }
+
             foreach (var row in rowsToProcess)
             {
                 if (row == null || row.IsNewRow)
@@ -153,6 +166,10 @@ namespace MediaFlux
 
                 EnsureRowMeta(row).AutoRetryScheduled = false;
             }
+
+            var rowsToProcessSet = rowsToProcess.ToHashSet();
+            RecordSkippedEncodingRows(
+                initiallyRequestedRows.Where(row => !rowsToProcessSet.Contains(row)));
 
             // Expose this list so the context menu can append rows while encoding
             _activeEncodeQueue = rowsToProcess;
@@ -182,6 +199,9 @@ namespace MediaFlux
                         _activeEncodeQueueLock,
                         () => Volatile.Read(ref _pendingEncodeImports) > 0);
                 }
+
+                if (_cancelEncode)
+                    RecordCancelledPendingRetries(rowsToProcess);
 
                 lblEncodeStatus.Text = _cancelEncode
                     ? "Encoding stopped."
@@ -299,8 +319,10 @@ namespace MediaFlux
                 string.IsNullOrWhiteSpace(file))
                 return;
 
-            var meta = row.Tag as RowMeta;
-            DvdImportOptions? dvdOptions = meta?.IsDvdEncode == true
+            RowMeta meta = EnsureRowMeta(row);
+            if (string.IsNullOrWhiteSpace(meta.StatisticsOperationId))
+                meta.StatisticsOperationId = Guid.NewGuid().ToString("N");
+            DvdImportOptions? dvdOptions = meta.IsDvdEncode
                 ? meta.DvdEncodeOptions
                 : null;
             bool isDvdEncode = dvdOptions != null;
@@ -376,6 +398,11 @@ namespace MediaFlux
             var jobLog = new StringBuilder();
             _activeJobLogSb = jobLog;
             var jobStartUtc = DateTime.UtcNow;
+            if (meta.StatisticsStartUtc == default)
+                meta.StatisticsStartUtc = jobStartUtc;
+            long? sourceSizeBytes = isDvdEncode
+                ? dvdOptions!.Candidate.CombinedSizeBytes
+                : TryGetFileSizeBytes(file);
 
             // Capture encoder + codec as one immutable selection for this job.
             // This prevents a UI change between reads from producing an invalid
@@ -657,11 +684,14 @@ namespace MediaFlux
                     SetEncodeRowState(row, "Done", "100%", "00:00:00", "Encoding completed successfully.");
                 });
 
+                DateTime jobEndUtc = DateTime.UtcNow;
+                meta!.StatisticsProcessingSeconds +=
+                    Math.Max(0, (jobEndUtc - jobStartUtc).TotalSeconds);
+                long? outputSizeBytes = TryGetFileSizeBytes(result.OutputPath);
+
                 // append success to history – never let this kill the job
                 try
                 {
-                    long? outputSizeBytes = TryGetFileSizeBytes(result.OutputPath);
-
                     lock (_historyLock)
                     {
                         _historyService.Append(new JobHistoryRecord
@@ -669,7 +699,7 @@ namespace MediaFlux
                             Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
                             Status = JobStatus.Success,
                             StartUtc = jobStartUtc,
-                            EndUtc = DateTime.UtcNow,
+                            EndUtc = jobEndUtc,
                             SourcePath = logicalSourcePath,
                             OutputPath = result.OutputPath,
                             EncoderMode = encoderText,
@@ -693,12 +723,8 @@ namespace MediaFlux
                             DvdOutputMode = isDvdEncode
                                 ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
                                 : null,
-                            SourceSizeBytes = isDvdEncode
-                                ? dvdOptions!.Candidate.CombinedSizeBytes
-                                : null,
-                            OutputSizeBytes = isDvdEncode
-                                ? outputSizeBytes
-                                : null,
+                            SourceSizeBytes = sourceSizeBytes,
+                            OutputSizeBytes = outputSizeBytes,
                             WasRecommendedDvdTitle = isDvdEncode
                                 ? dvdOptions!.Candidate.IsLikelyMainFeature
                                 : null
@@ -710,6 +736,20 @@ namespace MediaFlux
                     Debug.WriteLine($"History append (success) failed: {logEx}");
                     // We ignore this; the encode itself succeeded.
                 }
+
+                RecordEncodingStatistics(
+                    meta.StatisticsOperationId,
+                    meta.StatisticsStartUtc,
+                    jobEndUtc,
+                    EncodingStatisticsOutcome.Success,
+                    logicalSourcePath,
+                    result.OutputPath,
+                    videoCodec,
+                    encoderText,
+                    sourceSizeBytes,
+                    outputSizeBytes,
+                    durationSec > 0 ? durationSec : null,
+                    meta.StatisticsProcessingSeconds);
 
                 try
                 {
@@ -756,6 +796,9 @@ namespace MediaFlux
             }
             catch (Exception ex)
             {
+                DateTime attemptEndUtc = DateTime.UtcNow;
+                meta!.StatisticsProcessingSeconds +=
+                    Math.Max(0, (attemptEndUtc - jobStartUtc).TotalSeconds);
                 bool isCanceled = _cancelEncode || ex is OperationCanceledException;
                 var notes = isCanceled
                     ? "Cancelled by user."
@@ -806,9 +849,7 @@ namespace MediaFlux
                             DvdOutputMode = isDvdEncode
                                 ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
                                 : null,
-                            SourceSizeBytes = isDvdEncode
-                                ? dvdOptions!.Candidate.CombinedSizeBytes
-                                : null,
+                            SourceSizeBytes = sourceSizeBytes,
                             OutputSizeBytes = isDvdEncode
                                 ? TryGetFileSizeBytes(attemptedOutputPath)
                                 : null,
@@ -844,6 +885,26 @@ namespace MediaFlux
                     retryQueued = TryQueueFailedRowForAutoRetry(row);
                     if (!retryQueued)
                         System.Threading.Interlocked.Increment(ref _encodeFailedCount);
+                }
+
+                if (isCanceled || !retryQueued)
+                {
+                    RecordEncodingStatistics(
+                        meta.StatisticsOperationId,
+                        meta.StatisticsStartUtc,
+                        DateTime.UtcNow,
+                        isCanceled
+                            ? EncodingStatisticsOutcome.Cancelled
+                            : EncodingStatisticsOutcome.Failed,
+                        logicalSourcePath,
+                        attemptedOutputPath,
+                        videoCodec,
+                        encoderText,
+                        sourceSizeBytes,
+                        outputSizeBytes: null,
+                        mediaDurationSeconds: durationSec > 0 ? durationSec : null,
+                        processingSeconds: meta.StatisticsProcessingSeconds,
+                        notes: historyNotes);
                 }
 
                 Ui(() =>
