@@ -131,6 +131,8 @@ namespace MediaFlux.Models
         public int MainWindowHeight { get; set; } = 0;
         public bool MainWindowMaximized { get; set; } = false;
         public bool EncodeInfoHeaderCollapsed { get; set; } = false;
+        // Zero preserves the application's default Summary / Preview height.
+        public int EncodeInfoHeight { get; set; } = 0;
         public bool EncodingOptionsCollapsed { get; set; } = false;
         public bool DuplicateFinderCollapsed { get; set; } = false;
 

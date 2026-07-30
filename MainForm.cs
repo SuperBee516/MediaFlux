@@ -58,7 +58,9 @@ namespace MediaFlux
         private System.Windows.Forms.Timer? _estSmartUiTimer;
         private System.Windows.Forms.Timer? _estimateRefreshTimer;
 
-        private TableLayoutPanel? _encodeQueueLayout;
+        private SplitContainer? _encodeQueueSplit;
+        private Control? _encodeInfoHeader;
+        private Control? _encodeInfoToggleBar;
         private TableLayoutPanel? _encodeInfoHeaderContent;
         private Button? _btnToggleEncodeInfoHeader;
         private TabControl? _encodeInfoTabs;
@@ -89,6 +91,12 @@ namespace MediaFlux
         private bool _applyingRememberedSort;
         private CompactModeForm? _compactModeForm;
         private Button? _btnCompactMode;
+        private bool _applyingEncodeInfoSplitterState;
+
+        private const int DefaultEncodeInfoHeight = 274;
+        private const int MinimumEncodeInfoHeight = 150;
+        private const int MinimumEncodeQueueHeight = 160;
+        private const int EncodeInfoSplitterWidth = 7;
 
         private PictureBox? _encodingSpinner;
         private Label? _activityLabel;
@@ -396,7 +404,7 @@ namespace MediaFlux
 
         private void CreateEncodeInfoPanels()
         {
-            if (tlEncode == null || dgvEncodeQueue == null || _encodeQueueLayout != null)
+            if (tlEncode == null || dgvEncodeQueue == null || _encodeQueueSplit != null)
                 return;
 
             var position = tlEncode.GetPositionFromControl(dgvEncodeQueue);
@@ -405,24 +413,29 @@ namespace MediaFlux
 
             tlEncode.Controls.Remove(dgvEncodeQueue);
 
-            _encodeQueueLayout = new TableLayoutPanel
+            _encodeQueueSplit = new SplitContainer
             {
-                Name = "tlEncodeQueueAndInfo",
+                Name = "splitEncodeQueueAndInfo",
                 Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 2,
-                Margin = new Padding(0)
+                Orientation = Orientation.Horizontal,
+                FixedPanel = FixedPanel.Panel1,
+                SplitterWidth = EncodeInfoSplitterWidth,
+                Margin = Padding.Empty,
+                BorderStyle = BorderStyle.None,
+                BackColor = Color.FromArgb(210, 214, 220),
+                TabStop = false
             };
-            _encodeQueueLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            _encodeQueueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            _encodeQueueLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
             dgvEncodeQueue.Dock = DockStyle.Fill;
-            _encodeQueueLayout.Controls.Add(CreateEncodeInfoHeader(), 0, 0);
-            _encodeQueueLayout.Controls.Add(dgvEncodeQueue, 0, 1);
+            _encodeInfoHeader = CreateEncodeInfoHeader();
+            _encodeInfoHeader.Dock = DockStyle.Fill;
+            _encodeQueueSplit.Panel1.Controls.Add(_encodeInfoHeader);
+            _encodeQueueSplit.Panel2.Controls.Add(dgvEncodeQueue);
+            _encodeQueueSplit.SplitterMoved += EncodeQueueSplit_SplitterMoved;
+            _encodeQueueSplit.SizeChanged += (_, __) => ApplyEncodeInfoSplitterState();
 
-            tlEncode.Controls.Add(_encodeQueueLayout, position.Column, position.Row);
-            tlEncode.SetColumnSpan(_encodeQueueLayout, 4);
+            tlEncode.Controls.Add(_encodeQueueSplit, position.Column, position.Row);
+            tlEncode.SetColumnSpan(_encodeQueueSplit, 4);
             InitializeEncodeStatusRelocation();
             UpdateSizeTotals();
             UpdateEncodePreview();
@@ -560,17 +573,17 @@ namespace MediaFlux
         {
             var outer = new Panel
             {
-                AutoSize = true,
-                Dock = DockStyle.Top,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
                 BackColor = Color.White,
                 BorderStyle = BorderStyle.FixedSingle,
-                Margin = new Padding(0, 0, 0, 8),
+                Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
 
             var shell = new TableLayoutPanel
             {
-                AutoSize = true,
+                AutoSize = false,
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 2,
@@ -580,14 +593,15 @@ namespace MediaFlux
             };
             shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
-            shell.Controls.Add(CreateEncodeInfoToggleBar(), 0, 0);
+            _encodeInfoToggleBar = CreateEncodeInfoToggleBar();
+            shell.Controls.Add(_encodeInfoToggleBar, 0, 0);
 
             _encodeInfoHeaderContent = new TableLayoutPanel
             {
-                AutoSize = true,
-                Dock = DockStyle.Top,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 1,
                 Padding = new Padding(0),
@@ -595,7 +609,7 @@ namespace MediaFlux
                 BackColor = SystemColors.Control
             };
             _encodeInfoHeaderContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            _encodeInfoHeaderContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _encodeInfoHeaderContent.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             _encodeInfoHeaderContent.Controls.Add(CreateEncodeInfoTabs(), 0, 0);
 
             shell.Controls.Add(_encodeInfoHeaderContent, 0, 1);
@@ -607,8 +621,7 @@ namespace MediaFlux
         {
             _encodeInfoTabs = new TabControl
             {
-                Dock = DockStyle.Top,
-                Height = 230,
+                Dock = DockStyle.Fill,
                 Margin = Padding.Empty
             };
 
@@ -729,6 +742,85 @@ namespace MediaFlux
 
             if (_btnToggleEncodeInfoHeader != null)
                 _btnToggleEncodeInfoHeader.Text = collapsed ? ">" : "v";
+
+            ApplyEncodeInfoSplitterState();
+        }
+
+        private void ApplyEncodeInfoSplitterState()
+        {
+            if (_encodeQueueSplit == null ||
+                _encodeQueueSplit.Height <= EncodeInfoSplitterWidth ||
+                _applyingEncodeInfoSplitterState)
+            {
+                return;
+            }
+
+            bool collapsed = _encodeInfoHeaderContent?.Visible != true;
+            int availableHeight = _encodeQueueSplit.ClientSize.Height;
+            int collapsedHeight = Math.Max(
+                36,
+                (_encodeInfoToggleBar?.PreferredSize.Height ?? 34) + 2);
+
+            _applyingEncodeInfoSplitterState = true;
+            try
+            {
+                // Temporarily relax the top minimum so an expanded section can
+                // still collapse to its compact header.
+                _encodeQueueSplit.Panel1MinSize = 0;
+                _encodeQueueSplit.Panel2MinSize = 0;
+
+                int desiredHeight = collapsed
+                    ? collapsedHeight
+                    : (_config.EncodeInfoHeight > 0
+                        ? _config.EncodeInfoHeight
+                        : DefaultEncodeInfoHeight);
+                int summaryMinimum = collapsed ? collapsedHeight : MinimumEncodeInfoHeight;
+                int legalMaximumHeight = Math.Max(
+                    0,
+                    availableHeight - EncodeInfoSplitterWidth);
+                int effectiveSummaryMinimum = Math.Min(
+                    summaryMinimum,
+                    legalMaximumHeight);
+                int maximumHeight = Math.Min(
+                    legalMaximumHeight,
+                    Math.Max(
+                        effectiveSummaryMinimum,
+                        availableHeight - EncodeInfoSplitterWidth - MinimumEncodeQueueHeight));
+                int splitterDistance = Math.Clamp(
+                    desiredHeight,
+                    effectiveSummaryMinimum,
+                    maximumHeight);
+
+                _encodeQueueSplit.SplitterDistance = splitterDistance;
+                _encodeQueueSplit.IsSplitterFixed = collapsed;
+
+                // Enforce both normal minimums whenever the host has enough room.
+                // If the whole window is temporarily smaller, SplitContainer must
+                // remain lay-outable instead of throwing or overlapping controls.
+                int remainingHeight =
+                    availableHeight - EncodeInfoSplitterWidth - splitterDistance;
+                _encodeQueueSplit.Panel1MinSize = Math.Min(summaryMinimum, splitterDistance);
+                _encodeQueueSplit.Panel2MinSize = Math.Min(
+                    MinimumEncodeQueueHeight,
+                    Math.Max(0, remainingHeight));
+            }
+            finally
+            {
+                _applyingEncodeInfoSplitterState = false;
+            }
+        }
+
+        private void EncodeQueueSplit_SplitterMoved(object? sender, SplitterEventArgs e)
+        {
+            if (_applyingEncodeInfoSplitterState ||
+                _encodeQueueSplit == null ||
+                _encodeInfoHeaderContent?.Visible != true)
+            {
+                return;
+            }
+
+            _config.EncodeInfoHeight = _encodeQueueSplit.SplitterDistance;
+            _config.Save(_configPath);
         }
 
         private void ApplyEncodingOptionsCollapsedState(bool collapsed)
