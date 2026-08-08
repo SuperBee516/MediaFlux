@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using System.Diagnostics;
 
 namespace MediaFlux.Services.LibraryCatalog
 {
@@ -13,6 +14,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly ILibraryScanAccelerationCatalog? _accelerationCatalog;
         private readonly ILibraryChangeJournalProvider? _changeJournal;
         private readonly LibraryStorageScheduler _storageScheduler;
+        private readonly Action<string, string, Exception?>? _diagnosticLog;
         private readonly AsyncPauseGate _pauseGate = new();
         private readonly SemaphoreSlim _scanGate = new(1, 1);
         private CancellationTokenSource? _activeCancellation;
@@ -27,7 +29,8 @@ namespace MediaFlux.Services.LibraryCatalog
             ILibraryEnrichmentSink? enrichmentSink = null,
             ILibraryScanAccelerationCatalog? accelerationCatalog = null,
             ILibraryChangeJournalProvider? changeJournal = null,
-            LibraryStorageScheduler? storageScheduler = null)
+            LibraryStorageScheduler? storageScheduler = null,
+            Action<string, string, Exception?>? diagnosticLog = null)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             _fileSystem = fileSystem ?? new LibraryFileSystem();
@@ -42,6 +45,7 @@ namespace MediaFlux.Services.LibraryCatalog
             _accelerationCatalog = accelerationCatalog ?? catalog as ILibraryScanAccelerationCatalog;
             _changeJournal = changeJournal ?? (_accelerationCatalog == null ? null : new WindowsUsnChangeJournalProvider());
             _storageScheduler = storageScheduler ?? new LibraryStorageScheduler();
+            _diagnosticLog = diagnosticLog;
         }
 
         public bool IsPaused => _pauseGate.IsPaused;
@@ -70,19 +74,30 @@ namespace MediaFlux.Services.LibraryCatalog
             long unchangedFiles = 0;
             long missingFiles = 0;
             long errors = 0;
+            long enrichmentQueued = 0;
+            long enrichmentDeferred = 0;
             int queued = 0;
             int peakQueued = 0;
             string lastError = "";
+            string currentPath = "";
+            long lastProgressTimestamp = 0;
+            int loggedEnrichmentBackpressure = 0;
+            int loggedIndexing = 0;
 
             try
             {
                 LibraryLocationRecord location = _catalog.GetLocation(locationId)
                     ?? throw new KeyNotFoundException($"Library location {locationId} does not exist.");
                 if (!location.IsEnabled)
+                {
+                    Report("Failed", location.Path, force: true);
+                    Log("failed", $"Location: {location.Path}\r\nThe library location is disabled.");
                     return Result(LibraryScanOutcome.Failed, "The library location is disabled.");
+                }
 
                 scan = _catalog.BeginScan(locationId);
-                Report("Checking location");
+                Log("started", $"Location: {location.Path}\r\nScan run: {scan.ScanRunId}\r\nGeneration: {scan.Generation}");
+                Report("Checking location", location.Path, force: true);
                 if (!_fileSystem.DirectoryExists(location.Path))
                 {
                     string message = "The library location is offline or unavailable.";
@@ -92,6 +107,8 @@ namespace MediaFlux.Services.LibraryCatalog
                         message,
                         markMembershipsUnavailable: true);
                     _catalog.CompleteScan(scan, Completion(LibraryScanStatus.Failed, message));
+                    Report("Unavailable", location.Path, force: true);
+                    Log("unavailable", $"Location: {location.Path}\r\n{message}");
                     return Result(LibraryScanOutcome.Unavailable, message);
                 }
 
@@ -104,17 +121,22 @@ namespace MediaFlux.Services.LibraryCatalog
                     LibraryScanAcceleratorState? previous = _accelerationCatalog.GetScanAcceleratorState(locationId);
                     if (previous != null && LibraryChangeJournalSafety.ProvesNoVolumeChanges(previous, checkpoint))
                     {
-                        Report("USN journal confirms no volume changes");
+                        Report("Finalizing scan", location.Path, force: true);
                         _catalog.CompleteScan(scan, Completion(LibraryScanStatus.Completed, ""));
                         _catalog.SetLocationAvailability(locationId, LibraryLocationAvailability.Available);
                         _accelerationCatalog.SaveScanAcceleratorState(ToAcceleratorState(locationId, checkpoint, "No-change scan shortcut used."));
+                        Report("Scan complete", location.Path, force: true);
+                        Log("completed", $"Location: {location.Path}\r\nUSN no-change shortcut used.");
                         return Result(LibraryScanOutcome.Completed, "");
                     }
                 }
 
+                Report("Waiting for storage access", location.Path, force: true);
                 await using IAsyncDisposable storageLease = await _storageScheduler.AcquireAsync(
                     location.Path,
                     cancellationToken: token).ConfigureAwait(false);
+                Report("Discovering files", location.Path, force: true);
+                Log("enumeration started", $"Location: {location.Path}\r\nDiscovery queue capacity: {_options.DiscoveryQueueCapacity}\r\nBatch size: {_options.BatchSize}");
                 var channel = Channel.CreateBounded<LibraryInventoryEntry>(new BoundedChannelOptions(_options.DiscoveryQueueCapacity)
                 {
                     FullMode = BoundedChannelFullMode.Wait,
@@ -157,8 +179,7 @@ namespace MediaFlux.Services.LibraryCatalog
                             int currentQueued = Interlocked.Increment(ref queued);
                             UpdatePeak(ref peakQueued, currentQueued);
                             Interlocked.Increment(ref discovered);
-                            if ((discovered & 127) == 0)
-                                Report("Discovering files");
+                            Report("Discovering files", file.FullPath);
                         }
                         channel.Writer.TryComplete();
                     }
@@ -175,10 +196,10 @@ namespace MediaFlux.Services.LibraryCatalog
                     await _pauseGate.WaitAsync(token).ConfigureAwait(false);
                     batch.Add(entry);
                     if (batch.Count >= _options.BatchSize)
-                        await FlushBatchAsync(batch).ConfigureAwait(false);
+                        FlushBatch(batch);
                 }
                 if (batch.Count > 0)
-                    await FlushBatchAsync(batch).ConfigureAwait(false);
+                    FlushBatch(batch);
                 await producer.ConfigureAwait(false);
 
                 if (errors > 0)
@@ -186,20 +207,24 @@ namespace MediaFlux.Services.LibraryCatalog
                     string message = $"Enumeration was incomplete because {errors:N0} file-system errors occurred. {lastError}".Trim();
                     _catalog.SetLocationAvailability(locationId, LibraryLocationAvailability.Error, message);
                     _catalog.CompleteScan(scan, Completion(LibraryScanStatus.Failed, message));
+                    Report("Failed", currentPath, force: true);
+                    Log("failed", $"Location: {location.Path}\r\n{message}");
                     return Result(LibraryScanOutcome.Failed, message);
                 }
 
-                Report("Reconciling inventory");
+                Report("Finalizing scan", location.Path, force: true);
+                Log("finalizing", $"Location: {location.Path}\r\nDiscovered: {discovered:N0}\r\nIndexed: {written:N0}");
                 LibraryReconciliationResult reconciliation = _catalog.ReconcileCompletedScan(scan);
                 missingFiles = reconciliation.MissingFiles;
                 _catalog.CompleteScan(scan, Completion(LibraryScanStatus.Completed, ""));
                 _catalog.SetLocationAvailability(locationId, LibraryLocationAvailability.Available);
                 if (scanStartCheckpoint != null)
                     _accelerationCatalog?.SaveScanAcceleratorState(ToAcceleratorState(locationId, scanStartCheckpoint, "Authoritative scan checkpoint."));
-                Report("Completed");
+                Report("Scan complete", location.Path, force: true);
+                Log("completed", $"Location: {location.Path}\r\nDiscovered: {discovered:N0}\r\nIndexed: {written:N0}\r\nNew: {newFiles:N0}\r\nChanged: {changedFiles:N0}\r\nUnchanged: {unchangedFiles:N0}\r\nMissing: {missingFiles:N0}\r\nErrors: {errors:N0}\r\nMetadata deferred: {enrichmentDeferred:N0}");
                 return Result(LibraryScanOutcome.Completed, "");
 
-                async Task FlushBatchAsync(List<LibraryInventoryEntry> pending)
+                void FlushBatch(List<LibraryInventoryEntry> pending)
                 {
                     LibraryInventoryBatchResult result = _catalog.UpsertInventoryBatchDetailed(
                         scan,
@@ -210,26 +235,36 @@ namespace MediaFlux.Services.LibraryCatalog
                     changedFiles += result.ChangedFiles;
                     unchangedFiles += result.UnchangedFiles;
                     pending.Clear();
-                    Report("Writing inventory");
+                    Report("Indexing files", result.Mutations.LastOrDefault()?.FullPath ?? currentPath, force: true);
+                    if (Interlocked.Exchange(ref loggedIndexing, 1) == 0)
+                        Log("inventory indexing started", $"Location: {location.Path}\r\nFirst committed batch: {result.Written:N0} files");
 
                     if (_enrichmentSink == null)
                         return;
                     foreach (LibraryInventoryMutation mutation in result.Mutations.Where(item => item.RequiresEnrichment))
                     {
-                        await _enrichmentSink.EnqueueAsync(
-                            new LibraryEnrichmentRequest(
+                        bool accepted = _enrichmentSink.TryEnqueue(new LibraryEnrichmentRequest(
                                 mutation.FileId,
                                 mutation.FullPath,
                                 mutation.VolumeId,
                                 mutation.SizeBytes,
-                                new DateTime(mutation.LastWriteUtcTicks, DateTimeKind.Utc)),
-                            token).ConfigureAwait(false);
+                                new DateTime(mutation.LastWriteUtcTicks, DateTimeKind.Utc)));
+                        if (accepted)
+                            Interlocked.Increment(ref enrichmentQueued);
+                        else
+                        {
+                            Interlocked.Increment(ref enrichmentDeferred);
+                            if (Interlocked.Exchange(ref loggedEnrichmentBackpressure, 1) == 0)
+                                Log("metadata queue saturated", $"Location: {location.Path}\r\nDiscovered: {discovered:N0}\r\nIndexed: {written:N0}\r\nDiscovery queued: {queued:N0}\r\nMetadata work remains durable in the catalog and will be claimed in the background.");
+                        }
                     }
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
                 Resume();
+                Report("Canceled", currentPath, force: true);
+                Log("canceled", $"Location id: {locationId}\r\nDiscovered: {discovered:N0}\r\nIndexed: {written:N0}");
                 if (scan != null)
                 {
                     try
@@ -246,10 +281,14 @@ namespace MediaFlux.Services.LibraryCatalog
             catch (InvalidOperationException ex) when (scan != null &&
                 ex.Message.Contains("generation", StringComparison.OrdinalIgnoreCase))
             {
+                Report("Superseded", currentPath, force: true);
+                Log("superseded", $"Location id: {locationId}\r\n{ex.Message}");
                 return Result(LibraryScanOutcome.Superseded, ex.Message);
             }
             catch (Exception ex)
             {
+                Report("Failed", currentPath, force: true);
+                Log("failed", $"Location id: {locationId}\r\nDiscovered: {discovered:N0}\r\nIndexed: {written:N0}", ex);
                 if (scan != null)
                 {
                     try
@@ -295,18 +334,34 @@ namespace MediaFlux.Services.LibraryCatalog
                 peakQueued,
                 error);
 
-            void Report(string stage) => progress?.Report(new LibraryScanProgress(
-                locationId,
-                stage,
-                Interlocked.Read(ref discovered),
-                Interlocked.Read(ref written),
-                Interlocked.Read(ref newFiles),
-                Interlocked.Read(ref changedFiles),
-                Interlocked.Read(ref unchangedFiles),
-                Interlocked.Read(ref missingFiles),
-                Interlocked.Read(ref errors),
-                Volatile.Read(ref queued),
-                IsPaused));
+            void Report(string stage, string path = "", bool force = false)
+            {
+                if (!string.IsNullOrWhiteSpace(path))
+                    Volatile.Write(ref currentPath, path);
+                long now = Stopwatch.GetTimestamp();
+                long previous = Volatile.Read(ref lastProgressTimestamp);
+                if (!force && previous != 0 && Stopwatch.GetElapsedTime(previous, now) < TimeSpan.FromMilliseconds(250))
+                    return;
+                Volatile.Write(ref lastProgressTimestamp, now);
+                progress?.Report(new LibraryScanProgress(
+                    locationId,
+                    stage,
+                    Volatile.Read(ref currentPath),
+                    Interlocked.Read(ref discovered),
+                    Interlocked.Read(ref written),
+                    Interlocked.Read(ref newFiles),
+                    Interlocked.Read(ref changedFiles),
+                    Interlocked.Read(ref unchangedFiles),
+                    Interlocked.Read(ref missingFiles),
+                    Interlocked.Read(ref errors),
+                    Volatile.Read(ref queued),
+                    Interlocked.Read(ref enrichmentQueued),
+                    Interlocked.Read(ref enrichmentDeferred),
+                    IsPaused));
+            }
+
+            void Log(string eventName, string details, Exception? exception = null) =>
+                _diagnosticLog?.Invoke(eventName, details, exception);
         }
 
         private static void UpdatePeak(ref int peak, int value)

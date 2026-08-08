@@ -76,7 +76,12 @@ namespace MediaFlux.Services.LibraryCatalog
                 _enrichment,
                 _catalog,
                 changeJournal,
-                scheduler);
+                scheduler,
+                (eventName, details, exception) => ErrorLogService.Append(
+                    AppPaths.UserDataDirectory,
+                    $"Library Analyzer scan: {eventName}",
+                    exception: exception,
+                    details: details));
             _ = QueuePendingSafelyAsync();
         }
 

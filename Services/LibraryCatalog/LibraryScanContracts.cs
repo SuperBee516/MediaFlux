@@ -27,6 +27,7 @@ namespace MediaFlux.Services.LibraryCatalog
     public sealed record LibraryScanProgress(
         long LocationId,
         string Stage,
+        string CurrentPath,
         long DiscoveredFiles,
         long WrittenFiles,
         long NewFiles,
@@ -35,6 +36,8 @@ namespace MediaFlux.Services.LibraryCatalog
         long MissingFiles,
         long ErrorCount,
         int QueuedFiles,
+        long EnrichmentQueuedFiles,
+        long EnrichmentDeferredFiles,
         bool Paused);
 
     public sealed record LibraryScanResult(
@@ -88,5 +91,7 @@ namespace MediaFlux.Services.LibraryCatalog
         ValueTask EnqueueAsync(
             LibraryEnrichmentRequest request,
             CancellationToken cancellationToken);
+
+        bool TryEnqueue(LibraryEnrichmentRequest request);
     }
 }

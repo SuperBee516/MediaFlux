@@ -250,13 +250,13 @@ namespace MediaFlux
 
         private void Duplicates_ProgressChanged(object? sender, LibraryDuplicateAnalysisProgress e)
         {
-            if (IsDisposed || !IsHandleCreated) return;
-            BeginInvoke(() =>
-            {
-                _duplicateProgress.Visible = _runtime.Duplicates.IsRunning;
-                _duplicateStatus.Text = $"{e.Stage}: {e.QuickHashed:N0} quick, {e.FullHashed:N0} full hashes" +
-                                        (string.IsNullOrWhiteSpace(e.CurrentPath) ? "" : $" · {Path.GetFileName(e.CurrentPath)}");
-            });
+            _latestDuplicateProgress = e;
+        }
+
+        private void UpdateDuplicateActivity(string status, string detail, long completed, long total)
+        {
+            _duplicateStatus.Text = string.IsNullOrWhiteSpace(detail) ? status : $"{status} · {detail}";
+            ConfigureProgress(_duplicateProgress, true, completed, total, completed > 0 && total > 0);
         }
 
         private ExactDuplicateGroupRecord? SelectedGroup() => _duplicateGroupsGrid.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault()?.Tag as ExactDuplicateGroupRecord;

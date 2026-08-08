@@ -219,13 +219,13 @@ namespace MediaFlux
 
         private void VisualSimilarity_ProgressChanged(object? sender, LibraryVisualAnalysisProgress e)
         {
-            if (IsDisposed || !IsHandleCreated) return;
-            BeginInvoke(() =>
-            {
-                _visualProgress.Visible = _runtime.VisualSimilarity.IsRunning;
-                _visualStatus.Text = $"{e.Stage}: {e.FingerprintedFiles:N0}/{e.EligibleFiles:N0} fingerprinted, {e.MatchPairs:N0}/{e.CandidatePairs:N0} matches" +
-                                     (string.IsNullOrWhiteSpace(e.CurrentPath) ? "" : $" · {Path.GetFileName(e.CurrentPath)}");
-            });
+            _latestVisualProgress = e;
+        }
+
+        private void UpdateVisualActivity(string status, string detail, long completed, long total, bool determinate)
+        {
+            _visualStatus.Text = string.IsNullOrWhiteSpace(detail) ? status : $"{status} · {detail}";
+            ConfigureProgress(_visualProgress, true, completed, total, determinate);
         }
 
         private async void BackupUserDecisions_Click(object? sender, EventArgs e)

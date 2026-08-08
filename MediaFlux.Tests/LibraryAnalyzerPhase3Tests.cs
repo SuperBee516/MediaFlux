@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection;
+using System.Windows.Forms;
 using MediaFlux.Models;
 using MediaFlux.Services.LibraryCatalog;
 using Xunit;
@@ -204,6 +206,133 @@ public sealed class LibraryAnalyzerPhase3Tests : IDisposable
     }
 
     [Fact]
+    public async Task MetadataQueueBackpressureDoesNotBlockInventoryScanWhileStorageIsReserved()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        LibraryLocationRecord location = catalog.UpsertLocation(new LibraryLocationUpsert(Path.Combine(_root, "mapped-library")));
+        const int fileCount = 3_000;
+        var fileSystem = new FakeFileSystem(location.Path,
+            Enumerable.Range(0, fileCount).Select(index => Entry(Path.Combine(location.Path, $"video-{index:D5}.mkv"), index + 1)));
+        var scheduler = new LibraryStorageScheduler(new ConstantStorageResolver());
+        var probe = new FakeMetadataProbe(_ => SuccessfulProbe());
+        await using var enrichment = new LibraryEnrichmentCoordinator(
+            catalog,
+            probe,
+            new LibraryEnrichmentOptions(
+                WorkerCount: 2,
+                QueueCapacity: 128,
+                PendingClaimBatchSize: 64,
+                RetryPollInterval: TimeSpan.FromMinutes(5)),
+            storageScheduler: scheduler);
+        enrichment.Start();
+        var updates = new ConcurrentQueue<LibraryScanProgress>();
+        var diagnostics = new ConcurrentQueue<(string EventName, string Details)>();
+        var scanner = new LibraryScanCoordinator(
+            catalog,
+            new[] { ".mkv" },
+            fileSystem,
+            new FakeIdentityProvider(),
+            new LibraryScanOptions(DiscoveryQueueCapacity: 2_000, BatchSize: 500, CollectStableFileIdentity: false),
+            enrichment,
+            storageScheduler: scheduler,
+            diagnosticLog: (eventName, details, _) => diagnostics.Enqueue((eventName, details)));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+
+        LibraryScanResult result = await scanner.ScanLocationAsync(
+            location.Id,
+            LibraryEnrichmentCoordinator.CurrentMetadataVersion,
+            new InlineProgress<LibraryScanProgress>(updates.Enqueue),
+            cancellationToken: timeout.Token);
+
+        Assert.Equal(LibraryScanOutcome.Completed, result.Outcome);
+        Assert.Equal(fileCount, result.DiscoveredFiles);
+        Assert.Equal(fileCount, catalog.GetCounts().Files);
+        await WaitUntilAsync(() => probe.CallCount > 128, TimeSpan.FromSeconds(5));
+        Assert.Contains(updates, update => update.Stage == "Discovering files" && !string.IsNullOrWhiteSpace(update.CurrentPath));
+        Assert.Contains(updates, update => update.Stage == "Indexing files" && update.WrittenFiles >= 500);
+        Assert.Contains(updates, update => update.Stage == "Finalizing scan");
+        Assert.Contains(updates, update => update.Stage == "Scan complete" && update.WrittenFiles == fileCount);
+        Assert.Contains(updates, update => update.EnrichmentDeferredFiles > 0);
+        Assert.Contains(diagnostics, item => item.EventName == "metadata queue saturated" && item.Details.Contains("Metadata work remains durable", StringComparison.Ordinal));
+        Assert.Contains(diagnostics, item => item.EventName == "completed");
+    }
+
+    [Fact]
+    public void LibraryAnalyzerActivityAreaShowsLiveCountsCurrentPathPauseAndCompletion()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SqliteLibraryCatalog catalog = CreateCatalog();
+                using var runtime = new LibraryAnalyzerRuntime(
+                    catalog,
+                    new[] { ".mkv" },
+                    new FakeMetadataProbe(_ => SuccessfulProbe()),
+                    new EmptyVisualExtractor());
+                using var form = new LibraryAnalyzerForm(runtime);
+                form.Show();
+                GetField<TabControl>(form, "_tabs").SelectedIndex = 1;
+                Application.DoEvents();
+
+                SetField(form, "_scanning", true);
+                SetField(form, "_latestScanProgress", new LibraryScanProgress(
+                    1,
+                    "Discovering files",
+                    @"Y:\Movies\Example.mkv",
+                    2_432,
+                    500,
+                    500,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1_932,
+                    128,
+                    372,
+                    false));
+                InvokeActivityRefresh(form);
+
+                var status = GetField<Label>(form, "_scanStatus");
+                var detail = GetField<Label>(form, "_scanDetail");
+                var progress = GetField<ProgressBar>(form, "_scanProgress");
+                Assert.Contains("2,432 discovered", status.Text, StringComparison.Ordinal);
+                Assert.Contains("500 indexed", status.Text, StringComparison.Ordinal);
+                Assert.Contains("1,932 pending", status.Text, StringComparison.Ordinal);
+                Assert.Contains(@"Y:\Movies\Example.mkv", detail.Text, StringComparison.Ordinal);
+                Assert.Contains("372 metadata items deferred safely", detail.Text, StringComparison.Ordinal);
+                Assert.True(progress.Visible);
+                Assert.Equal(ProgressBarStyle.Marquee, progress.Style);
+
+                runtime.Scanner.Pause();
+                InvokeActivityRefresh(form);
+                Assert.StartsWith("Paused:", status.Text, StringComparison.Ordinal);
+                runtime.Scanner.Resume();
+
+                SetField(form, "_scanning", false);
+                SetField<LibraryScanProgress?>(form, "_latestScanProgress", null);
+                SetField(form, "_scanTerminalStatus", "Completed: 2,432 files, 0 missing");
+                InvokeActivityRefresh(form);
+                Assert.Equal("Completed: 2,432 files, 0 missing", status.Text);
+                Assert.False(progress.Visible);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(15)), "The Library Analyzer UI smoke test did not finish.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException("The Library Analyzer UI smoke test failed.", failure);
+    }
+
+    [Fact]
     public async Task MetadataEnrichmentPersistsFullProbeAndIsReusedByUnchangedScan()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();
@@ -215,7 +344,22 @@ public sealed class LibraryAnalyzerPhase3Tests : IDisposable
         var scanner = CreateScanner(catalog, fileSystem, enrichmentSink: enrichment);
 
         await scanner.ScanLocationAsync(location.Id, LibraryEnrichmentCoordinator.CurrentMetadataVersion);
-        await WaitUntilAsync(() => probe.CallCount == 1 && !enrichment.IsRunning);
+        try
+        {
+            await WaitUntilAsync(() => probe.CallCount == 1 && !enrichment.IsRunning);
+        }
+        catch (TimeoutException)
+        {
+            LibraryOverview state = catalog.GetOverview(LibraryEnrichmentCoordinator.CurrentMetadataVersion);
+            _output.WriteLine(
+                "Metadata wait timed out: calls={0}, queued={1}, active={2}, running={3}, pending={4}",
+                probe.CallCount,
+                enrichment.QueuedCount,
+                enrichment.ActiveCount,
+                enrichment.IsRunning,
+                state.PendingEnrichment);
+            throw;
+        }
         IndexedFileRecord file = Assert.IsType<IndexedFileRecord>(catalog.GetFileByPath(Path.Combine(location.Path, "movie.mkv")));
         LibraryMediaMetadata metadata = Assert.IsType<LibraryMediaMetadata>(catalog.GetMediaMetadata(file.Id));
         await scanner.ScanLocationAsync(location.Id, LibraryEnrichmentCoordinator.CurrentMetadataVersion);
@@ -414,4 +558,33 @@ public sealed class LibraryAnalyzerPhase3Tests : IDisposable
         public Task<MediaProbeResult> ProbeAsync(string path, CancellationToken cancellationToken) =>
             Task.FromResult(_result(Interlocked.Increment(ref _calls)));
     }
+
+    private sealed class ConstantStorageResolver : ILibraryStorageKeyResolver
+    {
+        public string ResolveStorageKey(string path, string reportedVolumeId = "") => "mapped-drive";
+    }
+
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
+    }
+
+    private sealed class EmptyVisualExtractor : ILibraryVisualFingerprintExtractor
+    {
+        public string ToolVersion => "fake-ffmpeg-v1";
+        public Task<IReadOnlyList<ulong>> ExtractAsync(VisualFingerprintCandidate candidate, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<ulong>>(Array.Empty<ulong>());
+    }
+
+    private static T GetField<T>(object instance, string name) =>
+        (T)(instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(instance)
+            ?? throw new MissingFieldException(instance.GetType().FullName, name));
+
+    private static void SetField<T>(object instance, string name, T value) =>
+        (instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(instance.GetType().FullName, name)).SetValue(instance, value);
+
+    private static void InvokeActivityRefresh(LibraryAnalyzerForm form) =>
+        (form.GetType().GetMethod("RefreshActivityDisplay", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(form.GetType().FullName, "RefreshActivityDisplay")).Invoke(form, null);
 }

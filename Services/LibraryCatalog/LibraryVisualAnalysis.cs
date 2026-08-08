@@ -197,6 +197,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly object _sync = new();
         private CancellationTokenSource? _activeCancellation;
         private TaskCompletionSource? _activeCompletion;
+        private int _waitingForEncoding;
         private bool _disposed;
 
         public LibraryVisualAnalysisCoordinator(
@@ -218,6 +219,7 @@ namespace MediaFlux.Services.LibraryCatalog
         public event EventHandler<LibraryVisualAnalysisProgress>? ProgressChanged;
         public bool IsRunning { get { lock (_sync) return _activeCancellation != null; } }
         public bool IsPaused => _pause.IsPaused;
+        public bool IsWaitingForEncoding => Volatile.Read(ref _waitingForEncoding) != 0;
         public void Pause() => _pause.Pause();
         public void Resume() => _pause.Resume();
         public void Cancel() { lock (_sync) _activeCancellation?.Cancel(); }
@@ -347,11 +349,16 @@ namespace MediaFlux.Services.LibraryCatalog
         private async Task WaitForPermissionAsync(CancellationToken token)
         {
             await _pause.WaitAsync(token).ConfigureAwait(false);
-            while (_isEncodingActive())
+            try
             {
-                await Task.Delay(_options.EffectiveEncodingPollInterval, token).ConfigureAwait(false);
-                await _pause.WaitAsync(token).ConfigureAwait(false);
+                while (_isEncodingActive())
+                {
+                    Volatile.Write(ref _waitingForEncoding, 1);
+                    await Task.Delay(_options.EffectiveEncodingPollInterval, token).ConfigureAwait(false);
+                    await _pause.WaitAsync(token).ConfigureAwait(false);
+                }
             }
+            finally { Volatile.Write(ref _waitingForEncoding, 0); }
         }
 
         private void Report(string stage, long eligible, long fingerprinted, long candidates, long matches, long errors, string path) =>

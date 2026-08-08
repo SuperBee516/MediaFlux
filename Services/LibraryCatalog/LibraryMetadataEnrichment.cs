@@ -84,7 +84,9 @@ namespace MediaFlux.Services.LibraryCatalog
         long Failed,
         int Queued,
         int Active,
-        string CurrentPath);
+        string CurrentPath,
+        string Activity,
+        bool IsEncodingThrottled);
 
     public sealed class LibraryEnrichmentCoordinator : ILibraryEnrichmentSink, IAsyncDisposable
     {
@@ -97,6 +99,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly ConcurrentDictionary<long, byte> _queuedFiles = new();
         private readonly LibraryStorageScheduler _storageScheduler;
         private readonly CancellationTokenSource _shutdown = new();
+        private readonly SemaphoreSlim _pendingSignal = new(0, 1);
         private readonly List<Task> _workers = new();
         private Task? _retryLoop;
         private long _completed;
@@ -104,6 +107,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private int _queued;
         private int _active;
         private bool _started;
+        private int _encodingThrottled;
 
         public LibraryEnrichmentCoordinator(
             ILibraryCatalog catalog,
@@ -129,6 +133,8 @@ namespace MediaFlux.Services.LibraryCatalog
         public event EventHandler<LibraryEnrichmentProgress>? ProgressChanged;
         public bool IsRunning => Volatile.Read(ref _active) > 0 || Volatile.Read(ref _queued) > 0;
         public int QueuedCount => Volatile.Read(ref _queued);
+        public int ActiveCount => Volatile.Read(ref _active);
+        public bool IsEncodingThrottled => Volatile.Read(ref _encodingThrottled) != 0;
 
         public void Start()
         {
@@ -148,17 +154,44 @@ namespace MediaFlux.Services.LibraryCatalog
                 throw new InvalidOperationException("The enrichment coordinator has not been started.");
             if (!_queuedFiles.TryAdd(request.FileId, 0))
                 return;
+            Interlocked.Increment(ref _queued);
             try
             {
                 await _channel.Writer.WriteAsync(request, cancellationToken).ConfigureAwait(false);
-                Interlocked.Increment(ref _queued);
-                RaiseProgress(request.FullPath);
+                RaiseProgress(request.FullPath, "Queued for metadata");
             }
             catch
             {
+                Interlocked.Decrement(ref _queued);
                 _queuedFiles.TryRemove(request.FileId, out _);
                 throw;
             }
+        }
+
+        public bool TryEnqueue(LibraryEnrichmentRequest request)
+        {
+            if (!_started)
+                throw new InvalidOperationException("The enrichment coordinator has not been started.");
+            if (!_queuedFiles.TryAdd(request.FileId, 0))
+                return true;
+
+            Interlocked.Increment(ref _queued);
+            if (_channel.Writer.TryWrite(request))
+            {
+                RaiseProgress(request.FullPath, "Queued for metadata");
+                return true;
+            }
+
+            Interlocked.Decrement(ref _queued);
+            _queuedFiles.TryRemove(request.FileId, out _);
+            NotifyPendingWork();
+            return false;
+        }
+
+        public void NotifyPendingWork()
+        {
+            try { _pendingSignal.Release(); }
+            catch (SemaphoreFullException) { }
         }
 
         public async Task<int> QueuePendingAsync(CancellationToken cancellationToken = default)
@@ -190,6 +223,7 @@ namespace MediaFlux.Services.LibraryCatalog
             if (!_started)
             {
                 _shutdown.Dispose();
+                _pendingSignal.Dispose();
                 return;
             }
             _shutdown.Cancel();
@@ -202,24 +236,32 @@ namespace MediaFlux.Services.LibraryCatalog
             {
             }
             _shutdown.Dispose();
+            _pendingSignal.Dispose();
         }
 
         private async Task WorkerAsync(CancellationToken cancellationToken)
         {
             await foreach (LibraryEnrichmentRequest request in _channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-                Interlocked.Decrement(ref _queued);
                 Interlocked.Increment(ref _active);
+                Interlocked.Decrement(ref _queued);
                 try
                 {
                     while (_isEncodingActive())
+                    {
+                        Volatile.Write(ref _encodingThrottled, 1);
+                        RaiseProgress(request.FullPath, "Waiting for active encoding");
                         await Task.Delay(_options.EffectiveEncodingThrottleDelay, cancellationToken).ConfigureAwait(false);
+                    }
+                    Volatile.Write(ref _encodingThrottled, 0);
 
+                    RaiseProgress(request.FullPath, "Waiting for storage access");
                     await using (await _storageScheduler.AcquireAsync(
                                      request.FullPath,
                                      request.VolumeId,
                                      cancellationToken).ConfigureAwait(false))
                     {
+                        RaiseProgress(request.FullPath, "Reading media metadata");
                         MediaProbeResult result = await _probe.ProbeAsync(request.FullPath, cancellationToken).ConfigureAwait(false);
                         DateTime now = DateTime.UtcNow;
                         LibraryMediaMetadata metadata = LibraryMetadataMapper.Map(
@@ -256,9 +298,12 @@ namespace MediaFlux.Services.LibraryCatalog
                 }
                 finally
                 {
+                    Volatile.Write(ref _encodingThrottled, 0);
                     _queuedFiles.TryRemove(request.FileId, out _);
                     Interlocked.Decrement(ref _active);
-                    RaiseProgress(request.FullPath);
+                    RaiseProgress(request.FullPath, "Metadata item finished");
+                    if (QueuedCount < _options.QueueCapacity / 2)
+                        NotifyPendingWork();
                 }
             }
         }
@@ -267,7 +312,8 @@ namespace MediaFlux.Services.LibraryCatalog
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(_options.EffectiveRetryPollInterval, cancellationToken).ConfigureAwait(false);
+                await _pendingSignal.WaitAsync(_options.EffectiveRetryPollInterval, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (QueuedCount < _options.QueueCapacity / 2)
                     await QueuePendingAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -279,12 +325,14 @@ namespace MediaFlux.Services.LibraryCatalog
             return TimeSpan.FromTicks(checked((long)(_options.EffectiveRetryBaseDelay.Ticks * multiplier)));
         }
 
-        private void RaiseProgress(string path) => ProgressChanged?.Invoke(this, new LibraryEnrichmentProgress(
+        private void RaiseProgress(string path, string activity) => ProgressChanged?.Invoke(this, new LibraryEnrichmentProgress(
             Interlocked.Read(ref _completed),
             Interlocked.Read(ref _failed),
             Volatile.Read(ref _queued),
             Volatile.Read(ref _active),
-            path));
+            path,
+            activity,
+            IsEncodingThrottled));
     }
 
     internal static class LibraryMetadataMapper

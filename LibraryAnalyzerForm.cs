@@ -17,8 +17,9 @@ namespace MediaFlux
         private readonly Label _overviewPending = ValueLabel();
         private readonly Label _overviewUnavailable = ValueLabel();
         private readonly Label _overviewLastScan = ValueLabel();
-        private readonly Label _scanStatus = new() { AutoSize = true, Text = "Ready", Padding = new Padding(6) };
-        private readonly ProgressBar _scanProgress = new() { Width = 220, Style = ProgressBarStyle.Marquee, Visible = false };
+        private readonly Label _scanStatus = new() { AutoEllipsis = true, Dock = DockStyle.Fill, Text = "Ready", Padding = new Padding(6, 2, 6, 0) };
+        private readonly Label _scanDetail = new() { AutoEllipsis = true, Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(6, 0, 6, 2) };
+        private readonly ProgressBar _scanProgress = new() { Dock = DockStyle.Fill, Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 25, Visible = false };
         private readonly TextBox _search = new() { Width = 260, PlaceholderText = "Filename or path" };
         private readonly ComboBox _fileLocation = DropDown();
         private readonly ComboBox _availability = DropDown();
@@ -29,10 +30,17 @@ namespace MediaFlux
         private readonly Button _previous = new() { Text = "Previous", AutoSize = true };
         private readonly Button _next = new() { Text = "Next", AutoSize = true };
         private readonly System.Windows.Forms.Timer _refreshTimer = new() { Interval = 2_000 };
+        private readonly System.Windows.Forms.Timer _activityTimer = new() { Interval = 250 };
         private int _page;
         private long _totalFiles;
         private bool _loadingFiles;
         private bool _scanning;
+        private volatile LibraryScanProgress? _latestScanProgress;
+        private volatile LibraryEnrichmentProgress? _latestEnrichmentProgress;
+        private volatile LibraryDuplicateAnalysisProgress? _latestDuplicateProgress;
+        private volatile LibraryVisualAnalysisProgress? _latestVisualProgress;
+        private string _scanTerminalStatus = "Ready";
+        private DateTime _scanTerminalStatusUntilUtc;
 
         public LibraryAnalyzerForm(
             LibraryAnalyzerRuntime runtime,
@@ -58,11 +66,14 @@ namespace MediaFlux
             _runtime.VisualSimilarity.ProgressChanged += VisualSimilarity_ProgressChanged;
             _tabs.SelectedIndexChanged += async (_, _) => await RefreshSelectedTabAsync();
             _refreshTimer.Tick += async (_, _) => await RefreshCurrentStateAsync();
+            _activityTimer.Tick += (_, _) => RefreshActivityDisplay();
             _refreshTimer.Start();
+            _activityTimer.Start();
             Shown += async (_, _) => await RefreshAllAsync();
             FormClosed += (_, _) =>
             {
                 _refreshTimer.Stop();
+                _activityTimer.Stop();
                 _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
                 _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
                 _runtime.VisualSimilarity.ProgressChanged -= VisualSimilarity_ProgressChanged;
@@ -129,20 +140,27 @@ namespace MediaFlux
             Button remove = AddButton(buttons, "Remove", RemoveLocation_Click);
             Button toggle = AddButton(buttons, "Enable / Disable", ToggleLocation_Click);
             Button scan = AddButton(buttons, "Scan selected", ScanSelected_Click);
-            Button pause = AddButton(buttons, "Pause", (_, _) => { _runtime.Scanner.Pause(); _scanStatus.Text = "Paused"; });
-            Button resume = AddButton(buttons, "Resume", (_, _) => { _runtime.Scanner.Resume(); _scanStatus.Text = "Resuming…"; });
-            Button cancel = AddButton(buttons, "Cancel", (_, _) => _runtime.Scanner.Cancel());
+            Button pause = AddButton(buttons, "Pause", (_, _) => { _runtime.Scanner.Pause(); RefreshActivityDisplay(); });
+            Button resume = AddButton(buttons, "Resume", (_, _) => { _runtime.Scanner.Resume(); RefreshActivityDisplay(); });
+            Button cancel = AddButton(buttons, "Cancel", (_, _) => { _scanTerminalStatus = "Canceling scan…"; _runtime.Scanner.Cancel(); RefreshActivityDisplay(); });
             _ = add; _ = remove; _ = toggle; _ = scan; _ = pause; _ = resume; _ = cancel;
 
-            var statusPanel = new FlowLayoutPanel
+            var statusPanel = new TableLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 38,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false
+                Height = 58,
+                ColumnCount = 2,
+                RowCount = 2,
+                Padding = new Padding(0, 4, 0, 0)
             };
-            statusPanel.Controls.Add(_scanProgress);
-            statusPanel.Controls.Add(_scanStatus);
+            statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
+            statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            statusPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
+            statusPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+            statusPanel.Controls.Add(_scanProgress, 0, 0);
+            statusPanel.SetRowSpan(_scanProgress, 2);
+            statusPanel.Controls.Add(_scanStatus, 1, 0);
+            statusPanel.Controls.Add(_scanDetail, 1, 1);
 
             _locationsGrid.MultiSelect = true;
             _locationsGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
@@ -310,14 +328,15 @@ namespace MediaFlux
                 return;
 
             _scanning = true;
-            _scanProgress.Visible = true;
+            _latestScanProgress = null;
+            _scanTerminalStatus = "Preparing scan…";
+            RefreshActivityDisplay();
             try
             {
                 var progress = new Progress<LibraryScanProgress>(value =>
                 {
-                    _scanStatus.Text = $"{value.Stage}: {value.DiscoveredFiles:N0} found, " +
-                                       $"{value.NewFiles:N0} new, {value.ChangedFiles:N0} changed, " +
-                                       $"{value.ErrorCount:N0} errors";
+                    _latestScanProgress = value;
+                    RefreshActivityDisplay();
                 });
                 foreach (long id in ids)
                 {
@@ -325,9 +344,10 @@ namespace MediaFlux
                         id,
                         LibraryEnrichmentCoordinator.CurrentMetadataVersion,
                         progress);
-                    _scanStatus.Text = result.Outcome == LibraryScanOutcome.Completed
+                    _scanTerminalStatus = result.Outcome == LibraryScanOutcome.Completed
                         ? $"Completed: {result.DiscoveredFiles:N0} files, {result.MissingFiles:N0} missing"
                         : $"{result.Outcome}: {result.ErrorMessage}";
+                    _scanTerminalStatusUntilUtc = DateTime.UtcNow.AddSeconds(6);
                     await RefreshAllAsync();
                     if (result.Outcome == LibraryScanOutcome.Canceled)
                         break;
@@ -336,7 +356,8 @@ namespace MediaFlux
             finally
             {
                 _scanning = false;
-                _scanProgress.Visible = false;
+                _latestScanProgress = null;
+                RefreshActivityDisplay();
             }
         }
 
@@ -504,9 +525,113 @@ namespace MediaFlux
 
         private void Enrichment_ProgressChanged(object? sender, LibraryEnrichmentProgress e)
         {
+            _latestEnrichmentProgress = e;
+        }
+
+        private void RefreshActivityDisplay()
+        {
             if (IsDisposed || !IsHandleCreated)
                 return;
-            BeginInvoke(async () => await RefreshOverviewAsync());
+
+            LibraryScanProgress? scan = _latestScanProgress;
+            if (_scanning || _runtime.Scanner.IsScanning)
+            {
+                if (scan == null)
+                {
+                    SetActivity("Preparing scan…", "Waiting for scan initialization.", active: true);
+                    return;
+                }
+
+                string phase = _runtime.Scanner.IsPaused || scan.Paused ? "Paused" : scan.Stage;
+                long pending = Math.Max(0, scan.DiscoveredFiles - scan.WrittenFiles);
+                string status = $"{phase}: {scan.DiscoveredFiles:N0} discovered · {scan.WrittenFiles:N0} indexed · " +
+                                $"{scan.NewFiles:N0} new · {scan.ChangedFiles:N0} changed · {scan.UnchangedFiles:N0} unchanged · " +
+                                $"{scan.ErrorCount:N0} errors · {pending:N0} pending";
+                string detail = string.IsNullOrWhiteSpace(scan.CurrentPath) ? "" : $"Current: {scan.CurrentPath}";
+                if (scan.EnrichmentDeferredFiles > 0)
+                    detail = $"{detail}{(detail.Length == 0 ? "" : " · ")}{scan.EnrichmentDeferredFiles:N0} metadata items deferred safely to background workers";
+                SetActivity(status, detail, active: true);
+                return;
+            }
+
+            LibraryDuplicateAnalysisProgress? duplicate = _latestDuplicateProgress;
+            if (_runtime.Duplicates.IsRunning)
+            {
+                string phase = _runtime.Duplicates.IsPaused
+                    ? "Exact duplicate analysis paused"
+                    : _runtime.Duplicates.IsWaitingForEncoding
+                        ? "Exact duplicate analysis waiting for active encoding"
+                        : $"Analyzing exact duplicates — {duplicate?.Stage ?? "starting"}";
+                string status = $"{phase}: {duplicate?.QuickHashed ?? 0:N0} quick · {duplicate?.FullHashed ?? 0:N0} full hashes · {duplicate?.ErrorCount ?? 0:N0} errors";
+                string detail = string.IsNullOrWhiteSpace(duplicate?.CurrentPath) ? "" : $"Current: {duplicate.CurrentPath}";
+                long total = duplicate?.SizeCandidates ?? 0;
+                long completed = duplicate?.Stage == "Quick fingerprints" ? duplicate.QuickHashed : 0;
+                SetActivity(status, detail, active: true, completed, total, determinate: completed > 0 && total > 0);
+                UpdateDuplicateActivity(status, detail, completed, total);
+                return;
+            }
+
+            LibraryVisualAnalysisProgress? visual = _latestVisualProgress;
+            if (_runtime.VisualSimilarity.IsRunning)
+            {
+                string phase = _runtime.VisualSimilarity.IsPaused
+                    ? "Visual analysis paused"
+                    : _runtime.VisualSimilarity.IsWaitingForEncoding
+                        ? "Visual analysis waiting for active encoding"
+                        : visual?.Stage == "Extracting visual fingerprints"
+                            ? "Generating visual fingerprints"
+                            : $"Analyzing visual similarity — {visual?.Stage ?? "starting"}";
+                string status = $"{phase}: {visual?.FingerprintedFiles ?? 0:N0}/{visual?.EligibleFiles ?? 0:N0} fingerprinted · " +
+                                $"{visual?.MatchPairs ?? 0:N0} matches · {visual?.ErrorCount ?? 0:N0} errors";
+                string detail = string.IsNullOrWhiteSpace(visual?.CurrentPath) ? "" : $"Current: {visual.CurrentPath}";
+                bool determinate = visual?.Stage == "Extracting visual fingerprints" && visual.EligibleFiles > 0;
+                SetActivity(status, detail, active: true, visual?.FingerprintedFiles ?? 0, visual?.EligibleFiles ?? 0, determinate);
+                UpdateVisualActivity(status, detail, visual?.FingerprintedFiles ?? 0, visual?.EligibleFiles ?? 0, determinate);
+                return;
+            }
+
+            LibraryEnrichmentProgress? enrichment = _latestEnrichmentProgress;
+            if (_runtime.Enrichment.IsRunning)
+            {
+                string phase = _runtime.Enrichment.IsEncodingThrottled
+                    ? "Metadata processing waiting for active encoding"
+                    : enrichment?.Activity == "Waiting for storage access"
+                        ? "Metadata processing waiting for storage access"
+                        : "Reading media metadata";
+                string status = $"{phase}: {enrichment?.Completed ?? 0:N0} completed · {enrichment?.Queued ?? _runtime.Enrichment.QueuedCount:N0} queued · " +
+                                $"{enrichment?.Active ?? _runtime.Enrichment.ActiveCount:N0} active · {enrichment?.Failed ?? 0:N0} failed";
+                if (DateTime.UtcNow < _scanTerminalStatusUntilUtc)
+                    status = $"{_scanTerminalStatus} · {status}";
+                string detail = string.IsNullOrWhiteSpace(enrichment?.CurrentPath) ? "" : $"Current: {enrichment.CurrentPath}";
+                SetActivity(status, detail, active: true);
+                return;
+            }
+
+            SetActivity(_scanTerminalStatus, "", active: false);
+        }
+
+        private void SetActivity(string status, string detail, bool active, long completed = 0, long total = 0, bool determinate = false)
+        {
+            _scanStatus.Text = status;
+            _scanDetail.Text = detail;
+            ConfigureProgress(_scanProgress, active, completed, total, determinate);
+        }
+
+        private static void ConfigureProgress(ProgressBar bar, bool active, long completed, long total, bool determinate)
+        {
+            bar.Visible = active;
+            if (!active)
+                return;
+            if (!determinate || total <= 0)
+            {
+                bar.Style = ProgressBarStyle.Marquee;
+                bar.MarqueeAnimationSpeed = 25;
+                return;
+            }
+            bar.Style = ProgressBarStyle.Continuous;
+            bar.Minimum = 0;
+            bar.Maximum = 1000;
+            bar.Value = (int)Math.Clamp(completed * 1000L / total, 0, 1000);
         }
 
         private static DataGridView CreateGrid() => new()
