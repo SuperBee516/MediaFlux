@@ -8,6 +8,7 @@ namespace MediaFlux
         private const int PageSize = 200;
         private readonly LibraryAnalyzerRuntime _runtime;
         private readonly LibraryAnalyzerCleanupOptions _cleanupOptions;
+        private readonly LibraryAnalyzerReviewOptions _reviewOptions;
         private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
         private readonly DataGridView _locationsGrid = CreateGrid();
         private readonly DataGridView _filesGrid = CreateGrid();
@@ -44,10 +45,12 @@ namespace MediaFlux
 
         public LibraryAnalyzerForm(
             LibraryAnalyzerRuntime runtime,
-            LibraryAnalyzerCleanupOptions? cleanupOptions = null)
+            LibraryAnalyzerCleanupOptions? cleanupOptions = null,
+            LibraryAnalyzerReviewOptions? reviewOptions = null)
         {
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
             _cleanupOptions = cleanupOptions ?? new LibraryAnalyzerCleanupOptions();
+            _reviewOptions = reviewOptions ?? new LibraryAnalyzerReviewOptions();
             Text = "Library Analyzer";
             MinimumSize = new Size(980, 620);
             Size = new Size(1280, 780);
@@ -72,6 +75,7 @@ namespace MediaFlux
             Shown += async (_, _) => await RefreshAllAsync();
             FormClosed += (_, _) =>
             {
+                Interlocked.Increment(ref _visualMemberLoadVersion);
                 _refreshTimer.Stop();
                 _activityTimer.Stop();
                 _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
@@ -725,5 +729,11 @@ namespace MediaFlux
             bool AllowRecycleBin = true,
             bool AllowQuarantine = false,
             string QuarantineFolder = "");
+
+        public sealed record LibraryAnalyzerReviewOptions(
+            string FfmpegPath = "",
+            string ExternalPlayerPath = "",
+            Action<string>? VideoLauncher = null,
+            string PreviewCacheRoot = "");
     }
 }

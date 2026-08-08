@@ -17,9 +17,13 @@ namespace MediaFlux
         private readonly Label _visualStatus = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0), Text = "Visual similarity analysis has not run." };
         private readonly Label _visualPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
         private readonly ProgressBar _visualProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
+        private readonly ContextMenuStrip _visualGroupsMenu = new();
+        private readonly ContextMenuStrip _visualMembersMenu = new();
         private int _visualPage;
         private long _visualTotal;
         private bool _loadingVisualGroups;
+        private int _visualMemberLoadVersion;
+        private readonly SemaphoreSlim _visualMemberRefreshLock = new(1, 1);
 
         private void BuildVisualSimilarityTab()
         {
@@ -62,6 +66,19 @@ namespace MediaFlux
             AddVisualGroupColumn("Evidence", "Evidence", 430);
             _visualGroupsGrid.MultiSelect = false;
             _visualGroupsGrid.SelectionChanged += async (_, _) => await RefreshVisualMembersAsync();
+            _visualGroupsGrid.CellDoubleClick += async (_, e) =>
+            {
+                if (e.RowIndex >= 0)
+                    await OpenVisualReviewAsync();
+            };
+            _visualGroupsGrid.KeyDown += async (_, e) =>
+            {
+                if (e.KeyCode != Keys.Enter)
+                    return;
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                await OpenVisualReviewAsync();
+            };
 
             AddVisualMemberColumn("Keeper", "Keeper", 85);
             AddVisualMemberColumn("Protected", "Protected", 70);
@@ -73,6 +90,14 @@ namespace MediaFlux
             AddVisualMemberColumn("Bitrate", "Bitrate", 90);
             AddVisualMemberColumn("Duration", "Duration", 85);
             AddVisualMemberColumn("Availability", "Availability", 90);
+            _visualMembersGrid.MultiSelect = false;
+            _visualMembersGrid.CellDoubleClick += (_, e) =>
+            {
+                if (e.RowIndex >= 0)
+                    PlaySelectedVisualMember();
+            };
+            _visualMembersGrid.KeyDown += VisualMembersGrid_KeyDown;
+            ConfigureVisualContextMenus();
 
             var notice = new Label
             {
@@ -125,14 +150,23 @@ namespace MediaFlux
             finally { _visualProgress.Visible = false; }
         }
 
-        private async Task RefreshVisualGroupsAsync()
+        private async Task RefreshVisualGroupsAsync(long? preferredGroupId = null)
         {
             if (_loadingVisualGroups || IsDisposed) return;
             _loadingVisualGroups = true;
             try
             {
-                VisualSimilarityGroupPage page = await Task.Run(() => _runtime.VisualCatalog.QueryVisualGroups(BuildVisualQuery()));
+                preferredGroupId ??= SelectedVisualGroup()?.GroupId;
+                VisualGroupQuery query = BuildVisualQuery();
+                VisualSimilarityGroupPage page = await Task.Run(() => _runtime.VisualCatalog.QueryVisualGroups(query));
                 if (IsDisposed) return;
+                if (page.TotalCount > 0 && page.Groups.Count == 0 && _visualPage > 0)
+                {
+                    _visualPage = (int)((page.TotalCount - 1) / VisualPageSize);
+                    query = BuildVisualQuery();
+                    page = await Task.Run(() => _runtime.VisualCatalog.QueryVisualGroups(query));
+                    if (IsDisposed) return;
+                }
                 _visualTotal = page.TotalCount;
                 _visualGroupsGrid.Rows.Clear();
                 foreach (VisualSimilarityGroupRecord group in page.Groups)
@@ -142,6 +176,12 @@ namespace MediaFlux
                         group.Ignored ? "Ignored" : group.Reviewed ? "Reviewed" : "Unreviewed", group.EvidenceText);
                     _visualGroupsGrid.Rows[row].Tag = group;
                 }
+                DataGridViewRow? preferredRow = preferredGroupId.HasValue
+                    ? _visualGroupsGrid.Rows.Cast<DataGridViewRow>()
+                        .FirstOrDefault(row => row.Tag is VisualSimilarityGroupRecord group && group.GroupId == preferredGroupId.Value)
+                    : null;
+                if (preferredRow != null)
+                    SelectVisualGroupRow(preferredRow.Index);
                 long first = _visualTotal == 0 ? 0 : (long)_visualPage * VisualPageSize + 1;
                 long last = Math.Min(_visualTotal, ((long)_visualPage + 1) * VisualPageSize);
                 _visualPageLabel.Text = $"{first:N0}–{last:N0} of {_visualTotal:N0}";
@@ -152,20 +192,34 @@ namespace MediaFlux
 
         private async Task RefreshVisualMembersAsync()
         {
-            if (_visualGroupsGrid.SelectedRows.Count == 0) { _visualMembersGrid.Rows.Clear(); return; }
-            long groupId = Convert.ToInt64(_visualGroupsGrid.SelectedRows[0].Cells[0].Value);
-            IReadOnlyList<VisualSimilarityMemberRecord> members = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroupMembers(groupId));
-            if (IsDisposed) return;
-            _visualMembersGrid.Rows.Clear();
-            foreach (VisualSimilarityMemberRecord member in members)
+            int loadVersion = Interlocked.Increment(ref _visualMemberLoadVersion);
+            await _visualMemberRefreshLock.WaitAsync();
+            try
             {
-                string keeper = member.IsManualKeeper ? "Manual" : member.IsSuggestedKeeper ? "Suggested" : "Candidate";
-                int row = _visualMembersGrid.Rows.Add(keeper, member.IsProtected ? "Yes" : "No", member.FullPath, member.LocationPath,
-                    FormatBytes(member.SizeBytes), member.VideoCodec, member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
-                    member.TotalBitRate.HasValue ? $"{member.TotalBitRate / 1_000_000d:0.##} Mbps" : "",
-                    member.DurationSeconds.HasValue ? FormatDuration(member.DurationSeconds.Value) : "", member.Availability);
-                _visualMembersGrid.Rows[row].Tag = member;
+                if (loadVersion != Volatile.Read(ref _visualMemberLoadVersion) || IsDisposed || Disposing || _visualMembersGrid.IsDisposed)
+                    return;
+                if (_visualGroupsGrid.SelectedRows.Count == 0) { _visualMembersGrid.Rows.Clear(); return; }
+                long groupId = Convert.ToInt64(_visualGroupsGrid.SelectedRows[0].Cells[0].Value);
+                IReadOnlyList<VisualSimilarityMemberRecord> members = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroupMembers(groupId));
+                if (loadVersion != Volatile.Read(ref _visualMemberLoadVersion) || IsDisposed || Disposing || _visualMembersGrid.IsDisposed)
+                    return;
+                _visualMembersGrid.Rows.Clear();
+                foreach (VisualSimilarityMemberRecord member in members)
+                {
+                    string keeper = member.IsManualKeeper ? "Manual" : member.IsSuggestedKeeper ? "Suggested" : "Candidate";
+                    int row = _visualMembersGrid.Rows.Add(keeper, member.IsProtected ? "Yes" : "No", member.FullPath, member.LocationPath,
+                        FormatBytes(member.SizeBytes), member.VideoCodec, member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
+                        member.TotalBitRate.HasValue ? $"{member.TotalBitRate / 1_000_000d:0.##} Mbps" : "",
+                        member.DurationSeconds.HasValue ? FormatDuration(member.DurationSeconds.Value) : "", member.Availability);
+                    _visualMembersGrid.Rows[row].Tag = member;
+                }
+                if (_visualMembersGrid.Rows.Count > 0 && _visualMembersGrid.SelectedRows.Count == 0)
+                {
+                    _visualMembersGrid.Rows[0].Selected = true;
+                    _visualMembersGrid.CurrentCell = _visualMembersGrid.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                }
             }
+            finally { _visualMemberRefreshLock.Release(); }
         }
 
         private VisualGroupQuery BuildVisualQuery()
@@ -191,30 +245,22 @@ namespace MediaFlux
 
         private async void SetVisualKeeper_Click(object? sender, EventArgs e)
         {
-            if (SelectedVisualGroup() is not { } group || SelectedVisualMember() is not { } member) return;
-            _runtime.VisualCatalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, member.FileId, true, group.Ignored));
-            await RefreshVisualGroupsAsync();
+            await SetSelectedVisualKeeperAsync();
         }
 
         private async void ToggleVisualProtection_Click(object? sender, EventArgs e)
         {
-            if (SelectedVisualMember() is not { } member) return;
-            _runtime.AnalysisCatalog.SetFileProtection(member.FileId, !member.IsProtected, member.IsProtected ? "" : "Protected in Library Analyzer visual review");
-            await RefreshVisualGroupsAsync();
+            await ToggleSelectedVisualProtectionAsync();
         }
 
         private async void MarkVisualReviewed_Click(object? sender, EventArgs e)
         {
-            if (SelectedVisualGroup() is not { } group) return;
-            _runtime.VisualCatalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, group.Ignored));
-            await RefreshVisualGroupsAsync();
+            await MarkSelectedVisualReviewedAsync();
         }
 
         private async void ToggleVisualIgnored_Click(object? sender, EventArgs e)
         {
-            if (SelectedVisualGroup() is not { } group) return;
-            _runtime.VisualCatalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, !group.Ignored));
-            await RefreshVisualGroupsAsync();
+            await ToggleSelectedVisualIgnoredAsync();
         }
 
         private void VisualSimilarity_ProgressChanged(object? sender, LibraryVisualAnalysisProgress e)

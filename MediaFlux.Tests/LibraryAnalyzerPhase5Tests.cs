@@ -1,7 +1,12 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Drawing;
+using System.Reflection;
+using System.Windows.Forms;
 using Microsoft.Data.Sqlite;
 using MediaFlux.Models;
+using MediaFlux.Services;
 using MediaFlux.Services.LibraryCatalog;
 using Xunit;
 using Xunit.Abstractions;
@@ -407,6 +412,209 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             extractor.ExtractAsync(cancellationCandidate, new CancellationToken(canceled: true)));
     }
 
+    [Fact]
+    public void VisualReviewWorkflowSupportsComparisonPlaybackNavigationMenusAndDurableDecisions()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                SqliteLibraryCatalog catalog = CreateCatalog(Path.Combine(_root, "visual-review.db"));
+                string library = Path.Combine(_root, "visual-review");
+                Directory.CreateDirectory(library);
+                string a = Write(library, "first-original.mkv", 800);
+                string b = Write(library, "first-reencode.mp4", 700);
+                string c = Write(library, "second-original.mkv", 900);
+                string d = Write(library, "second-reencode.mp4", 650);
+                AddInventoryAndMetadata(catalog, library, new[] { a, b, c, d }, path =>
+                    path == a || path == b ? ("h264", 1920, 1080, 60d) : ("hevc", 1280, 720, 120d));
+                ulong[] firstHashes = { 0x1111111111111111, 0x2111111111111111, 0x3111111111111111, 0x4111111111111111, 0x5111111111111111, 0x6111111111111111 };
+                ulong[] secondHashes = { 0xaaaaaaaaaaaaaaaa, 0xbaaaaaaaaaaaaaaa, 0xcaaaaaaaaaaaaaaa, 0xdaaaaaaaaaaaaaaa, 0xeaaaaaaaaaaaaaaa, 0xfaaaaaaaaaaaaaaa };
+                var extractor = new FakeVisualExtractor(path => path == a || path == b ? firstHashes : secondHashes);
+                using (var analysis = new LibraryVisualAnalysisCoordinator(catalog, extractor, new LibraryVisualAnalysisOptions(1, 3, 16, 128, 3, 70)))
+                    Assert.Equal(2, analysis.AnalyzeAsync().GetAwaiter().GetResult().MatchPairs);
+
+                var played = new ConcurrentQueue<string>();
+                using var runtime = new LibraryAnalyzerRuntime(
+                    catalog,
+                    new[] { ".mkv", ".mp4" },
+                    new EmptyMetadataProbe(),
+                    extractor);
+                using var form = new LibraryAnalyzerForm(
+                    runtime,
+                    reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(VideoLauncher: played.Enqueue, PreviewCacheRoot: _root));
+                form.Show();
+                TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Duplicates — Visual");
+                Application.DoEvents();
+                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+
+                DataGridView groups = GetPrivateField<DataGridView>(form, "_visualGroupsGrid");
+                DataGridView members = GetPrivateField<DataGridView>(form, "_visualMembersGrid");
+                Assert.Equal(2, groups.Rows.Count);
+                PumpUntil(() => members.Rows.Count == 2);
+                long initialGroupId = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
+
+                ContextMenuStrip groupMenu = GetPrivateField<ContextMenuStrip>(form, "_visualGroupsMenu");
+                ContextMenuStrip memberMenu = GetPrivateField<ContextMenuStrip>(form, "_visualMembersMenu");
+                InvokePrivate(form, "VisualGroupsMenu_Opening", groupMenu, new CancelEventArgs());
+                InvokePrivate(form, "VisualMembersMenu_Opening", memberMenu, new CancelEventArgs());
+                Assert.True(groupMenu.Items.Find("Review", false).Single().Enabled);
+                Assert.True(groupMenu.Items.Find("Next", false).Single().Enabled);
+                Assert.True(memberMenu.Items.Find("Play", false).Single().Enabled);
+                Assert.True(memberMenu.Items.Find("Keeper", false).Single().Enabled);
+                Assert.Equal("Protect", memberMenu.Items.Find("Protect", false).Single().Text);
+
+                bool sawComparison = false;
+                bool navigated = false;
+                bool ignoreClicked = false;
+                bool restoreClicked = false;
+                string? firstReviewTitle = null;
+                using var timer = new System.Windows.Forms.Timer { Interval = 50 };
+                timer.Tick += (_, _) =>
+                {
+                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Match", StringComparison.Ordinal));
+                    if (review == null)
+                        return;
+                    Panel[] cards = Descendants<Panel>(review).Where(panel => panel.AccessibleName?.StartsWith("Visual review file:", StringComparison.Ordinal) == true).ToArray();
+                    if (cards.Length != 2)
+                        return;
+                    if (!sawComparison)
+                    {
+                        sawComparison = true;
+                        firstReviewTitle = review.Text;
+                        foreach (Panel card in cards)
+                            Descendants<Button>(card).Single(button => button.Text == "Play video").PerformClick();
+                        Descendants<Button>(review).Single(button => button.Text == "Next >").PerformClick();
+                        return;
+                    }
+                    if (!navigated && review.Text != firstReviewTitle)
+                    {
+                        navigated = true;
+                        Descendants<Button>(review).Single(button => button.Text == "Ignore").PerformClick();
+                        ignoreClicked = true;
+                        return;
+                    }
+                    if (ignoreClicked && !restoreClicked && Descendants<Button>(review).FirstOrDefault(button => button.Text == "Restore") is { } restore)
+                    {
+                        restore.PerformClick();
+                        restoreClicked = true;
+                        return;
+                    }
+                    if (restoreClicked && Descendants<Button>(review).Any(button => button.Text == "Ignore"))
+                    {
+                        review.Close();
+                    }
+                };
+                timer.Start();
+                Task reviewTask = InvokePrivateTask(form, "OpenVisualReviewAsync");
+                PumpTask(reviewTask, TimeSpan.FromSeconds(10));
+                timer.Stop();
+                Assert.True(sawComparison);
+                Assert.True(navigated);
+                Assert.True(ignoreClicked);
+                Assert.True(restoreClicked);
+                Assert.Equal(2, played.Count);
+                Assert.Contains(a, played.Concat(new[] { "" }), StringComparer.OrdinalIgnoreCase);
+                Assert.Contains(b, played.Concat(new[] { "" }), StringComparer.OrdinalIgnoreCase);
+
+                DataGridViewRow initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                groups.ClearSelection();
+                initialRow.Selected = true;
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                PumpUntil(() => members.Rows.Count == 2 && members.SelectedRows.Count == 1);
+                VisualSimilarityMemberRecord selectedMember = (VisualSimilarityMemberRecord)members.SelectedRows[0].Tag!;
+                PumpTask(InvokePrivateTask(form, "SetSelectedVisualKeeperAsync"));
+                Assert.Equal(selectedMember.FileId, catalog.GetVisualGroup(initialGroupId)!.ManualKeeperFileId);
+                Assert.True(catalog.GetVisualGroup(initialGroupId)!.Reviewed);
+
+                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualProtectionAsync"));
+                Assert.True(catalog.GetVisualGroupMembers(initialGroupId).Single(member => member.FileId == selectedMember.FileId).IsProtected);
+                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualIgnoredAsync"));
+                Assert.True(catalog.GetVisualGroup(initialGroupId)!.Ignored);
+                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualIgnoredAsync"));
+                Assert.False(catalog.GetVisualGroup(initialGroupId)!.Ignored);
+
+                long beforeNavigation = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
+                PumpTask(InvokePrivateTask(form, "NavigateVisualSelectionAsync", 1));
+                long afterNavigation = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
+                Assert.NotEqual(beforeNavigation, afterNavigation);
+                PumpTask(InvokePrivateTask(form, "NavigateVisualSelectionAsync", -1));
+                Assert.Equal(beforeNavigation, ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId);
+                form.Close();
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(20)), "The visual review UI test did not finish.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException("The visual review UI workflow failed.", failure);
+    }
+
+    [Fact]
+    public void RealVisualReviewThumbnailUsesConfiguredFfmpegWhenAvailable()
+    {
+        string ffmpeg = Environment.GetEnvironmentVariable("MEDIAFLUX_FFMPEG_PATH") ?? "";
+        if (!File.Exists(ffmpeg))
+            return;
+
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                string media = Path.Combine(_root, "visual-review-ffmpeg");
+                Directory.CreateDirectory(media);
+                string clip = Path.Combine(media, "review-source.mp4");
+                RunToolAsync(ffmpeg, "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24", "-t", "2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", clip).GetAwaiter().GetResult();
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                FileInfo file = new(clip);
+                var member = new VisualSimilarityMemberRecord(
+                    1, 1, clip, media, file.Length, file.LastWriteTimeUtc, IndexedFileAvailability.Present,
+                    "h264", 320, 180, 1_000_000, 2, false, true, false);
+                SqliteLibraryCatalog catalog = CreateCatalog(Path.Combine(_root, "visual-review-ffmpeg.db"));
+                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mp4" }, new EmptyMetadataProbe(), new FakeVisualExtractor(_ => Array.Empty<ulong>()));
+                using var form = new LibraryAnalyzerForm(
+                    runtime,
+                    reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(FfmpegPath: ffmpeg, PreviewCacheRoot: _root));
+                form.Show();
+                Application.DoEvents();
+                MethodInfo method = typeof(LibraryAnalyzerForm).GetMethod("CreateVisualReviewThumbnailAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new MissingMethodException(typeof(LibraryAnalyzerForm).FullName, "CreateVisualReviewThumbnailAsync");
+                var thumbnailTask = (Task<string?>)method.Invoke(form, new object[] { member, CancellationToken.None })!;
+                PumpTask(thumbnailTask, TimeSpan.FromSeconds(30));
+                string? thumbnail = thumbnailTask.Result;
+                Assert.NotNull(thumbnail);
+                Assert.True(File.Exists(thumbnail));
+                using (Image image = Image.FromFile(thumbnail))
+                {
+                    Assert.True(image.Width > 0);
+                    Assert.True(image.Height > 0);
+                }
+                File.Delete(thumbnail);
+                form.Close();
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "The real FFmpeg visual review thumbnail test did not finish.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException("The real FFmpeg visual review thumbnail test failed.", failure);
+    }
+
     public void Dispose()
     {
         SqliteConnection.ClearAllPools();
@@ -484,6 +692,50 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
         Assert.True(process.ExitCode == 0, $"{Path.GetFileName(executable)} exited with {process.ExitCode}: {stderr}");
     }
 
+    private static T GetPrivateField<T>(object instance, string name) =>
+        (T)(instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(instance)
+            ?? throw new MissingFieldException(instance.GetType().FullName, name));
+
+    private static object? InvokePrivate(object instance, string name, params object?[] arguments)
+    {
+        MethodInfo method = instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(instance.GetType().FullName, name);
+        return method.Invoke(instance, arguments);
+    }
+
+    private static Task InvokePrivateTask(object instance, string name, params object?[] arguments) =>
+        (Task)(instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(instance, arguments)
+            ?? throw new MissingMethodException(instance.GetType().FullName, name));
+
+    private static void PumpTask(Task task, TimeSpan? timeout = null)
+    {
+        PumpUntil(() => task.IsCompleted, timeout);
+        task.GetAwaiter().GetResult();
+    }
+
+    private static void PumpUntil(Func<bool> condition, TimeSpan? timeout = null)
+    {
+        DateTime deadline = DateTime.UtcNow.Add(timeout ?? TimeSpan.FromSeconds(5));
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+                throw new TimeoutException("The WinForms operation did not complete in time.");
+            Application.DoEvents();
+            Thread.Sleep(10);
+        }
+    }
+
+    private static IEnumerable<T> Descendants<T>(Control parent) where T : Control
+    {
+        foreach (Control child in parent.Controls)
+        {
+            if (child is T match)
+                yield return match;
+            foreach (T descendant in Descendants<T>(child))
+                yield return descendant;
+        }
+    }
+
     private sealed class FakeVisualExtractor : ILibraryVisualFingerprintExtractor
     {
         private readonly Func<string, IReadOnlyList<ulong>> _factory;
@@ -496,6 +748,13 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             Interlocked.Increment(ref _calls);
             return Task.FromResult(_factory(candidate.FullPath));
         }
+    }
+
+    private sealed class EmptyMetadataProbe : ILibraryMetadataProbe
+    {
+        public string ToolVersion => "empty-probe";
+        public Task<MediaProbeResult> ProbeAsync(string path, CancellationToken cancellationToken) =>
+            Task.FromResult(new MediaProbeResult { Success = false, ErrorMessage = "Not used by this test." });
     }
 
     private sealed class BlockingVisualExtractor : ILibraryVisualFingerprintExtractor

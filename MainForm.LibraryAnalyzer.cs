@@ -35,7 +35,10 @@ namespace MediaFlux
                         new LibraryAnalyzerForm.LibraryAnalyzerCleanupOptions(
                             _config.AllowDuplicateRecycleBin,
                             _config.AllowDuplicateQuarantine,
-                            _config.DuplicateQuarantineFolder));
+                            _config.DuplicateQuarantineFolder),
+                        new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
+                            _config.FfmpegPath,
+                            _config.ExternalPlayerPath));
                     _libraryAnalyzerForm.FormClosed += (_, _) => _libraryAnalyzerForm = null;
                     _libraryAnalyzerForm.Show(this);
                 }
