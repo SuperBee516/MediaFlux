@@ -79,6 +79,22 @@ namespace MediaFlux.Services.LibraryCatalog
 
                     SetFileUpsertParameters(fileCommand, entry, fullPath, pathKey, seenTicks);
                     long fileId = Convert.ToInt64(fileCommand.ExecuteScalar());
+                    if (factsChanged)
+                    {
+                        using SqliteCommand invalidate = connection.CreateCommand();
+                        invalidate.Transaction = transaction;
+                        invalidate.CommandText =
+                            """
+                            DELETE FROM exact_duplicate_groups
+                            WHERE id IN (SELECT group_id FROM exact_duplicate_members WHERE file_id = $file_id);
+                            DELETE FROM file_hash_facts WHERE file_id = $file_id;
+                            DELETE FROM visual_similarity_groups
+                            WHERE left_file_id = $file_id OR right_file_id = $file_id;
+                            DELETE FROM visual_fingerprints WHERE file_id = $file_id;
+                            """;
+                        invalidate.Parameters.AddWithValue("$file_id", fileId);
+                        invalidate.ExecuteNonQuery();
+                    }
                     membershipCommand.Parameters["$location_id"].Value = scan.LocationId;
                     membershipCommand.Parameters["$file_id"].Value = fileId;
                     membershipCommand.Parameters["$relative_path"].Value = relativePath;

@@ -22,11 +22,20 @@ namespace MediaFlux
                 _libraryAnalyzerRuntime ??= new LibraryAnalyzerRuntime(
                     GetAllowedExts(),
                     Application.StartupPath,
+                    _config.FfmpegPath,
                     _config.FfprobePath,
-                    () => _encodingActive);
+                    () => _encodingActive,
+                    string.IsNullOrWhiteSpace(_config.DuplicateReferenceFolder)
+                        ? Array.Empty<string>()
+                        : new[] { _config.DuplicateReferenceFolder });
                 if (_libraryAnalyzerForm == null || _libraryAnalyzerForm.IsDisposed)
                 {
-                    _libraryAnalyzerForm = new LibraryAnalyzerForm(_libraryAnalyzerRuntime);
+                    _libraryAnalyzerForm = new LibraryAnalyzerForm(
+                        _libraryAnalyzerRuntime,
+                        new LibraryAnalyzerForm.LibraryAnalyzerCleanupOptions(
+                            _config.AllowDuplicateRecycleBin,
+                            _config.AllowDuplicateQuarantine,
+                            _config.DuplicateQuarantineFolder));
                     _libraryAnalyzerForm.FormClosed += (_, _) => _libraryAnalyzerForm = null;
                     _libraryAnalyzerForm.Show(this);
                 }

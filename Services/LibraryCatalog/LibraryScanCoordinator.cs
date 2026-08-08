@@ -10,9 +10,13 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly HashSet<string> _extensions;
         private readonly LibraryScanOptions _options;
         private readonly ILibraryEnrichmentSink? _enrichmentSink;
+        private readonly ILibraryScanAccelerationCatalog? _accelerationCatalog;
+        private readonly ILibraryChangeJournalProvider? _changeJournal;
+        private readonly LibraryStorageScheduler _storageScheduler;
         private readonly AsyncPauseGate _pauseGate = new();
         private readonly SemaphoreSlim _scanGate = new(1, 1);
         private CancellationTokenSource? _activeCancellation;
+        private TaskCompletionSource? _activeCompletion;
 
         public LibraryScanCoordinator(
             ILibraryCatalog catalog,
@@ -20,7 +24,10 @@ namespace MediaFlux.Services.LibraryCatalog
             ILibraryFileSystem? fileSystem = null,
             ILibraryFileIdentityProvider? identityProvider = null,
             LibraryScanOptions? options = null,
-            ILibraryEnrichmentSink? enrichmentSink = null)
+            ILibraryEnrichmentSink? enrichmentSink = null,
+            ILibraryScanAccelerationCatalog? accelerationCatalog = null,
+            ILibraryChangeJournalProvider? changeJournal = null,
+            LibraryStorageScheduler? storageScheduler = null)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             _fileSystem = fileSystem ?? new LibraryFileSystem();
@@ -32,6 +39,9 @@ namespace MediaFlux.Services.LibraryCatalog
                 throw new ArgumentException("At least one supported video extension is required.", nameof(supportedExtensions));
             _options = (options ?? new LibraryScanOptions()).Validate();
             _enrichmentSink = enrichmentSink;
+            _accelerationCatalog = accelerationCatalog ?? catalog as ILibraryScanAccelerationCatalog;
+            _changeJournal = changeJournal ?? (_accelerationCatalog == null ? null : new WindowsUsnChangeJournalProvider());
+            _storageScheduler = storageScheduler ?? new LibraryStorageScheduler();
         }
 
         public bool IsPaused => _pauseGate.IsPaused;
@@ -50,6 +60,7 @@ namespace MediaFlux.Services.LibraryCatalog
             await _scanGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _activeCancellation = linkedCancellation;
+            _activeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             CancellationToken token = linkedCancellation.Token;
             LibraryScanHandle? scan = null;
             long discovered = 0;
@@ -85,6 +96,25 @@ namespace MediaFlux.Services.LibraryCatalog
                 }
 
                 _catalog.SetLocationAvailability(locationId, LibraryLocationAvailability.Available);
+                LibraryChangeJournalCheckpoint? scanStartCheckpoint = null;
+                if (_accelerationCatalog != null && _changeJournal != null &&
+                    _changeJournal.TryGetCheckpoint(location.Path, out LibraryChangeJournalCheckpoint checkpoint, out _))
+                {
+                    scanStartCheckpoint = checkpoint;
+                    LibraryScanAcceleratorState? previous = _accelerationCatalog.GetScanAcceleratorState(locationId);
+                    if (previous != null && LibraryChangeJournalSafety.ProvesNoVolumeChanges(previous, checkpoint))
+                    {
+                        Report("USN journal confirms no volume changes");
+                        _catalog.CompleteScan(scan, Completion(LibraryScanStatus.Completed, ""));
+                        _catalog.SetLocationAvailability(locationId, LibraryLocationAvailability.Available);
+                        _accelerationCatalog.SaveScanAcceleratorState(ToAcceleratorState(locationId, checkpoint, "No-change scan shortcut used."));
+                        return Result(LibraryScanOutcome.Completed, "");
+                    }
+                }
+
+                await using IAsyncDisposable storageLease = await _storageScheduler.AcquireAsync(
+                    location.Path,
+                    cancellationToken: token).ConfigureAwait(false);
                 var channel = Channel.CreateBounded<LibraryInventoryEntry>(new BoundedChannelOptions(_options.DiscoveryQueueCapacity)
                 {
                     FullMode = BoundedChannelFullMode.Wait,
@@ -164,6 +194,8 @@ namespace MediaFlux.Services.LibraryCatalog
                 missingFiles = reconciliation.MissingFiles;
                 _catalog.CompleteScan(scan, Completion(LibraryScanStatus.Completed, ""));
                 _catalog.SetLocationAvailability(locationId, LibraryLocationAvailability.Available);
+                if (scanStartCheckpoint != null)
+                    _accelerationCatalog?.SaveScanAcceleratorState(ToAcceleratorState(locationId, scanStartCheckpoint, "Authoritative scan checkpoint."));
                 Report("Completed");
                 return Result(LibraryScanOutcome.Completed, "");
 
@@ -236,6 +268,8 @@ namespace MediaFlux.Services.LibraryCatalog
             {
                 Resume();
                 _activeCancellation = null;
+                _activeCompletion?.TrySetResult();
+                _activeCompletion = null;
                 _scanGate.Release();
             }
 
@@ -286,5 +320,28 @@ namespace MediaFlux.Services.LibraryCatalog
             }
             while (Interlocked.CompareExchange(ref peak, value, current) != current);
         }
+
+        public bool CancelAndWait(TimeSpan timeout)
+        {
+            _activeCancellation?.Cancel();
+            Task? completion = _activeCompletion?.Task;
+            if (completion == null) return true;
+            try { return completion.Wait(timeout); }
+            catch { return completion.IsCompleted; }
+        }
+
+        private static LibraryScanAcceleratorState ToAcceleratorState(
+            long locationId,
+            LibraryChangeJournalCheckpoint checkpoint,
+            string message) => new(
+                locationId,
+                "usn-volume-checkpoint-v1",
+                checkpoint.VolumeIdentity,
+                checkpoint.FileSystemName,
+                checkpoint.JournalId,
+                checkpoint.NextUsn,
+                checkpoint.LowestValidUsn,
+                DateTime.UtcNow,
+                message);
     }
 }

@@ -95,7 +95,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly Func<bool> _isEncodingActive;
         private readonly Channel<LibraryEnrichmentRequest> _channel;
         private readonly ConcurrentDictionary<long, byte> _queuedFiles = new();
-        private readonly ConcurrentDictionary<string, SemaphoreSlim> _storageGates = new(StringComparer.OrdinalIgnoreCase);
+        private readonly LibraryStorageScheduler _storageScheduler;
         private readonly CancellationTokenSource _shutdown = new();
         private readonly List<Task> _workers = new();
         private Task? _retryLoop;
@@ -109,12 +109,14 @@ namespace MediaFlux.Services.LibraryCatalog
             ILibraryCatalog catalog,
             ILibraryMetadataProbe probe,
             LibraryEnrichmentOptions? options = null,
-            Func<bool>? isEncodingActive = null)
+            Func<bool>? isEncodingActive = null,
+            LibraryStorageScheduler? storageScheduler = null)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             _probe = probe ?? throw new ArgumentNullException(nameof(probe));
             _options = (options ?? new LibraryEnrichmentOptions()).Validate();
             _isEncodingActive = isEncodingActive ?? (() => false);
+            _storageScheduler = storageScheduler ?? new LibraryStorageScheduler();
             _channel = Channel.CreateBounded<LibraryEnrichmentRequest>(new BoundedChannelOptions(_options.QueueCapacity)
             {
                 FullMode = BoundedChannelFullMode.Wait,
@@ -199,8 +201,6 @@ namespace MediaFlux.Services.LibraryCatalog
             catch (OperationCanceledException)
             {
             }
-            foreach (SemaphoreSlim gate in _storageGates.Values)
-                gate.Dispose();
             _shutdown.Dispose();
         }
 
@@ -210,15 +210,15 @@ namespace MediaFlux.Services.LibraryCatalog
             {
                 Interlocked.Decrement(ref _queued);
                 Interlocked.Increment(ref _active);
-                string storageKey = GetStorageKey(request);
-                SemaphoreSlim storageGate = _storageGates.GetOrAdd(storageKey, _ => new SemaphoreSlim(1, 1));
                 try
                 {
                     while (_isEncodingActive())
                         await Task.Delay(_options.EffectiveEncodingThrottleDelay, cancellationToken).ConfigureAwait(false);
 
-                    await storageGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    try
+                    await using (await _storageScheduler.AcquireAsync(
+                                     request.FullPath,
+                                     request.VolumeId,
+                                     cancellationToken).ConfigureAwait(false))
                     {
                         MediaProbeResult result = await _probe.ProbeAsync(request.FullPath, cancellationToken).ConfigureAwait(false);
                         DateTime now = DateTime.UtcNow;
@@ -236,10 +236,6 @@ namespace MediaFlux.Services.LibraryCatalog
                             Interlocked.Increment(ref _completed);
                         else
                             Interlocked.Increment(ref _failed);
-                    }
-                    finally
-                    {
-                        storageGate.Release();
                     }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -281,13 +277,6 @@ namespace MediaFlux.Services.LibraryCatalog
         {
             double multiplier = Math.Pow(2, Math.Clamp(attempt - 1, 0, 6));
             return TimeSpan.FromTicks(checked((long)(_options.EffectiveRetryBaseDelay.Ticks * multiplier)));
-        }
-
-        private static string GetStorageKey(LibraryEnrichmentRequest request)
-        {
-            if (!string.IsNullOrWhiteSpace(request.VolumeId))
-                return request.VolumeId;
-            return Path.GetPathRoot(request.FullPath) ?? request.FullPath;
         }
 
         private void RaiseProgress(string path) => ProgressChanged?.Invoke(this, new LibraryEnrichmentProgress(

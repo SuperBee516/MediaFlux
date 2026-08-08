@@ -3,10 +3,11 @@ using MediaFlux.Services.LibraryCatalog;
 
 namespace MediaFlux
 {
-    public sealed class LibraryAnalyzerForm : MediaFluxForm
+    public sealed partial class LibraryAnalyzerForm : MediaFluxForm
     {
         private const int PageSize = 200;
         private readonly LibraryAnalyzerRuntime _runtime;
+        private readonly LibraryAnalyzerCleanupOptions _cleanupOptions;
         private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
         private readonly DataGridView _locationsGrid = CreateGrid();
         private readonly DataGridView _filesGrid = CreateGrid();
@@ -33,9 +34,12 @@ namespace MediaFlux
         private bool _loadingFiles;
         private bool _scanning;
 
-        public LibraryAnalyzerForm(LibraryAnalyzerRuntime runtime)
+        public LibraryAnalyzerForm(
+            LibraryAnalyzerRuntime runtime,
+            LibraryAnalyzerCleanupOptions? cleanupOptions = null)
         {
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+            _cleanupOptions = cleanupOptions ?? new LibraryAnalyzerCleanupOptions();
             Text = "Library Analyzer";
             MinimumSize = new Size(980, 620);
             Size = new Size(1280, 780);
@@ -46,7 +50,13 @@ namespace MediaFlux
             BuildOverviewTab();
             BuildLocationsTab();
             BuildFilesTab();
+            BuildStatisticsTab();
+            BuildDuplicatesTab();
+            BuildVisualSimilarityTab();
             _runtime.Enrichment.ProgressChanged += Enrichment_ProgressChanged;
+            _runtime.Duplicates.ProgressChanged += Duplicates_ProgressChanged;
+            _runtime.VisualSimilarity.ProgressChanged += VisualSimilarity_ProgressChanged;
+            _tabs.SelectedIndexChanged += async (_, _) => await RefreshSelectedTabAsync();
             _refreshTimer.Tick += async (_, _) => await RefreshCurrentStateAsync();
             _refreshTimer.Start();
             Shown += async (_, _) => await RefreshAllAsync();
@@ -54,6 +64,8 @@ namespace MediaFlux
             {
                 _refreshTimer.Stop();
                 _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
+                _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
+                _runtime.VisualSimilarity.ProgressChanged -= VisualSimilarity_ProgressChanged;
             };
         }
 
@@ -95,6 +107,10 @@ namespace MediaFlux
             content.Controls.Add(title);
             content.Controls.Add(table);
             content.Controls.Add(refresh);
+            var userData = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 10, 0, 0) };
+            AddButton(userData, "Backup decisions…", BackupUserDecisions_Click);
+            AddButton(userData, "Restore decisions…", RestoreUserDecisions_Click);
+            content.Controls.Add(userData);
             tab.Controls.Add(content);
             _tabs.TabPages.Add(tab);
         }
@@ -338,6 +354,16 @@ namespace MediaFlux
                 await RefreshLocationsAsync();
         }
 
+        private async Task RefreshSelectedTabAsync()
+        {
+            if (_tabs.SelectedIndex == 3)
+                await RefreshStatisticsAsync();
+            else if (_tabs.SelectedIndex == 4)
+                await RefreshDuplicateGroupsAsync();
+            else if (_tabs.SelectedIndex == 5)
+                await RefreshVisualGroupsAsync();
+        }
+
         private async Task RefreshOverviewAsync()
         {
             LibraryOverview overview = await Task.Run(() =>
@@ -382,6 +408,8 @@ namespace MediaFlux
             foreach (object[] row in rows)
                 _locationsGrid.Rows.Add(row);
             RefreshLocationFilter(locations);
+            RefreshDuplicateLocationFilter(locations);
+            RefreshVisualLocationFilter(locations);
         }
 
         private async Task RefreshFilesAsync()
@@ -567,5 +595,10 @@ namespace MediaFlux
         {
             public override string ToString() => Name;
         }
+
+        public sealed record LibraryAnalyzerCleanupOptions(
+            bool AllowRecycleBin = true,
+            bool AllowQuarantine = false,
+            string QuarantineFolder = "");
     }
 }

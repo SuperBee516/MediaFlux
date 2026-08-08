@@ -2,7 +2,8 @@ using Microsoft.Data.Sqlite;
 
 namespace MediaFlux.Services.LibraryCatalog
 {
-    public sealed partial class SqliteLibraryCatalog : ILibraryCatalog
+    public sealed partial class SqliteLibraryCatalog : ILibraryCatalog, ILibraryAnalysisCatalog,
+        ILibraryVisualCatalog, ILibraryScanAccelerationCatalog
     {
         private const int MaximumPageSize = 10_000;
         private readonly LibraryCatalogDatabase _database;
@@ -80,7 +81,19 @@ namespace MediaFlux.Services.LibraryCatalog
         public string RebuildCatalog()
         {
             ThrowIfDisposed();
-            return WithWriterGate(_database.RebuildCatalog);
+            return WithWriterGate(() =>
+            {
+                try
+                {
+                    CreateUserDataBackupCore(destinationPath: null);
+                }
+                catch
+                {
+                    // A rebuild must remain available for a damaged catalog. The complete
+                    // database/WAL set is still retained in the recovery archive below.
+                }
+                return _database.RebuildCatalog();
+            });
         }
 
         public LibraryLocationRecord UpsertLocation(LibraryLocationUpsert location)

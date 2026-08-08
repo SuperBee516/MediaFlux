@@ -17,6 +17,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Bounded FFprobe metadata enrichment with metadata reuse, durable retries,
   per-storage-device concurrency control, and container, video, audio, subtitle,
   chapter, attachment, color, and HDR facts.
+- Catalog-backed library statistics plus scalable exact-duplicate analysis using
+  size grouping, quick fingerprints, SHA-256 confirmation, durable keeper decisions,
+  and revalidated Recycle Bin or quarantine cleanup plans.
+- Review-only visual similarity analysis with versioned six-frame fingerprints,
+  indexed hash-band candidate generation, confidence evidence, metadata comparison,
+  and paged review results.
+- Physical-storage-aware scheduling, conservative NTFS USN no-change acceleration
+  with authoritative fallback, coordinated background-work shutdown, and independent
+  backup/restore for protected paths and other non-reconstructable user decisions.
 
 - Explainable Smart Encode recommendations for queued videos, including Strong,
   Moderate, Skip, Review, confidence, estimated savings, and detailed reasons.
