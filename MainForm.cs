@@ -218,6 +218,7 @@ namespace MediaFlux
             UpdateAudioUiState();
             CreateAdvancedVideoControls();
             CreateEncodeInfoPanels();
+            InitializeLibraryAnalyzerMenu();
 
             // Tools → View History
             var viewHistoryToolStripMenuItem = new ToolStripMenuItem("View History");
@@ -3153,6 +3154,7 @@ namespace MediaFlux
                 _sampleComparisonCts?.Cancel();
                 _deepAnalysisCts?.Cancel();
                 _mediaRemuxCts?.Cancel();
+                DisposeLibraryAnalyzer();
 
                 lock (_monLock)
                 {

@@ -17,6 +17,9 @@ namespace MediaFlux.Services
 
         public static string UserDataDirectory => Path.Combine(RootDirectory, "UserData");
         public static string DataDirectory => Path.Combine(UserDataDirectory, "data");
+        public static string LibraryCatalogFile => Path.Combine(DataDirectory, "library-catalog.db");
+        public static string LibraryCatalogBackupDirectory => Path.Combine(DataDirectory, "catalog-backups");
+        public static string LibraryCatalogRecoveryDirectory => Path.Combine(DataDirectory, "catalog-recovery");
         public static string TempDirectory => Path.Combine(UserDataDirectory, "temp");
         public static string ConfigFile => Path.Combine(UserDataDirectory, "config.json");
         public static string BackupDirectory => Path.Combine(RootDirectory, "Backups");

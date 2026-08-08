@@ -7,6 +7,7 @@ namespace MediaFlux.Models
         public string FormatName { get; init; } = "";
         public long? SizeBytes { get; init; }
         public double? DurationSeconds { get; init; }
+        public long? BitRate { get; init; }
         public IReadOnlyList<MediaProbeStreamInfo> Streams { get; init; } =
             Array.Empty<MediaProbeStreamInfo>();
         public IReadOnlyList<MediaProbeChapterInfo> Chapters { get; init; } =
@@ -26,10 +27,18 @@ namespace MediaFlux.Models
         public string CodecType { get; init; } = "";
         public string CodecName { get; init; } = "";
         public string CodecLongName { get; init; } = "";
+        public string Profile { get; init; } = "";
+        public int? Level { get; init; }
+        public long? BitRate { get; init; }
         public string TimeBase { get; init; } = "";
         public string DisplayAspectRatio { get; init; } = "";
         public string FieldOrder { get; init; } = "";
         public string PixelFormat { get; init; } = "";
+        public int? BitsPerRawSample { get; init; }
+        public string ColorRange { get; init; } = "";
+        public string ColorSpace { get; init; } = "";
+        public string ColorTransfer { get; init; } = "";
+        public string ColorPrimaries { get; init; } = "";
         public string Language { get; init; } = "";
         public string ChannelLayout { get; init; } = "";
         public int? Width { get; init; }

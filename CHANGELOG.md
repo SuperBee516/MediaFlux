@@ -9,6 +9,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- A standalone Library Analyzer with a persistent SQLite-backed catalog, scalable
+  multi-folder and whole-drive inventory scanning, pause/resume/cancel controls, and
+  database-paged Overview, Locations, and Files views.
+- Incremental reconciliation that preserves prior inventory for offline drives,
+  inaccessible roots, canceled or interrupted work, and superseded scan generations.
+- Bounded FFprobe metadata enrichment with metadata reuse, durable retries,
+  per-storage-device concurrency control, and container, video, audio, subtitle,
+  chapter, attachment, color, and HDR facts.
+
 - Explainable Smart Encode recommendations for queued videos, including Strong,
   Moderate, Skip, Review, confidence, estimated savings, and detailed reasons.
 - Configurable minimum worthwhile savings and a pre-encode review prompt that

@@ -1,5 +1,31 @@
 # MediaFlux Architecture
 
+## Library Analyzer
+
+The standalone Library Analyzer uses one application-lifetime
+`LibraryAnalyzerRuntime`. UI code depends on `ILibraryCatalog` and coordinator
+contracts rather than SQLite connections.
+
+`LibraryScanCoordinator` performs streaming, recursive discovery with a bounded
+producer/consumer channel. It records cheap file-system facts and stable Windows file
+identity where available, commits prepared batches through the catalog's single
+writer, and applies backpressure before enqueueing metadata work. Pause, resume, and
+cancellation do not discard committed batches. Only a fully successful authoritative
+enumeration advances missing-file reconciliation; offline, inaccessible, canceled,
+interrupted, and superseded roots preserve prior records without treating the root as
+empty.
+
+`LibraryEnrichmentCoordinator` runs a small bounded FFprobe worker pool. Work is
+durable through source-fact, metadata-version, tool-version, status, attempt, and retry
+fields. Per-volume gates avoid concurrent probes against one storage device, while an
+encoding-activity seam throttles probes during active encoding. One FFprobe JSON pass
+supplies format, video, audio, subtitle, chapter, attachment, color, and HDR facts.
+
+The analyzer form pages file queries directly from SQLite and loads only the current
+200-row page. Overview and location summaries are aggregate queries. Duplicate
+analysis, cleanup decisions, statistics, fingerprints, and similarity remain separate
+future derived-data layers.
+
 ## Encoding flow
 
 The main encode queue, DVD "encode using current settings" workflow, and sample

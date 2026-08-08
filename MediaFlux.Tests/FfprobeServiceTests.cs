@@ -39,12 +39,20 @@ public sealed class FfprobeServiceTests : IDisposable
                           "id": "0x1e0",
                           "codec_name": "mpeg2video",
                           "codec_long_name": "MPEG-2 video",
+                          "profile": "Main",
+                          "level": 8,
+                          "bit_rate": "6500000",
                           "codec_type": "video",
                           "width": 720,
                           "height": 480,
                           "display_aspect_ratio": "16:9",
                           "pix_fmt": "yuv420p",
                           "field_order": "tt",
+                          "bits_per_raw_sample": "8",
+                          "color_range": "tv",
+                          "color_space": "smpte170m",
+                          "color_transfer": "bt709",
+                          "color_primaries": "smpte170m",
                           "avg_frame_rate": "30000/1001",
                           "time_base": "1/90000",
                           "duration": "120.5",
@@ -81,7 +89,8 @@ public sealed class FfprobeServiceTests : IDisposable
                       "format": {
                         "format_name": "mpeg",
                         "duration": "120.5",
-                        "size": "1048576"
+                        "size": "1048576",
+                        "bit_rate": "7000000"
                       }
                     }
                     """
@@ -95,9 +104,15 @@ public sealed class FfprobeServiceTests : IDisposable
         Assert.Equal("mpeg", result.FormatName);
         Assert.Equal(120.5, result.DurationSeconds);
         Assert.Equal(1_048_576, result.SizeBytes);
+        Assert.Equal(7_000_000, result.BitRate);
         Assert.Equal(3, result.Streams.Count);
         Assert.Equal("0x1e0", result.Streams[0].Id);
         Assert.Equal(720, result.Streams[0].Width);
+        Assert.Equal("Main", result.Streams[0].Profile);
+        Assert.Equal(8, result.Streams[0].Level);
+        Assert.Equal(6_500_000, result.Streams[0].BitRate);
+        Assert.Equal(8, result.Streams[0].BitsPerRawSample);
+        Assert.Equal("smpte170m", result.Streams[0].ColorSpace);
         Assert.Equal(30000d / 1001d, result.Streams[0].FrameRate!.Value, precision: 6);
         Assert.Equal("eng", result.Streams[1].Language);
         Assert.True(result.Streams[2].Dispositions["forced"]);

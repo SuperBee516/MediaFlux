@@ -1823,9 +1823,7 @@ namespace MediaFlux
 
         private static bool CanCleanupDuplicateReviewItem(DuplicateGroup group, DuplicateItem item)
         {
-            return IsActionableDuplicateGroup(group) &&
-                   !item.IsReferenceProtected &&
-                   string.Equals(item.Recommendation, "Trash candidate", StringComparison.OrdinalIgnoreCase);
+            return DuplicateCleanupPolicy.CanCleanupItem(group, item);
         }
 
         private bool ExecuteDuplicateReviewFileAction(
@@ -2545,8 +2543,7 @@ namespace MediaFlux
 
         private static bool IsActionableDuplicateGroup(DuplicateGroup group)
         {
-            return string.Equals(group.ConfidenceLabel, "Exact", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(group.ConfidenceLabel, "Strong visual match", StringComparison.OrdinalIgnoreCase);
+            return DuplicateCleanupPolicy.IsActionableGroup(group);
         }
 
         private static List<DuplicateManagedFile> SelectByExtreme(List<DuplicateManagedFile> groupItems, bool largest)

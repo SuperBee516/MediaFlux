@@ -1,0 +1,165 @@
+using MediaFlux.Models;
+using MediaFlux.Services;
+using Xunit;
+
+namespace MediaFlux.Tests;
+
+public sealed class DuplicateKeeperAndCleanupPolicyTests
+{
+    [Fact]
+    public void QualityFirstPrefersResolutionThenBitrateThenSize()
+    {
+        DuplicateItem lowResolution = Item("low.mp4", size: 500, width: 1280, height: 720, bitrate: 8_000);
+        DuplicateItem highResolution = Item("high.mp4", size: 300, width: 1920, height: 1080, bitrate: 2_000);
+
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { lowResolution, highResolution },
+            new DuplicateKeeperPreferences());
+
+        Assert.False(result.RequiresReview);
+        Assert.Equal(highResolution.Path, result.Keeper?.Path);
+        Assert.Contains("highest resolution", result.Explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ProtectedReferenceRestrictsKeeperSelection()
+    {
+        DuplicateItem unprotected = Item("higher-quality.mkv", 1_000, 3840, 2160, 20_000);
+        DuplicateItem protectedReference = Item("reference.mkv", 500, 1920, 1080, 5_000, isProtected: true);
+
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { unprotected, protectedReference },
+            new DuplicateKeeperPreferences());
+
+        Assert.False(result.RequiresReview);
+        Assert.Equal(protectedReference.Path, result.Keeper?.Path);
+    }
+
+    [Fact]
+    public void WeightedScoresInsideMinimumMarginRequireManualReview()
+    {
+        DuplicateItem smaller = Item("smaller.mkv", 100, 1920, 1080, 5_000);
+        DuplicateItem slightlyLarger = Item("larger.mkv", 101, 1920, 1080, 5_000);
+        var preferences = new DuplicateKeeperPreferences
+        {
+            Profile = DuplicateKeeperPreferences.Custom,
+            ResolutionWeight = 0,
+            QualityWeight = 0,
+            StorageWeight = 100,
+            CodecWeight = 0,
+            ModifiedDateWeight = 0,
+            NeverSacrificeResolution = false,
+            MinimumScoreMargin = 8
+        };
+
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { smaller, slightlyLarger },
+            preferences);
+
+        Assert.True(result.RequiresReview);
+        Assert.Null(result.Keeper);
+        Assert.InRange(result.Margin, 0, 8);
+    }
+
+    [Fact]
+    public void ExactGroupRetainsQualityFirstPolicyRegardlessOfWeightedProfile()
+    {
+        DuplicateItem smallerLowResolution = Item("small.mkv", 100, 1280, 720, 3_000);
+        DuplicateItem largerHighResolution = Item("large.mkv", 1_000, 1920, 1080, 5_000);
+        DuplicateGroup group = Group("Exact", smallerLowResolution, largerHighResolution);
+        var storagePreferences = new DuplicateKeeperPreferences
+        {
+            Profile = DuplicateKeeperPreferences.SaveStorage,
+            NeverSacrificeResolution = false
+        };
+
+        DuplicateGroup result = DuplicateKeeperScoringService.Apply(group, storagePreferences);
+
+        Assert.Equal(largerHighResolution.Path, result.Items[0].Path);
+        Assert.Equal("Suggested keeper", result.Items[0].Recommendation);
+    }
+
+    [Fact]
+    public void ExistingManualKeeperIsPreservedWhenRecommendationsAreReapplied()
+    {
+        DuplicateItem selected = Item("selected.mkv", 100, 1280, 720, 2_000) with
+        {
+            Recommendation = "Selected keeper",
+            KeeperReason = "User selected in review"
+        };
+        DuplicateItem other = Item("other.mkv", 1_000, 3840, 2160, 20_000) with
+        {
+            Recommendation = "Trash candidate"
+        };
+
+        DuplicateGroup result = DuplicateKeeperScoringService.Apply(
+            Group("Strong visual match", selected, other),
+            new DuplicateKeeperPreferences());
+
+        Assert.Equal(selected.Path, result.Items[0].Path);
+        Assert.Equal("Selected keeper", result.Items[0].Recommendation);
+    }
+
+    [Theory]
+    [InlineData("Exact", true)]
+    [InlineData("Strong visual match", true)]
+    [InlineData("Review only", false)]
+    [InlineData("Unknown", false)]
+    public void CleanupPolicyLimitsActionableEvidence(string confidence, bool expected)
+    {
+        Assert.Equal(expected, DuplicateCleanupPolicy.IsActionableGroup(Group(confidence, Item("a.mkv"))));
+    }
+
+    [Fact]
+    public void CleanupPolicyAllowsOnlyUnprotectedTrashCandidates()
+    {
+        DuplicateItem trash = Item("trash.mkv") with { Recommendation = "Trash candidate" };
+        DuplicateItem keeper = Item("keeper.mkv") with { Recommendation = "Suggested keeper" };
+        DuplicateItem protectedTrash = Item("protected.mkv", isProtected: true) with { Recommendation = "Trash candidate" };
+        DuplicateGroup actionable = Group("Exact", trash, keeper, protectedTrash);
+        DuplicateGroup reviewOnly = Group("Review only", trash, keeper);
+
+        Assert.True(DuplicateCleanupPolicy.CanCleanupItem(actionable, trash));
+        Assert.False(DuplicateCleanupPolicy.CanCleanupItem(actionable, keeper));
+        Assert.False(DuplicateCleanupPolicy.CanCleanupItem(actionable, protectedTrash));
+        Assert.False(DuplicateCleanupPolicy.CanCleanupItem(reviewOnly, trash));
+    }
+
+    private static DuplicateGroup Group(string confidence, params DuplicateItem[] items)
+    {
+        return new DuplicateGroup(
+            1,
+            confidence,
+            100,
+            "characterization",
+            confidence == "Exact" ? "Exact hash" : "Visual",
+            0,
+            0,
+            0,
+            0,
+            items);
+    }
+
+    private static DuplicateItem Item(
+        string path,
+        long size = 100,
+        int width = 1920,
+        int height = 1080,
+        int bitrate = 5_000,
+        bool isProtected = false)
+    {
+        return new DuplicateItem(
+            path,
+            size,
+            "h264",
+            width,
+            height,
+            60,
+            bitrate,
+            new DateTime(2025, 1, 1),
+            new DateTime(2025, 1, 2),
+            isProtected,
+            "",
+            "Review duplicate");
+    }
+}

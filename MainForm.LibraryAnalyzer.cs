@@ -1,0 +1,58 @@
+using MediaFlux.Services.LibraryCatalog;
+
+namespace MediaFlux
+{
+    public partial class MainForm
+    {
+        private LibraryAnalyzerRuntime? _libraryAnalyzerRuntime;
+        private LibraryAnalyzerForm? _libraryAnalyzerForm;
+
+        private void InitializeLibraryAnalyzerMenu()
+        {
+            var item = new ToolStripMenuItem("Library Analyzer");
+            item.Click += ShowLibraryAnalyzer_Click;
+            toolsToolStripMenuItem.DropDownItems.Insert(0, item);
+            toolsToolStripMenuItem.DropDownItems.Insert(1, new ToolStripSeparator());
+        }
+
+        private void ShowLibraryAnalyzer_Click(object? sender, EventArgs e)
+        {
+            try
+            {
+                _libraryAnalyzerRuntime ??= new LibraryAnalyzerRuntime(
+                    GetAllowedExts(),
+                    Application.StartupPath,
+                    _config.FfprobePath,
+                    () => _encodingActive);
+                if (_libraryAnalyzerForm == null || _libraryAnalyzerForm.IsDisposed)
+                {
+                    _libraryAnalyzerForm = new LibraryAnalyzerForm(_libraryAnalyzerRuntime);
+                    _libraryAnalyzerForm.FormClosed += (_, _) => _libraryAnalyzerForm = null;
+                    _libraryAnalyzerForm.Show(this);
+                }
+                else
+                {
+                    _libraryAnalyzerForm.WindowState = FormWindowState.Normal;
+                    _libraryAnalyzerForm.Activate();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    this,
+                    "MediaFlux could not open the Library Analyzer. No media files were changed.\r\n\r\n" + ex.Message,
+                    "Library Analyzer",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+
+        private void DisposeLibraryAnalyzer()
+        {
+            _libraryAnalyzerForm?.Close();
+            _libraryAnalyzerForm = null;
+            _libraryAnalyzerRuntime?.Dispose();
+            _libraryAnalyzerRuntime = null;
+        }
+    }
+}

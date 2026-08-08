@@ -21,6 +21,8 @@ The application is intended for power users who want a graphical orchestration l
 - Verified lossless remux-to-MKV execution for legacy containers when video
   encoding would provide little benefit
 - Large-queue loading with progressive analysis, bounded background work, cancellation, and persistent metadata caching
+- Standalone Library Analyzer with a persistent SQLite catalog, incremental
+  folder/drive scanning, offline-drive safety, and bounded FFprobe enrichment
 - Duplicate detection, review, keeper recommendations, reference-folder comparison, and guarded cleanup actions
 - Audio extraction/conversion with loudness normalization and optional RNNoise denoising
 - Persistent job history, requeue actions, diagnostics, and centralized error logging
@@ -127,6 +129,25 @@ The duplicate workflow includes:
 - Optional confirmation before cleanup
 
 Potentially destructive cleanup options are disabled or confirmation-gated by default. Review the selected keeper and cleanup action before changing source files.
+
+## Library Analyzer
+
+Open **Tools → Library Analyzer** to maintain an independent catalog of large media
+libraries. Multiple folders or whole drives can be enabled, scanned, paused, resumed,
+or canceled without loading every path into the interface.
+
+The analyzer keeps incremental inventory and FFprobe metadata in a local SQLite
+database. Unchanged files retain current metadata, while new or changed videos enter a
+bounded enrichment queue. A location is reconciled for missing files only after a
+complete authoritative scan; disconnected drives, access failures, cancellation, and
+shutdown interruption are retained as unavailable or incomplete rather than being
+treated as empty.
+
+The Overview tab reports current catalog and worker state. Locations manages roots and
+scan controls. Files provides database-backed search, filters, sorting, and 200-row
+paging for filename, path, size, availability, container, codec, resolution, bitrate,
+duration, and probe status. Duplicate analysis and management remain in the existing
+Duplicate Finder and are not yet driven by this catalog.
 
 ## Audio tools
 

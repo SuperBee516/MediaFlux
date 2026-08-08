@@ -125,12 +125,14 @@ namespace MediaFlux.Services
             string formatName = "";
             double? formatDuration = null;
             long? formatSize = null;
+            long? formatBitRate = null;
             if (root.TryGetProperty("format", out JsonElement format) &&
                 format.ValueKind == JsonValueKind.Object)
             {
                 formatName = GetString(format, "format_name");
                 formatDuration = GetPositiveDouble(format, "duration");
                 formatSize = GetPositiveLong(format, "size");
+                formatBitRate = GetPositiveLong(format, "bit_rate");
             }
 
             double? duration = formatDuration;
@@ -167,6 +169,7 @@ namespace MediaFlux.Services
                 FormatName = formatName,
                 SizeBytes = size,
                 DurationSeconds = duration,
+                BitRate = formatBitRate,
                 Streams = streams,
                 Chapters = chapters
             };
@@ -209,10 +212,18 @@ namespace MediaFlux.Services
                     CodecType = GetString(stream, "codec_type"),
                     CodecName = GetString(stream, "codec_name"),
                     CodecLongName = GetString(stream, "codec_long_name"),
+                    Profile = GetString(stream, "profile"),
+                    Level = GetInt32(stream, "level"),
+                    BitRate = GetPositiveLong(stream, "bit_rate"),
                     TimeBase = GetString(stream, "time_base"),
                     DisplayAspectRatio = GetString(stream, "display_aspect_ratio"),
                     FieldOrder = GetString(stream, "field_order"),
                     PixelFormat = GetString(stream, "pix_fmt"),
+                    BitsPerRawSample = GetInt32(stream, "bits_per_raw_sample"),
+                    ColorRange = GetString(stream, "color_range"),
+                    ColorSpace = GetString(stream, "color_space"),
+                    ColorTransfer = GetString(stream, "color_transfer"),
+                    ColorPrimaries = GetString(stream, "color_primaries"),
                     Language = language,
                     ChannelLayout = GetString(stream, "channel_layout"),
                     Width = GetInt32(stream, "width"),
