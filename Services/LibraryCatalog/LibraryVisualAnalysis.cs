@@ -193,7 +193,8 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly LibraryVisualAnalysisOptions _options;
         private readonly Func<bool> _isEncodingActive;
         private readonly LibraryStorageScheduler _storageScheduler;
-        private readonly MediaFlux.Models.DuplicateKeeperPreferences _keeperPreferences;
+        private MediaFlux.Models.DuplicateKeeperPreferences _keeperPreferences;
+        private readonly object _keeperPreferencesSync = new();
         private readonly AsyncPauseGate _pause = new();
         private readonly object _sync = new();
         private CancellationTokenSource? _activeCancellation;
@@ -227,6 +228,17 @@ namespace MediaFlux.Services.LibraryCatalog
         public void Pause() => _pause.Pause();
         public void Resume() => _pause.Resume();
         public void Cancel() { lock (_sync) _activeCancellation?.Cancel(); }
+
+        public void UpdateKeeperPreferences(MediaFlux.Models.DuplicateKeeperPreferences preferences, bool rescore = true)
+        {
+            ArgumentNullException.ThrowIfNull(preferences);
+            var normalized = preferences.Clone();
+            normalized.Normalize();
+            lock (_keeperPreferencesSync)
+                _keeperPreferences = normalized;
+            if (rescore && !IsRunning)
+                ScoreKeepers(CancellationToken.None);
+        }
 
         public async Task<LibraryVisualAnalysisResult> AnalyzeAsync(CancellationToken cancellationToken = default)
         {
@@ -353,17 +365,21 @@ namespace MediaFlux.Services.LibraryCatalog
 
         private void ScoreKeepers(CancellationToken token)
         {
+            MediaFlux.Models.DuplicateKeeperPreferences preferences;
+            lock (_keeperPreferencesSync)
+                preferences = _keeperPreferences.Clone();
             int offset = 0;
             while (true)
             {
-                VisualSimilarityGroupPage page = _catalog.QueryVisualGroups(new VisualGroupQuery(Offset: offset, Limit: 500));
+                VisualSimilarityGroupPage page = _catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: false, Offset: offset, Limit: 500));
                 if (page.Groups.Count == 0) return;
                 foreach (VisualSimilarityGroupRecord group in page.Groups)
                 {
                     token.ThrowIfCancellationRequested();
                     IReadOnlyList<VisualSimilarityMemberRecord> members = _catalog.GetVisualGroupMembers(group.GroupId);
                     DuplicateKeeperEvaluation score = DuplicateKeeperScoringService.Evaluate(
-                        members.Select(LibraryVisualDuplicateCleanupService.ToLegacyItem).ToArray(), _keeperPreferences);
+                        members.Select(LibraryVisualDuplicateCleanupService.ToLegacyItem).ToArray(), preferences,
+                        DuplicateKeeperScoringContext.Visual);
                     long? keeper = score.RequiresReview || score.Keeper == null ? null :
                         members.First(x => string.Equals(x.FullPath, score.Keeper.Path, StringComparison.OrdinalIgnoreCase)).FileId;
                     _catalog.SetVisualSuggestedKeeper(group.GroupId, keeper);

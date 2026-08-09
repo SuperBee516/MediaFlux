@@ -9,6 +9,7 @@ namespace MediaFlux
         private readonly LibraryAnalyzerRuntime _runtime;
         private readonly LibraryAnalyzerCleanupOptions _cleanupOptions;
         private readonly LibraryAnalyzerReviewOptions _reviewOptions;
+        private MediaFlux.Models.DuplicateKeeperPreferences _visualKeeperPreferences;
         private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
         private readonly DataGridView _locationsGrid = CreateGrid();
         private readonly DataGridView _filesGrid = CreateGrid();
@@ -51,6 +52,8 @@ namespace MediaFlux
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
             _cleanupOptions = cleanupOptions ?? new LibraryAnalyzerCleanupOptions();
             _reviewOptions = reviewOptions ?? new LibraryAnalyzerReviewOptions();
+            _visualKeeperPreferences = (_reviewOptions.KeeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences()).Clone();
+            _visualKeeperPreferences.Normalize();
             Text = "Library Analyzer";
             MinimumSize = new Size(980, 620);
             Size = new Size(1280, 780);
@@ -82,6 +85,13 @@ namespace MediaFlux
                 _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
                 _runtime.VisualSimilarity.ProgressChanged -= VisualSimilarity_ProgressChanged;
             };
+        }
+
+        public void UpdateVisualKeeperPreferences(MediaFlux.Models.DuplicateKeeperPreferences preferences)
+        {
+            ArgumentNullException.ThrowIfNull(preferences);
+            _visualKeeperPreferences = preferences.Clone();
+            _visualKeeperPreferences.Normalize();
         }
 
         private void BuildOverviewTab()
@@ -737,6 +747,8 @@ namespace MediaFlux
             string FfmpegPath = "",
             string ExternalPlayerPath = "",
             Action<string>? VideoLauncher = null,
-            string PreviewCacheRoot = "");
+            string PreviewCacheRoot = "",
+            MediaFlux.Models.DuplicateKeeperPreferences? KeeperPreferences = null,
+            Action<MediaFlux.Models.DuplicateKeeperPreferences>? KeeperPreferencesChanged = null);
     }
 }

@@ -403,6 +403,7 @@ namespace MediaFlux.Services.LibraryCatalog
                   AND ($search='' OR fl.full_path LIKE $like ESCAPE '\' OR fr.full_path LIKE $like ESCAPE '\')
                   AND ($reviewed<0 OR COALESCE(d.reviewed,0)=$reviewed)
                   AND ($ignored<0 OR COALESCE(d.ignored,0)=$ignored)
+                  AND ($not_match<0 OR COALESCE(d.not_match,0)=$not_match)
                   AND ($codec_differs<0 OR (COALESCE(ml.video_codec,'')<>COALESCE(mr.video_codec,''))=$codec_differs)
                   AND ($resolution_differs<0 OR (COALESCE(ml.width,0)<>COALESCE(mr.width,0) OR COALESCE(ml.height,0)<>COALESCE(mr.height,0))=$resolution_differs)
                   AND ($location IS NULL OR EXISTS(SELECT 1 FROM file_location_memberships x WHERE x.location_id=$location AND x.file_id IN(g.left_file_id,g.right_file_id)))
@@ -417,7 +418,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 SELECT g.id,g.group_key,g.confidence_score,g.frame_matches,g.frame_comparisons,g.average_hash_distance,
                        g.duration_delta_seconds,g.evidence_text,g.left_file_id,g.right_file_id,g.suggested_keeper_file_id,
                        CASE WHEN d.manual_keeper_path_key=fl.path_key THEN fl.id WHEN d.manual_keeper_path_key=fr.path_key THEN fr.id END,
-                       COALESCE(d.reviewed,0),COALESCE(d.ignored,0),
+                       COALESCE(d.reviewed,0),COALESCE(d.ignored,0),COALESCE(d.not_match,0),
                        COALESCE(ml.video_codec,'')<>COALESCE(mr.video_codec,''),
                        COALESCE(ml.width,0)<>COALESCE(mr.width,0) OR COALESCE(ml.height,0)<>COALESCE(mr.height,0),
                        CASE WHEN fl.volume_id<>'' AND fl.volume_id=fr.volume_id AND fl.file_identity<>'' AND fl.file_identity=fr.file_identity THEN 0 ELSE MIN(fl.size_bytes,fr.size_bytes) END AS reclaimable_bytes
@@ -428,7 +429,7 @@ namespace MediaFlux.Services.LibraryCatalog
             using SqliteDataReader reader = command.ExecuteReader();
             var groups = new List<VisualSimilarityGroupRecord>();
             while (reader.Read())
-                groups.Add(new VisualSimilarityGroupRecord(reader.GetInt64(0), reader.GetString(1), reader.GetDouble(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetDouble(5), reader.GetDouble(6), reader.GetString(7), reader.GetInt64(8), reader.GetInt64(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetInt64(11), reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0, reader.GetInt32(15) != 0, reader.GetInt64(16)));
+                groups.Add(new VisualSimilarityGroupRecord(reader.GetInt64(0), reader.GetString(1), reader.GetDouble(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetDouble(5), reader.GetDouble(6), reader.GetString(7), reader.GetInt64(8), reader.GetInt64(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetInt64(11), reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0, reader.GetInt32(15) != 0, reader.GetInt32(16) != 0, reader.GetInt64(17)));
             return new VisualSimilarityGroupPage(total, groups);
         }
 
@@ -501,16 +502,17 @@ namespace MediaFlux.Services.LibraryCatalog
                 command.Transaction = transaction;
                 command.CommandText =
                     """
-                    INSERT INTO visual_group_decisions(group_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks)
-                    SELECT g.group_key,COALESCE(f.path_key,''),$reviewed,$ignored,$now
+                    INSERT INTO visual_group_decisions(group_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks,not_match)
+                    SELECT g.group_key,COALESCE(f.path_key,''),$reviewed,$ignored,$now,$not_match
                     FROM visual_similarity_groups g LEFT JOIN indexed_files f ON f.id=$keeper
                     WHERE g.id=$id
                       AND ($keeper IS NULL OR $keeper IN(g.left_file_id,g.right_file_id))
-                    ON CONFLICT(group_key) DO UPDATE SET manual_keeper_path_key=excluded.manual_keeper_path_key,reviewed=excluded.reviewed,ignored=excluded.ignored,updated_utc_ticks=excluded.updated_utc_ticks;
+                    ON CONFLICT(group_key) DO UPDATE SET manual_keeper_path_key=excluded.manual_keeper_path_key,reviewed=excluded.reviewed,ignored=excluded.ignored,updated_utc_ticks=excluded.updated_utc_ticks,not_match=excluded.not_match;
                     """;
                 command.Parameters.AddWithValue("$keeper", (object?)decision.ManualKeeperFileId ?? DBNull.Value);
                 command.Parameters.AddWithValue("$reviewed", decision.Reviewed ? 1 : 0);
                 command.Parameters.AddWithValue("$ignored", decision.Ignored ? 1 : 0);
+                command.Parameters.AddWithValue("$not_match", decision.NotMatch ? 1 : 0);
                 command.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
                 command.Parameters.AddWithValue("$id", decision.GroupId);
                 if (command.ExecuteNonQuery() != 1) throw new KeyNotFoundException($"Visual group {decision.GroupId} does not exist.");
@@ -547,6 +549,7 @@ namespace MediaFlux.Services.LibraryCatalog
             command.Parameters.AddWithValue("$like", $"%{search.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")}%");
             command.Parameters.AddWithValue("$reviewed", query.Reviewed.HasValue ? (query.Reviewed.Value ? 1 : 0) : -1);
             command.Parameters.AddWithValue("$ignored", query.Ignored.HasValue ? (query.Ignored.Value ? 1 : 0) : -1);
+            command.Parameters.AddWithValue("$not_match", query.NotMatch.HasValue ? (query.NotMatch.Value ? 1 : 0) : -1);
             command.Parameters.AddWithValue("$codec_differs", query.CodecDiffers.HasValue ? (query.CodecDiffers.Value ? 1 : 0) : -1);
             command.Parameters.AddWithValue("$resolution_differs", query.ResolutionDiffers.HasValue ? (query.ResolutionDiffers.Value ? 1 : 0) : -1);
             command.Parameters.AddWithValue("$location", (object?)query.LocationId ?? DBNull.Value);

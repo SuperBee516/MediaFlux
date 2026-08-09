@@ -3957,6 +3957,8 @@ namespace MediaFlux
                 ApplyDuplicateConfigurationToUi();
                 UpdateDuplicateReferenceFolderUi();
                 RescoreDuplicateKeeperRecommendations();
+                _libraryAnalyzerRuntime?.UpdateVisualKeeperPreferences(_config.DuplicateKeeperPreferences);
+                _libraryAnalyzerForm?.UpdateVisualKeeperPreferences(_config.DuplicateKeeperPreferences);
                 if (dgvEncodeQueue.Columns.Contains("colEncodeRecommendation"))
                 {
                     dgvEncodeQueue.Columns["colEncodeRecommendation"].Visible =

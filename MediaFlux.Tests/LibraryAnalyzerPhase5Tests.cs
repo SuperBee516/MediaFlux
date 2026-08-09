@@ -28,7 +28,7 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
     public void MigrationCreatesVersionedVisualAndAccelerationSchema()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();
-        Assert.Equal(6, catalog.GetDiagnostics().SchemaVersion);
+        Assert.Equal(7, catalog.GetDiagnostics().SchemaVersion);
         using var connection = new SqliteConnection($"Data Source={catalog.DatabasePath}");
         connection.Open();
         string[] tables = { "visual_fingerprints", "visual_hash_bands", "visual_analysis_runs", "visual_candidate_pairs", "visual_similarity_groups", "visual_group_decisions", "location_scan_accelerators", "visual_cleanup_plans", "visual_cleanup_plan_items", "visual_cleanup_audit" };
@@ -39,6 +39,9 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             command.Parameters.AddWithValue("$name", table);
             Assert.Equal(1, Convert.ToInt32(command.ExecuteScalar()));
         }
+        using SqliteCommand columns = connection.CreateCommand();
+        columns.CommandText = "SELECT (SELECT COUNT(*) FROM pragma_table_info('visual_group_decisions') WHERE name='not_match') + (SELECT COUNT(*) FROM pragma_table_info('visual_cleanup_plan_items') WHERE name='cleanup_intent');";
+        Assert.Equal(2, Convert.ToInt32(columns.ExecuteScalar()));
     }
 
     [Fact]
@@ -54,7 +57,7 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             seed.ExecuteNonQuery();
         }
         using SqliteLibraryCatalog catalog = CreateCatalog(path);
-        Assert.Equal(6, catalog.GetDiagnostics().SchemaVersion);
+        Assert.Equal(7, catalog.GetDiagnostics().SchemaVersion);
         using var verify = new SqliteConnection($"Data Source={path}"); verify.Open();
         using SqliteCommand query = verify.CreateCommand();
         query.CommandText = "INSERT INTO duplicate_cleanup_plans(action,status,created_utc_ticks) VALUES(2,2,2); SELECT action FROM duplicate_cleanup_plans ORDER BY id;";
@@ -168,6 +171,87 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
         VisualCleanupProposalItem item = Assert.Single(cleanup.BuildProposal().Items);
         Assert.True(item.HasExactEvidence);
         Assert.NotNull(item.ExactHash);
+    }
+
+    [Fact]
+    public async Task NotMatchDecisionSurvivesVisualReanalysisAndCanBeRestored()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "visual-not-match"); Directory.CreateDirectory(library);
+        string first = Write(library, "first.mkv", 1000), second = Write(library, "second.mp4", 800);
+        AddInventoryAndMetadata(catalog, library, new[] { first, second }, _ => ("hevc", 1920, 1080, 60d));
+        ulong[] hashes = Enumerable.Range(0, 6).Select(i => 0x1010101010101010UL + (ulong)i).ToArray();
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog, new FakeVisualExtractor(_ => hashes), new LibraryVisualAnalysisOptions(1, 2, 8, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+        VisualSimilarityGroupRecord group = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: false)).Groups);
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, null, true, false, true));
+
+        Assert.Empty(catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: false)).Groups);
+        Assert.True(Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: true)).Groups).NotMatch);
+        Assert.Empty(new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog).BuildProposal(includeUnreviewed: true).Items);
+
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog, new FakeVisualExtractor(_ => hashes), new LibraryVisualAnalysisOptions(1, 2, 8, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+        VisualSimilarityGroupRecord restored = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: true)).Groups);
+        catalog.SaveVisualDecision(new VisualGroupDecision(restored.GroupId, restored.ManualKeeperFileId, restored.Reviewed, restored.Ignored, false));
+        Assert.False(Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: false)).Groups).NotMatch);
+    }
+
+    [Fact]
+    public async Task DeleteBothUsesDurablePlanRevalidatesBothFilesAndAuditsEachAction()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "visual-delete-both"); Directory.CreateDirectory(library);
+        string first = Write(library, "unwanted-a.mkv", 1000), second = Write(library, "unwanted-b.mp4", 800);
+        AddInventoryAndMetadata(catalog, library, new[] { first, second }, _ => ("hevc", 1920, 1080, 60d));
+        ulong[] hashes = Enumerable.Range(0, 6).Select(i => 0x2020202020202020UL + (ulong)i).ToArray();
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog, new FakeVisualExtractor(_ => hashes), new LibraryVisualAnalysisOptions(1, 2, 8, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+        VisualSimilarityGroupRecord group = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
+        var actions = new FakeCleanupActions();
+        var cleanup = new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog, actions, new EmptyIdentityProvider());
+
+        long protectedId = catalog.GetFileByPath(second)!.Id;
+        catalog.SetFileProtection(protectedId, true, "test protection");
+        Assert.Empty(cleanup.BuildDeleteBothProposal(group.GroupId).Items);
+        catalog.SetFileProtection(protectedId, false, "");
+
+        VisualCleanupProposalItem proposal = Assert.Single(cleanup.BuildDeleteBothProposal(group.GroupId).Items);
+        Assert.Equal(VisualCleanupIntent.DeleteBoth, proposal.Intent);
+        Assert.Equal(new FileInfo(first).Length + new FileInfo(second).Length, proposal.ReclaimableBytes);
+        VisualCleanupPlanRecord plan = cleanup.CreatePlan(new[] { proposal }, DuplicateCleanupAction.RecycleBin);
+        Assert.Equal(VisualCleanupIntent.DeleteBoth, Assert.Single(plan.Items).Intent);
+        DuplicateCleanupExecutionResult result = await cleanup.ExecutePlanAsync(plan.PlanId);
+
+        Assert.Equal(2, result.Succeeded);
+        Assert.False(File.Exists(first));
+        Assert.False(File.Exists(second));
+        using var db = new SqliteConnection($"Data Source={catalog.DatabasePath}"); db.Open();
+        using SqliteCommand audit = db.CreateCommand(); audit.CommandText = "SELECT COUNT(*) FROM visual_cleanup_audit WHERE plan_id=$id;"; audit.Parameters.AddWithValue("$id", plan.PlanId);
+        Assert.Equal(2, Convert.ToInt32(audit.ExecuteScalar()));
+    }
+
+    [Fact]
+    public async Task DeleteBothPreflightFailureLeavesBothFilesInPlace()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "visual-delete-both-preflight"); Directory.CreateDirectory(library);
+        string first = Write(library, "first.mkv", 900), second = Write(library, "second.mp4", 700);
+        AddInventoryAndMetadata(catalog, library, new[] { first, second }, _ => ("h264", 1920, 1080, 60d));
+        ulong[] hashes = Enumerable.Range(0, 6).Select(i => 0x3030303030303030UL + (ulong)i).ToArray();
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog, new FakeVisualExtractor(_ => hashes), new LibraryVisualAnalysisOptions(1, 2, 8, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+        VisualSimilarityGroupRecord group = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
+        var cleanup = new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog, new FakeCleanupActions(), new EmptyIdentityProvider());
+        VisualCleanupPlanRecord plan = cleanup.CreatePlan(cleanup.BuildDeleteBothProposal(group.GroupId).Items, DuplicateCleanupAction.RecycleBin);
+        File.AppendAllText(second, "changed after preview");
+
+        DuplicateCleanupExecutionResult result = await cleanup.ExecutePlanAsync(plan.PlanId);
+
+        Assert.Equal(0, result.Succeeded);
+        Assert.Equal(2, result.Excluded);
+        Assert.True(File.Exists(first));
+        Assert.True(File.Exists(second));
     }
 
     [Fact]
@@ -346,7 +430,7 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 """
                 INSERT INTO duplicate_group_decisions VALUES(10,'sha256',1,X'0102','KEEP',1,1,1);
                 INSERT INTO duplicate_file_protections VALUES('PATH','P:\\protected.mkv','test',1);
-                INSERT INTO visual_group_decisions VALUES('VISUAL','KEEP',1,0,1);
+                INSERT INTO visual_group_decisions(group_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks,not_match) VALUES('VISUAL','KEEP',1,0,1,1);
                 """;
             seed.ExecuteNonQuery();
         }
@@ -365,6 +449,43 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
         Assert.Equal(1, restored.FileProtections);
         Assert.Equal(1, restored.VisualDecisions);
         Assert.Contains(restored.Warnings, warning => warning.Contains("not re-executed", StringComparison.OrdinalIgnoreCase));
+        using var verify = new SqliteConnection($"Data Source={catalog.DatabasePath}"); verify.Open();
+        using SqliteCommand notMatch = verify.CreateCommand(); notMatch.CommandText = "SELECT not_match FROM visual_group_decisions WHERE group_key='VISUAL';";
+        Assert.Equal(1, Convert.ToInt32(notMatch.ExecuteScalar()));
+    }
+
+    [Fact]
+    public void VersionSixDecisionBackupRestoresVisualDecisionsAsActiveMatches()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string backup = Path.Combine(_root, "v6-user-decisions.db");
+        using (var connection = new SqliteConnection($"Data Source={backup}"))
+        {
+            connection.Open();
+            using SqliteCommand seed = connection.CreateCommand();
+            seed.CommandText =
+                """
+                CREATE TABLE backup_manifest(created_utc_ticks INTEGER NOT NULL,source_schema_version INTEGER NOT NULL);
+                INSERT INTO backup_manifest VALUES(1,6);
+                CREATE TABLE duplicate_group_decisions(size_bytes INTEGER,full_algorithm TEXT,full_version INTEGER,full_hash BLOB,manual_keeper_path_key TEXT,reviewed INTEGER,ignored INTEGER,updated_utc_ticks INTEGER);
+                CREATE TABLE duplicate_file_protections(path_key TEXT,protected_path TEXT,reason TEXT,updated_utc_ticks INTEGER);
+                CREATE TABLE visual_group_decisions(group_key TEXT,manual_keeper_path_key TEXT,reviewed INTEGER,ignored INTEGER,updated_utc_ticks INTEGER);
+                INSERT INTO visual_group_decisions VALUES('OLD-VISUAL','',1,0,1);
+                """;
+            seed.ExecuteNonQuery();
+        }
+
+        LibraryUserDataRestoreResult result = catalog.RestoreUserDataBackup(backup);
+
+        Assert.Equal(1, result.VisualDecisions);
+        using var verify = new SqliteConnection($"Data Source={catalog.DatabasePath}"); verify.Open();
+        using SqliteCommand query = verify.CreateCommand();
+        query.CommandText = "SELECT reviewed,ignored,not_match FROM visual_group_decisions WHERE group_key='OLD-VISUAL';";
+        using SqliteDataReader reader = query.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal(1, reader.GetInt32(0));
+        Assert.Equal(0, reader.GetInt32(1));
+        Assert.Equal(0, reader.GetInt32(2));
     }
 
     [Fact]
@@ -580,7 +701,14 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 form.Show();
                 TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
                 tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Duplicates — Visual");
+                form.Size = form.MinimumSize;
                 Application.DoEvents();
+                Button apply = GetPrivateField<Button>(form, "_visualApplyButton");
+                TableLayoutPanel controlArea = GetPrivateField<TableLayoutPanel>(form, "_visualControlArea");
+                Rectangle tabBounds = tabs.SelectedTab.RectangleToScreen(tabs.SelectedTab.ClientRectangle);
+                Assert.True(apply.Visible);
+                Assert.True(tabBounds.Contains(apply.RectangleToScreen(apply.ClientRectangle)));
+                Assert.False(controlArea.AutoScroll);
                 PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
 
                 DataGridView groups = GetPrivateField<DataGridView>(form, "_visualGroupsGrid");
@@ -595,6 +723,8 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 InvokePrivate(form, "VisualMembersMenu_Opening", memberMenu, new CancelEventArgs());
                 Assert.True(groupMenu.Items.Find("Review", false).Single().Enabled);
                 Assert.True(groupMenu.Items.Find("Cleanup", false).Single().Enabled);
+                Assert.True(groupMenu.Items.Find("DeleteBoth", false).Single().Enabled);
+                Assert.True(groupMenu.Items.Find("NotMatch", false).Single().Enabled);
                 Assert.True(groupMenu.Items.Find("Next", false).Single().Enabled);
                 Assert.True(memberMenu.Items.Find("Play", false).Single().Enabled);
                 Assert.True(memberMenu.Items.Find("Keeper", false).Single().Enabled);
@@ -689,6 +819,41 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                     cleanupTimer.Stop();
                 }
                 Assert.True(sawCleanupPreview);
+
+                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualProtectionAsync"));
+                bool sawDeleteBothPreview = false;
+                using (var deleteBothTimer = new System.Windows.Forms.Timer { Interval = 50 })
+                {
+                    deleteBothTimer.Tick += (_, _) =>
+                    {
+                        Form? preview = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open.Text == "Review Visual Duplicate Cleanup Plan");
+                        if (preview == null) return;
+                        DataGridView previewGrid = Descendants<DataGridView>(preview).Single(grid => grid.Name == "VisualCleanupPreviewGrid");
+                        DataGridViewRow row = Assert.Single(previewGrid.Rows.Cast<DataGridViewRow>());
+                        Assert.Equal("DELETE BOTH", row.Cells["Intent"].Value);
+                        Assert.Contains("NO KEEPER", Convert.ToString(row.Cells["Keeper"].Value), StringComparison.OrdinalIgnoreCase);
+                        Assert.Contains("DELETE BOTH", Descendants<Label>(preview).Select(label => label.Text).First(text => text.Contains("DELETE BOTH")));
+                        sawDeleteBothPreview = true;
+                        Descendants<Button>(preview).Single(button => button.Text == "Cancel").PerformClick();
+                    };
+                    deleteBothTimer.Start();
+                    PumpTask(InvokePrivateTask(form, "PreviewDeleteBothAsync", initialGroupId));
+                    deleteBothTimer.Stop();
+                }
+                Assert.True(sawDeleteBothPreview);
+
+                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualNotMatchAsync"));
+                Assert.True(catalog.GetVisualGroup(initialGroupId)!.NotMatch);
+                Assert.Single(groups.Rows.Cast<DataGridViewRow>());
+                ComboBox reviewFilter = GetPrivateField<ComboBox>(form, "_visualReview");
+                reviewFilter.SelectedIndex = 4;
+                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                Assert.Single(groups.Rows.Cast<DataGridViewRow>());
+                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualNotMatchAsync"));
+                Assert.False(catalog.GetVisualGroup(initialGroupId)!.NotMatch);
+                reviewFilter.SelectedIndex = 0;
+                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                Assert.Equal(2, groups.Rows.Count);
 
                 long beforeNavigation = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
                 PumpTask(InvokePrivateTask(form, "NavigateVisualSelectionAsync", 1));

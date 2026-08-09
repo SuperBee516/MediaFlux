@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 6;
+        public const int CurrentVersion = 7;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -498,6 +498,15 @@ namespace MediaFlux.Services.LibraryCatalog
                     ) STRICT;
                     CREATE INDEX ix_visual_cleanup_items_group ON visual_cleanup_plan_items(group_key,plan_id);
                     CREATE INDEX ix_visual_cleanup_audit_plan ON visual_cleanup_audit(plan_id,occurred_utc_ticks);
+                    """),
+                new LibraryCatalogMigration(
+                    7,
+                    "Visual failed-match decisions and delete-both cleanup intent",
+                    """
+                    ALTER TABLE visual_group_decisions
+                        ADD COLUMN not_match INTEGER NOT NULL DEFAULT 0 CHECK (not_match IN (0,1));
+                    ALTER TABLE visual_cleanup_plan_items
+                        ADD COLUMN cleanup_intent INTEGER NOT NULL DEFAULT 0 CHECK (cleanup_intent IN (0,1));
                     """)
             };
 

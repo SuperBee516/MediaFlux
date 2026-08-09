@@ -531,7 +531,7 @@ namespace MediaFlux
             btnDuplicateKeeperPreferences.BringToFront();
             _settingsToolTip.SetToolTip(
                 btnDuplicateKeeperPreferences,
-                "Choose keeper presets, custom weights, codec preference, and close-score review safeguards.");
+                "Choose keeper presets, custom weights, codec preference, and close-score safeguards for Duplicate Finder and Library Analyzer visual matches.");
         }
 
         private void btnDuplicateKeeperPreferences_Click(object? sender, EventArgs e)
@@ -543,7 +543,7 @@ namespace MediaFlux
             _duplicateKeeperPreferences = dialog.Preferences.Clone();
             _settingsToolTip.SetToolTip(
                 btnDuplicateKeeperPreferences,
-                $"Current keeper preference: {_duplicateKeeperPreferences.Profile}. Click to change weights and safeguards.");
+                $"Current shared keeper preference: {_duplicateKeeperPreferences.Profile}. Used by Duplicate Finder and Library Analyzer visual matches.");
         }
 
         private void ToggleDuplicateCleanupInputs()

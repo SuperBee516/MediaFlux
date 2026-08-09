@@ -21,15 +21,21 @@ namespace MediaFlux
         private readonly NumericUpDown _minimumMargin = new();
         private readonly Label _profileDescription = new();
         private readonly Label _preview = new();
+        private readonly DuplicateKeeperScoringContext _scoringContext;
 
         public DuplicateKeeperPreferences Preferences { get; private set; }
 
-        public DuplicateKeeperPreferencesForm(DuplicateKeeperPreferences preferences)
+        public DuplicateKeeperPreferencesForm(
+            DuplicateKeeperPreferences preferences,
+            DuplicateKeeperScoringContext scoringContext = DuplicateKeeperScoringContext.Standard)
         {
+            _scoringContext = scoringContext;
             Preferences = preferences.Clone();
             Preferences.Normalize();
 
-            Text = "Duplicate Keeper Preferences";
+            Text = scoringContext == DuplicateKeeperScoringContext.Visual
+                ? "Visual Duplicate Keeper Rules"
+                : "Duplicate Keeper Preferences";
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -191,6 +197,7 @@ namespace MediaFlux
             _minimumMargin.Enabled = weighted;
             _profileDescription.Text = _profile.SelectedItem?.ToString() switch
             {
+                DuplicateKeeperPreferences.QualityFirst when _scoringContext == DuplicateKeeperScoringContext.Visual => "Visual default: protected file, resolution, codec preference, reported bitrate, larger size, then modified date.",
                 DuplicateKeeperPreferences.QualityFirst => "Compatibility preset: protected reference, resolution, reported bitrate, larger size, then modified date. It reproduces the existing keeper order.",
                 DuplicateKeeperPreferences.Balanced => "Weights: resolution 40, quality 15, storage 30, codec 15. Designed to accept meaningful space savings without casually sacrificing resolution.",
                 DuplicateKeeperPreferences.SaveStorage => "Weights: resolution 30, quality 10, storage 45, codec 15. Strongly rewards smaller efficient encodes.",
@@ -230,7 +237,7 @@ namespace MediaFlux
                 new("Example HEVC.mp4", (long)(1.14 * gib), "hevc", 1920, 1080, 1800, 5000, DateTime.Today, DateTime.Today, false, "", ""),
                 new("Example H264.mp4", (long)(2.51 * gib), "h264", 1920, 1080, 1800, 11000, DateTime.Today, DateTime.Today, false, "", "")
             };
-            var evaluation = DuplicateKeeperScoringService.Evaluate(items, preferences);
+            var evaluation = DuplicateKeeperScoringService.Evaluate(items, preferences, _scoringContext);
             string result = evaluation.RequiresReview || evaluation.Keeper == null
                 ? "Result: Review required"
                 : $"Result: keep {Path.GetFileName(evaluation.Keeper.Path)}";

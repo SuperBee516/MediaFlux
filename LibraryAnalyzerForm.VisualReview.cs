@@ -12,9 +12,11 @@ namespace MediaFlux
         {
             AddVisualMenuItem(_visualGroupsMenu, "Review / Compare", "Review", async () => await OpenVisualReviewAsync());
             AddVisualMenuItem(_visualGroupsMenu, "Review cleanup plan…", "Cleanup", async () => { if (SelectedVisualGroup() is { } g) await PreviewVisualCleanupAsync(new[] { g.GroupId }); });
+            AddVisualMenuItem(_visualGroupsMenu, "Delete both files…", "DeleteBoth", async () => { if (SelectedVisualGroup() is { } g) await PreviewDeleteBothAsync(g.GroupId); });
             _visualGroupsMenu.Items.Add(new ToolStripSeparator());
             AddVisualMenuItem(_visualGroupsMenu, "Mark reviewed", "Reviewed", async () => await MarkSelectedVisualReviewedAsync());
             AddVisualMenuItem(_visualGroupsMenu, "Ignore match", "Ignore", async () => await ToggleSelectedVisualIgnoredAsync());
+            AddVisualMenuItem(_visualGroupsMenu, "Not a match", "NotMatch", async () => await ToggleSelectedVisualNotMatchAsync());
             _visualGroupsMenu.Items.Add(new ToolStripSeparator());
             AddVisualMenuItem(_visualGroupsMenu, "Previous match", "Previous", async () => await NavigateVisualSelectionAsync(-1));
             AddVisualMenuItem(_visualGroupsMenu, "Next match", "Next", async () => await NavigateVisualSelectionAsync(1));
@@ -33,6 +35,7 @@ namespace MediaFlux
             _visualMembersMenu.Items.Add(new ToolStripSeparator());
             AddVisualMenuItem(_visualMembersMenu, "Mark reviewed", "Reviewed", async () => await MarkSelectedVisualReviewedAsync());
             AddVisualMenuItem(_visualMembersMenu, "Ignore match", "Ignore", async () => await ToggleSelectedVisualIgnoredAsync());
+            AddVisualMenuItem(_visualMembersMenu, "Not a match", "NotMatch", async () => await ToggleSelectedVisualNotMatchAsync());
             _visualMembersMenu.Opening += VisualMembersMenu_Opening;
             AttachVisualContextMenu(_visualMembersGrid, _visualMembersMenu);
         }
@@ -63,8 +66,10 @@ namespace MediaFlux
             VisualSimilarityGroupRecord? group = SelectedVisualGroup();
             SetMenuState(_visualGroupsMenu, "Review", group != null);
             SetMenuState(_visualGroupsMenu, "Cleanup", group != null && !group.Ignored);
+            SetMenuState(_visualGroupsMenu, "DeleteBoth", group != null && !group.Ignored && !group.NotMatch);
             SetMenuState(_visualGroupsMenu, "Reviewed", group != null && !group.Reviewed);
             SetMenuState(_visualGroupsMenu, "Ignore", group != null, group?.Ignored == true ? "Restore match" : "Ignore match");
+            SetMenuState(_visualGroupsMenu, "NotMatch", group != null, group?.NotMatch == true ? "Restore failed match" : "Not a match");
             SetMenuState(_visualGroupsMenu, "Previous", group != null && _visualTotal > 1);
             SetMenuState(_visualGroupsMenu, "Next", group != null && _visualTotal > 1);
             e.Cancel = group == null;
@@ -87,6 +92,7 @@ namespace MediaFlux
             SetMenuState(_visualMembersMenu, "CopyPath", member != null && !string.IsNullOrWhiteSpace(member.FullPath));
             SetMenuState(_visualMembersMenu, "Reviewed", group != null && !group.Reviewed);
             SetMenuState(_visualMembersMenu, "Ignore", group != null, group?.Ignored == true ? "Restore match" : "Ignore match");
+            SetMenuState(_visualMembersMenu, "NotMatch", group != null, group?.NotMatch == true ? "Restore failed match" : "Not a match");
             e.Cancel = member == null;
         }
 
@@ -122,7 +128,7 @@ namespace MediaFlux
             if (SelectedVisualGroup() is not { } group)
                 return;
             await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, group.Ignored)));
+                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, group.Ignored, group.NotMatch)));
             await RefreshVisualGroupsAsync(group.GroupId);
         }
 
@@ -131,13 +137,21 @@ namespace MediaFlux
             if (SelectedVisualGroup() is not { } group)
                 return;
             await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, !group.Ignored)));
+                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, !group.Ignored, group.NotMatch)));
             await RefreshVisualGroupsAsync(group.GroupId);
+        }
+
+        private async Task ToggleSelectedVisualNotMatchAsync()
+        {
+            if (SelectedVisualGroup() is not { } group) return;
+            await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
+                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, group.Reviewed, group.Ignored, !group.NotMatch)));
+            await RefreshVisualGroupsAsync();
         }
 
         private Task SaveVisualKeeperAsync(VisualSimilarityGroupRecord group, VisualSimilarityMemberRecord member) =>
             Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                new VisualGroupDecision(group.GroupId, member.FileId, true, group.Ignored)));
+                new VisualGroupDecision(group.GroupId, member.FileId, true, group.Ignored, group.NotMatch)));
 
         private Task SaveVisualProtectionAsync(VisualSimilarityMemberRecord member) =>
             Task.Run(() => _runtime.AnalysisCatalog.SetFileProtection(
@@ -205,7 +219,7 @@ namespace MediaFlux
             var header = new Label
             {
                 Dock = DockStyle.Top,
-                Height = 104,
+                Height = 124,
                 Padding = new Padding(12, 10, 12, 8),
                 BackColor = SystemColors.Window
             };
@@ -229,11 +243,15 @@ namespace MediaFlux
             var next = new Button { Text = "Next >", Width = 90 };
             var previous = new Button { Text = "< Previous", Width = 90 };
             var ignore = new Button { Text = "Ignore", Width = 100 };
+            var notMatch = new Button { Text = "Not a Match + Next", Width = 145 };
+            var deleteBoth = new Button { Text = "Delete Both…", Width = 120 };
             var reviewedNext = new Button { Text = "Reviewed + Next", Width = 130 };
             footer.Controls.Add(close);
             footer.Controls.Add(next);
             footer.Controls.Add(previous);
             footer.Controls.Add(ignore);
+            footer.Controls.Add(notMatch);
+            footer.Controls.Add(deleteBoth);
             footer.Controls.Add(reviewedNext);
             dialog.Controls.Add(body);
             dialog.Controls.Add(footer);
@@ -264,9 +282,17 @@ namespace MediaFlux
                     body.Controls.Clear();
                     DuplicatePreviewCacheService.PruneOlderThan(VisualPreviewCacheRoot, TimeSpan.FromDays(30));
                     long position = ((long)_visualPage * VisualPageSize) + _visualGroupsGrid.SelectedRows[0].Index + 1;
-                    header.Text = BuildVisualReviewHeader(group, position, _visualTotal);
+                    DuplicateKeeperEvaluation keeperEvaluation = DuplicateKeeperScoringService.Evaluate(
+                        members.Select(LibraryVisualDuplicateCleanupService.ToLegacyItem).ToArray(),
+                        _visualKeeperPreferences,
+                        DuplicateKeeperScoringContext.Visual);
+                    string keeperExplanation = group.ManualKeeperFileId.HasValue
+                        ? "Manual keeper selected by the user."
+                        : keeperEvaluation.Explanation;
+                    header.Text = BuildVisualReviewHeader(group, position, _visualTotal, keeperExplanation);
                     dialog.Text = $"Review Visual Match {position:N0} of {_visualTotal:N0}";
                     ignore.Text = group.Ignored ? "Restore" : "Ignore";
+                    notMatch.Text = group.NotMatch ? "Restore Match" : "Not a Match + Next";
                     previous.Enabled = next.Enabled = _visualTotal > 1;
                     foreach (VisualSimilarityMemberRecord member in members)
                     {
@@ -309,15 +335,37 @@ namespace MediaFlux
                 if (currentReviewGroup is not { } group)
                     return;
                 await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                    new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, !group.Ignored)));
+                    new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, !group.Ignored, group.NotMatch)));
                 await LoadCurrentAsync();
+            };
+            notMatch.Click += async (_, _) =>
+            {
+                if (currentReviewGroup is not { } group) return;
+                int rowIndex = _visualGroupsGrid.SelectedRows.Count == 0 ? 0 : _visualGroupsGrid.SelectedRows[0].Index;
+                await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
+                    new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, group.Reviewed, group.Ignored, !group.NotMatch)));
+                await RefreshVisualGroupsAsync();
+                if (_visualGroupsGrid.Rows.Count == 0)
+                {
+                    dialog.Close();
+                    return;
+                }
+                SelectVisualGroupRow(Math.Min(rowIndex, _visualGroupsGrid.Rows.Count - 1));
+                await RefreshVisualMembersAsync();
+                await LoadCurrentAsync();
+            };
+            deleteBoth.Click += async (_, _) =>
+            {
+                if (currentReviewGroup is not { } group) return;
+                bool deleted = await PreviewDeleteBothAsync(group.GroupId);
+                if (deleted) await MoveAsync(1); else await LoadCurrentAsync();
             };
             reviewedNext.Click += async (_, _) =>
             {
                 if (currentReviewGroup is not { } group)
                     return;
                 await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                    new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, group.Ignored)));
+                    new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, group.Ignored, group.NotMatch)));
                 await MoveAsync(1);
             };
             dialog.KeyDown += async (_, e) =>
@@ -340,13 +388,14 @@ namespace MediaFlux
             await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
         }
 
-        private static string BuildVisualReviewHeader(VisualSimilarityGroupRecord group, long position, long total)
+        private static string BuildVisualReviewHeader(VisualSimilarityGroupRecord group, long position, long total, string keeperExplanation)
         {
-            string state = group.Ignored ? "Ignored" : group.Reviewed ? "Reviewed" : "Unreviewed";
+            string state = group.NotMatch ? "Not a match" : group.Ignored ? "Ignored" : group.Reviewed ? "Reviewed" : "Unreviewed";
             string differences = $"Codec: {(group.CodecDiffers ? "different" : "same")} · Resolution: {(group.ResolutionDiffers ? "different" : "same")} · Duration delta: {group.DurationDeltaSeconds:0.###} s";
             return $"Visual match {position:N0} of {total:N0} · {group.ConfidenceScore:0.0}% confidence · {state}{Environment.NewLine}" +
                    $"{group.FrameMatches}/{group.FrameComparisons} representative frames matched · Average hash distance {group.AverageHashDistance:0.#}{Environment.NewLine}" +
                    differences + Environment.NewLine +
+                   $"Keeper recommendation: {keeperExplanation}{Environment.NewLine}" +
                    $"Evidence: {group.EvidenceText}{Environment.NewLine}Visual matches are suggestions only; choose and protect a keeper before any separate cleanup decision.";
         }
 

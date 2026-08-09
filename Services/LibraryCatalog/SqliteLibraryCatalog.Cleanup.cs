@@ -96,12 +96,21 @@ namespace MediaFlux.Services.LibraryCatalog
                     int visual = 0;
                     if (AttachedTableExists(connection, "visual_group_decisions"))
                     {
-                        visual = RestoreTable(connection, transaction,
+                        string visualRestoreSql = sourceVersion >= 7
+                            ?
                             """
-                            INSERT INTO visual_group_decisions(group_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks)
-                            SELECT group_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks FROM restored.visual_group_decisions WHERE 1
-                            ON CONFLICT(group_key) DO UPDATE SET manual_keeper_path_key=excluded.manual_keeper_path_key,reviewed=excluded.reviewed,ignored=excluded.ignored,updated_utc_ticks=excluded.updated_utc_ticks;
-                            """);
+                            INSERT INTO visual_group_decisions(group_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks,not_match)
+                            SELECT group_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks,not_match FROM restored.visual_group_decisions WHERE 1
+                            ON CONFLICT(group_key) DO UPDATE SET manual_keeper_path_key=excluded.manual_keeper_path_key,reviewed=excluded.reviewed,ignored=excluded.ignored,updated_utc_ticks=excluded.updated_utc_ticks,not_match=excluded.not_match;
+                            """
+                            :
+                            """
+                            INSERT INTO visual_group_decisions(group_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks,not_match)
+                            SELECT group_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks,0 FROM restored.visual_group_decisions WHERE 1
+                            ON CONFLICT(group_key) DO UPDATE SET manual_keeper_path_key=excluded.manual_keeper_path_key,reviewed=excluded.reviewed,ignored=excluded.ignored,updated_utc_ticks=excluded.updated_utc_ticks,not_match=0;
+                            """;
+                        visual = RestoreTable(connection, transaction,
+                            visualRestoreSql);
                     }
                     transaction.Commit();
                     return new LibraryUserDataRestoreResult(

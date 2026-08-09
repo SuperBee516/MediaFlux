@@ -100,6 +100,13 @@ namespace MediaFlux.Services.LibraryCatalog
         public LibraryDuplicateCleanupService DuplicateCleanup { get; }
         public LibraryVisualDuplicateCleanupService VisualDuplicateCleanup { get; }
 
+        public void UpdateVisualKeeperPreferences(MediaFlux.Models.DuplicateKeeperPreferences preferences)
+        {
+            ArgumentNullException.ThrowIfNull(preferences);
+            _visual.UpdateKeeperPreferences(preferences);
+            VisualDuplicateCleanup.UpdateKeeperPreferences(preferences);
+        }
+
         public void Dispose()
         {
             if (_disposed)

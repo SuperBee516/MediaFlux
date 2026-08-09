@@ -13,6 +13,12 @@ namespace MediaFlux.Services
         IReadOnlyDictionary<string, double> Scores,
         string Explanation);
 
+    public enum DuplicateKeeperScoringContext
+    {
+        Standard,
+        Visual
+    }
+
     public static class DuplicateKeeperScoringService
     {
         public static DuplicateGroup Apply(
@@ -51,7 +57,8 @@ namespace MediaFlux.Services
 
         public static DuplicateKeeperEvaluation Evaluate(
             IReadOnlyCollection<DuplicateItem> sourceItems,
-            DuplicateKeeperPreferences? sourcePreferences)
+            DuplicateKeeperPreferences? sourcePreferences,
+            DuplicateKeeperScoringContext context = DuplicateKeeperScoringContext.Standard)
         {
             if (sourceItems.Count == 0)
                 return new DuplicateKeeperEvaluation(null, true, 0, new Dictionary<string, double>(), "No files are available to score.");
@@ -63,7 +70,11 @@ namespace MediaFlux.Services
             var candidates = protectedItems.Count > 0 ? protectedItems : items;
 
             if (string.Equals(preferences.Profile, DuplicateKeeperPreferences.QualityFirst, StringComparison.Ordinal))
-                return EvaluateLegacy(items, candidates);
+            {
+                return context == DuplicateKeeperScoringContext.Visual
+                    ? EvaluateVisualDefault(items, candidates, preferences.CodecPreference)
+                    : EvaluateLegacy(items, candidates);
+            }
 
             if (preferences.NeverSacrificeResolution)
             {
@@ -139,6 +150,51 @@ namespace MediaFlux.Services
                 item => string.Equals(item.Path, keeper.Path, StringComparison.OrdinalIgnoreCase) ? 100d : 0d,
                 StringComparer.OrdinalIgnoreCase);
             return new DuplicateKeeperEvaluation(keeper, false, 100, scores, GetLegacyReason(keeper, allItems));
+        }
+
+        private static DuplicateKeeperEvaluation EvaluateVisualDefault(
+            IReadOnlyCollection<DuplicateItem> allItems,
+            IReadOnlyCollection<DuplicateItem> candidates,
+            string codecPreference)
+        {
+            var ranked = candidates
+                .OrderByDescending(item => GetPixels(item))
+                .ThenByDescending(item => GetConfiguredCodecScore(item.VideoCodec, codecPreference))
+                .ThenByDescending(item => item.BitrateKbps)
+                .ThenByDescending(item => item.LengthBytes)
+                .ThenByDescending(item => item.Modified)
+                .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            DuplicateItem keeper = ranked[0];
+            var scores = allItems.ToDictionary(
+                item => item.Path,
+                item => string.Equals(item.Path, keeper.Path, StringComparison.OrdinalIgnoreCase) ? 100d : 0d,
+                StringComparer.OrdinalIgnoreCase);
+            string reason = keeper.IsReferenceProtected
+                ? "Visual quality first: protected file"
+                : BuildVisualDefaultReason(keeper, allItems, codecPreference);
+            return new DuplicateKeeperEvaluation(keeper, false, 100, scores, reason);
+        }
+
+        private static string BuildVisualDefaultReason(
+            DuplicateItem keeper,
+            IReadOnlyCollection<DuplicateItem> items,
+            string codecPreference)
+        {
+            long pixels = GetPixels(keeper);
+            long maxPixels = items.Max(GetPixels);
+            if (pixels > 0 && pixels == maxPixels && items.Any(item => GetPixels(item) < maxPixels))
+                return "Visual quality first: highest resolution";
+
+            double codecScore = GetConfiguredCodecScore(keeper.VideoCodec, codecPreference);
+            if (items.Any(item => GetConfiguredCodecScore(item.VideoCodec, codecPreference) < codecScore))
+                return $"Visual quality first: preferred {keeper.VideoCodec.ToUpperInvariant()} codec at equal resolution";
+
+            int maxBitrate = items.Max(item => item.BitrateKbps);
+            if (keeper.BitrateKbps > 0 && keeper.BitrateKbps == maxBitrate && items.Any(item => item.BitrateKbps < maxBitrate))
+                return $"Visual quality first: highest reported bitrate among {keeper.VideoCodec.ToUpperInvariant()} matches";
+
+            return "Visual quality first: resolution, codec, bitrate, file size, and modified date tie-breakers";
         }
 
         private static DuplicateItem ApplyRecommendation(DuplicateItem item, DuplicateKeeperEvaluation evaluation)
@@ -311,6 +367,9 @@ namespace MediaFlux.Services
             if (h264) return 65;
             return 45;
         }
+
+        private static double GetConfiguredCodecScore(string codec, string preference) =>
+            string.Equals(preference, DuplicateKeeperPreferences.CodecNoPreference, StringComparison.Ordinal) ? 50 : GetCodecScore(codec, preference);
 
         private static long GetPixels(DuplicateItem item) => (long)item.Width * item.Height;
     }

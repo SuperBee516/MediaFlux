@@ -1,3 +1,4 @@
+using MediaFlux.Services;
 using MediaFlux.Services.LibraryCatalog;
 
 namespace MediaFlux
@@ -19,6 +20,8 @@ namespace MediaFlux
         private readonly ProgressBar _visualProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
         private readonly ContextMenuStrip _visualGroupsMenu = new();
         private readonly ContextMenuStrip _visualMembersMenu = new();
+        private readonly Button _visualApplyButton = new() { Name = "VisualApplyButton", Text = "Apply", Dock = DockStyle.Top, Height = 30 };
+        private readonly TableLayoutPanel _visualControlArea = new() { Name = "VisualControlArea" };
         private int _visualPage;
         private long _visualTotal;
         private bool _loadingVisualGroups;
@@ -28,25 +31,54 @@ namespace MediaFlux
         private void BuildVisualSimilarityTab()
         {
             var tab = new TabPage("Duplicates — Visual") { Padding = new Padding(8) };
-            var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 72, AutoScroll = true, WrapContents = true };
-            AddButton(toolbar, "Analyze visual similarity", AnalyzeVisualSimilarity_Click);
-            AddButton(toolbar, "Pause", (_, _) => _runtime.VisualSimilarity.Pause());
-            AddButton(toolbar, "Resume", (_, _) => _runtime.VisualSimilarity.Resume());
-            AddButton(toolbar, "Cancel", (_, _) => _runtime.VisualSimilarity.Cancel());
-            toolbar.Controls.Add(Labeled("Search", _visualSearch));
-            toolbar.Controls.Add(Labeled("Location", _visualLocation));
-            toolbar.Controls.Add(Labeled("Minimum confidence", _visualConfidence));
-            toolbar.Controls.Add(Labeled("Review", _visualReview));
-            toolbar.Controls.Add(Labeled("Codec", _visualCodecDifference));
-            toolbar.Controls.Add(Labeled("Resolution", _visualResolutionDifference));
-            toolbar.Controls.Add(Labeled("Sort", _visualSort));
-            var apply = new Button { Text = "Apply", AutoSize = true, Margin = new Padding(4, 19, 3, 3) };
-            apply.Click += async (_, _) => { _visualPage = 0; await RefreshVisualGroupsAsync(); };
-            toolbar.Controls.Add(apply);
+            _visualControlArea.Dock = DockStyle.Top;
+            _visualControlArea.Height = 142;
+            _visualControlArea.ColumnCount = 1;
+            _visualControlArea.RowCount = 2;
+            _visualControlArea.Margin = Padding.Empty;
+            _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var analysis = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false, Padding = new Padding(0, 4, 0, 2) };
+            AddButton(analysis, "Analyze visual similarity", AnalyzeVisualSimilarity_Click);
+            AddButton(analysis, "Pause", (_, _) => _runtime.VisualSimilarity.Pause());
+            AddButton(analysis, "Resume", (_, _) => _runtime.VisualSimilarity.Resume());
+            AddButton(analysis, "Cancel", (_, _) => _runtime.VisualSimilarity.Cancel());
+            AddButton(analysis, "Keeper rules…", VisualKeeperRules_Click);
+            _visualControlArea.Controls.Add(analysis, 0, 0);
+
+            var filtersBox = new GroupBox { Text = "Filters", Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 7) };
+            var filters = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 2, Margin = Padding.Empty };
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+            filters.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            filters.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            AddVisualFilter(filters, "Search", _visualSearch, 0, 0, 2);
+            AddVisualFilter(filters, "Location", _visualLocation, 2, 0);
+            AddVisualFilter(filters, "Review state", _visualReview, 3, 0);
+            AddVisualFilter(filters, "Minimum confidence", _visualConfidence, 0, 1);
+            AddVisualFilter(filters, "Codec", _visualCodecDifference, 1, 1);
+            AddVisualFilter(filters, "Resolution", _visualResolutionDifference, 2, 1);
+            AddVisualFilter(filters, "Sort", _visualSort, 3, 1);
+            var filterActions = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = new Padding(5, 0, 0, 0) };
+            filterActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            filterActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            _visualApplyButton.Click += async (_, _) => { _visualPage = 0; await RefreshVisualGroupsAsync(); };
+            var reset = new Button { Text = "Reset", Dock = DockStyle.Top, Height = 30 };
+            reset.Click += ResetVisualFilters_Click;
+            filterActions.Controls.Add(_visualApplyButton, 0, 0);
+            filterActions.Controls.Add(reset, 0, 1);
+            filters.Controls.Add(filterActions, 4, 0);
+            filters.SetRowSpan(filterActions, 2);
+            filtersBox.Controls.Add(filters);
+            _visualControlArea.Controls.Add(filtersBox, 0, 1);
 
             _visualLocation.Items.Add(new LocationChoice(0, "All locations"));
             _visualLocation.SelectedIndex = 0;
-            _visualReview.Items.AddRange(new object[] { "All", "Unreviewed", "Reviewed", "Ignored" });
+            _visualReview.Items.AddRange(new object[] { "Active", "Unreviewed", "Reviewed", "Ignored", "Not a match", "All including failed matches" });
             _visualReview.SelectedIndex = 0;
             _visualCodecDifference.Items.AddRange(new object[] { "All", "Different", "Same" });
             _visualCodecDifference.SelectedIndex = 0;
@@ -113,6 +145,7 @@ namespace MediaFlux
             AddButton(actions, "Mark reviewed", MarkVisualReviewed_Click);
             AddButton(actions, "Ignore / restore match", ToggleVisualIgnored_Click);
             AddButton(actions, "Review cleanup plan…", ReviewSelectedVisualCleanup_Click);
+            AddButton(actions, "Delete both…", DeleteBothVisual_Click);
             AddButton(actions, "Bulk delete recommended duplicates…", ReviewBulkVisualCleanup_Click);
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
@@ -131,8 +164,44 @@ namespace MediaFlux
             tab.Controls.Add(pager);
             tab.Controls.Add(actions);
             tab.Controls.Add(notice);
-            tab.Controls.Add(toolbar);
+            tab.Controls.Add(_visualControlArea);
             _tabs.TabPages.Add(tab);
+        }
+
+        private static void AddVisualFilter(TableLayoutPanel layout, string label, Control control, int column, int row, int columnSpan = 1)
+        {
+            var cell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = new Padding(3, 0, 6, 0) };
+            cell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            cell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            cell.Controls.Add(new Label { Text = label, AutoSize = true, Margin = new Padding(0, 0, 0, 1) }, 0, 0);
+            control.Dock = DockStyle.Fill;
+            control.Margin = Padding.Empty;
+            cell.Controls.Add(control, 0, 1);
+            layout.Controls.Add(cell, column, row);
+            if (columnSpan > 1) layout.SetColumnSpan(cell, columnSpan);
+        }
+
+        private async void ResetVisualFilters_Click(object? sender, EventArgs e)
+        {
+            _visualSearch.Clear();
+            _visualLocation.SelectedIndex = _visualLocation.Items.Count > 0 ? 0 : -1;
+            _visualConfidence.Value = 76;
+            _visualReview.SelectedIndex = 0;
+            _visualCodecDifference.SelectedIndex = 0;
+            _visualResolutionDifference.SelectedIndex = 0;
+            _visualSort.SelectedIndex = 0;
+            _visualPage = 0;
+            await RefreshVisualGroupsAsync();
+        }
+
+        private async void VisualKeeperRules_Click(object? sender, EventArgs e)
+        {
+            using var dialog = new DuplicateKeeperPreferencesForm(_visualKeeperPreferences, DuplicateKeeperScoringContext.Visual);
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            _visualKeeperPreferences = dialog.Preferences.Clone();
+            _reviewOptions.KeeperPreferencesChanged?.Invoke(_visualKeeperPreferences.Clone());
+            await Task.Run(() => _runtime.UpdateVisualKeeperPreferences(_visualKeeperPreferences));
+            await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
         }
 
         private async void AnalyzeVisualSimilarity_Click(object? sender, EventArgs e)
@@ -175,7 +244,7 @@ namespace MediaFlux
                 {
                     int row = _visualGroupsGrid.Rows.Add(group.GroupId, "Visual / similar", $"{group.ConfidenceScore:0.0}%", FormatBytes(group.ReclaimableBytes),
                         $"{group.DurationDeltaSeconds:0.###} s", group.CodecDiffers ? "Different" : "Same", group.ResolutionDiffers ? "Different" : "Same",
-                        group.Ignored ? "Ignored" : group.Reviewed ? "Reviewed" : "Unreviewed", group.EvidenceText);
+                        group.NotMatch ? "Not a match" : group.Ignored ? "Ignored" : group.Reviewed ? "Reviewed" : "Unreviewed", group.EvidenceText);
                     _visualGroupsGrid.Rows[row].Tag = group;
                 }
                 DataGridViewRow? preferredRow = preferredGroupId.HasValue
@@ -228,10 +297,11 @@ namespace MediaFlux
         {
             bool? reviewed = _visualReview.SelectedIndex switch { 1 => false, 2 => true, _ => null };
             bool? ignored = _visualReview.SelectedIndex == 3 ? true : null;
+            bool? notMatch = _visualReview.SelectedIndex switch { 4 => true, 5 => null, _ => false };
             bool? codec = _visualCodecDifference.SelectedIndex switch { 1 => true, 2 => false, _ => null };
             bool? resolution = _visualResolutionDifference.SelectedIndex switch { 1 => true, 2 => false, _ => null };
             long? location = _visualLocation.SelectedItem is LocationChoice choice && choice.Id > 0 ? choice.Id : null;
-            return new VisualGroupQuery(Search: _visualSearch.Text, LocationId: location, Reviewed: reviewed, Ignored: ignored,
+            return new VisualGroupQuery(Search: _visualSearch.Text, LocationId: location, Reviewed: reviewed, Ignored: ignored, NotMatch: notMatch,
                 CodecDiffers: codec, ResolutionDiffers: resolution, MinimumConfidence: (double)_visualConfidence.Value,
                 SortColumn: _visualSort.Text.ToLowerInvariant(), Descending: true, Offset: _visualPage * VisualPageSize, Limit: VisualPageSize);
         }
@@ -272,6 +342,12 @@ namespace MediaFlux
         }
 
         private async void ReviewBulkVisualCleanup_Click(object? sender, EventArgs e) => await PreviewVisualCleanupAsync(null);
+
+        private async void DeleteBothVisual_Click(object? sender, EventArgs e)
+        {
+            if (SelectedVisualGroup() is not { } group) return;
+            await PreviewDeleteBothAsync(group.GroupId);
+        }
 
         private void VisualSimilarity_ProgressChanged(object? sender, LibraryVisualAnalysisProgress e)
         {

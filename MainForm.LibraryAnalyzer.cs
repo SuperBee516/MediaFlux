@@ -47,7 +47,14 @@ namespace MediaFlux
                             _config.VisualBulkCleanupMinimumConfidence),
                         new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
                             _config.FfmpegPath,
-                            _config.ExternalPlayerPath));
+                            _config.ExternalPlayerPath,
+                            KeeperPreferences: _config.DuplicateKeeperPreferences,
+                            KeeperPreferencesChanged: preferences =>
+                            {
+                                _config.DuplicateKeeperPreferences = preferences.Clone();
+                                _config.Save(_configPath);
+                                RescoreDuplicateKeeperRecommendations();
+                            }));
                     _libraryAnalyzerForm.FormClosed += (_, _) => _libraryAnalyzerForm = null;
                     _libraryAnalyzerForm.Show(this);
                 }

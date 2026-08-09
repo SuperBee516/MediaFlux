@@ -31,9 +31,9 @@ namespace MediaFlux.Services.LibraryCatalog
                     item.CommandText = """
                         INSERT INTO visual_cleanup_plan_items(plan_id,group_key,group_id,file_id,keeper_file_id,source_path,source_size_bytes,
                         source_last_write_utc_ticks,source_volume_id,source_file_identity,keeper_path,keeper_size_bytes,keeper_last_write_utc_ticks,
-                        keeper_volume_id,keeper_file_identity,confidence_score,exact_hash,status)
+                        keeper_volume_id,keeper_file_identity,confidence_score,exact_hash,cleanup_intent,status)
                         VALUES($plan,$key,$group,$file,$keeper,$source,$source_size,$source_time,$source_volume,$source_identity,
-                        $keeper_path,$keeper_size,$keeper_time,$keeper_volume,$keeper_identity,$confidence,$hash,$status);
+                        $keeper_path,$keeper_size,$keeper_time,$keeper_volume,$keeper_identity,$confidence,$hash,$intent,$status);
                         """;
                     item.Parameters.AddWithValue("$plan", planId); item.Parameters.AddWithValue("$key", source.GroupKey);
                     item.Parameters.AddWithValue("$group", source.GroupId); item.Parameters.AddWithValue("$file", source.FileId);
@@ -43,7 +43,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     item.Parameters.AddWithValue("$keeper_path", source.KeeperPath); item.Parameters.AddWithValue("$keeper_size", source.KeeperSizeBytes);
                     item.Parameters.AddWithValue("$keeper_time", source.KeeperLastWriteUtc.Ticks); item.Parameters.AddWithValue("$keeper_volume", source.KeeperVolumeId ?? "");
                     item.Parameters.AddWithValue("$keeper_identity", source.KeeperFileIdentity ?? ""); item.Parameters.AddWithValue("$confidence", source.ConfidenceScore);
-                    item.Parameters.AddWithValue("$hash", (object?)source.ExactHash ?? DBNull.Value); item.Parameters.AddWithValue("$status", (int)DuplicateCleanupItemStatus.Planned);
+                    item.Parameters.AddWithValue("$hash", (object?)source.ExactHash ?? DBNull.Value); item.Parameters.AddWithValue("$intent", (int)source.Intent); item.Parameters.AddWithValue("$status", (int)DuplicateCleanupItemStatus.Planned);
                     item.ExecuteNonQuery();
                 }
                 return planId;
@@ -63,10 +63,10 @@ namespace MediaFlux.Services.LibraryCatalog
             bool unreviewed=pr.GetInt32(3)!=0; double confidence=pr.GetDouble(4); DateTime created=FromUtcTicks(pr.GetInt64(5));
             DateTime? completed=pr.IsDBNull(6)?null:FromUtcTicks(pr.GetInt64(6)); string error=pr.GetString(7); pr.Close();
             using SqliteCommand items = connection.CreateCommand();
-            items.CommandText = "SELECT plan_id,group_key,group_id,file_id,keeper_file_id,source_path,source_size_bytes,source_last_write_utc_ticks,source_volume_id,source_file_identity,keeper_path,keeper_size_bytes,keeper_last_write_utc_ticks,keeper_volume_id,keeper_file_identity,confidence_score,exact_hash,status,destination_path,validation_error FROM visual_cleanup_plan_items WHERE plan_id=$id ORDER BY group_id,file_id;";
+            items.CommandText = "SELECT plan_id,group_key,group_id,file_id,keeper_file_id,source_path,source_size_bytes,source_last_write_utc_ticks,source_volume_id,source_file_identity,keeper_path,keeper_size_bytes,keeper_last_write_utc_ticks,keeper_volume_id,keeper_file_identity,confidence_score,exact_hash,cleanup_intent,status,destination_path,validation_error FROM visual_cleanup_plan_items WHERE plan_id=$id ORDER BY group_id,file_id;";
             items.Parameters.AddWithValue("$id", planId);
             using SqliteDataReader r=items.ExecuteReader(); var result=new List<VisualCleanupPlanItemRecord>();
-            while(r.Read()) result.Add(new VisualCleanupPlanItemRecord(r.GetInt64(0),r.GetString(1),r.GetInt64(2),r.GetInt64(3),r.GetInt64(4),r.GetString(5),r.GetInt64(6),FromUtcTicks(r.GetInt64(7)),r.GetString(8),r.GetString(9),r.GetString(10),r.GetInt64(11),FromUtcTicks(r.GetInt64(12)),r.GetString(13),r.GetString(14),r.GetDouble(15),r.IsDBNull(16)?null:(byte[])r[16],(DuplicateCleanupItemStatus)r.GetInt32(17),r.GetString(18),r.GetString(19)));
+            while(r.Read()) result.Add(new VisualCleanupPlanItemRecord(r.GetInt64(0),r.GetString(1),r.GetInt64(2),r.GetInt64(3),r.GetInt64(4),r.GetString(5),r.GetInt64(6),FromUtcTicks(r.GetInt64(7)),r.GetString(8),r.GetString(9),r.GetString(10),r.GetInt64(11),FromUtcTicks(r.GetInt64(12)),r.GetString(13),r.GetString(14),r.GetDouble(15),r.IsDBNull(16)?null:(byte[])r[16],(VisualCleanupIntent)r.GetInt32(17),(DuplicateCleanupItemStatus)r.GetInt32(18),r.GetString(19),r.GetString(20)));
             return new VisualCleanupPlanRecord(planId,action,status,root,unreviewed,confidence,created,completed,error,result);
         }
 

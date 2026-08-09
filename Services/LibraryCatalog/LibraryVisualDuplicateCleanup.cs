@@ -8,7 +8,11 @@ namespace MediaFlux.Services.LibraryCatalog
         VisualSimilarityMemberRecord Candidate,
         string KeeperReason,
         bool HasExactEvidence,
-        byte[]? ExactHash);
+        byte[]? ExactHash,
+        VisualCleanupIntent Intent = VisualCleanupIntent.DeleteCandidate)
+    {
+        public long ReclaimableBytes => Candidate.SizeBytes + (Intent == VisualCleanupIntent.DeleteBoth ? Keeper.SizeBytes : 0);
+    }
 
     public sealed record VisualCleanupProposal(
         IReadOnlyList<VisualCleanupProposalItem> Items,
@@ -25,7 +29,8 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly ILibraryDuplicateFileActions _actions;
         private readonly ILibraryFileIdentityProvider _identityProvider;
         private readonly Func<bool> _isEncodingActive;
-        private readonly DuplicateKeeperPreferences _preferences;
+        private DuplicateKeeperPreferences _preferences;
+        private readonly object _preferencesSync = new();
 
         public LibraryVisualDuplicateCleanupService(ILibraryCatalog inventory, ILibraryAnalysisCatalog analysis,
             ILibraryVisualCatalog visual, DuplicateKeeperPreferences? preferences = null, Func<bool>? isEncodingActive = null)
@@ -40,6 +45,14 @@ namespace MediaFlux.Services.LibraryCatalog
             _isEncodingActive=isEncodingActive??(()=>false);
         }
 
+        public void UpdateKeeperPreferences(DuplicateKeeperPreferences preferences)
+        {
+            ArgumentNullException.ThrowIfNull(preferences);
+            DuplicateKeeperPreferences normalized = preferences.Clone();
+            normalized.Normalize();
+            lock (_preferencesSync) _preferences = normalized;
+        }
+
         public VisualCleanupProposal BuildProposal(bool includeUnreviewed=false, double minimumConfidence=95,
             IReadOnlyCollection<long>? groupIds=null, int maximumItems=5000)
         {
@@ -50,13 +63,13 @@ namespace MediaFlux.Services.LibraryCatalog
             while(true)
             {
                 VisualSimilarityGroupPage page=_visual.QueryVisualGroups(new VisualGroupQuery(
-                    Reviewed: includeUnreviewed?null:true, Ignored:false, MinimumConfidence:includeUnreviewed?minimumConfidence:0,
+                    Reviewed: includeUnreviewed?null:true, Ignored:false, NotMatch:false, MinimumConfidence:includeUnreviewed?minimumConfidence:0,
                     SortColumn:"reclaimable", Descending:true, Offset:offset, Limit:500));
                 if(page.Groups.Count==0) break;
                 foreach(VisualSimilarityGroupRecord group in page.Groups)
                 {
                     if(selected!=null && !selected.Contains(group.GroupId)) continue;
-                    if(group.Ignored || (!includeUnreviewed && !group.Reviewed) || (includeUnreviewed && !group.Reviewed && group.ConfidenceScore<minimumConfidence)) { excluded++; continue; }
+                    if(group.Ignored || group.NotMatch || (!includeUnreviewed && !group.Reviewed) || (includeUnreviewed && !group.Reviewed && group.ConfidenceScore<minimumConfidence)) { excluded++; continue; }
                     IReadOnlyList<VisualSimilarityMemberRecord> members=_visual.GetVisualGroupMembers(group.GroupId);
                     if(members.Count!=2) { excluded++; continue; }
                     VisualSimilarityMemberRecord? keeper=members.FirstOrDefault(x=>x.IsManualKeeper)
@@ -65,7 +78,8 @@ namespace MediaFlux.Services.LibraryCatalog
                     string reason=keeper?.IsManualKeeper==true?"Manual keeper selection":keeper?.IsProtected==true?"Protected keeper":"Keeper recommendation";
                     if(keeper==null)
                     {
-                        DuplicateKeeperEvaluation score=DuplicateKeeperScoringService.Evaluate(members.Select(ToLegacyItem).ToArray(),_preferences);
+                        DuplicateKeeperPreferences preferences; lock (_preferencesSync) preferences=_preferences.Clone();
+                        DuplicateKeeperEvaluation score=DuplicateKeeperScoringService.Evaluate(members.Select(ToLegacyItem).ToArray(),preferences,DuplicateKeeperScoringContext.Visual);
                         if(score.RequiresReview || score.Keeper==null) { excluded++; continue; }
                         keeper=members.First(x=>string.Equals(x.FullPath,score.Keeper.Path,StringComparison.OrdinalIgnoreCase));
                         reason=score.Explanation;
@@ -88,6 +102,24 @@ namespace MediaFlux.Services.LibraryCatalog
             return new VisualCleanupProposal(safe,excluded,safe.Sum(x=>x.Candidate.SizeBytes),includeUnreviewed,truncated);
         }
 
+        public VisualCleanupProposal BuildDeleteBothProposal(long groupId)
+        {
+            VisualSimilarityGroupRecord? group = _visual.GetVisualGroup(groupId);
+            if (group == null || group.Ignored || group.NotMatch)
+                return new VisualCleanupProposal(Array.Empty<VisualCleanupProposalItem>(), 1, 0, false, false);
+            IReadOnlyList<VisualSimilarityMemberRecord> members = _visual.GetVisualGroupMembers(groupId);
+            if (members.Count != 2 || members.Any(member => !Eligible(member, true)) || SamePhysicalFile(members[0], members[1]))
+                return new VisualCleanupProposal(Array.Empty<VisualCleanupProposalItem>(), 1, 0, false, false);
+            LibraryFileHashFact? firstHash = _analysis.GetFileHashFact(members[0].FileId);
+            LibraryFileHashFact? secondHash = _analysis.GetFileHashFact(members[1].FileId);
+            bool exact = HashFactIsCurrent(firstHash, members[0]) && HashFactIsCurrent(secondHash, members[1]) &&
+                         firstHash!.FullHash!.SequenceEqual(secondHash!.FullHash!);
+            var item = new VisualCleanupProposalItem(group, members[1], members[0],
+                "Explicit Delete Both selection — no keeper will remain", exact, exact ? firstHash!.FullHash : null,
+                VisualCleanupIntent.DeleteBoth);
+            return new VisualCleanupProposal(new[] { item }, 0, item.ReclaimableBytes, false, false);
+        }
+
         public VisualCleanupPlanRecord CreatePlan(IReadOnlyCollection<VisualCleanupProposalItem> approved,
             DuplicateCleanupAction action, string quarantineRoot="", bool allowUnreviewed=false, double minimumConfidence=95)
         {
@@ -101,7 +133,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 items.Add(new VisualCleanupPlanItemRecord(0,proposal.Group.GroupKey,proposal.Group.GroupId,source.Id,keeper.Id,
                     source.FullPath,source.SizeBytes,source.LastWriteTimeUtc,source.VolumeId,source.FileIdentity,
                     keeper.FullPath,keeper.SizeBytes,keeper.LastWriteTimeUtc,keeper.VolumeId,keeper.FileIdentity,
-                    proposal.Group.ConfidenceScore,proposal.ExactHash,DuplicateCleanupItemStatus.Planned,"",""));
+                    proposal.Group.ConfidenceScore,proposal.ExactHash,proposal.Intent,DuplicateCleanupItemStatus.Planned,"",""));
             }
             if(items.Count==0) throw new InvalidOperationException("No safe visual cleanup candidates remain.");
             long id=_visual.CreateVisualCleanupPlan(action,quarantineRoot,allowUnreviewed,minimumConfidence,items);
@@ -118,7 +150,24 @@ namespace MediaFlux.Services.LibraryCatalog
             {
                 token.ThrowIfCancellationRequested();
                 string? error=await ValidateAsync(plan,item,token).ConfigureAwait(false);
-                if(error!=null){Record(plan,item,DuplicateCleanupItemStatus.Excluded,"",error);excluded++;continue;}
+                if(error!=null)
+                {
+                    Record(plan,item,DuplicateCleanupItemStatus.Excluded,"",error);
+                    excluded++;
+                    if (item.Intent == VisualCleanupIntent.DeleteBoth)
+                    {
+                        _visual.AppendVisualCleanupAudit(plan.PlanId,item.KeeperFileId,item.KeeperPath,"",plan.Action,DuplicateCleanupItemStatus.Excluded,error);
+                        excluded++;
+                    }
+                    continue;
+                }
+                if (item.Intent == VisualCleanupIntent.DeleteBoth)
+                {
+                    (int itemSucceeded, int itemFailed) = ExecuteDeleteBoth(plan, item);
+                    succeeded += itemSucceeded;
+                    failed += itemFailed;
+                    continue;
+                }
                 string destination="";
                 try
                 {
@@ -137,19 +186,56 @@ namespace MediaFlux.Services.LibraryCatalog
             return new DuplicateCleanupExecutionResult(planId,succeeded,excluded,failed,"");
         }
 
+        private (int Succeeded, int Failed) ExecuteDeleteBoth(VisualCleanupPlanRecord plan, VisualCleanupPlanItemRecord item)
+        {
+            int succeeded = 0, failed = 0;
+            var outcomes = new List<string>(2);
+            foreach ((long fileId, string path) in new[] { (item.FileId, item.SourcePath), (item.KeeperFileId, item.KeeperPath) })
+            {
+                string destination = "";
+                try
+                {
+                    destination = ExecuteAction(plan, item.GroupId, fileId, path);
+                    _visual.AppendVisualCleanupAudit(plan.PlanId,fileId,path,destination,plan.Action,DuplicateCleanupItemStatus.Succeeded,
+                        item.ExactHash==null?"User-approved Delete Both visual cleanup succeeded; no keeper remains.":"Exact hash evidence confirmed; Delete Both cleanup succeeded; no keeper remains.");
+                    outcomes.Add(destination);
+                    succeeded++;
+                }
+                catch (Exception ex)
+                {
+                    _visual.AppendVisualCleanupAudit(plan.PlanId,fileId,path,destination,plan.Action,DuplicateCleanupItemStatus.Failed,ex.Message);
+                    outcomes.Add(ex.Message);
+                    failed++;
+                }
+            }
+            _visual.UpdateVisualCleanupPlanItem(plan.PlanId,item.FileId,
+                failed == 0 ? DuplicateCleanupItemStatus.Succeeded : DuplicateCleanupItemStatus.Failed,
+                string.Join("; ", outcomes), failed == 0 ? "" : "One or more Delete Both actions failed.");
+            return (succeeded, failed);
+        }
+
+        private string ExecuteAction(VisualCleanupPlanRecord plan, long groupId, long fileId, string path) => plan.Action switch
+        {
+            DuplicateCleanupAction.RecycleBin => Recycle(path),
+            DuplicateCleanupAction.Quarantine => _actions.Quarantine(path,plan.QuarantineRoot,groupId,fileId),
+            DuplicateCleanupAction.PermanentDelete => DeletePermanent(path),
+            _ => throw new InvalidOperationException("Unknown cleanup action.")
+        };
+
         private async Task<string?> ValidateAsync(VisualCleanupPlanRecord plan,VisualCleanupPlanItemRecord item,CancellationToken token)
         {
             VisualSimilarityGroupRecord? group=_visual.GetVisualGroupByKey(item.GroupKey);
-            if(group==null||group.Ignored) return "The visual match is no longer current or is ignored.";
+            if(group==null||group.Ignored||group.NotMatch) return "The visual match is no longer current, is ignored, or was marked not a match.";
             if(group.ConfidenceScore + 0.001 < item.ConfidenceScore) return "The current visual confidence is lower than the approved evidence.";
-            if(!plan.AllowUnreviewed&&!group.Reviewed) return "The visual match is no longer reviewed.";
-            if(plan.AllowUnreviewed&&!group.Reviewed&&group.ConfidenceScore<plan.MinimumConfidence) return "The unreviewed match no longer meets the confidence threshold.";
-            if(group.ManualKeeperFileId.HasValue&&group.ManualKeeperFileId!=item.KeeperFileId) return "The manual keeper decision changed.";
-            if(!group.ManualKeeperFileId.HasValue&&group.SuggestedKeeperFileId!=item.KeeperFileId) return "The keeper recommendation changed.";
+            if(item.Intent != VisualCleanupIntent.DeleteBoth && !plan.AllowUnreviewed&&!group.Reviewed) return "The visual match is no longer reviewed.";
+            if(item.Intent != VisualCleanupIntent.DeleteBoth && plan.AllowUnreviewed&&!group.Reviewed&&group.ConfidenceScore<plan.MinimumConfidence) return "The unreviewed match no longer meets the confidence threshold.";
+            if(item.Intent != VisualCleanupIntent.DeleteBoth && group.ManualKeeperFileId.HasValue&&group.ManualKeeperFileId!=item.KeeperFileId) return "The manual keeper decision changed.";
+            if(item.Intent != VisualCleanupIntent.DeleteBoth && !group.ManualKeeperFileId.HasValue&&group.SuggestedKeeperFileId!=item.KeeperFileId) return "The keeper recommendation changed.";
             IReadOnlyList<VisualSimilarityMemberRecord> members=_visual.GetVisualGroupMembers(group.GroupId);
             VisualSimilarityMemberRecord? keeper=members.FirstOrDefault(x=>x.FileId==item.KeeperFileId), candidate=members.FirstOrDefault(x=>x.FileId==item.FileId);
             if(keeper==null||candidate==null) return "The files are no longer members of the visual match.";
             if(candidate.IsProtected) return "The candidate is protected.";
+            if(item.Intent == VisualCleanupIntent.DeleteBoth && keeper.IsProtected) return "Delete Both is blocked because one or more files are protected.";
             string? keeperError=ValidateSnapshot(keeper,item.KeeperPath,item.KeeperSizeBytes,item.KeeperLastWriteUtc,item.KeeperVolumeId,item.KeeperFileIdentity);
             if(keeperError!=null) return "Keeper validation failed: "+keeperError;
             string? candidateError=ValidateSnapshot(candidate,item.SourcePath,item.SourceSizeBytes,item.SourceLastWriteUtc,item.SourceVolumeId,item.SourceFileIdentity);

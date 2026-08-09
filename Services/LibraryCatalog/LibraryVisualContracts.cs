@@ -74,6 +74,7 @@ namespace MediaFlux.Services.LibraryCatalog
         long? LocationId = null,
         bool? Reviewed = null,
         bool? Ignored = null,
+        bool? NotMatch = null,
         bool? CodecDiffers = null,
         bool? ResolutionDiffers = null,
         double MinimumConfidence = 0,
@@ -97,6 +98,7 @@ namespace MediaFlux.Services.LibraryCatalog
         long? ManualKeeperFileId,
         bool Reviewed,
         bool Ignored,
+        bool NotMatch,
         bool CodecDiffers,
         bool ResolutionDiffers,
         long ReclaimableBytes);
@@ -126,7 +128,14 @@ namespace MediaFlux.Services.LibraryCatalog
         long GroupId,
         long? ManualKeeperFileId,
         bool Reviewed,
-        bool Ignored);
+        bool Ignored,
+        bool NotMatch = false);
+
+    public enum VisualCleanupIntent
+    {
+        DeleteCandidate = 0,
+        DeleteBoth = 1
+    }
 
     public sealed record VisualCleanupPlanItemRecord(
         long PlanId,
@@ -146,6 +155,7 @@ namespace MediaFlux.Services.LibraryCatalog
         string KeeperFileIdentity,
         double ConfidenceScore,
         byte[]? ExactHash,
+        VisualCleanupIntent Intent,
         DuplicateCleanupItemStatus Status,
         string DestinationPath,
         string ValidationError);
