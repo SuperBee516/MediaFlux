@@ -728,7 +728,10 @@ namespace MediaFlux
         public sealed record LibraryAnalyzerCleanupOptions(
             bool AllowRecycleBin = true,
             bool AllowQuarantine = false,
-            string QuarantineFolder = "");
+            string QuarantineFolder = "",
+            DuplicateCleanupAction PreferredAction = DuplicateCleanupAction.PermanentDelete,
+            bool AllowUnreviewedVisualBulkCleanup = false,
+            double VisualBulkCleanupMinimumConfidence = 95);
 
         public sealed record LibraryAnalyzerReviewOptions(
             string FfmpegPath = "",

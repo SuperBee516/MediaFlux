@@ -81,10 +81,7 @@ namespace MediaFlux
             AddButton(actions, "Protect / unprotect file", ToggleProtection_Click);
             AddButton(actions, "Mark reviewed", MarkReviewed_Click);
             AddButton(actions, "Ignore / restore group", ToggleIgnored_Click);
-            Button recycle = AddButton(actions, "Preview Recycle Bin cleanup…", PreviewRecycle_Click);
-            recycle.Enabled = _cleanupOptions.AllowRecycleBin;
-            Button quarantine = AddButton(actions, "Preview Quarantine cleanup…", PreviewQuarantine_Click);
-            quarantine.Enabled = _cleanupOptions.AllowQuarantine;
+            AddButton(actions, $"Preview {CleanupActionLabel(_cleanupOptions.PreferredAction)} cleanup…", PreviewPreferredCleanup_Click);
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
             var next = new Button { Text = "Next", AutoSize = true };
@@ -218,6 +215,14 @@ namespace MediaFlux
 
         private async void PreviewRecycle_Click(object? sender, EventArgs e) => await PreviewCleanupAsync(DuplicateCleanupAction.RecycleBin);
         private async void PreviewQuarantine_Click(object? sender, EventArgs e) => await PreviewCleanupAsync(DuplicateCleanupAction.Quarantine);
+        private async void PreviewPreferredCleanup_Click(object? sender, EventArgs e) => await PreviewCleanupAsync(_cleanupOptions.PreferredAction);
+
+        private static string CleanupActionLabel(DuplicateCleanupAction action) => action switch
+        {
+            DuplicateCleanupAction.RecycleBin => "Recycle Bin",
+            DuplicateCleanupAction.Quarantine => "Quarantine",
+            _ => "permanent-delete"
+        };
 
         private async Task PreviewCleanupAsync(DuplicateCleanupAction action)
         {
@@ -238,6 +243,8 @@ namespace MediaFlux
                                  $"Groups: {plan.Items.Select(item => item.GroupId).Distinct().Count():N0}\r\n\r\n" +
                                  "Every keeper and candidate will be revalidated by path, size, modified time, stable identity, and SHA-256 immediately before action. " +
                                  "Protected, changed, unavailable, and hard-link alias files are excluded.\r\n\r\nExecute this plan?";
+                if (action == DuplicateCleanupAction.PermanentDelete)
+                    message = "WARNING: This action permanently deletes files and cannot be undone.\r\n\r\n" + message;
                 if (MessageBox.Show(this, message, "Confirm exact duplicate cleanup", MessageBoxButtons.YesNo,
                         MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
                 DuplicateCleanupExecutionResult result = await _runtime.DuplicateCleanup.ExecutePlanAsync(plan.PlanId);

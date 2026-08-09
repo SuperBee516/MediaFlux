@@ -14,14 +14,16 @@ namespace MediaFlux.Services.LibraryCatalog
             string? configuredFfmpegPath,
             string? configuredFfprobePath,
             Func<bool>? isEncodingActive = null,
-            IEnumerable<string>? protectedPaths = null)
+            IEnumerable<string>? protectedPaths = null,
+            MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null)
             : this(
                 SqliteLibraryCatalog.CreateDefault(),
                 supportedExtensions,
                 new FfprobeLibraryMetadataProbe(applicationDirectory, configuredFfprobePath),
                 new FfmpegVisualFingerprintExtractor(applicationDirectory, configuredFfmpegPath),
                 isEncodingActive,
-                protectedPaths)
+                protectedPaths,
+                keeperPreferences: keeperPreferences)
         {
         }
 
@@ -37,7 +39,8 @@ namespace MediaFlux.Services.LibraryCatalog
             ILibraryFileSystem? fileSystem = null,
             ILibraryFileIdentityProvider? identityProvider = null,
             ILibraryChangeJournalProvider? changeJournal = null,
-            LibraryStorageScheduler? storageScheduler = null)
+            LibraryStorageScheduler? storageScheduler = null,
+            MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null)
         {
             _catalog = catalog;
             _catalog.Initialize();
@@ -65,8 +68,10 @@ namespace MediaFlux.Services.LibraryCatalog
                 _catalog,
                 visualExtractor,
                 isEncodingActive: isEncodingActive,
-                storageScheduler: scheduler);
+                storageScheduler: scheduler,
+                keeperPreferences: keeperPreferences);
             DuplicateCleanup = new LibraryDuplicateCleanupService(_catalog, _catalog, isEncodingActive);
+            VisualDuplicateCleanup = new LibraryVisualDuplicateCleanupService(_catalog, _catalog, _catalog, keeperPreferences, isEncodingActive);
             Scanner = new LibraryScanCoordinator(
                 _catalog,
                 supportedExtensions,
@@ -93,6 +98,7 @@ namespace MediaFlux.Services.LibraryCatalog
         public ILibraryVisualCatalog VisualCatalog => _catalog;
         public LibraryVisualAnalysisCoordinator VisualSimilarity => _visual;
         public LibraryDuplicateCleanupService DuplicateCleanup { get; }
+        public LibraryVisualDuplicateCleanupService VisualDuplicateCleanup { get; }
 
         public void Dispose()
         {

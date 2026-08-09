@@ -6,6 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
     internal interface ILibraryDuplicateFileActions
     {
         void Recycle(string path);
+        void DeletePermanent(string path);
         string Quarantine(string path, string quarantineRoot, long groupId, long fileId);
     }
 
@@ -13,6 +14,8 @@ namespace MediaFlux.Services.LibraryCatalog
     {
         public void Recycle(string path) => FileSystem.DeleteFile(
             path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin, UICancelOption.ThrowException);
+
+        public void DeletePermanent(string path) => File.Delete(path);
 
         public string Quarantine(string path, string quarantineRoot, long groupId, long fileId)
         {
@@ -150,9 +153,13 @@ namespace MediaFlux.Services.LibraryCatalog
                     string destination = "";
                     try
                     {
-                        destination = plan.Action == DuplicateCleanupAction.RecycleBin
-                            ? Recycle(item.SourcePath)
-                            : _actions.Quarantine(item.SourcePath, plan.QuarantineRoot, item.GroupId, item.FileId);
+                        destination = plan.Action switch
+                        {
+                            DuplicateCleanupAction.RecycleBin => Recycle(item.SourcePath),
+                            DuplicateCleanupAction.Quarantine => _actions.Quarantine(item.SourcePath, plan.QuarantineRoot, item.GroupId, item.FileId),
+                            DuplicateCleanupAction.PermanentDelete => DeletePermanent(item.SourcePath),
+                            _ => throw new InvalidOperationException("Unknown cleanup action.")
+                        };
                         _analysis.UpdateCleanupPlanItem(plan.PlanId, item.FileId, DuplicateCleanupItemStatus.Succeeded, destination, "");
                         _analysis.AppendCleanupAudit(plan.PlanId, item.FileId, item.SourcePath, destination, plan.Action, DuplicateCleanupItemStatus.Succeeded, "Validated exact duplicate cleanup succeeded.");
                         succeeded++;
@@ -203,6 +210,7 @@ namespace MediaFlux.Services.LibraryCatalog
         }
 
         private string Recycle(string path) { _actions.Recycle(path); return "Recycle Bin"; }
+        private string DeletePermanent(string path) { _actions.DeletePermanent(path); return "Permanently deleted"; }
         private void Exclude(DuplicateCleanupPlanRecord plan, DuplicateCleanupPlanItemRecord item, string message)
         {
             _analysis.UpdateCleanupPlanItem(plan.PlanId, item.FileId, DuplicateCleanupItemStatus.Excluded, "", message);

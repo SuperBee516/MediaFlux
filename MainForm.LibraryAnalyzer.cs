@@ -27,7 +27,8 @@ namespace MediaFlux
                     () => _encodingActive,
                     string.IsNullOrWhiteSpace(_config.DuplicateReferenceFolder)
                         ? Array.Empty<string>()
-                        : new[] { _config.DuplicateReferenceFolder });
+                        : new[] { _config.DuplicateReferenceFolder },
+                    _config.DuplicateKeeperPreferences);
                 if (_libraryAnalyzerForm == null || _libraryAnalyzerForm.IsDisposed)
                 {
                     _libraryAnalyzerForm = new LibraryAnalyzerForm(
@@ -35,7 +36,15 @@ namespace MediaFlux
                         new LibraryAnalyzerForm.LibraryAnalyzerCleanupOptions(
                             _config.AllowDuplicateRecycleBin,
                             _config.AllowDuplicateQuarantine,
-                            _config.DuplicateQuarantineFolder),
+                            _config.DuplicateQuarantineFolder,
+                            _config.LibraryAnalyzerCleanupMode switch
+                            {
+                                "RecycleBin" => DuplicateCleanupAction.RecycleBin,
+                                "Quarantine" => DuplicateCleanupAction.Quarantine,
+                                _ => DuplicateCleanupAction.PermanentDelete
+                            },
+                            _config.AllowUnreviewedVisualBulkCleanup,
+                            _config.VisualBulkCleanupMinimumConfidence),
                         new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
                             _config.FfmpegPath,
                             _config.ExternalPlayerPath));

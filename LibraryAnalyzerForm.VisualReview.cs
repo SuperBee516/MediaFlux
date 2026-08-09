@@ -11,6 +11,7 @@ namespace MediaFlux
         private void ConfigureVisualContextMenus()
         {
             AddVisualMenuItem(_visualGroupsMenu, "Review / Compare", "Review", async () => await OpenVisualReviewAsync());
+            AddVisualMenuItem(_visualGroupsMenu, "Review cleanup plan…", "Cleanup", async () => { if (SelectedVisualGroup() is { } g) await PreviewVisualCleanupAsync(new[] { g.GroupId }); });
             _visualGroupsMenu.Items.Add(new ToolStripSeparator());
             AddVisualMenuItem(_visualGroupsMenu, "Mark reviewed", "Reviewed", async () => await MarkSelectedVisualReviewedAsync());
             AddVisualMenuItem(_visualGroupsMenu, "Ignore match", "Ignore", async () => await ToggleSelectedVisualIgnoredAsync());
@@ -23,6 +24,8 @@ namespace MediaFlux
             AddVisualMenuItem(_visualMembersMenu, "Review / Compare", "Review", async () => await OpenVisualReviewAsync());
             AddVisualMenuItem(_visualMembersMenu, "Play / Preview", "Play", () => { PlaySelectedVisualMember(); return Task.CompletedTask; });
             AddVisualMenuItem(_visualMembersMenu, "Set as keeper", "Keeper", async () => await SetSelectedVisualKeeperAsync());
+            AddVisualMenuItem(_visualMembersMenu, "Keep this file / delete the other…", "KeepDeleteOther", async () => await KeepSelectedAndDeleteOtherAsync());
+            AddVisualMenuItem(_visualMembersMenu, "Delete selected candidate…", "DeleteCandidate", async () => await DeleteSelectedVisualCandidateAsync());
             AddVisualMenuItem(_visualMembersMenu, "Protect", "Protect", async () => await ToggleSelectedVisualProtectionAsync());
             _visualMembersMenu.Items.Add(new ToolStripSeparator());
             AddVisualMenuItem(_visualMembersMenu, "Open containing folder", "Folder", () => { OpenSelectedVisualMemberFolder(); return Task.CompletedTask; });
@@ -59,6 +62,7 @@ namespace MediaFlux
         {
             VisualSimilarityGroupRecord? group = SelectedVisualGroup();
             SetMenuState(_visualGroupsMenu, "Review", group != null);
+            SetMenuState(_visualGroupsMenu, "Cleanup", group != null && !group.Ignored);
             SetMenuState(_visualGroupsMenu, "Reviewed", group != null && !group.Reviewed);
             SetMenuState(_visualGroupsMenu, "Ignore", group != null, group?.Ignored == true ? "Restore match" : "Ignore match");
             SetMenuState(_visualGroupsMenu, "Previous", group != null && _visualTotal > 1);
@@ -75,6 +79,9 @@ namespace MediaFlux
             SetMenuState(_visualMembersMenu, "Review", group != null);
             SetMenuState(_visualMembersMenu, "Play", fileExists);
             SetMenuState(_visualMembersMenu, "Keeper", member != null && CanSelectVisualKeeper(member) && !member.IsManualKeeper);
+            bool hasOtherKeeper = group != null && member != null && (group.ManualKeeperFileId ?? group.SuggestedKeeperFileId) is long keeperId && keeperId != member.FileId;
+            SetMenuState(_visualMembersMenu, "KeepDeleteOther", member != null && CanSelectVisualKeeper(member));
+            SetMenuState(_visualMembersMenu, "DeleteCandidate", hasOtherKeeper && member!.Availability == IndexedFileAvailability.Present && !member.IsProtected);
             SetMenuState(_visualMembersMenu, "Protect", member != null, member?.IsProtected == true ? "Unprotect" : "Protect");
             SetMenuState(_visualMembersMenu, "Folder", folderExists);
             SetMenuState(_visualMembersMenu, "CopyPath", member != null && !string.IsNullOrWhiteSpace(member.FullPath));
@@ -137,6 +144,22 @@ namespace MediaFlux
                 member.FileId,
                 !member.IsProtected,
                 member.IsProtected ? "" : "Protected in Library Analyzer visual review"));
+
+        private async Task KeepSelectedAndDeleteOtherAsync()
+        {
+            if (SelectedVisualGroup() is not { } group || SelectedVisualMember() is not { } member) return;
+            await SaveVisualKeeperAsync(group, member);
+            await PreviewVisualCleanupAsync(new[] { group.GroupId });
+        }
+
+        private async Task DeleteSelectedVisualCandidateAsync()
+        {
+            if (SelectedVisualGroup() is not { } group || SelectedVisualMember() is not { } candidate) return;
+            IReadOnlyList<VisualSimilarityMemberRecord> members = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroupMembers(group.GroupId));
+            VisualSimilarityMemberRecord? keeper = members.FirstOrDefault(x => x.FileId == (group.ManualKeeperFileId ?? group.SuggestedKeeperFileId));
+            if (keeper == null || keeper.FileId == candidate.FileId) return;
+            await PreviewVisualCleanupAsync(new[] { group.GroupId }, candidate.FileId);
+        }
 
         private async Task NavigateVisualSelectionAsync(int delta)
         {
@@ -251,7 +274,13 @@ namespace MediaFlux
                             group,
                             member,
                             async () => { await SaveVisualKeeperAsync(group, member); await LoadCurrentAsync(); },
-                            async () => { await SaveVisualProtectionAsync(member); await LoadCurrentAsync(); });
+                            async () => { await SaveVisualProtectionAsync(member); await LoadCurrentAsync(); },
+                            async () =>
+                            {
+                                await SaveVisualKeeperAsync(group, member);
+                                bool deleted = await PreviewVisualCleanupAsync(new[] { group.GroupId });
+                                if (deleted) await MoveAsync(1); else await LoadCurrentAsync();
+                            });
                         body.Controls.Add(card.Panel);
                         _ = LoadVisualReviewThumbnailAsync(card.Picture, card.Status, member, groupPreviewCancellation.Token);
                     }
@@ -325,7 +354,8 @@ namespace MediaFlux
             VisualSimilarityGroupRecord group,
             VisualSimilarityMemberRecord member,
             Func<Task> keepSelected,
-            Func<Task> protectSelected)
+            Func<Task> protectSelected,
+            Func<Task> keepAndDeleteOther)
         {
             bool selectedKeeper = member.IsManualKeeper;
             bool suggestedKeeper = member.IsSuggestedKeeper && !selectedKeeper;
@@ -372,10 +402,12 @@ namespace MediaFlux
             var keep = new Button { Text = selectedKeeper ? "Keeper selected" : suggestedKeeper ? "Keep (suggested)" : "Set as keeper", Width = 112, Enabled = CanSelectVisualKeeper(member) && !selectedKeeper };
             var protect = new Button { Text = member.IsProtected ? "Unprotect" : "Protect", Width = 90 };
             var folder = new Button { Text = "Open folder", Width = 100, Enabled = Directory.Exists(Path.GetDirectoryName(member.FullPath)) };
+            var deleteOther = new Button { Text = "Keep this / delete other…", Width = 180, Enabled = CanSelectVisualKeeper(member) };
             play.Click += (_, _) => PlayVisualMember(member);
             keep.Click += async (_, _) => await keepSelected();
             protect.Click += async (_, _) => await protectSelected();
             folder.Click += (_, _) => OpenVisualMemberFolder(member);
+            deleteOther.Click += async (_, _) => await keepAndDeleteOther();
             if (selectedKeeper)
             {
                 keep.UseVisualStyleBackColor = false;
@@ -383,7 +415,7 @@ namespace MediaFlux
                 keep.BackColor = Color.FromArgb(46, 125, 50);
                 keep.ForeColor = Color.White;
             }
-            actions.Controls.AddRange(new Control[] { play, keep, protect, folder });
+            actions.Controls.AddRange(new Control[] { play, keep, deleteOther, protect, folder });
             var status = new Label
             {
                 Dock = DockStyle.Bottom,

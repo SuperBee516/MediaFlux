@@ -31,6 +31,9 @@ namespace MediaFlux.Services.LibraryCatalog
                 CREATE TABLE userdata.duplicate_cleanup_plan_items AS SELECT * FROM main.duplicate_cleanup_plan_items;
                 CREATE TABLE userdata.duplicate_cleanup_audit AS SELECT * FROM main.duplicate_cleanup_audit;
                 CREATE TABLE userdata.visual_group_decisions AS SELECT * FROM main.visual_group_decisions;
+                CREATE TABLE userdata.visual_cleanup_plans AS SELECT * FROM main.visual_cleanup_plans;
+                CREATE TABLE userdata.visual_cleanup_plan_items AS SELECT * FROM main.visual_cleanup_plan_items;
+                CREATE TABLE userdata.visual_cleanup_audit AS SELECT * FROM main.visual_cleanup_audit;
                 DETACH DATABASE userdata;
                 """;
             command.Parameters.AddWithValue("$path", path);

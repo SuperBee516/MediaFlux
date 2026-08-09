@@ -41,6 +41,27 @@ public sealed class UiConfigPersistenceTests : IDisposable
         Assert.Equal(0, loaded.EncodeInfoHeight);
     }
 
+    [Fact]
+    public void LibraryAnalyzerCleanupDefaultsAreConservativeAndAdvancedChoiceRoundTrips()
+    {
+        string legacy = Path.Combine(_root, "legacy-cleanup.json");
+        File.WriteAllText(legacy, "{}");
+        Config defaults = Config.Load(legacy);
+        Assert.Equal("PermanentDelete", defaults.LibraryAnalyzerCleanupMode);
+        Assert.False(defaults.AllowUnreviewedVisualBulkCleanup);
+        Assert.Equal(95, defaults.VisualBulkCleanupMinimumConfidence);
+
+        string path = Path.Combine(_root, "cleanup.json");
+        defaults.LibraryAnalyzerCleanupMode = "RecycleBin";
+        defaults.AllowUnreviewedVisualBulkCleanup = true;
+        defaults.VisualBulkCleanupMinimumConfidence = 97.5;
+        defaults.Save(path);
+        Config loaded = Config.Load(path);
+        Assert.Equal("RecycleBin", loaded.LibraryAnalyzerCleanupMode);
+        Assert.True(loaded.AllowUnreviewedVisualBulkCleanup);
+        Assert.Equal(97.5, loaded.VisualBulkCleanupMinimumConfidence);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

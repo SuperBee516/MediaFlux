@@ -158,6 +158,23 @@ public sealed class LibraryAnalyzerPhase4Tests : IDisposable
     }
 
     [Fact]
+    public async Task ExactCleanupSupportsPermanentDeleteWithoutWeakeningShaValidation()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "cleanup-permanent"); Directory.CreateDirectory(library);
+        string keeper = Write(library, "keeper.mkv", Repeated(16, 120_000)), candidate = Write(library, "candidate.mkv", Repeated(16, 120_000));
+        AddInventory(catalog, library, new[] { keeper, candidate });
+        using var coordinator = new LibraryDuplicateAnalysisCoordinator(catalog, new LibraryDuplicateAnalysisOptions(1, 8, 32 * 1024)); await coordinator.AnalyzeAsync();
+        ExactDuplicateGroupRecord group = Assert.Single(catalog.QueryDuplicateGroups(new DuplicateGroupQuery()).Groups);
+        catalog.SaveDuplicateDecision(new DuplicateGroupDecision(group.GroupId, catalog.GetFileByPath(keeper)!.Id, true, false));
+        var cleanup = new LibraryDuplicateCleanupService(catalog, catalog);
+        DuplicateCleanupPlanRecord plan = cleanup.CreatePlan(new[] { group.GroupId }, DuplicateCleanupAction.PermanentDelete);
+        DuplicateCleanupExecutionResult result = await cleanup.ExecutePlanAsync(plan.PlanId);
+        Assert.Equal(1, result.Succeeded);
+        Assert.True(File.Exists(keeper)); Assert.False(File.Exists(candidate));
+    }
+
+    [Fact]
     public void InterruptedDuplicateRunIsRecoveredAndSchemaContainsDecisionTables()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();

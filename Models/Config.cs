@@ -79,6 +79,9 @@ namespace MediaFlux.Models
         public bool AllowDuplicateQuarantine { get; set; } = false;
         public bool AllowDuplicatePermanentDelete { get; set; } = false;
         public bool RequireDuplicateCleanupConfirmation { get; set; } = true;
+        public string LibraryAnalyzerCleanupMode { get; set; } = "PermanentDelete";
+        public bool AllowUnreviewedVisualBulkCleanup { get; set; } = false;
+        public double VisualBulkCleanupMinimumConfidence { get; set; } = 95;
         public bool ShowDuplicateReferenceFolderOnMain { get; set; } = true;
         public bool EnablePersistentMediaInfoCache { get; set; } = true;
         public bool ExplorerFileContextMenuEnabled { get; set; } = false;
@@ -184,6 +187,9 @@ namespace MediaFlux.Models
                 config.DuplicateScanMode = "Strict visual duplicates";
             config.DuplicateKeeperPreferences ??= new DuplicateKeeperPreferences();
             config.DuplicateKeeperPreferences.Normalize();
+            if (config.LibraryAnalyzerCleanupMode is not ("PermanentDelete" or "RecycleBin" or "Quarantine"))
+                config.LibraryAnalyzerCleanupMode = "PermanentDelete";
+            config.VisualBulkCleanupMinimumConfidence = Math.Clamp(config.VisualBulkCleanupMinimumConfidence, 76, 100);
             if (!config.AllowDuplicateRecycleBin &&
                 !config.AllowDuplicateQuarantine &&
                 !config.AllowDuplicatePermanentDelete)

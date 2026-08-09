@@ -103,7 +103,7 @@ namespace MediaFlux
             {
                 Dock = DockStyle.Bottom,
                 Height = 36,
-                Text = "Visual matches are probabilistic and review-only. MediaFlux never offers bulk deletion from this view.",
+                Text = "Visual matches are probabilistic. Cleanup always requires a preview, explicit confirmation, and keeper/candidate revalidation.",
                 ForeColor = Color.DarkOrange,
                 Padding = new Padding(8, 9, 0, 0)
             };
@@ -112,6 +112,8 @@ namespace MediaFlux
             AddButton(actions, "Protect / unprotect file", ToggleVisualProtection_Click);
             AddButton(actions, "Mark reviewed", MarkVisualReviewed_Click);
             AddButton(actions, "Ignore / restore match", ToggleVisualIgnored_Click);
+            AddButton(actions, "Review cleanup plan…", ReviewSelectedVisualCleanup_Click);
+            AddButton(actions, "Bulk delete recommended duplicates…", ReviewBulkVisualCleanup_Click);
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
             var next = new Button { Text = "Next", AutoSize = true };
@@ -262,6 +264,14 @@ namespace MediaFlux
         {
             await ToggleSelectedVisualIgnoredAsync();
         }
+
+        private async void ReviewSelectedVisualCleanup_Click(object? sender, EventArgs e)
+        {
+            if (SelectedVisualGroup() is not { } group) return;
+            await PreviewVisualCleanupAsync(new[] { group.GroupId });
+        }
+
+        private async void ReviewBulkVisualCleanup_Click(object? sender, EventArgs e) => await PreviewVisualCleanupAsync(null);
 
         private void VisualSimilarity_ProgressChanged(object? sender, LibraryVisualAnalysisProgress e)
         {

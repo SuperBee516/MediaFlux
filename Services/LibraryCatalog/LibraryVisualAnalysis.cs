@@ -193,6 +193,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly LibraryVisualAnalysisOptions _options;
         private readonly Func<bool> _isEncodingActive;
         private readonly LibraryStorageScheduler _storageScheduler;
+        private readonly MediaFlux.Models.DuplicateKeeperPreferences _keeperPreferences;
         private readonly AsyncPauseGate _pause = new();
         private readonly object _sync = new();
         private CancellationTokenSource? _activeCancellation;
@@ -205,7 +206,8 @@ namespace MediaFlux.Services.LibraryCatalog
             ILibraryVisualFingerprintExtractor extractor,
             LibraryVisualAnalysisOptions? options = null,
             Func<bool>? isEncodingActive = null,
-            LibraryStorageScheduler? storageScheduler = null)
+            LibraryStorageScheduler? storageScheduler = null,
+            MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             _extractor = extractor ?? throw new ArgumentNullException(nameof(extractor));
@@ -214,6 +216,8 @@ namespace MediaFlux.Services.LibraryCatalog
                 throw new ArgumentOutOfRangeException(nameof(options));
             _isEncodingActive = isEncodingActive ?? (() => false);
             _storageScheduler = storageScheduler ?? new LibraryStorageScheduler();
+            _keeperPreferences = (keeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences()).Clone();
+            _keeperPreferences.Normalize();
         }
 
         public event EventHandler<LibraryVisualAnalysisProgress>? ProgressChanged;
@@ -295,6 +299,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     Report("Scoring visual candidates", eligible, fingerprinted, candidates, matches, errors, "");
                 }
                 _catalog.PublishVisualSimilarityGroups(run);
+                ScoreKeepers(linked.Token);
                 status = DuplicateAnalysisStatus.Completed;
             }
             catch (OperationCanceledException)
@@ -344,6 +349,28 @@ namespace MediaFlux.Services.LibraryCatalog
             if (matchRatio < 0.67 || confidence < minimumConfidence) return null;
             return new VisualMatchWrite(pair.LeftFileId, pair.RightFileId, confidence, matches, comparisons, average, durationDelta,
                 $"{matches}/{comparisons} aligned samples within dHash distance 12; average distance {average:0.0}; {pair.BandMatches} indexed band matches; duration delta {durationDelta:0.###}s.");
+        }
+
+        private void ScoreKeepers(CancellationToken token)
+        {
+            int offset = 0;
+            while (true)
+            {
+                VisualSimilarityGroupPage page = _catalog.QueryVisualGroups(new VisualGroupQuery(Offset: offset, Limit: 500));
+                if (page.Groups.Count == 0) return;
+                foreach (VisualSimilarityGroupRecord group in page.Groups)
+                {
+                    token.ThrowIfCancellationRequested();
+                    IReadOnlyList<VisualSimilarityMemberRecord> members = _catalog.GetVisualGroupMembers(group.GroupId);
+                    DuplicateKeeperEvaluation score = DuplicateKeeperScoringService.Evaluate(
+                        members.Select(LibraryVisualDuplicateCleanupService.ToLegacyItem).ToArray(), _keeperPreferences);
+                    long? keeper = score.RequiresReview || score.Keeper == null ? null :
+                        members.First(x => string.Equals(x.FullPath, score.Keeper.Path, StringComparison.OrdinalIgnoreCase)).FileId;
+                    _catalog.SetVisualSuggestedKeeper(group.GroupId, keeper);
+                }
+                offset += page.Groups.Count;
+                if (offset >= page.TotalCount) return;
+            }
         }
 
         private async Task WaitForPermissionAsync(CancellationToken token)

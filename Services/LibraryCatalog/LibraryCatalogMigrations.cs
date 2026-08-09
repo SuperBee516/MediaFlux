@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 5;
+        public const int CurrentVersion = 6;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -429,6 +429,75 @@ namespace MediaFlux.Services.LibraryCatalog
                         status_message TEXT NOT NULL DEFAULT '',
                         updated_utc_ticks INTEGER NOT NULL
                     ) STRICT;
+                    """),
+                new LibraryCatalogMigration(
+                    6,
+                    "Visual cleanup plans and permanent Library Analyzer cleanup",
+                    """
+                    ALTER TABLE duplicate_cleanup_plans RENAME TO duplicate_cleanup_plans_v5;
+                    ALTER TABLE duplicate_cleanup_plan_items RENAME TO duplicate_cleanup_plan_items_v5;
+                    ALTER TABLE duplicate_cleanup_audit RENAME TO duplicate_cleanup_audit_v5;
+
+                    CREATE TABLE duplicate_cleanup_plans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        action INTEGER NOT NULL CHECK (action BETWEEN 0 AND 2),
+                        status INTEGER NOT NULL CHECK (status BETWEEN 0 AND 4),
+                        quarantine_root TEXT NOT NULL DEFAULT '',
+                        created_utc_ticks INTEGER NOT NULL,
+                        completed_utc_ticks INTEGER NULL,
+                        error_text TEXT NOT NULL DEFAULT ''
+                    ) STRICT;
+                    CREATE TABLE duplicate_cleanup_plan_items (
+                        plan_id INTEGER NOT NULL REFERENCES duplicate_cleanup_plans(id) ON DELETE CASCADE,
+                        group_id INTEGER NOT NULL,file_id INTEGER NOT NULL,keeper_file_id INTEGER NOT NULL,
+                        source_path TEXT NOT NULL,source_path_key TEXT NOT NULL,
+                        source_size_bytes INTEGER NOT NULL CHECK (source_size_bytes >= 0),source_last_write_utc_ticks INTEGER NOT NULL,
+                        source_volume_id TEXT NOT NULL DEFAULT '',source_file_identity TEXT NOT NULL DEFAULT '',full_hash BLOB NOT NULL,
+                        status INTEGER NOT NULL CHECK (status BETWEEN 0 AND 4),destination_path TEXT NOT NULL DEFAULT '',validation_error TEXT NOT NULL DEFAULT '',
+                        PRIMARY KEY (plan_id,file_id)
+                    ) STRICT;
+                    CREATE TABLE duplicate_cleanup_audit (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,plan_id INTEGER NOT NULL REFERENCES duplicate_cleanup_plans(id) ON DELETE RESTRICT,
+                        file_id INTEGER NOT NULL,source_path TEXT NOT NULL,destination_path TEXT NOT NULL DEFAULT '',
+                        action INTEGER NOT NULL CHECK (action BETWEEN 0 AND 2),outcome INTEGER NOT NULL CHECK (outcome BETWEEN 0 AND 4),
+                        message TEXT NOT NULL DEFAULT '',occurred_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+                    INSERT INTO duplicate_cleanup_plans SELECT * FROM duplicate_cleanup_plans_v5;
+                    INSERT INTO duplicate_cleanup_plan_items SELECT * FROM duplicate_cleanup_plan_items_v5;
+                    INSERT INTO duplicate_cleanup_audit SELECT * FROM duplicate_cleanup_audit_v5;
+                    DROP TABLE duplicate_cleanup_audit_v5;
+                    DROP TABLE duplicate_cleanup_plan_items_v5;
+                    DROP TABLE duplicate_cleanup_plans_v5;
+                    CREATE INDEX ix_cleanup_audit_plan ON duplicate_cleanup_audit(plan_id,occurred_utc_ticks);
+
+                    CREATE TABLE visual_cleanup_plans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        action INTEGER NOT NULL CHECK (action BETWEEN 0 AND 2),
+                        status INTEGER NOT NULL CHECK (status BETWEEN 0 AND 4),
+                        quarantine_root TEXT NOT NULL DEFAULT '',
+                        allow_unreviewed INTEGER NOT NULL DEFAULT 0 CHECK (allow_unreviewed IN (0,1)),
+                        minimum_confidence REAL NOT NULL CHECK (minimum_confidence BETWEEN 0 AND 100),
+                        created_utc_ticks INTEGER NOT NULL,completed_utc_ticks INTEGER NULL,error_text TEXT NOT NULL DEFAULT ''
+                    ) STRICT;
+                    CREATE TABLE visual_cleanup_plan_items (
+                        plan_id INTEGER NOT NULL REFERENCES visual_cleanup_plans(id) ON DELETE CASCADE,
+                        group_key TEXT NOT NULL,group_id INTEGER NOT NULL,file_id INTEGER NOT NULL,keeper_file_id INTEGER NOT NULL,
+                        source_path TEXT NOT NULL,source_size_bytes INTEGER NOT NULL CHECK(source_size_bytes>=0),source_last_write_utc_ticks INTEGER NOT NULL,
+                        source_volume_id TEXT NOT NULL DEFAULT '',source_file_identity TEXT NOT NULL DEFAULT '',
+                        keeper_path TEXT NOT NULL,keeper_size_bytes INTEGER NOT NULL CHECK(keeper_size_bytes>=0),keeper_last_write_utc_ticks INTEGER NOT NULL,
+                        keeper_volume_id TEXT NOT NULL DEFAULT '',keeper_file_identity TEXT NOT NULL DEFAULT '',
+                        confidence_score REAL NOT NULL CHECK(confidence_score BETWEEN 0 AND 100),exact_hash BLOB NULL,
+                        status INTEGER NOT NULL CHECK(status BETWEEN 0 AND 4),destination_path TEXT NOT NULL DEFAULT '',validation_error TEXT NOT NULL DEFAULT '',
+                        PRIMARY KEY(plan_id,file_id)
+                    ) STRICT;
+                    CREATE TABLE visual_cleanup_audit (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,plan_id INTEGER NOT NULL REFERENCES visual_cleanup_plans(id) ON DELETE RESTRICT,
+                        file_id INTEGER NOT NULL,source_path TEXT NOT NULL,destination_path TEXT NOT NULL DEFAULT '',
+                        action INTEGER NOT NULL CHECK(action BETWEEN 0 AND 2),outcome INTEGER NOT NULL CHECK(outcome BETWEEN 0 AND 4),
+                        message TEXT NOT NULL DEFAULT '',occurred_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+                    CREATE INDEX ix_visual_cleanup_items_group ON visual_cleanup_plan_items(group_key,plan_id);
+                    CREATE INDEX ix_visual_cleanup_audit_plan ON visual_cleanup_audit(plan_id,occurred_utc_ticks);
                     """)
             };
 

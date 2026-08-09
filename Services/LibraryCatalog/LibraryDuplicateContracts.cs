@@ -12,7 +12,8 @@ namespace MediaFlux.Services.LibraryCatalog
     public enum DuplicateCleanupAction
     {
         RecycleBin = 0,
-        Quarantine = 1
+        Quarantine = 1,
+        PermanentDelete = 2
     }
 
     public enum DuplicateCleanupStatus

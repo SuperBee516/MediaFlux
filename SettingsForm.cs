@@ -37,6 +37,11 @@ namespace MediaFlux
         private StorageSavingsOptions _storageSavingsOptions = new();
         private DuplicateKeeperPreferences _duplicateKeeperPreferences = new();
         private readonly ToolTip _settingsToolTip = new();
+        private ComboBox comboLibraryAnalyzerCleanupMode = null!;
+        private CheckBox chkAllowUnreviewedVisualBulkCleanup = null!;
+        private NumericUpDown nudVisualBulkCleanupConfidence = null!;
+        private Label lblVisualBulkCleanupWarning = null!;
+        internal const string VisualBulkCleanupRiskWarning = "Visual similarity is probabilistic. Enabling this option may propose unreviewed false positives for permanent deletion. Every plan is previewed and requires confirmation, but you must verify each proposed keeper and deletion.";
 
         public SettingsForm(
             Config cfg,
@@ -50,6 +55,7 @@ namespace MediaFlux
             InitializeFfmpegStatusControls();
             InitializeExplorerIntegrationControls();
             Config = cfg;
+            InitializeLibraryAnalyzerCleanupControls(cfg);
             InitializeSmartRecommendationControls(cfg);
             InitializeDvdSettingsControls(cfg);
             _duplicateKeeperPreferences = (cfg.DuplicateKeeperPreferences ?? new DuplicateKeeperPreferences()).Clone();
@@ -542,7 +548,7 @@ namespace MediaFlux
 
         private void ToggleDuplicateCleanupInputs()
         {
-            bool allowQuarantine = chkAllowDuplicateQuarantine.Checked;
+            bool allowQuarantine = chkAllowDuplicateQuarantine.Checked || comboLibraryAnalyzerCleanupMode?.SelectedIndex == 2;
             lblDuplicateQuarantineFolder.Enabled = allowQuarantine;
             txtDuplicateQuarantineFolder.Enabled = allowQuarantine;
             btnBrowseDuplicateQuarantineFolder.Enabled = allowQuarantine;
@@ -557,6 +563,34 @@ namespace MediaFlux
                 lblDuplicateManagementHint.Text = "Warning: cleanup actions, including permanent delete, run immediately.";
                 lblDuplicateManagementHint.ForeColor = Color.DarkRed;
             }
+        }
+
+        private void InitializeLibraryAnalyzerCleanupControls(Config cfg)
+        {
+            var group = new GroupBox { Text = "Library Analyzer Cleanup", Location = new Point(820, 730), Size = new Size(390, 150) };
+            var modeLabel = new Label { Text = "Deletion mode:", AutoSize = true, Location = new Point(12, 26) };
+            comboLibraryAnalyzerCleanupMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(115, 22), Size = new Size(255, 23) };
+            comboLibraryAnalyzerCleanupMode.Items.AddRange(new object[] { "Permanent delete", "Recycle Bin", "Quarantine" });
+            comboLibraryAnalyzerCleanupMode.SelectedIndex = cfg.LibraryAnalyzerCleanupMode switch { "RecycleBin" => 1, "Quarantine" => 2, _ => 0 };
+            comboLibraryAnalyzerCleanupMode.SelectedIndexChanged += (_, _) => ToggleDuplicateCleanupInputs();
+            chkAllowUnreviewedVisualBulkCleanup = new CheckBox { Text = "Advanced: include unreviewed visual matches", AutoSize = true, Location = new Point(15, 55), Checked = cfg.AllowUnreviewedVisualBulkCleanup };
+            var confidenceLabel = new Label { Text = "Minimum confidence:", AutoSize = true, Location = new Point(31, 84) };
+            nudVisualBulkCleanupConfidence = new NumericUpDown { Minimum = 76, Maximum = 100, DecimalPlaces = 1, Increment = 0.5M, Location = new Point(160, 80), Size = new Size(70, 23), Value = (decimal)Math.Clamp(cfg.VisualBulkCleanupMinimumConfidence, 76, 100) };
+            lblVisualBulkCleanupWarning = new Label { Text = "Higher risk: unreviewed matches still require preview and confirmation.", AutoSize = false, Location = new Point(15, 110), Size = new Size(355, 32), ForeColor = Color.DarkRed };
+            group.Controls.AddRange(new Control[] { modeLabel, comboLibraryAnalyzerCleanupMode, chkAllowUnreviewedVisualBulkCleanup, confidenceLabel, nudVisualBulkCleanupConfidence, lblVisualBulkCleanupWarning });
+            Controls.Add(group);
+            chkAllowUnreviewedVisualBulkCleanup.CheckedChanged += (_, _) =>
+            {
+                if (chkAllowUnreviewedVisualBulkCleanup.Checked && !cfg.AllowUnreviewedVisualBulkCleanup)
+                {
+                    if (MessageBox.Show(this, VisualBulkCleanupRiskWarning + "\r\n\r\nEnable this advanced option?", "Enable higher-risk visual cleanup", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                        chkAllowUnreviewedVisualBulkCleanup.Checked = false;
+                }
+                nudVisualBulkCleanupConfidence.Enabled = chkAllowUnreviewedVisualBulkCleanup.Checked;
+                lblVisualBulkCleanupWarning.Visible = chkAllowUnreviewedVisualBulkCleanup.Checked;
+            };
+            nudVisualBulkCleanupConfidence.Enabled = chkAllowUnreviewedVisualBulkCleanup.Checked;
+            lblVisualBulkCleanupWarning.Visible = chkAllowUnreviewedVisualBulkCleanup.Checked;
         }
 
         private void btnClearDuplicateSignatureCache_Click(object sender, EventArgs e)
@@ -675,6 +709,13 @@ namespace MediaFlux
                 return;
             }
 
+            if (comboLibraryAnalyzerCleanupMode.SelectedIndex == 2 && !Directory.Exists(duplicateQuarantineFolder))
+            {
+                MessageBox.Show(this, "Choose an existing duplicate quarantine folder before selecting Library Analyzer quarantine cleanup.", "Quarantine folder required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                txtDuplicateQuarantineFolder.Focus();
+                return;
+            }
+
             Config.AutomaticallyBackupBeforeUpdates = chkBackupBeforeUpdates.Checked;
             Config.BackupFolderPath = txtBackupFolder.Text.Trim();
             Config.BackupsToKeep = (int)nudBackupsToKeep.Value;
@@ -711,6 +752,9 @@ namespace MediaFlux
             Config.AllowDuplicateQuarantine = allowDuplicateQuarantine;
             Config.AllowDuplicatePermanentDelete = allowDuplicatePermanentDelete;
             Config.RequireDuplicateCleanupConfirmation = chkRequireDuplicateCleanupConfirmation.Checked;
+            Config.LibraryAnalyzerCleanupMode = comboLibraryAnalyzerCleanupMode.SelectedIndex switch { 1 => "RecycleBin", 2 => "Quarantine", _ => "PermanentDelete" };
+            Config.AllowUnreviewedVisualBulkCleanup = chkAllowUnreviewedVisualBulkCleanup.Checked;
+            Config.VisualBulkCleanupMinimumConfidence = (double)nudVisualBulkCleanupConfidence.Value;
             Config.ShowDuplicateReferenceFolderOnMain = chkShowDuplicateReferenceFolderOnMain.Checked;
             Config.EnablePersistentMediaInfoCache = chkEnablePersistentMediaInfoCache.Checked;
             Config.FfmpegPath = txtFfmpegPath.Text.Trim();

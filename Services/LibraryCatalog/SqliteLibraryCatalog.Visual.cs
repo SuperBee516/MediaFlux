@@ -438,6 +438,34 @@ namespace MediaFlux.Services.LibraryCatalog
             return page.Groups.FirstOrDefault();
         }
 
+        public VisualSimilarityGroupRecord? GetVisualGroupByKey(string groupKey)
+        {
+            if (string.IsNullOrWhiteSpace(groupKey)) return null;
+            ThrowIfDisposed();
+            using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "SELECT id FROM visual_similarity_groups WHERE group_key=$key AND analysis_run_id=(SELECT id FROM visual_analysis_runs WHERE status=1 ORDER BY id DESC LIMIT 1) LIMIT 1;";
+            command.Parameters.AddWithValue("$key", groupKey);
+            object? id = command.ExecuteScalar();
+            return id == null || id == DBNull.Value ? null : GetVisualGroup(Convert.ToInt64(id));
+        }
+
+        public void SetVisualSuggestedKeeper(long groupId, long? fileId)
+        {
+            ThrowIfDisposed();
+            WithWriteTransaction<object?>((connection, transaction) =>
+            {
+                using SqliteCommand command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = "UPDATE visual_similarity_groups SET suggested_keeper_file_id=$file,updated_utc_ticks=$now WHERE id=$group AND ($file IS NULL OR $file IN(left_file_id,right_file_id));";
+                command.Parameters.AddWithValue("$file", (object?)fileId ?? DBNull.Value);
+                command.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+                command.Parameters.AddWithValue("$group", groupId);
+                command.ExecuteNonQuery();
+                return null;
+            });
+        }
+
         public IReadOnlyList<VisualSimilarityMemberRecord> GetVisualGroupMembers(long groupId)
         {
             ThrowIfDisposed();

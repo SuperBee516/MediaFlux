@@ -128,6 +128,40 @@ namespace MediaFlux.Services.LibraryCatalog
         bool Reviewed,
         bool Ignored);
 
+    public sealed record VisualCleanupPlanItemRecord(
+        long PlanId,
+        string GroupKey,
+        long GroupId,
+        long FileId,
+        long KeeperFileId,
+        string SourcePath,
+        long SourceSizeBytes,
+        DateTime SourceLastWriteUtc,
+        string SourceVolumeId,
+        string SourceFileIdentity,
+        string KeeperPath,
+        long KeeperSizeBytes,
+        DateTime KeeperLastWriteUtc,
+        string KeeperVolumeId,
+        string KeeperFileIdentity,
+        double ConfidenceScore,
+        byte[]? ExactHash,
+        DuplicateCleanupItemStatus Status,
+        string DestinationPath,
+        string ValidationError);
+
+    public sealed record VisualCleanupPlanRecord(
+        long PlanId,
+        DuplicateCleanupAction Action,
+        DuplicateCleanupStatus Status,
+        string QuarantineRoot,
+        bool AllowUnreviewed,
+        double MinimumConfidence,
+        DateTime CreatedUtc,
+        DateTime? CompletedUtc,
+        string ErrorText,
+        IReadOnlyList<VisualCleanupPlanItemRecord> Items);
+
     public interface ILibraryVisualCatalog
     {
         VisualAnalysisHandle BeginVisualAnalysis(string algorithm, int algorithmVersion);
@@ -144,8 +178,17 @@ namespace MediaFlux.Services.LibraryCatalog
         void PublishVisualSimilarityGroups(VisualAnalysisHandle run);
         VisualSimilarityGroupPage QueryVisualGroups(VisualGroupQuery query);
         VisualSimilarityGroupRecord? GetVisualGroup(long groupId);
+        VisualSimilarityGroupRecord? GetVisualGroupByKey(string groupKey);
         IReadOnlyList<VisualSimilarityMemberRecord> GetVisualGroupMembers(long groupId);
+        void SetVisualSuggestedKeeper(long groupId, long? fileId);
         void SaveVisualDecision(VisualGroupDecision decision);
+        long CreateVisualCleanupPlan(DuplicateCleanupAction action, string quarantineRoot, bool allowUnreviewed,
+            double minimumConfidence, IReadOnlyCollection<VisualCleanupPlanItemRecord> items);
+        VisualCleanupPlanRecord? GetVisualCleanupPlan(long planId);
+        void UpdateVisualCleanupPlanItem(long planId, long fileId, DuplicateCleanupItemStatus status, string destinationPath, string validationError);
+        void CompleteVisualCleanupPlan(long planId, DuplicateCleanupStatus status, string errorText = "");
+        void AppendVisualCleanupAudit(long planId, long fileId, string sourcePath, string destinationPath,
+            DuplicateCleanupAction action, DuplicateCleanupItemStatus outcome, string message);
     }
 
     public sealed record LibraryScanAcceleratorState(
