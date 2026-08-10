@@ -45,6 +45,7 @@ namespace MediaFlux
         private NumericUpDown nudVisualMassReviewMaximumMatches = null!;
         private NumericUpDown nudVisualMassReviewMinimumMargin = null!;
         private NumericUpDown nudVisualMassReviewMinimumConfidence = null!;
+        private FlowLayoutPanel? _libraryAnalyzerSettingsPanel;
         internal const string VisualBulkCleanupRiskWarning = "Visual similarity is probabilistic. Enabling this option may propose unreviewed false positives for permanent deletion. Every plan is previewed and requires confirmation, but you must verify each proposed keeper and deletion.";
 
         public SettingsForm(
@@ -572,7 +573,8 @@ namespace MediaFlux
 
         private void InitializeLibraryAnalyzerCleanupControls(Config cfg)
         {
-            var group = new GroupBox { Text = "Library Analyzer Cleanup", Location = new Point(820, 730), Size = new Size(390, 150) };
+            FlowLayoutPanel container = EnsureLibraryAnalyzerSettingsPanel();
+            var group = new GroupBox { Name = "grpLibraryAnalyzerCleanup", Text = "Library Analyzer Cleanup", Size = new Size(390, 150), Margin = Padding.Empty };
             var modeLabel = new Label { Text = "Deletion mode:", AutoSize = true, Location = new Point(12, 26) };
             comboLibraryAnalyzerCleanupMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(115, 22), Size = new Size(255, 23) };
             comboLibraryAnalyzerCleanupMode.Items.AddRange(new object[] { "Permanent delete", "Recycle Bin", "Quarantine" });
@@ -583,7 +585,7 @@ namespace MediaFlux
             nudVisualBulkCleanupConfidence = new NumericUpDown { Minimum = 76, Maximum = 100, DecimalPlaces = 1, Increment = 0.5M, Location = new Point(160, 80), Size = new Size(70, 23), Value = (decimal)Math.Clamp(cfg.VisualBulkCleanupMinimumConfidence, 76, 100) };
             lblVisualBulkCleanupWarning = new Label { Text = "Higher risk: unreviewed matches still require preview and confirmation.", AutoSize = false, Location = new Point(15, 110), Size = new Size(355, 32), ForeColor = Color.DarkRed };
             group.Controls.AddRange(new Control[] { modeLabel, comboLibraryAnalyzerCleanupMode, chkAllowUnreviewedVisualBulkCleanup, confidenceLabel, nudVisualBulkCleanupConfidence, lblVisualBulkCleanupWarning });
-            Controls.Add(group);
+            container.Controls.Add(group);
             chkAllowUnreviewedVisualBulkCleanup.CheckedChanged += (_, _) =>
             {
                 if (chkAllowUnreviewedVisualBulkCleanup.Checked && !cfg.AllowUnreviewedVisualBulkCleanup)
@@ -600,7 +602,8 @@ namespace MediaFlux
 
         private void InitializeLibraryAnalyzerReviewProductivityControls(Config cfg)
         {
-            var group = new GroupBox { Text = "Library Analyzer Review Productivity", Location = new Point(820, 890), Size = new Size(390, 155) };
+            FlowLayoutPanel container = EnsureLibraryAnalyzerSettingsPanel();
+            var group = new GroupBox { Name = "grpLibraryAnalyzerReviewProductivity", Text = "Library Analyzer Review Productivity", Size = new Size(390, 155), Margin = new Padding(0, 10, 0, 0) };
             chkSemiAutomaticVisualKeeperApproval = new CheckBox
             {
                 Text = "Semi-Automatic Visual Keeper Approval",
@@ -631,7 +634,26 @@ namespace MediaFlux
                 chkSemiAutomaticVisualKeeperApproval, maximumLabel, nudVisualMassReviewMaximumMatches,
                 marginLabel, nudVisualMassReviewMinimumMargin, confidenceLabel, nudVisualMassReviewMinimumConfidence
             });
-            Controls.Add(group);
+            container.Controls.Add(group);
+        }
+
+        private FlowLayoutPanel EnsureLibraryAnalyzerSettingsPanel()
+        {
+            if (_libraryAnalyzerSettingsPanel != null)
+                return _libraryAnalyzerSettingsPanel;
+
+            _libraryAnalyzerSettingsPanel = new FlowLayoutPanel
+            {
+                Name = "LibraryAnalyzerSettingsPanel",
+                Location = new Point(820, 970),
+                Size = new Size(390, 315),
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = false,
+                Margin = Padding.Empty
+            };
+            Controls.Add(_libraryAnalyzerSettingsPanel);
+            return _libraryAnalyzerSettingsPanel;
         }
 
         private void btnClearDuplicateSignatureCache_Click(object sender, EventArgs e)

@@ -5,6 +5,7 @@ namespace MediaFlux
 {
     public sealed partial class LibraryAnalyzerForm : MediaFluxForm
     {
+        private static readonly Color LibraryAnalyzerAccentColor = Color.FromArgb(0, 92, 160);
         private const int PageSize = 200;
         private readonly LibraryAnalyzerRuntime _runtime;
         private readonly LibraryAnalyzerCleanupOptions _cleanupOptions;

@@ -1,6 +1,7 @@
 using MediaFlux.Models;
 using MediaFlux.Services;
 using MediaFlux.Services.LibraryCatalog;
+using System.Drawing;
 using System.Windows.Forms;
 using Xunit;
 
@@ -156,6 +157,166 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         thread.Start();
         thread.Join(TimeSpan.FromSeconds(15));
         if (thread.IsAlive) throw new TimeoutException("Semi-automatic visual review did not complete.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void VisualGridDoubleClickOpensReviewWithoutChangingCatalogState()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                using SqliteLibraryCatalog catalog = CreateCatalog();
+                string library = Path.Combine(_root, "double-click"); Directory.CreateDirectory(library);
+                string first = Write(library, "first.mkv", 50_000);
+                string second = Write(library, "second.mp4", 30_000);
+                AddInventoryAndMetadata(catalog, library, new[] { first, second },
+                    path => path == first ? ("hevc", 1920, 1080, 8_000_000L) : ("h264", 1280, 720, 2_000_000L));
+                AnalyzeVisualAsync(catalog, new[] { first, second }).GetAwaiter().GetResult();
+                VisualSimilarityGroupRecord before = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
+                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new EmptyMetadataProbe(),
+                    new FakeVisualExtractor(_ => Array.Empty<ulong>()));
+                using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
+                    AutomationOptions: new LibraryVisualReviewAutomationOptions(SemiAutomaticKeeperApproval: true)));
+                form.Show();
+                TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Visual");
+                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                DataGridView groups = GetPrivateField<DataGridView>(form, "_visualGroupsGrid");
+                PumpUntil(() => groups.Rows.Count == 1);
+
+                // Reproduce the regression window: the row was loaded while active, then
+                // a path became absent before review was opened. Opening must remain a
+                // non-authoritative observation and must not suspend or hide the row.
+                File.Delete(second);
+                bool sawReview = false;
+                bool sawSemiAutomaticSelection = false;
+                using var timer = new System.Windows.Forms.Timer { Interval = 40 };
+                timer.Tick += (_, _) =>
+                {
+                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Match", StringComparison.Ordinal));
+                    if (review == null) return;
+                    sawReview = true;
+                    sawSemiAutomaticSelection = Descendants<Button>(review).Any(button => button.Text == "Selected for Next");
+                    review.Close();
+                };
+                timer.Start();
+                var raiseDoubleClick = typeof(DataGridView).GetMethod("OnCellDoubleClick",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?? throw new MissingMethodException(typeof(DataGridView).FullName, "OnCellDoubleClick");
+                raiseDoubleClick.Invoke(groups, new object[] { new DataGridViewCellEventArgs(1, 0) });
+                timer.Stop();
+                Application.DoEvents();
+
+                VisualSimilarityGroupRecord after = catalog.GetVisualGroup(before.GroupId)!;
+                Assert.True(sawReview);
+                Assert.True(sawSemiAutomaticSelection);
+                Assert.Equal(before.Reviewed, after.Reviewed);
+                Assert.Equal(before.Ignored, after.Ignored);
+                Assert.Equal(before.NotMatch, after.NotMatch);
+                Assert.Equal(before.ManualKeeperFileId, after.ManualKeeperFileId);
+                Assert.Equal(before.Eligibility, after.Eligibility);
+                Assert.Single(groups.Rows.Cast<DataGridViewRow>());
+                form.Close();
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        if (!thread.Join(TimeSpan.FromSeconds(15))) throw new TimeoutException("Visual double-click regression test did not complete.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void LibraryAnalyzerPrimaryLayoutsAndSettingsGroupsDoNotClipOrOverlap()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                using SqliteLibraryCatalog catalog = CreateCatalog();
+                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new EmptyMetadataProbe(),
+                    new FakeVisualExtractor(_ => Array.Empty<ulong>()));
+                using var form = new LibraryAnalyzerForm(runtime);
+                form.Show();
+                TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
+                TableLayoutPanel exactControls = GetPrivateField<TableLayoutPanel>(form, "_duplicateControlArea");
+                Button exactApply = GetPrivateField<Button>(form, "_duplicateApplyButton");
+                TableLayoutPanel visualControls = GetPrivateField<TableLayoutPanel>(form, "_visualControlArea");
+                Control visualActions = Descendants<Control>(form).Single(control => control.Name == "VisualActionArea");
+
+                void AssertCurrentTabContains(Control control)
+                {
+                    Rectangle tabBounds = tabs.SelectedTab!.RectangleToScreen(tabs.SelectedTab.ClientRectangle);
+                    Assert.True(control.Visible, $"{control.Name} should be visible.");
+                    Assert.True(tabBounds.Contains(control.RectangleToScreen(control.ClientRectangle)), $"{control.Name} should remain inside the selected tab.");
+                }
+
+                void AssertLayoutsAtCurrentSize()
+                {
+                    tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Exact");
+                    Application.DoEvents();
+                    AssertCurrentTabContains(exactControls);
+                    AssertCurrentTabContains(exactApply);
+                    Assert.False(exactControls.AutoScroll);
+
+                    tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Visual");
+                    Application.DoEvents();
+                    AssertCurrentTabContains(visualControls);
+                    AssertCurrentTabContains(visualActions);
+                    Assert.False(visualControls.AutoScroll);
+                    Assert.All(Descendants<Button>(visualActions), AssertCurrentTabContains);
+                }
+
+                form.Size = form.MinimumSize;
+                Application.DoEvents();
+                AssertLayoutsAtCurrentSize();
+                form.Size = new Size(1280, 780);
+                Application.DoEvents();
+                AssertLayoutsAtCurrentSize();
+                form.WindowState = FormWindowState.Maximized;
+                Application.DoEvents();
+                AssertLayoutsAtCurrentSize();
+
+                Label visualNotice = Descendants<Label>(form).Single(label => label.Name == "VisualSafetyNotice");
+                Label recommendationsIntro = Descendants<Label>(form).Single(label => label.Name == "CleanupRecommendationsIntro");
+                Label optimizationIntro = Descendants<Label>(form).Single(label => label.Name == "StorageOptimizationIntro");
+                Label exactStatus = GetPrivateField<Label>(form, "_duplicateStatus");
+                Color accent = visualNotice.ForeColor;
+                Assert.Equal(accent, recommendationsIntro.ForeColor);
+                Assert.Equal(accent, optimizationIntro.ForeColor);
+                Assert.Equal(accent, exactStatus.ForeColor);
+                Assert.True(accent.B > accent.R && accent.B > accent.G, "The Library Analyzer accent should be visibly blue.");
+                form.Close();
+
+                string extensions = Path.Combine(_root, "extensions.txt");
+                File.WriteAllText(extensions, ".mp4");
+                using var settings = new SettingsForm(new Config(), extensions, new[] { ".mp4" }, _root);
+                settings.Show();
+                Application.DoEvents();
+                Control analyzerPanel = settings.Controls.Find("LibraryAnalyzerSettingsPanel", true).Single();
+                Control cleanup = settings.Controls.Find("grpLibraryAnalyzerCleanup", true).Single();
+                Control productivity = settings.Controls.Find("grpLibraryAnalyzerReviewProductivity", true).Single();
+                Control explorer = GetPrivateField<GroupBox>(settings, "grpExplorerIntegration");
+                Control smart = GetPrivateField<GroupBox>(settings, "grpSmartRecommendations");
+                Assert.False(analyzerPanel.Bounds.IntersectsWith(explorer.Bounds));
+                Assert.False(analyzerPanel.Bounds.IntersectsWith(smart.Bounds));
+                Assert.False(cleanup.Bounds.IntersectsWith(productivity.Bounds));
+                Assert.True(settings.AutoScroll);
+                settings.Close();
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        if (!thread.Join(TimeSpan.FromSeconds(15))) throw new TimeoutException("Library Analyzer layout regression test did not complete.");
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 

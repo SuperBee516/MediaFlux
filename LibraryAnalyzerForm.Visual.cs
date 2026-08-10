@@ -31,6 +31,7 @@ namespace MediaFlux
         private void BuildVisualSimilarityTab()
         {
             var tab = new TabPage("Duplicates — Visual") { Padding = new Padding(8) };
+            _visualStatus.ForeColor = LibraryAnalyzerAccentColor;
             _visualControlArea.Dock = DockStyle.Top;
             _visualControlArea.Height = 142;
             _visualControlArea.ColumnCount = 1;
@@ -98,11 +99,7 @@ namespace MediaFlux
             AddVisualGroupColumn("Evidence", "Evidence", 430);
             _visualGroupsGrid.MultiSelect = false;
             _visualGroupsGrid.SelectionChanged += async (_, _) => await RefreshVisualMembersAsync();
-            _visualGroupsGrid.CellDoubleClick += async (_, e) =>
-            {
-                if (e.RowIndex >= 0)
-                    await OpenVisualReviewAsync();
-            };
+            _visualGroupsGrid.CellDoubleClick += VisualGroupsGrid_CellDoubleClick;
             _visualGroupsGrid.KeyDown += async (_, e) =>
             {
                 if (e.KeyCode != Keys.Enter)
@@ -133,22 +130,29 @@ namespace MediaFlux
 
             var notice = new Label
             {
+                Name = "VisualSafetyNotice",
                 Dock = DockStyle.Bottom,
                 Height = 36,
                 Text = "Visual matches are probabilistic. Cleanup always requires a preview, explicit confirmation, and keeper/candidate revalidation.",
-                ForeColor = Color.DarkOrange,
+                ForeColor = LibraryAnalyzerAccentColor,
                 Padding = new Padding(8, 9, 0, 0)
             };
-            var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42, AutoScroll = true, WrapContents = false };
-            AddButton(actions, "Set selected keeper", SetVisualKeeper_Click);
-            AddButton(actions, "Protect / unprotect file", ToggleVisualProtection_Click);
-            AddButton(actions, "Mark reviewed", MarkVisualReviewed_Click);
-            AddButton(actions, "Ignore / restore match", ToggleVisualIgnored_Click);
-            AddButton(actions, "Re-analyze selected match", QueueSelectedVisualGroup_Click);
-            AddButton(actions, "Review cleanup plan…", ReviewSelectedVisualCleanup_Click);
-            AddButton(actions, "Delete both…", DeleteBothVisual_Click);
-            AddButton(actions, "Bulk delete recommended duplicates…", ReviewBulkVisualCleanup_Click);
-            AddButton(actions, "Mass review by keeper rules…", async (_, _) => await PreviewMassReviewAsync());
+            var actions = new TableLayoutPanel { Name = "VisualActionArea", Dock = DockStyle.Bottom, Height = 78, RowCount = 2, ColumnCount = 1 };
+            actions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            actions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            var reviewActions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false };
+            AddButton(reviewActions, "Set selected keeper", SetVisualKeeper_Click);
+            AddButton(reviewActions, "Protect / unprotect file", ToggleVisualProtection_Click);
+            AddButton(reviewActions, "Mark reviewed", MarkVisualReviewed_Click);
+            AddButton(reviewActions, "Ignore / restore match", ToggleVisualIgnored_Click);
+            AddButton(reviewActions, "Re-analyze selected match", QueueSelectedVisualGroup_Click);
+            var cleanupActions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false };
+            AddButton(cleanupActions, "Review cleanup plan…", ReviewSelectedVisualCleanup_Click);
+            AddButton(cleanupActions, "Delete both…", DeleteBothVisual_Click);
+            AddButton(cleanupActions, "Bulk delete recommended duplicates…", ReviewBulkVisualCleanup_Click);
+            AddButton(cleanupActions, "Mass review by keeper rules…", async (_, _) => await PreviewMassReviewAsync());
+            actions.Controls.Add(reviewActions, 0, 0);
+            actions.Controls.Add(cleanupActions, 0, 1);
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
             var next = new Button { Text = "Next", AutoSize = true };

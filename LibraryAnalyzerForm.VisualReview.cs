@@ -202,6 +202,18 @@ namespace MediaFlux
             _visualGroupsGrid.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
         }
 
+        private async void VisualGroupsGrid_CellDoubleClick(object? sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= _visualGroupsGrid.Rows.Count)
+                return;
+
+            DataGridViewRow row = _visualGroupsGrid.Rows[e.RowIndex];
+            _visualGroupsGrid.ClearSelection();
+            row.Selected = true;
+            _visualGroupsGrid.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            await OpenVisualReviewAsync();
+        }
+
         private async Task OpenVisualReviewAsync()
         {
             if (SelectedVisualGroup() == null)
@@ -260,6 +272,8 @@ namespace MediaFlux
             dialog.AcceptButton = close;
 
             bool loading = false;
+            bool catalogStateChanged = false;
+            bool currentReviewEligible = false;
             VisualSimilarityGroupRecord? currentReviewGroup = null;
             long? currentAutoKeeperFileId = null;
             CancellationTokenSource? groupPreviewCancellation = null;
@@ -273,15 +287,11 @@ namespace MediaFlux
                     VisualSimilarityGroupRecord? group = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroup(selected.GroupId));
                     if (group == null || dialog.IsDisposed)
                         return;
-                    LibraryMatchEligibility eligibility = await Task.Run(() =>
-                        _runtime.MatchEligibility.EvaluateVisualGroup(group.GroupId));
-                    if (!eligibility.IsActive)
-                    {
-                        _visualStatus.Text = "Match suspended: " + eligibility.Reason;
-                        dialog.Close();
-                        await RefreshVisualGroupsAsync();
-                        return;
-                    }
+                    // Opening review is observational. Use the catalog's existing lifecycle
+                    // snapshot; authoritative scans and explicit action validation own
+                    // presence reconciliation.
+                    LibraryMatchEligibility eligibility = new(group.Eligibility, group.EligibilityReason);
+                    currentReviewEligible = eligibility.IsActive;
                     currentReviewGroup = group;
                     IReadOnlyList<VisualSimilarityMemberRecord> members = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroupMembers(group.GroupId));
                     if (dialog.IsDisposed)
@@ -303,22 +313,29 @@ namespace MediaFlux
                     string keeperExplanation = group.ManualKeeperFileId.HasValue
                         ? "Manual keeper selected by the user."
                         : keeperDetails.Summary + (keeperDetails.Factors.Count == 0 ? "" : " Factors: " + string.Join("; ", keeperDetails.Factors) + ".");
-                    header.Text = BuildVisualReviewHeader(group, position, _visualTotal, keeperExplanation);
+                    header.Height = eligibility.IsActive ? 124 : 146;
+                    header.Text = BuildVisualReviewHeader(group, position, _visualTotal, keeperExplanation) +
+                        (eligibility.IsActive ? "" : Environment.NewLine + "Catalog status: " + eligibility.Reason);
                     dialog.Text = $"Review Visual Match {position:N0} of {_visualTotal:N0}";
                     ignore.Text = group.Ignored ? "Restore" : "Ignore";
                     notMatch.Text = group.NotMatch ? "Restore Match" : "Not a Match + Next";
-                    previous.Enabled = next.Enabled = _visualTotal > 1;
+                    previous.Enabled = _visualTotal > 1;
+                    next.Enabled = _visualTotal > 1;
+                    next.Text = semiAutomaticApproval && eligibility.IsActive ? "Accept + Next" : "Next >";
+                    reviewedNext.Enabled = eligibility.IsActive;
                     foreach (VisualSimilarityMemberRecord member in members)
                     {
                         var card = CreateVisualReviewCard(
                             group,
                             member,
+                            eligibility.IsActive,
                             semiAutomaticApproval && currentAutoKeeperFileId == member.FileId && !member.IsManualKeeper,
-                            async () => { await SaveVisualKeeperAsync(group, member); await LoadCurrentAsync(); },
-                            async () => { await SaveVisualProtectionAsync(member); await LoadCurrentAsync(); },
+                            async () => { await SaveVisualKeeperAsync(group, member); catalogStateChanged = true; await LoadCurrentAsync(); },
+                            async () => { await SaveVisualProtectionAsync(member); catalogStateChanged = true; await LoadCurrentAsync(); },
                             async () =>
                             {
                                 await SaveVisualKeeperAsync(group, member);
+                                catalogStateChanged = true;
                                 bool deleted = await PreviewVisualCleanupAsync(new[] { group.GroupId });
                                 if (deleted) await MoveAsync(1); else await LoadCurrentAsync();
                             });
@@ -346,12 +363,13 @@ namespace MediaFlux
             previous.Click += async (_, _) => await MoveAsync(-1);
             next.Click += async (_, _) =>
             {
-                if (semiAutomaticApproval && currentReviewGroup is { } group &&
+                if (semiAutomaticApproval && currentReviewEligible && currentReviewGroup is { } group &&
                     !group.ManualKeeperFileId.HasValue && currentAutoKeeperFileId is long keeperId)
                 {
                     await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
                         new VisualGroupDecision(group.GroupId, keeperId, true, group.Ignored, group.NotMatch,
                             Source: "semi-automatic-review")));
+                    catalogStateChanged = true;
                 }
                 await MoveAsync(1);
             };
@@ -361,6 +379,7 @@ namespace MediaFlux
                     return;
                 await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
                     new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, !group.Ignored, group.NotMatch)));
+                catalogStateChanged = true;
                 await LoadCurrentAsync();
             };
             notMatch.Click += async (_, _) =>
@@ -369,6 +388,7 @@ namespace MediaFlux
                 int rowIndex = _visualGroupsGrid.SelectedRows.Count == 0 ? 0 : _visualGroupsGrid.SelectedRows[0].Index;
                 await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
                     new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, group.Reviewed, group.Ignored, !group.NotMatch)));
+                catalogStateChanged = true;
                 await RefreshVisualGroupsAsync();
                 if (_visualGroupsGrid.Rows.Count == 0)
                 {
@@ -383,6 +403,7 @@ namespace MediaFlux
             {
                 if (currentReviewGroup is not { } group) return;
                 bool deleted = await PreviewDeleteBothAsync(group.GroupId);
+                catalogStateChanged |= deleted;
                 if (deleted) await MoveAsync(1); else await LoadCurrentAsync();
             };
             reviewedNext.Click += async (_, _) =>
@@ -391,6 +412,7 @@ namespace MediaFlux
                     return;
                 await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
                     new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, group.Ignored, group.NotMatch)));
+                catalogStateChanged = true;
                 await MoveAsync(1);
             };
             dialog.KeyDown += async (_, e) =>
@@ -410,7 +432,8 @@ namespace MediaFlux
                 DisposeVisualReviewImages(body);
             };
             dialog.ShowDialog(this);
-            await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
+            if (catalogStateChanged)
+                await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
         }
 
         private static string BuildVisualReviewHeader(VisualSimilarityGroupRecord group, long position, long total, string keeperExplanation)
@@ -427,6 +450,7 @@ namespace MediaFlux
         private (Panel Panel, PictureBox Picture, Label Status) CreateVisualReviewCard(
             VisualSimilarityGroupRecord group,
             VisualSimilarityMemberRecord member,
+            bool decisionsAllowed,
             bool automaticallySelected,
             Func<Task> keepSelected,
             Func<Task> protectSelected,
@@ -474,10 +498,10 @@ namespace MediaFlux
                 WrapContents = true
             };
             var play = new Button { Text = "Play video", Width = 104, Enabled = File.Exists(member.FullPath) };
-            var keep = new Button { Text = member.IsManualKeeper ? "Keeper selected" : automaticallySelected ? "Selected for Next" : suggestedKeeper ? "Keep (suggested)" : "Set as keeper", Width = 112, Enabled = CanSelectVisualKeeper(member) && !member.IsManualKeeper };
+            var keep = new Button { Text = member.IsManualKeeper ? "Keeper selected" : automaticallySelected ? "Selected for Next" : suggestedKeeper ? "Keep (suggested)" : "Set as keeper", Width = 112, Enabled = decisionsAllowed && CanSelectVisualKeeper(member) && !member.IsManualKeeper };
             var protect = new Button { Text = member.IsProtected ? "Unprotect" : "Protect", Width = 90 };
             var folder = new Button { Text = "Open folder", Width = 100, Enabled = Directory.Exists(Path.GetDirectoryName(member.FullPath)) };
-            var deleteOther = new Button { Text = "Keep this / delete other…", Width = 180, Enabled = CanSelectVisualKeeper(member) };
+            var deleteOther = new Button { Text = "Keep this / delete other…", Width = 180, Enabled = decisionsAllowed && CanSelectVisualKeeper(member) };
             play.Click += (_, _) => PlayVisualMember(member);
             keep.Click += async (_, _) => await keepSelected();
             protect.Click += async (_, _) => await protectSelected();

@@ -14,10 +14,11 @@ namespace MediaFlux
             var tab = new TabPage("Cleanup Recommendations") { Padding = new Padding(10) };
             var intro = new Label
             {
+                Name = "CleanupRecommendationsIntro",
                 Dock = DockStyle.Top,
                 Height = 46,
                 Padding = new Padding(4),
-                ForeColor = Color.DarkOrange,
+                ForeColor = LibraryAnalyzerAccentColor,
                 Text = "This view estimates reclaimable storage from currently eligible catalog records. It never deletes files; visual suggestions still require separate review and cleanup confirmation."
             };
             var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, WrapContents = false };
@@ -55,10 +56,11 @@ namespace MediaFlux
             var tab = new TabPage("Storage Optimization") { Padding = new Padding(10) };
             var intro = new Label
             {
+                Name = "StorageOptimizationIntro",
                 Dock = DockStyle.Top,
                 Height = 42,
                 Padding = new Padding(4),
-                ForeColor = Color.DarkOrange,
+                ForeColor = LibraryAnalyzerAccentColor,
                 Text = "Potential re-encode opportunities are ranked from catalog metadata. Adding files only places them in the normal Encode queue; it does not start encoding."
             };
             var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, WrapContents = false };

@@ -18,6 +18,8 @@ namespace MediaFlux
         private readonly Label _duplicateStatus = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0), Text = "Exact analysis has not run." };
         private readonly Label _duplicatePageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
         private readonly ProgressBar _duplicateProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
+        private readonly Button _duplicateApplyButton = new() { Name = "DuplicateApplyButton", Text = "Apply", Dock = DockStyle.Top, Height = 30 };
+        private readonly TableLayoutPanel _duplicateControlArea = new() { Name = "DuplicateControlArea" };
         private int _duplicatePage;
         private long _duplicateTotal;
         private bool _loadingDuplicateGroups;
@@ -25,22 +27,50 @@ namespace MediaFlux
         private void BuildDuplicatesTab()
         {
             var tab = new TabPage("Duplicates — Exact") { Padding = new Padding(8) };
-            var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 72, AutoScroll = true, WrapContents = true };
-            Button analyze = AddButton(toolbar, "Analyze exact duplicates", AnalyzeDuplicates_Click);
-            AddButton(toolbar, "Pause", (_, _) => _runtime.Duplicates.Pause());
-            AddButton(toolbar, "Resume", (_, _) => _runtime.Duplicates.Resume());
-            AddButton(toolbar, "Cancel", (_, _) => _runtime.Duplicates.Cancel());
-            toolbar.Controls.Add(Labeled("Search", _duplicateSearch));
-            toolbar.Controls.Add(Labeled("Location", _duplicateLocation));
-            toolbar.Controls.Add(Labeled("Codec", _duplicateCodec));
-            toolbar.Controls.Add(Labeled("Resolution", _duplicateResolution));
-            toolbar.Controls.Add(Labeled("Review", _duplicateReviewFilter));
-            toolbar.Controls.Add(Labeled("Protection", _duplicateProtectionFilter));
-            toolbar.Controls.Add(Labeled("Sort", _duplicateSort));
-            var apply = new Button { Text = "Apply", AutoSize = true, Margin = new Padding(4, 19, 3, 3) };
-            apply.Click += async (_, _) => { _duplicatePage = 0; await RefreshDuplicateGroupsAsync(); };
-            toolbar.Controls.Add(apply);
-            _ = analyze;
+            _duplicateStatus.ForeColor = LibraryAnalyzerAccentColor;
+            _duplicateControlArea.Dock = DockStyle.Top;
+            _duplicateControlArea.Height = 142;
+            _duplicateControlArea.ColumnCount = 1;
+            _duplicateControlArea.RowCount = 2;
+            _duplicateControlArea.Margin = Padding.Empty;
+            _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var analysis = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false, Padding = new Padding(0, 4, 0, 2) };
+            AddButton(analysis, "Analyze exact duplicates", AnalyzeDuplicates_Click);
+            AddButton(analysis, "Pause", (_, _) => _runtime.Duplicates.Pause());
+            AddButton(analysis, "Resume", (_, _) => _runtime.Duplicates.Resume());
+            AddButton(analysis, "Cancel", (_, _) => _runtime.Duplicates.Cancel());
+            _duplicateControlArea.Controls.Add(analysis, 0, 0);
+
+            var filtersBox = new GroupBox { Text = "Filters", Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 7) };
+            var filters = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 2, Margin = Padding.Empty };
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
+            filters.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+            filters.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            filters.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            AddVisualFilter(filters, "Search", _duplicateSearch, 0, 0, 2);
+            AddVisualFilter(filters, "Location", _duplicateLocation, 2, 0);
+            AddVisualFilter(filters, "Review", _duplicateReviewFilter, 3, 0);
+            AddVisualFilter(filters, "Codec", _duplicateCodec, 0, 1);
+            AddVisualFilter(filters, "Resolution", _duplicateResolution, 1, 1);
+            AddVisualFilter(filters, "Protection", _duplicateProtectionFilter, 2, 1);
+            AddVisualFilter(filters, "Sort", _duplicateSort, 3, 1);
+            var filterActions = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = new Padding(5, 0, 0, 0) };
+            filterActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            filterActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            _duplicateApplyButton.Click += async (_, _) => { _duplicatePage = 0; await RefreshDuplicateGroupsAsync(); };
+            var reset = new Button { Text = "Reset", Dock = DockStyle.Top, Height = 30 };
+            reset.Click += ResetDuplicateFilters_Click;
+            filterActions.Controls.Add(_duplicateApplyButton, 0, 0);
+            filterActions.Controls.Add(reset, 0, 1);
+            filters.Controls.Add(filterActions, 4, 0);
+            filters.SetRowSpan(filterActions, 2);
+            filtersBox.Controls.Add(filters);
+            _duplicateControlArea.Controls.Add(filtersBox, 0, 1);
 
             _duplicateReviewFilter.Items.AddRange(new object[] { "All", "Unreviewed", "Reviewed", "Ignored" });
             _duplicateReviewFilter.SelectedIndex = 0;
@@ -100,8 +130,21 @@ namespace MediaFlux
             tab.Controls.Add(status);
             tab.Controls.Add(pager);
             tab.Controls.Add(actions);
-            tab.Controls.Add(toolbar);
+            tab.Controls.Add(_duplicateControlArea);
             _tabs.TabPages.Add(tab);
+        }
+
+        private async void ResetDuplicateFilters_Click(object? sender, EventArgs e)
+        {
+            _duplicateSearch.Clear();
+            _duplicateLocation.SelectedIndex = _duplicateLocation.Items.Count > 0 ? 0 : -1;
+            _duplicateCodec.Clear();
+            _duplicateResolution.SelectedIndex = 0;
+            _duplicateReviewFilter.SelectedIndex = 0;
+            _duplicateProtectionFilter.SelectedIndex = 0;
+            _duplicateSort.SelectedIndex = 0;
+            _duplicatePage = 0;
+            await RefreshDuplicateGroupsAsync();
         }
 
         private async void AnalyzeDuplicates_Click(object? sender, EventArgs e)
