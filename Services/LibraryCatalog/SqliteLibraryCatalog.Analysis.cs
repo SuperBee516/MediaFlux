@@ -103,6 +103,11 @@ namespace MediaFlux.Services.LibraryCatalog
                     membershipCommand.Parameters["$availability"].Value = (int)entry.Availability;
                     membershipCommand.Parameters["$last_seen"].Value = seenTicks;
                     membershipCommand.ExecuteNonQuery();
+                    UpsertPresenceObservationCore(connection, transaction, scan.LocationId, fileId,
+                        LibraryPresenceObservationState.Present, "authoritative-scan", "File observed during scan.");
+
+                    if (existingId == 0 && !string.IsNullOrWhiteSpace(entry.VolumeId) && !string.IsNullOrWhiteSpace(entry.FileIdentity))
+                        RecordPossibleMoveCore(connection, transaction, scan, fileId, entry.VolumeId, entry.FileIdentity);
 
                     mutations.Add(new LibraryInventoryMutation(
                         fileId,
@@ -144,6 +149,26 @@ namespace MediaFlux.Services.LibraryCatalog
                 membershipCommand.Parameters.AddWithValue("$location_id", scan.LocationId);
                 membershipCommand.Parameters.AddWithValue("$generation", scan.Generation);
                 long missingMemberships = membershipCommand.ExecuteNonQuery();
+
+                using (SqliteCommand observations = connection.CreateCommand())
+                {
+                    observations.Transaction = transaction;
+                    observations.CommandText =
+                        "INSERT INTO library_presence_observations(location_id,file_id,state,consecutive_observations,related_file_id,source,details,last_observed_utc_ticks) " +
+                        "SELECT m.location_id,m.file_id,CASE WHEN o.state=$moved AND o.related_file_id IS NOT NULL THEN $moved ELSE $confirmed END," +
+                        "CASE WHEN o.state IN($moved,$confirmed) THEN o.consecutive_observations+1 ELSE 1 END,o.related_file_id,'authoritative-scan'," +
+                        "CASE WHEN o.state=$moved AND o.related_file_id IS NOT NULL THEN 'Stable identity confirmed at a new path; the old path is no longer present.' ELSE 'File was absent from a completed authoritative scan.' END,$now " +
+                        "FROM file_location_memberships m LEFT JOIN library_presence_observations o ON o.location_id=m.location_id AND o.file_id=m.file_id " +
+                        "WHERE m.location_id=$location AND m.last_seen_generation<$generation " +
+                        "ON CONFLICT(location_id,file_id) DO UPDATE SET state=excluded.state,consecutive_observations=excluded.consecutive_observations," +
+                        "related_file_id=excluded.related_file_id,source=excluded.source,details=excluded.details,last_observed_utc_ticks=excluded.last_observed_utc_ticks;";
+                    observations.Parameters.AddWithValue("$moved", (int)LibraryPresenceObservationState.MovedOrRenamed);
+                    observations.Parameters.AddWithValue("$confirmed", (int)LibraryPresenceObservationState.ConfirmedMissing);
+                    observations.Parameters.AddWithValue("$location", scan.LocationId);
+                    observations.Parameters.AddWithValue("$generation", scan.Generation);
+                    observations.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+                    observations.ExecuteNonQuery();
+                }
 
                 using SqliteCommand fileCommand = connection.CreateCommand();
                 fileCommand.Transaction = transaction;
@@ -187,6 +212,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 fileCommand.Parameters.AddWithValue("$location_id", scan.LocationId);
                 fileCommand.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
                 fileCommand.ExecuteNonQuery();
+                RefreshVisualLifecycleCore(connection, transaction, null, preserveRetired: true);
 
                 using SqliteCommand countCommand = connection.CreateCommand();
                 countCommand.Transaction = transaction;
@@ -259,6 +285,20 @@ namespace MediaFlux.Services.LibraryCatalog
                     memberships.Parameters.AddWithValue("$location_id", locationId);
                     memberships.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
                     memberships.ExecuteNonQuery();
+                    using SqliteCommand observations = connection.CreateCommand();
+                    observations.Transaction = transaction;
+                    observations.CommandText =
+                        "INSERT INTO library_presence_observations(location_id,file_id,state,consecutive_observations,source,details,last_observed_utc_ticks) " +
+                        "SELECT location_id,file_id,$state,1,'location-check',$details,$now FROM file_location_memberships WHERE location_id=$location " +
+                        "ON CONFLICT(location_id,file_id) DO UPDATE SET state=excluded.state," +
+                        "consecutive_observations=CASE WHEN library_presence_observations.state=excluded.state THEN library_presence_observations.consecutive_observations+1 ELSE 1 END," +
+                        "related_file_id=NULL,source=excluded.source,details=excluded.details,last_observed_utc_ticks=excluded.last_observed_utc_ticks;";
+                    observations.Parameters.AddWithValue("$state", (int)LibraryPresenceObservationState.Unavailable);
+                    observations.Parameters.AddWithValue("$details", error ?? "The library location is unavailable.");
+                    observations.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+                    observations.Parameters.AddWithValue("$location", locationId);
+                    observations.ExecuteNonQuery();
+                    RefreshVisualLifecycleCore(connection, transaction, null, preserveRetired: true);
                 }
 
                 return null;

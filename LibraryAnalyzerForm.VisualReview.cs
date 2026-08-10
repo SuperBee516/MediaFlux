@@ -240,7 +240,8 @@ namespace MediaFlux
                 WrapContents = false
             };
             var close = new Button { Text = "Close", Width = 90, DialogResult = DialogResult.OK };
-            var next = new Button { Text = "Next >", Width = 90 };
+            bool semiAutomaticApproval = (_reviewOptions.AutomationOptions ?? new LibraryVisualReviewAutomationOptions()).Normalize().SemiAutomaticKeeperApproval;
+            var next = new Button { Text = semiAutomaticApproval ? "Accept + Next" : "Next >", Width = semiAutomaticApproval ? 112 : 90 };
             var previous = new Button { Text = "< Previous", Width = 90 };
             var ignore = new Button { Text = "Ignore", Width = 100 };
             var notMatch = new Button { Text = "Not a Match + Next", Width = 145 };
@@ -260,6 +261,7 @@ namespace MediaFlux
 
             bool loading = false;
             VisualSimilarityGroupRecord? currentReviewGroup = null;
+            long? currentAutoKeeperFileId = null;
             CancellationTokenSource? groupPreviewCancellation = null;
             async Task LoadCurrentAsync()
             {
@@ -271,6 +273,15 @@ namespace MediaFlux
                     VisualSimilarityGroupRecord? group = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroup(selected.GroupId));
                     if (group == null || dialog.IsDisposed)
                         return;
+                    LibraryMatchEligibility eligibility = await Task.Run(() =>
+                        _runtime.MatchEligibility.EvaluateVisualGroup(group.GroupId));
+                    if (!eligibility.IsActive)
+                    {
+                        _visualStatus.Text = "Match suspended: " + eligibility.Reason;
+                        dialog.Close();
+                        await RefreshVisualGroupsAsync();
+                        return;
+                    }
                     currentReviewGroup = group;
                     IReadOnlyList<VisualSimilarityMemberRecord> members = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroupMembers(group.GroupId));
                     if (dialog.IsDisposed)
@@ -286,9 +297,12 @@ namespace MediaFlux
                         members.Select(LibraryVisualDuplicateCleanupService.ToLegacyItem).ToArray(),
                         _visualKeeperPreferences,
                         DuplicateKeeperScoringContext.Visual);
+                    LibraryKeeperExplanation keeperDetails = _runtime.KeeperExplanations.Explain(members, _visualKeeperPreferences);
+                    currentAutoKeeperFileId = group.ManualKeeperFileId
+                        ?? (semiAutomaticApproval ? group.SuggestedKeeperFileId ?? keeperDetails.RecommendedKeeperFileId : null);
                     string keeperExplanation = group.ManualKeeperFileId.HasValue
                         ? "Manual keeper selected by the user."
-                        : keeperEvaluation.Explanation;
+                        : keeperDetails.Summary + (keeperDetails.Factors.Count == 0 ? "" : " Factors: " + string.Join("; ", keeperDetails.Factors) + ".");
                     header.Text = BuildVisualReviewHeader(group, position, _visualTotal, keeperExplanation);
                     dialog.Text = $"Review Visual Match {position:N0} of {_visualTotal:N0}";
                     ignore.Text = group.Ignored ? "Restore" : "Ignore";
@@ -299,6 +313,7 @@ namespace MediaFlux
                         var card = CreateVisualReviewCard(
                             group,
                             member,
+                            semiAutomaticApproval && currentAutoKeeperFileId == member.FileId && !member.IsManualKeeper,
                             async () => { await SaveVisualKeeperAsync(group, member); await LoadCurrentAsync(); },
                             async () => { await SaveVisualProtectionAsync(member); await LoadCurrentAsync(); },
                             async () =>
@@ -329,7 +344,17 @@ namespace MediaFlux
             }
 
             previous.Click += async (_, _) => await MoveAsync(-1);
-            next.Click += async (_, _) => await MoveAsync(1);
+            next.Click += async (_, _) =>
+            {
+                if (semiAutomaticApproval && currentReviewGroup is { } group &&
+                    !group.ManualKeeperFileId.HasValue && currentAutoKeeperFileId is long keeperId)
+                {
+                    await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
+                        new VisualGroupDecision(group.GroupId, keeperId, true, group.Ignored, group.NotMatch,
+                            Source: "semi-automatic-review")));
+                }
+                await MoveAsync(1);
+            };
             ignore.Click += async (_, _) =>
             {
                 if (currentReviewGroup is not { } group)
@@ -402,11 +427,12 @@ namespace MediaFlux
         private (Panel Panel, PictureBox Picture, Label Status) CreateVisualReviewCard(
             VisualSimilarityGroupRecord group,
             VisualSimilarityMemberRecord member,
+            bool automaticallySelected,
             Func<Task> keepSelected,
             Func<Task> protectSelected,
             Func<Task> keepAndDeleteOther)
         {
-            bool selectedKeeper = member.IsManualKeeper;
+            bool selectedKeeper = member.IsManualKeeper || automaticallySelected;
             bool suggestedKeeper = member.IsSuggestedKeeper && !selectedKeeper;
             var panel = new Panel
             {
@@ -448,7 +474,7 @@ namespace MediaFlux
                 WrapContents = true
             };
             var play = new Button { Text = "Play video", Width = 104, Enabled = File.Exists(member.FullPath) };
-            var keep = new Button { Text = selectedKeeper ? "Keeper selected" : suggestedKeeper ? "Keep (suggested)" : "Set as keeper", Width = 112, Enabled = CanSelectVisualKeeper(member) && !selectedKeeper };
+            var keep = new Button { Text = member.IsManualKeeper ? "Keeper selected" : automaticallySelected ? "Selected for Next" : suggestedKeeper ? "Keep (suggested)" : "Set as keeper", Width = 112, Enabled = CanSelectVisualKeeper(member) && !member.IsManualKeeper };
             var protect = new Button { Text = member.IsProtected ? "Unprotect" : "Protect", Width = 90 };
             var folder = new Button { Text = "Open folder", Width = 100, Enabled = Directory.Exists(Path.GetDirectoryName(member.FullPath)) };
             var deleteOther = new Button { Text = "Keep this / delete other…", Width = 180, Enabled = CanSelectVisualKeeper(member) };

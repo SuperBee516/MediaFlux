@@ -122,6 +122,8 @@ namespace MediaFlux.Services.LibraryCatalog
                     if (previous != null && LibraryChangeJournalSafety.ProvesNoVolumeChanges(previous, checkpoint))
                     {
                         Report("Finalizing scan", location.Path, force: true);
+                        if (_catalog is ILibraryRecoveryCatalog recoveryCatalog)
+                            recoveryCatalog.RestoreLocationAfterVerifiedNoChanges(locationId);
                         _catalog.CompleteScan(scan, Completion(LibraryScanStatus.Completed, ""));
                         _catalog.SetLocationAvailability(locationId, LibraryLocationAvailability.Available);
                         _accelerationCatalog.SaveScanAcceleratorState(ToAcceleratorState(locationId, checkpoint, "No-change scan shortcut used."));

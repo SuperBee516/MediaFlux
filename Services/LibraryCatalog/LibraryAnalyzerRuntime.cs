@@ -6,6 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly LibraryEnrichmentCoordinator _enrichment;
         private readonly LibraryDuplicateAnalysisCoordinator _duplicates;
         private readonly LibraryVisualAnalysisCoordinator _visual;
+        private readonly LibraryReanalysisCoordinator _reanalysis;
         private bool _disposed;
 
         public LibraryAnalyzerRuntime(
@@ -72,6 +73,16 @@ namespace MediaFlux.Services.LibraryCatalog
                 keeperPreferences: keeperPreferences);
             DuplicateCleanup = new LibraryDuplicateCleanupService(_catalog, _catalog, isEncodingActive);
             VisualDuplicateCleanup = new LibraryVisualDuplicateCleanupService(_catalog, _catalog, _catalog, keeperPreferences, isEncodingActive);
+            MatchEligibility = new LibraryMatchEligibilityService(_catalog, _catalog);
+            _reanalysis = new LibraryReanalysisCoordinator(_catalog, _enrichment, _duplicates, _visual);
+            Reanalysis = _reanalysis;
+            Decisions = new LibraryDecisionService(_catalog, _reanalysis);
+            Insights = new LibraryInsightsService(_catalog);
+            KeeperExplanations = new LibraryKeeperExplanationService();
+            MassReview = new LibraryMassReviewService(_catalog, MatchEligibility, keeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences());
+            Recommendations = new LibraryRecommendationService(_catalog, DuplicateCleanup, VisualDuplicateCleanup, _catalog);
+            VisualFamilies = new LibraryVisualFamilyService(_catalog, VisualDuplicateCleanup, keeperPreferences);
+            Recommendations.AttachFamilies(_catalog, VisualFamilies);
             Scanner = new LibraryScanCoordinator(
                 _catalog,
                 supportedExtensions,
@@ -88,6 +99,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     exception: exception,
                     details: details));
             _ = QueuePendingSafelyAsync();
+            _ = RunMaintenanceSafelyAsync();
         }
 
         public ILibraryCatalog Catalog => _catalog;
@@ -99,12 +111,23 @@ namespace MediaFlux.Services.LibraryCatalog
         public LibraryVisualAnalysisCoordinator VisualSimilarity => _visual;
         public LibraryDuplicateCleanupService DuplicateCleanup { get; }
         public LibraryVisualDuplicateCleanupService VisualDuplicateCleanup { get; }
+        public LibraryMatchEligibilityService MatchEligibility { get; }
+        public LibraryReanalysisCoordinator Reanalysis { get; }
+        public LibraryDecisionService Decisions { get; }
+        public LibraryInsightsService Insights { get; }
+        public LibraryKeeperExplanationService KeeperExplanations { get; }
+        public LibraryMassReviewService MassReview { get; }
+        public LibraryRecommendationService Recommendations { get; }
+        public ILibraryVisualFamilyCatalog FamilyCatalog => _catalog;
+        public LibraryVisualFamilyService VisualFamilies { get; }
 
         public void UpdateVisualKeeperPreferences(MediaFlux.Models.DuplicateKeeperPreferences preferences)
         {
             ArgumentNullException.ThrowIfNull(preferences);
             _visual.UpdateKeeperPreferences(preferences);
             VisualDuplicateCleanup.UpdateKeeperPreferences(preferences);
+            MassReview.UpdatePreferences(preferences);
+            VisualFamilies.UpdateKeeperPreferences(preferences);
         }
 
         public void Dispose()
@@ -113,6 +136,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 return;
             _disposed = true;
             Scanner.CancelAndWait(TimeSpan.FromSeconds(10));
+            _reanalysis.Dispose();
             _duplicates.CancelAndWait(TimeSpan.FromSeconds(10));
             _visual.CancelAndWait(TimeSpan.FromSeconds(10));
             try
@@ -138,6 +162,19 @@ namespace MediaFlux.Services.LibraryCatalog
             {
                 // Pending work remains durable and will be picked up by the retry loop
                 // or the next application start.
+            }
+        }
+
+        private async Task RunMaintenanceSafelyAsync()
+        {
+            try
+            {
+                await Task.Yield();
+                Insights.RunMaintenance();
+            }
+            catch
+            {
+                // Health view reports persistent maintenance or integrity problems.
             }
         }
     }

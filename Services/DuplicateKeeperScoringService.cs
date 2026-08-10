@@ -134,6 +134,29 @@ namespace MediaFlux.Services
                 explanation);
         }
 
+        // Automation deliberately uses a calibrated weighted score even when the shared
+        // Quality First profile is selected. This leaves the legacy/manual review path
+        // untouched while preventing its deterministic 100/0 tie-breaker from looking
+        // like a meaningful automation margin.
+        public static DuplicateKeeperEvaluation EvaluateAutomation(
+            IReadOnlyCollection<DuplicateItem> sourceItems,
+            DuplicateKeeperPreferences? sourcePreferences,
+            DuplicateKeeperScoringContext context = DuplicateKeeperScoringContext.Visual)
+        {
+            var preferences = sourcePreferences?.Clone() ?? new DuplicateKeeperPreferences();
+            preferences.Normalize();
+            if (string.Equals(preferences.Profile, DuplicateKeeperPreferences.QualityFirst, StringComparison.Ordinal))
+            {
+                preferences.Profile = DuplicateKeeperPreferences.Custom;
+                preferences.ResolutionWeight = 50;
+                preferences.QualityWeight = 20;
+                preferences.StorageWeight = 10;
+                preferences.CodecWeight = 20;
+                preferences.ModifiedDateWeight = 0;
+            }
+            return Evaluate(sourceItems, preferences, context);
+        }
+
         private static DuplicateKeeperEvaluation EvaluateLegacy(
             IReadOnlyCollection<DuplicateItem> allItems,
             IReadOnlyCollection<DuplicateItem> candidates)

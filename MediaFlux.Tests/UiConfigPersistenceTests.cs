@@ -50,6 +50,10 @@ public sealed class UiConfigPersistenceTests : IDisposable
         Assert.Equal("PermanentDelete", defaults.LibraryAnalyzerCleanupMode);
         Assert.False(defaults.AllowUnreviewedVisualBulkCleanup);
         Assert.Equal(95, defaults.VisualBulkCleanupMinimumConfidence);
+        Assert.False(defaults.SemiAutomaticVisualKeeperApproval);
+        Assert.Equal(100, defaults.VisualMassReviewMaximumMatches);
+        Assert.Equal(15, defaults.VisualMassReviewMinimumAutomationMargin);
+        Assert.Equal(95, defaults.VisualMassReviewMinimumConfidence);
 
         string path = Path.Combine(_root, "cleanup.json");
         defaults.LibraryAnalyzerCleanupMode = "RecycleBin";
@@ -60,6 +64,25 @@ public sealed class UiConfigPersistenceTests : IDisposable
         Assert.Equal("RecycleBin", loaded.LibraryAnalyzerCleanupMode);
         Assert.True(loaded.AllowUnreviewedVisualBulkCleanup);
         Assert.Equal(97.5, loaded.VisualBulkCleanupMinimumConfidence);
+    }
+
+    [Fact]
+    public void LibraryAnalyzerReviewProductivitySettingsRoundTripAndNormalize()
+    {
+        string path = Path.Combine(_root, "review-productivity.json");
+        var config = new Config
+        {
+            SemiAutomaticVisualKeeperApproval = true,
+            VisualMassReviewMaximumMatches = 2_000,
+            VisualMassReviewMinimumAutomationMargin = -1,
+            VisualMassReviewMinimumConfidence = 10
+        };
+        config.Save(path);
+        Config loaded = Config.Load(path);
+        Assert.True(loaded.SemiAutomaticVisualKeeperApproval);
+        Assert.Equal(1_000, loaded.VisualMassReviewMaximumMatches);
+        Assert.Equal(0, loaded.VisualMassReviewMinimumAutomationMargin);
+        Assert.Equal(76, loaded.VisualMassReviewMinimumConfidence);
     }
 
     public void Dispose()

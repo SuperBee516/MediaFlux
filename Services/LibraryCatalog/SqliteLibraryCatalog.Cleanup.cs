@@ -31,9 +31,11 @@ namespace MediaFlux.Services.LibraryCatalog
                 CREATE TABLE userdata.duplicate_cleanup_plan_items AS SELECT * FROM main.duplicate_cleanup_plan_items;
                 CREATE TABLE userdata.duplicate_cleanup_audit AS SELECT * FROM main.duplicate_cleanup_audit;
                 CREATE TABLE userdata.visual_group_decisions AS SELECT * FROM main.visual_group_decisions;
+                CREATE TABLE userdata.visual_family_decisions AS SELECT * FROM main.visual_family_decisions;
                 CREATE TABLE userdata.visual_cleanup_plans AS SELECT * FROM main.visual_cleanup_plans;
                 CREATE TABLE userdata.visual_cleanup_plan_items AS SELECT * FROM main.visual_cleanup_plan_items;
                 CREATE TABLE userdata.visual_cleanup_audit AS SELECT * FROM main.visual_cleanup_audit;
+                CREATE TABLE userdata.library_decision_events AS SELECT * FROM main.library_decision_events;
                 DETACH DATABASE userdata;
                 """;
             command.Parameters.AddWithValue("$path", path);
@@ -112,12 +114,36 @@ namespace MediaFlux.Services.LibraryCatalog
                         visual = RestoreTable(connection, transaction,
                             visualRestoreSql);
                     }
+                    int history = 0;
+                    if (sourceVersion >= 8 && AttachedTableExists(connection, "library_decision_events"))
+                    {
+                        history = RestoreTable(connection, transaction,
+                            """
+                            INSERT INTO library_decision_events(target_kind,target_key,event_kind,before_state,after_state,batch_id,source,
+                                reversal_of_event_id,reversed_by_event_id,occurred_utc_ticks)
+                            SELECT target_kind,target_key,event_kind,before_state,after_state,batch_id,'restored-history',NULL,NULL,occurred_utc_ticks
+                            FROM restored.library_decision_events;
+                            """);
+                    }
+                    int familyDecisions = 0;
+                    if (sourceVersion >= 9 && AttachedTableExists(connection, "visual_family_decisions"))
+                    {
+                        familyDecisions = RestoreTable(connection, transaction,
+                            """
+                            INSERT INTO visual_family_decisions(family_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks)
+                            SELECT family_key,manual_keeper_path_key,reviewed,ignored,updated_utc_ticks FROM restored.visual_family_decisions WHERE 1
+                            ON CONFLICT(family_key) DO UPDATE SET manual_keeper_path_key=excluded.manual_keeper_path_key,
+                                reviewed=excluded.reviewed,ignored=excluded.ignored,updated_utc_ticks=excluded.updated_utc_ticks;
+                            """);
+                    }
                     transaction.Commit();
                     return new LibraryUserDataRestoreResult(
                         decisions,
                         protections,
                         visual,
-                        new[] { "Cleanup plan and audit history is retained in the backup for audit purposes but is not re-executed or imported." });
+                        new[] { "Cleanup plan and audit history is retained in the backup for audit purposes but is not re-executed or imported. Restored decision-event history remains read-only." },
+                        history,
+                        familyDecisions);
                 }
                 finally
                 {

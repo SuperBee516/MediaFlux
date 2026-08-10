@@ -22,6 +22,7 @@ namespace MediaFlux.Services.LibraryCatalog
             string direction = query.Descending ? "DESC" : "ASC";
             string filters =
                 " WHERE g.analysis_run_id=(SELECT MAX(id) FROM duplicate_analysis_runs WHERE status=$completed)" +
+                " AND ($include_inactive=1 OR NOT EXISTS(SELECT 1 FROM exact_duplicate_members em JOIN indexed_files ef ON ef.id=em.file_id WHERE em.group_id=g.id AND (ef.availability_state<>$present OR EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id=ef.id AND o.state<>$presence_present) OR EXISTS(SELECT 1 FROM file_location_memberships fm JOIN library_locations l ON l.id=fm.location_id WHERE fm.file_id=ef.id AND (fm.availability_state<>$present OR l.availability_state>=$location_unavailable)))))" +
                 " AND ($search='' OR EXISTS(SELECT 1 FROM exact_duplicate_members sm JOIN indexed_files sf ON sf.id=sm.file_id WHERE sm.group_id=g.id AND sf.full_path LIKE $search_pattern))" +
                 " AND ($location IS NULL OR EXISTS(SELECT 1 FROM exact_duplicate_members lm JOIN file_location_memberships flm ON flm.file_id=lm.file_id WHERE lm.group_id=g.id AND flm.location_id=$location))" +
                 " AND ($codec='' OR EXISTS(SELECT 1 FROM exact_duplicate_members cm JOIN media_metadata cmeta ON cmeta.file_id=cm.file_id WHERE cm.group_id=g.id AND cmeta.video_codec=$codec))" +
@@ -166,6 +167,7 @@ namespace MediaFlux.Services.LibraryCatalog
             ThrowIfDisposed();
             WithWriteTransaction<object?>((connection, transaction) =>
             {
+                ExactDecisionState before = CaptureExactDecisionState(connection, transaction, decision.GroupId);
                 using SqliteCommand command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText =
@@ -184,6 +186,9 @@ namespace MediaFlux.Services.LibraryCatalog
                 command.Parameters.AddWithValue("$group", decision.GroupId);
                 if (command.ExecuteNonQuery() != 1)
                     throw new KeyNotFoundException($"Duplicate group {decision.GroupId} does not exist.");
+                ExactDecisionState after = CaptureExactDecisionState(connection, transaction, decision.GroupId);
+                InsertDecisionEventCore(connection, transaction, LibraryDecisionTargetKind.ExactGroup,
+                    ExactTargetKey(after), ExactEventKind(before, after), Serialize(before), Serialize(after), "", "library-analyzer");
                 return null;
             });
         }
@@ -193,6 +198,7 @@ namespace MediaFlux.Services.LibraryCatalog
             ThrowIfDisposed();
             WithWriteTransaction<object?>((connection, transaction) =>
             {
+                ProtectionDecisionState before = CaptureProtectionDecisionState(connection, transaction, fileId);
                 using SqliteCommand command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText = isProtected
@@ -202,6 +208,9 @@ namespace MediaFlux.Services.LibraryCatalog
                 command.Parameters.AddWithValue("$reason", reason ?? "");
                 command.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
                 command.ExecuteNonQuery();
+                ProtectionDecisionState after = CaptureProtectionDecisionState(connection, transaction, fileId);
+                InsertDecisionEventCore(connection, transaction, LibraryDecisionTargetKind.FileProtection,
+                    after.PathKey, LibraryDecisionEventKind.ProtectionChanged, Serialize(before), Serialize(after), "", "library-analyzer");
                 return null;
             });
         }
@@ -281,6 +290,10 @@ namespace MediaFlux.Services.LibraryCatalog
             command.Parameters.AddWithValue("$reviewed", query.Reviewed.HasValue ? (query.Reviewed.Value ? 1 : 0) : DBNull.Value);
             command.Parameters.AddWithValue("$ignored", query.Ignored.HasValue ? (query.Ignored.Value ? 1 : 0) : DBNull.Value);
             command.Parameters.AddWithValue("$protected", query.Protected.HasValue ? (query.Protected.Value ? 1 : 0) : DBNull.Value);
+            command.Parameters.AddWithValue("$include_inactive", query.IncludeInactive ? 1 : 0);
+            command.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
+            command.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
+            command.Parameters.AddWithValue("$location_unavailable", (int)LibraryLocationAvailability.Unavailable);
         }
     }
 }

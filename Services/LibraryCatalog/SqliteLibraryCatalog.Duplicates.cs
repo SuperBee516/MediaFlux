@@ -103,8 +103,12 @@ namespace MediaFlux.Services.LibraryCatalog
             using SqliteConnection connection = _database.OpenConnection(readOnly: true);
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                "SELECT COUNT(*) FROM indexed_files f WHERE f.availability_state=$present AND EXISTS (SELECT 1 FROM indexed_files other WHERE other.availability_state=$present AND other.size_bytes=f.size_bytes AND other.id<>f.id);";
+                "SELECT COUNT(*) FROM indexed_files f WHERE f.availability_state=$present " +
+                "AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id=f.id AND o.state<>$presence_present) " +
+                "AND EXISTS (SELECT 1 FROM indexed_files other WHERE other.availability_state=$present AND other.size_bytes=f.size_bytes AND other.id<>f.id " +
+                "AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id=other.id AND o.state<>$presence_present));";
             command.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
+            command.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
             return Convert.ToInt64(command.ExecuteScalar());
         }
 
@@ -128,6 +132,7 @@ namespace MediaFlux.Services.LibraryCatalog
                   SELECT f.id,f.full_path,f.path_key,f.size_bytes,f.last_write_utc_ticks,f.volume_id,f.file_identity
                   FROM indexed_files f JOIN file_hash_facts h ON h.file_id=f.id
                   WHERE f.availability_state=$present AND h.source_size_bytes=f.size_bytes
+                    AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id=f.id AND o.state<>$presence_present)
                     AND h.source_last_write_utc_ticks=f.last_write_utc_ticks
                     AND h.source_volume_id=f.volume_id AND h.source_file_identity=f.file_identity
                     AND h.quick_version=$qv AND h.quick_hash IS NOT NULL
@@ -145,6 +150,7 @@ namespace MediaFlux.Services.LibraryCatalog
                   SELECT f.id,f.full_path,f.path_key,f.size_bytes,f.last_write_utc_ticks,f.volume_id,f.file_identity
                   FROM indexed_files f LEFT JOIN file_hash_facts h ON h.file_id=f.id
                   WHERE f.availability_state=$present
+                    AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id=f.id AND o.state<>$presence_present)
                     AND EXISTS (SELECT 1 FROM indexed_files f2 WHERE f2.id<>f.id AND f2.availability_state=$present AND f2.size_bytes=f.size_bytes)
                     AND (h.file_id IS NULL OR h.source_size_bytes<>f.size_bytes
                          OR h.source_last_write_utc_ticks<>f.last_write_utc_ticks
@@ -157,6 +163,7 @@ namespace MediaFlux.Services.LibraryCatalog
             command.Parameters.AddWithValue("$qv", quickVersion);
             command.Parameters.AddWithValue("$fv", fullVersion);
             command.Parameters.AddWithValue("$limit", limit);
+            command.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
             using SqliteDataReader reader = command.ExecuteReader();
             var result = new List<LibraryHashCandidate>(limit);
             while (reader.Read())
@@ -294,6 +301,7 @@ namespace MediaFlux.Services.LibraryCatalog
                            $run,$now
                     FROM indexed_files f JOIN file_hash_facts h ON h.file_id=f.id
                     WHERE f.availability_state=$present AND h.full_algorithm=$algorithm AND h.full_version=$version AND h.full_hash IS NOT NULL
+                      AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id=f.id AND o.state<>$presence_present)
                       AND h.source_size_bytes=f.size_bytes AND h.source_last_write_utc_ticks=f.last_write_utc_ticks
                       AND h.source_volume_id=f.volume_id AND h.source_file_identity=f.file_identity
                     GROUP BY f.size_bytes,h.full_hash HAVING COUNT(*)>=2
@@ -306,6 +314,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 groups.Parameters.AddWithValue("$run", run.RunId);
                 groups.Parameters.AddWithValue("$now", now);
                 groups.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
+                groups.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
                 groups.ExecuteNonQuery();
 
                 using SqliteCommand clearMembers = connection.CreateCommand();
@@ -328,11 +337,13 @@ namespace MediaFlux.Services.LibraryCatalog
                     JOIN file_hash_facts h ON h.full_hash=g.full_hash AND h.full_algorithm=g.full_algorithm AND h.full_version=g.full_version
                     JOIN indexed_files f ON f.id=h.file_id AND f.size_bytes=g.size_bytes
                     WHERE g.analysis_run_id=$run AND f.availability_state=$present
+                      AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id=f.id AND o.state<>$presence_present)
                       AND h.source_size_bytes=f.size_bytes AND h.source_last_write_utc_ticks=f.last_write_utc_ticks
                       AND h.source_volume_id=f.volume_id AND h.source_file_identity=f.file_identity;
                     """;
                 members.Parameters.AddWithValue("$run", run.RunId);
                 members.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
+                members.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
                 members.ExecuteNonQuery();
 
                 using SqliteCommand count = connection.CreateCommand();

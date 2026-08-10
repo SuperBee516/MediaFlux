@@ -67,6 +67,10 @@ namespace MediaFlux
             BuildStatisticsTab();
             BuildDuplicatesTab();
             BuildVisualSimilarityTab();
+            BuildVisualFamiliesTab();
+            BuildHealthTab();
+            BuildRecommendationsTab();
+            BuildStorageOptimizationTab();
             _runtime.Enrichment.ProgressChanged += Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged += Duplicates_ProgressChanged;
             _runtime.VisualSimilarity.ProgressChanged += VisualSimilarity_ProgressChanged;
@@ -217,6 +221,9 @@ namespace MediaFlux
             var apply = new Button { Text = "Apply", AutoSize = true, Margin = new Padding(8, 19, 3, 3) };
             apply.Click += async (_, _) => { _page = 0; await RefreshFilesAsync(); };
             filters.Controls.Add(apply);
+            AddButton(filters, "Re-analyze metadata", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.Metadata));
+            AddButton(filters, "Re-analyze exact", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.ExactHash));
+            AddButton(filters, "Re-analyze visual", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.VisualFingerprint));
             _search.KeyDown += async (_, e) =>
             {
                 if (e.KeyCode == Keys.Enter)
@@ -397,6 +404,14 @@ namespace MediaFlux
                 await RefreshDuplicateGroupsAsync();
             else if (_tabs.SelectedIndex == 5)
                 await RefreshVisualGroupsAsync();
+            else if (_tabs.SelectedIndex == 6)
+                await RefreshVisualFamiliesAsync();
+            else if (_tabs.SelectedIndex == 7)
+                await RefreshHealthAsync();
+            else if (_tabs.SelectedIndex == 8)
+                await RefreshRecommendationsAsync();
+            else if (_tabs.SelectedIndex == 9)
+                await RefreshStorageOptimizationAsync();
         }
 
         private async Task RefreshOverviewAsync()
@@ -462,7 +477,7 @@ namespace MediaFlux
                 _filesGrid.Rows.Clear();
                 foreach (LibraryFileViewRecord file in result.Files)
                 {
-                    _filesGrid.Rows.Add(
+                    int row = _filesGrid.Rows.Add(
                         file.FileName,
                         file.FullPath,
                         file.LocationPath,
@@ -477,6 +492,7 @@ namespace MediaFlux
                         file.ProbeStatus == LibraryProbeStatus.Failed && !string.IsNullOrWhiteSpace(file.ProbeError)
                             ? $"Failed: {file.ProbeError}"
                             : file.ProbeStatus.ToString());
+                    _filesGrid.Rows[row].Tag = file;
                 }
                 long first = _totalFiles == 0 ? 0 : (long)_page * PageSize + 1;
                 long last = Math.Min(_totalFiles, ((long)_page + 1) * PageSize);
@@ -536,6 +552,14 @@ namespace MediaFlux
             .Select(row => Convert.ToInt64(row.Cells[0].Value, CultureInfo.InvariantCulture))
             .Distinct()
             .ToArray();
+
+        private void QueueSelectedFiles(LibraryReanalysisWork work)
+        {
+            long[] fileIds = _filesGrid.SelectedRows.Cast<DataGridViewRow>().Select(row => row.Tag)
+                .OfType<LibraryFileViewRecord>().Select(file => file.FileId).Distinct().ToArray();
+            if (fileIds.Length == 0) return;
+            _runtime.Reanalysis.QueueFiles(fileIds, work);
+        }
 
         private void Enrichment_ProgressChanged(object? sender, LibraryEnrichmentProgress e)
         {
@@ -749,6 +773,8 @@ namespace MediaFlux
             Action<string>? VideoLauncher = null,
             string PreviewCacheRoot = "",
             MediaFlux.Models.DuplicateKeeperPreferences? KeeperPreferences = null,
-            Action<MediaFlux.Models.DuplicateKeeperPreferences>? KeeperPreferencesChanged = null);
+            Action<MediaFlux.Models.DuplicateKeeperPreferences>? KeeperPreferencesChanged = null,
+            LibraryVisualReviewAutomationOptions? AutomationOptions = null,
+            Action<IReadOnlyList<string>>? AddToEncodeQueue = null);
     }
 }

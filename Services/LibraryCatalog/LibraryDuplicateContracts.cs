@@ -90,7 +90,8 @@ namespace MediaFlux.Services.LibraryCatalog
         string SortColumn = "reclaimable",
         bool Descending = true,
         int Offset = 0,
-        int Limit = 100);
+        int Limit = 100,
+        bool IncludeInactive = false);
 
     public sealed record ExactDuplicateGroupRecord(
         long GroupId,

@@ -35,10 +35,17 @@ namespace MediaFlux.Services.LibraryCatalog
         int Failed,
         string ErrorText);
 
+    public sealed record ExactCleanupCandidate(
+        long GroupId,
+        long FileId,
+        long KeeperFileId,
+        long SizeBytes);
+
     public sealed class LibraryDuplicateCleanupService
     {
         private readonly ILibraryCatalog _inventory;
         private readonly ILibraryAnalysisCatalog _analysis;
+        private readonly ILibraryRecoveryCatalog? _recovery;
         private readonly ILibraryDuplicateFileActions _actions;
         private readonly ILibraryFileIdentityProvider _identityProvider;
         private readonly Func<bool> _isEncodingActive;
@@ -60,9 +67,61 @@ namespace MediaFlux.Services.LibraryCatalog
         {
             _inventory = inventory ?? throw new ArgumentNullException(nameof(inventory));
             _analysis = analysis ?? throw new ArgumentNullException(nameof(analysis));
+            _recovery = inventory as ILibraryRecoveryCatalog;
             _actions = actions ?? throw new ArgumentNullException(nameof(actions));
             _identityProvider = identityProvider ?? throw new ArgumentNullException(nameof(identityProvider));
             _isEncodingActive = isEncodingActive ?? (() => false);
+        }
+
+        // This is the same catalog-side safety screen used while creating a cleanup
+        // plan. It deliberately does not create a plan or touch files.
+        public IReadOnlyList<ExactCleanupCandidate> GetEligibleCandidates(int maximumCandidates = 10_000)
+        {
+            maximumCandidates = Math.Clamp(maximumCandidates, 1, 50_000);
+            var candidates = new List<ExactCleanupCandidate>();
+            int offset = 0;
+            while (candidates.Count < maximumCandidates)
+            {
+                ExactDuplicateGroupPage page = _analysis.QueryDuplicateGroups(new DuplicateGroupQuery(
+                    SortColumn: "reclaimable", Descending: true, Offset: offset, Limit: 500));
+                if (page.Groups.Count == 0) break;
+                foreach (ExactDuplicateGroupRecord group in page.Groups)
+                {
+                    if (group.Ignored) continue;
+                    IReadOnlyList<ExactDuplicateMemberRecord> members = _analysis.GetDuplicateGroupMembers(group.GroupId);
+                    if (members.Count < 2) continue;
+                    ExactDuplicateMemberRecord keeper = members.FirstOrDefault(x => x.IsManualKeeper)
+                        ?? members.FirstOrDefault(x => x.IsSuggestedKeeper)
+                        ?? members.FirstOrDefault(x => x.IsProtected)
+                        ?? members[0];
+                    LibraryFileHashFact? keeperFact = _analysis.GetFileHashFact(keeper.FileId);
+                    if (keeperFact?.FullHash == null || !File.Exists(keeper.FullPath)) continue;
+                    var legacyItems = members.Select(member => LibraryDuplicateAnalysisCoordinator.ToLegacyItem(member) with
+                    {
+                        Recommendation = member.FileId == keeper.FileId ? "Selected keeper" : "Trash candidate",
+                        KeeperReason = member.FileId == keeper.FileId ? "Catalog keeper" : "Not selected to keep"
+                    }).ToList();
+                    var legacyGroup = new DuplicateGroup((int)Math.Min(int.MaxValue, group.GroupId), "Exact", 100,
+                        "Matching size and SHA-256", "Catalog SHA-256", 0, 0, 0, 0, legacyItems);
+                    var usedPhysical = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { keeper.PhysicalIdentityKey };
+                    foreach (ExactDuplicateMemberRecord member in members)
+                    {
+                        DuplicateItem legacy = legacyItems.First(x => string.Equals(x.Path, member.FullPath, StringComparison.OrdinalIgnoreCase));
+                        LibraryFileHashFact? fact = _analysis.GetFileHashFact(member.FileId);
+                        if (member.FileId == keeper.FileId || member.Availability != IndexedFileAvailability.Present || member.IsProtected ||
+                            member.IsHardLinkAlias || !File.Exists(member.FullPath) || !usedPhysical.Add(member.PhysicalIdentityKey) ||
+                            !DuplicateCleanupPolicy.CanCleanupItem(legacyGroup, legacy) || fact?.FullHash == null ||
+                            !fact.FullHash.SequenceEqual(keeperFact.FullHash))
+                            continue;
+                        candidates.Add(new ExactCleanupCandidate(group.GroupId, member.FileId, keeper.FileId, member.SizeBytes));
+                        if (candidates.Count >= maximumCandidates) break;
+                    }
+                    if (candidates.Count >= maximumCandidates) break;
+                }
+                offset += page.Groups.Count;
+                if (offset >= page.TotalCount) break;
+            }
+            return candidates;
         }
 
         public DuplicateCleanupPlanRecord CreatePlan(
@@ -162,6 +221,8 @@ namespace MediaFlux.Services.LibraryCatalog
                         };
                         _analysis.UpdateCleanupPlanItem(plan.PlanId, item.FileId, DuplicateCleanupItemStatus.Succeeded, destination, "");
                         _analysis.AppendCleanupAudit(plan.PlanId, item.FileId, item.SourcePath, destination, plan.Action, DuplicateCleanupItemStatus.Succeeded, "Validated exact duplicate cleanup succeeded.");
+                        _recovery?.MarkFileRemovedByCleanup(item.FileId, item.SourcePath,
+                            $"Exact cleanup plan {plan.PlanId} completed using {plan.Action}.");
                         succeeded++;
                     }
                     catch (Exception ex)

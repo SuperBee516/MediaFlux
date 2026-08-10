@@ -26,6 +26,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly ILibraryCatalog _inventory;
         private readonly ILibraryAnalysisCatalog _analysis;
         private readonly ILibraryVisualCatalog _visual;
+        private readonly ILibraryRecoveryCatalog? _recovery;
         private readonly ILibraryDuplicateFileActions _actions;
         private readonly ILibraryFileIdentityProvider _identityProvider;
         private readonly Func<bool> _isEncodingActive;
@@ -41,6 +42,7 @@ namespace MediaFlux.Services.LibraryCatalog
             DuplicateKeeperPreferences? preferences = null, Func<bool>? isEncodingActive = null)
         {
             _inventory=inventory; _analysis=analysis; _visual=visual; _actions=actions; _identityProvider=identityProvider;
+            _recovery=inventory as ILibraryRecoveryCatalog;
             _preferences=(preferences??new DuplicateKeeperPreferences()).Clone(); _preferences.Normalize();
             _isEncodingActive=isEncodingActive??(()=>false);
         }
@@ -54,7 +56,7 @@ namespace MediaFlux.Services.LibraryCatalog
         }
 
         public VisualCleanupProposal BuildProposal(bool includeUnreviewed=false, double minimumConfidence=95,
-            IReadOnlyCollection<long>? groupIds=null, int maximumItems=5000)
+            IReadOnlyCollection<long>? groupIds=null, int maximumItems=5000, bool includeFamilyPairs=false)
         {
             minimumConfidence=Math.Clamp(minimumConfidence,0,100);
             maximumItems=Math.Clamp(maximumItems,1,10_000);
@@ -64,7 +66,7 @@ namespace MediaFlux.Services.LibraryCatalog
             {
                 VisualSimilarityGroupPage page=_visual.QueryVisualGroups(new VisualGroupQuery(
                     Reviewed: includeUnreviewed?null:true, Ignored:false, NotMatch:false, MinimumConfidence:includeUnreviewed?minimumConfidence:0,
-                    SortColumn:"reclaimable", Descending:true, Offset:offset, Limit:500));
+                    SortColumn:"reclaimable", Descending:true, Offset:offset, Limit:500, IncludeFamilyPairs:includeFamilyPairs));
                 if(page.Groups.Count==0) break;
                 foreach(VisualSimilarityGroupRecord group in page.Groups)
                 {
@@ -179,6 +181,8 @@ namespace MediaFlux.Services.LibraryCatalog
                         _=>throw new InvalidOperationException("Unknown cleanup action.")
                     };
                     Record(plan,item,DuplicateCleanupItemStatus.Succeeded,destination,item.ExactHash==null?"User-approved visual duplicate cleanup succeeded.":"Exact hash evidence confirmed; cleanup succeeded."); succeeded++;
+                    _recovery?.MarkFileRemovedByCleanup(item.FileId, item.SourcePath,
+                        $"Visual cleanup plan {plan.PlanId} completed using {plan.Action}.");
                 }
                 catch(Exception ex){Record(plan,item,DuplicateCleanupItemStatus.Failed,destination,ex.Message);failed++;}
             }
@@ -198,6 +202,8 @@ namespace MediaFlux.Services.LibraryCatalog
                     destination = ExecuteAction(plan, item.GroupId, fileId, path);
                     _visual.AppendVisualCleanupAudit(plan.PlanId,fileId,path,destination,plan.Action,DuplicateCleanupItemStatus.Succeeded,
                         item.ExactHash==null?"User-approved Delete Both visual cleanup succeeded; no keeper remains.":"Exact hash evidence confirmed; Delete Both cleanup succeeded; no keeper remains.");
+                    _recovery?.MarkFileRemovedByCleanup(fileId, path,
+                        $"Visual Delete Both plan {plan.PlanId} completed using {plan.Action}.");
                     outcomes.Add(destination);
                     succeeded++;
                 }

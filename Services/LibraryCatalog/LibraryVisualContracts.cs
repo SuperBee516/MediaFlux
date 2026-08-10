@@ -81,7 +81,9 @@ namespace MediaFlux.Services.LibraryCatalog
         string SortColumn = "confidence",
         bool Descending = true,
         int Offset = 0,
-        int Limit = 100);
+        int Limit = 100,
+        bool IncludeInactive = false,
+        bool IncludeFamilyPairs = false);
 
     public sealed record VisualSimilarityGroupRecord(
         long GroupId,
@@ -101,7 +103,9 @@ namespace MediaFlux.Services.LibraryCatalog
         bool NotMatch,
         bool CodecDiffers,
         bool ResolutionDiffers,
-        long ReclaimableBytes);
+        long ReclaimableBytes,
+        LibraryMatchEligibilityState Eligibility = LibraryMatchEligibilityState.Active,
+        string EligibilityReason = "");
 
     public sealed record VisualSimilarityGroupPage(
         long TotalCount,
@@ -122,14 +126,18 @@ namespace MediaFlux.Services.LibraryCatalog
         double? DurationSeconds,
         bool IsProtected,
         bool IsSuggestedKeeper,
-        bool IsManualKeeper);
+        bool IsManualKeeper,
+        bool IsHdr = false,
+        string AudioSummary = "");
 
     public sealed record VisualGroupDecision(
         long GroupId,
         long? ManualKeeperFileId,
         bool Reviewed,
         bool Ignored,
-        bool NotMatch = false);
+        bool NotMatch = false,
+        string BatchId = "",
+        string Source = "library-analyzer");
 
     public enum VisualCleanupIntent
     {
@@ -223,5 +231,7 @@ namespace MediaFlux.Services.LibraryCatalog
         int DuplicateDecisions,
         int FileProtections,
         int VisualDecisions,
-        IReadOnlyList<string> Warnings);
+        IReadOnlyList<string> Warnings,
+        int DecisionEvents = 0,
+        int FamilyDecisions = 0);
 }

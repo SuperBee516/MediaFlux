@@ -13,6 +13,7 @@ using Xunit.Abstractions;
 
 namespace MediaFlux.Tests;
 
+[Collection("LibraryAnalyzerUi")]
 public sealed class LibraryAnalyzerPhase5Tests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "MediaFlux-LibraryPhase5Tests", Guid.NewGuid().ToString("N"));
@@ -28,7 +29,7 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
     public void MigrationCreatesVersionedVisualAndAccelerationSchema()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();
-        Assert.Equal(7, catalog.GetDiagnostics().SchemaVersion);
+        Assert.Equal(LibraryCatalogMigrations.CurrentVersion, catalog.GetDiagnostics().SchemaVersion);
         using var connection = new SqliteConnection($"Data Source={catalog.DatabasePath}");
         connection.Open();
         string[] tables = { "visual_fingerprints", "visual_hash_bands", "visual_analysis_runs", "visual_candidate_pairs", "visual_similarity_groups", "visual_group_decisions", "location_scan_accelerators", "visual_cleanup_plans", "visual_cleanup_plan_items", "visual_cleanup_audit" };
@@ -57,7 +58,7 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             seed.ExecuteNonQuery();
         }
         using SqliteLibraryCatalog catalog = CreateCatalog(path);
-        Assert.Equal(7, catalog.GetDiagnostics().SchemaVersion);
+        Assert.Equal(LibraryCatalogMigrations.CurrentVersion, catalog.GetDiagnostics().SchemaVersion);
         using var verify = new SqliteConnection($"Data Source={path}"); verify.Open();
         using SqliteCommand query = verify.CreateCommand();
         query.CommandText = "INSERT INTO duplicate_cleanup_plans(action,status,created_utc_ticks) VALUES(2,2,2); SELECT action FROM duplicate_cleanup_plans ORDER BY id;";

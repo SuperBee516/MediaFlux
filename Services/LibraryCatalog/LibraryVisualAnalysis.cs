@@ -327,7 +327,12 @@ namespace MediaFlux.Services.LibraryCatalog
             }
             finally
             {
-                if (run != null) _catalog.CompleteVisualAnalysis(run, new VisualAnalysisCompletion(status, eligible, fingerprinted, candidates, matches, errors, errorText));
+                if (run != null)
+                {
+                    _catalog.CompleteVisualAnalysis(run, new VisualAnalysisCompletion(status, eligible, fingerprinted, candidates, matches, errors, errorText));
+                    if (status == DuplicateAnalysisStatus.Completed && _catalog is ILibraryVisualFamilyCatalog families)
+                        families.RebuildVisualFamilies(_options.MinimumConfidence);
+                }
                 lock (_sync)
                 {
                     _activeCancellation?.Dispose();

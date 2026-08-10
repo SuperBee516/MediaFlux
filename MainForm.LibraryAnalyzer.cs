@@ -54,7 +54,15 @@ namespace MediaFlux
                                 _config.DuplicateKeeperPreferences = preferences.Clone();
                                 _config.Save(_configPath);
                                 RescoreDuplicateKeeperRecommendations();
-                            }));
+                            },
+                            AutomationOptions: new LibraryVisualReviewAutomationOptions(
+                                _config.SemiAutomaticVisualKeeperApproval,
+                                _config.VisualMassReviewMaximumMatches,
+                                _config.VisualMassReviewMinimumAutomationMargin,
+                                _config.VisualMassReviewMinimumConfidence),
+                            AddToEncodeQueue: paths => _ = ImportEncodePathsAsync(
+                                paths, includeSubfolders: false, applyCodecFilters: true,
+                                replaceExisting: false, rememberRoots: false)));
                     _libraryAnalyzerForm.FormClosed += (_, _) => _libraryAnalyzerForm = null;
                     _libraryAnalyzerForm.Show(this);
                 }

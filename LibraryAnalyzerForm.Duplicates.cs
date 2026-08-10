@@ -81,6 +81,7 @@ namespace MediaFlux
             AddButton(actions, "Protect / unprotect file", ToggleProtection_Click);
             AddButton(actions, "Mark reviewed", MarkReviewed_Click);
             AddButton(actions, "Ignore / restore group", ToggleIgnored_Click);
+            AddButton(actions, "Re-analyze selected group", QueueSelectedExactGroup_Click);
             AddButton(actions, $"Preview {CleanupActionLabel(_cleanupOptions.PreferredAction)} cleanup…", PreviewPreferredCleanup_Click);
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
@@ -121,6 +122,15 @@ namespace MediaFlux
             finally { _duplicateProgress.Visible = false; }
         }
 
+        private void QueueSelectedExactGroup_Click(object? sender, EventArgs e)
+        {
+            long[] fileIds = _duplicateGroupsGrid.SelectedRows.Cast<DataGridViewRow>().Select(x => x.Tag)
+                .OfType<ExactDuplicateGroupRecord>()
+                .SelectMany(group => _runtime.AnalysisCatalog.GetDuplicateGroupMembers(group.GroupId))
+                .Select(member => member.FileId).Distinct().ToArray();
+            if (fileIds.Length > 0) _runtime.Reanalysis.QueueFiles(fileIds, LibraryReanalysisWork.ExactHash);
+        }
+
         private async Task RefreshDuplicateGroupsAsync()
         {
             if (_loadingDuplicateGroups || IsDisposed) return;
@@ -151,6 +161,14 @@ namespace MediaFlux
         {
             if (_duplicateGroupsGrid.SelectedRows.Count == 0) { _duplicateMembersGrid.Rows.Clear(); return; }
             long groupId = Convert.ToInt64(_duplicateGroupsGrid.SelectedRows[0].Cells[0].Value);
+            LibraryMatchEligibility eligibility = await Task.Run(() => _runtime.MatchEligibility.EvaluateExactGroup(groupId));
+            if (!eligibility.IsActive)
+            {
+                _duplicateMembersGrid.Rows.Clear();
+                _duplicateStatus.Text = $"Match suspended: {eligibility.Reason}";
+                if (!_loadingDuplicateGroups) await RefreshDuplicateGroupsAsync();
+                return;
+            }
             IReadOnlyList<ExactDuplicateMemberRecord> members = await Task.Run(() => _runtime.AnalysisCatalog.GetDuplicateGroupMembers(groupId));
             if (IsDisposed) return;
             _duplicateMembersGrid.Rows.Clear();

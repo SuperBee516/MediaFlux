@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace MediaFlux.Services.LibraryCatalog
@@ -98,6 +99,8 @@ namespace MediaFlux.Services.LibraryCatalog
             command.Parameters.AddWithValue("$tool", toolVersion ?? "");
             command.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
             command.Parameters.AddWithValue("$succeeded", (int)LibraryProbeStatus.Succeeded);
+            command.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
+            command.Parameters.AddWithValue("$location_unavailable", (int)LibraryLocationAvailability.Unavailable);
             return Convert.ToInt64(command.ExecuteScalar());
         }
 
@@ -110,6 +113,8 @@ namespace MediaFlux.Services.LibraryCatalog
             command.Parameters.AddWithValue("$tool", toolVersion ?? "");
             command.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
             command.Parameters.AddWithValue("$succeeded", (int)LibraryProbeStatus.Succeeded);
+            command.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
+            command.Parameters.AddWithValue("$location_unavailable", (int)LibraryLocationAvailability.Unavailable);
             command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, MaximumPageSize));
             using SqliteDataReader reader = command.ExecuteReader();
             var result = new List<VisualFingerprintCandidate>();
@@ -129,6 +134,9 @@ namespace MediaFlux.Services.LibraryCatalog
                 JOIN media_metadata m ON m.file_id=f.id
                 LEFT JOIN visual_fingerprints v ON v.file_id=f.id
                 WHERE f.availability_state=$present AND m.probe_status=$succeeded AND m.duration_seconds>0
+                  AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id=f.id AND o.state<>$presence_present)
+                  AND EXISTS(SELECT 1 FROM file_location_memberships fm JOIN library_locations l ON l.id=fm.location_id
+                             WHERE fm.file_id=f.id AND fm.availability_state=$present AND l.availability_state<$location_unavailable)
                   AND (v.file_id IS NULL OR v.source_size_bytes<>f.size_bytes OR v.source_last_write_utc_ticks<>f.last_write_utc_ticks
                        OR v.source_volume_id<>f.volume_id OR v.source_file_identity<>f.file_identity
                        OR v.algorithm_version<>$version OR v.tool_version<>$tool OR v.status<>2)
@@ -246,6 +254,7 @@ namespace MediaFlux.Services.LibraryCatalog
                         JOIN indexed_files fa ON fa.id=a.file_id AND fa.availability_state=$present
                         JOIN indexed_files fb ON fb.id=b.file_id AND fb.availability_state=$present
                         WHERE ABS(ma.duration_seconds-mb.duration_seconds)<=MAX(3.0,MIN(ma.duration_seconds,mb.duration_seconds)*0.03)
+                          AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id IN(a.file_id,b.file_id) AND o.state<>$presence_present)
                         GROUP BY a.file_id,b.file_id HAVING COUNT(*) >= $minimum
                     )
                     SELECT $run,left_id,right_id,matches FROM collisions;
@@ -256,6 +265,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 command.Parameters.AddWithValue("$max_bucket", Math.Clamp(maximumBandBucket, 8, 1024));
                 command.Parameters.AddWithValue("$minimum", Math.Clamp(minimumBandMatches, 1, 24));
                 command.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
+                command.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
                 return Convert.ToInt64(command.ExecuteScalar());
             });
         }
@@ -398,7 +408,16 @@ namespace MediaFlux.Services.LibraryCatalog
                 LEFT JOIN media_metadata mr ON mr.file_id=fr.id
                 LEFT JOIN visual_group_decisions d ON d.group_key=g.group_key
                 WHERE g.analysis_run_id=(SELECT id FROM visual_analysis_runs WHERE status=1 ORDER BY id DESC LIMIT 1)
+                  AND ($include_inactive=1 OR (
+                        g.lifecycle_state=$active
+                        AND fl.availability_state=$present AND fr.availability_state=$present
+                        AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id IN(g.left_file_id,g.right_file_id) AND o.state<>$presence_present)
+                        AND EXISTS(SELECT 1 FROM file_location_memberships x JOIN library_locations l ON l.id=x.location_id WHERE x.file_id=fl.id AND x.availability_state=$present AND l.availability_state<$location_unavailable)
+                        AND EXISTS(SELECT 1 FROM file_location_memberships x JOIN library_locations l ON l.id=x.location_id WHERE x.file_id=fr.id AND x.availability_state=$present AND l.availability_state<$location_unavailable)))
                   AND ($group_id IS NULL OR g.id=$group_id)
+                  AND ($include_family_pairs=1 OR NOT EXISTS(
+                        SELECT 1 FROM visual_family_edges fe JOIN visual_families vf ON vf.id=fe.family_id
+                        WHERE fe.visual_group_id=g.id AND vf.lifecycle_state=$active))
                   AND g.confidence_score >= $confidence
                   AND ($search='' OR fl.full_path LIKE $like ESCAPE '\' OR fr.full_path LIKE $like ESCAPE '\')
                   AND ($reviewed<0 OR COALESCE(d.reviewed,0)=$reviewed)
@@ -421,7 +440,8 @@ namespace MediaFlux.Services.LibraryCatalog
                        COALESCE(d.reviewed,0),COALESCE(d.ignored,0),COALESCE(d.not_match,0),
                        COALESCE(ml.video_codec,'')<>COALESCE(mr.video_codec,''),
                        COALESCE(ml.width,0)<>COALESCE(mr.width,0) OR COALESCE(ml.height,0)<>COALESCE(mr.height,0),
-                       CASE WHEN fl.volume_id<>'' AND fl.volume_id=fr.volume_id AND fl.file_identity<>'' AND fl.file_identity=fr.file_identity THEN 0 ELSE MIN(fl.size_bytes,fr.size_bytes) END AS reclaimable_bytes
+                       CASE WHEN fl.volume_id<>'' AND fl.volume_id=fr.volume_id AND fl.file_identity<>'' AND fl.file_identity=fr.file_identity THEN 0 ELSE MIN(fl.size_bytes,fr.size_bytes) END AS reclaimable_bytes,
+                       g.lifecycle_state,g.lifecycle_reason
                 """ + " " + common + $" ORDER BY {order} {direction},g.id LIMIT $limit OFFSET $offset;";
             AddVisualQueryParameters(command, query);
             command.Parameters.AddWithValue("$limit", limit);
@@ -429,13 +449,13 @@ namespace MediaFlux.Services.LibraryCatalog
             using SqliteDataReader reader = command.ExecuteReader();
             var groups = new List<VisualSimilarityGroupRecord>();
             while (reader.Read())
-                groups.Add(new VisualSimilarityGroupRecord(reader.GetInt64(0), reader.GetString(1), reader.GetDouble(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetDouble(5), reader.GetDouble(6), reader.GetString(7), reader.GetInt64(8), reader.GetInt64(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetInt64(11), reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0, reader.GetInt32(15) != 0, reader.GetInt32(16) != 0, reader.GetInt64(17)));
+                groups.Add(new VisualSimilarityGroupRecord(reader.GetInt64(0), reader.GetString(1), reader.GetDouble(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetDouble(5), reader.GetDouble(6), reader.GetString(7), reader.GetInt64(8), reader.GetInt64(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetInt64(11), reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0, reader.GetInt32(15) != 0, reader.GetInt32(16) != 0, reader.GetInt64(17), (LibraryMatchEligibilityState)reader.GetInt32(18), reader.GetString(19)));
             return new VisualSimilarityGroupPage(total, groups);
         }
 
         public VisualSimilarityGroupRecord? GetVisualGroup(long groupId)
         {
-            VisualSimilarityGroupPage page = QueryVisualGroups(new VisualGroupQuery(GroupId: groupId, Limit: 1));
+            VisualSimilarityGroupPage page = QueryVisualGroups(new VisualGroupQuery(GroupId: groupId, Limit: 1, IncludeFamilyPairs: true));
             return page.Groups.FirstOrDefault();
         }
 
@@ -477,7 +497,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 SELECT g.id,f.id,f.full_path,COALESCE((SELECT l.path FROM file_location_memberships x JOIN library_locations l ON l.id=x.location_id WHERE x.file_id=f.id ORDER BY l.path LIMIT 1),''),
                        f.size_bytes,f.last_write_utc_ticks,f.availability_state,COALESCE(m.video_codec,''),m.width,m.height,m.total_bitrate,m.duration_seconds,
                        EXISTS(SELECT 1 FROM duplicate_file_protections p WHERE p.path_key=f.path_key),f.id=g.suggested_keeper_file_id,
-                       f.path_key=COALESCE(d.manual_keeper_path_key,'')
+                       f.path_key=COALESCE(d.manual_keeper_path_key,''),COALESCE(m.color_transfer,''),COALESCE(m.color_primaries,''),COALESCE(m.audio_streams_json,'[]')
                 FROM visual_similarity_groups g
                 JOIN indexed_files f ON f.id IN(g.left_file_id,g.right_file_id)
                 LEFT JOIN media_metadata m ON m.file_id=f.id
@@ -488,7 +508,7 @@ namespace MediaFlux.Services.LibraryCatalog
             using SqliteDataReader reader = command.ExecuteReader();
             var result = new List<VisualSimilarityMemberRecord>(2);
             while (reader.Read())
-                result.Add(new VisualSimilarityMemberRecord(reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4), FromUtcTicks(reader.GetInt64(5)), (IndexedFileAvailability)reader.GetInt32(6), reader.GetString(7), reader.IsDBNull(8) ? null : reader.GetInt32(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetDouble(11), reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0));
+                result.Add(new VisualSimilarityMemberRecord(reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4), FromUtcTicks(reader.GetInt64(5)), (IndexedFileAvailability)reader.GetInt32(6), reader.GetString(7), reader.IsDBNull(8) ? null : reader.GetInt32(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetDouble(11), reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0, IsHdrTransfer(reader.GetString(15), reader.GetString(16)), BuildAudioSummary(reader.GetString(17))));
             return result;
         }
 
@@ -498,6 +518,7 @@ namespace MediaFlux.Services.LibraryCatalog
             ThrowIfDisposed();
             WithWriteTransaction<object?>((connection, transaction) =>
             {
+                VisualDecisionState before = CaptureVisualDecisionState(connection, transaction, decision.GroupId);
                 using SqliteCommand command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText =
@@ -516,6 +537,17 @@ namespace MediaFlux.Services.LibraryCatalog
                 command.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
                 command.Parameters.AddWithValue("$id", decision.GroupId);
                 if (command.ExecuteNonQuery() != 1) throw new KeyNotFoundException($"Visual group {decision.GroupId} does not exist.");
+                VisualDecisionState after = CaptureVisualDecisionState(connection, transaction, decision.GroupId);
+                InsertDecisionEventCore(connection, transaction, LibraryDecisionTargetKind.VisualGroup,
+                    after.GroupKey, VisualEventKind(before, after), Serialize(before), Serialize(after), decision.BatchId, decision.Source);
+                if (decision.Ignored || decision.NotMatch)
+                {
+                    using SqliteCommand invalidateFamily = connection.CreateCommand();
+                    invalidateFamily.Transaction = transaction;
+                    invalidateFamily.CommandText = "DELETE FROM visual_families WHERE id IN(SELECT family_id FROM visual_family_edges WHERE visual_group_id=$group);";
+                    invalidateFamily.Parameters.AddWithValue("$group", decision.GroupId);
+                    invalidateFamily.ExecuteNonQuery();
+                }
                 return null;
             });
         }
@@ -530,6 +562,24 @@ namespace MediaFlux.Services.LibraryCatalog
             byte[] bytes = new byte[hashes.Count * sizeof(ulong)];
             for (int index = 0; index < hashes.Count; index++) BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(index * 8, 8), hashes[index]);
             return bytes;
+        }
+
+        private static bool IsHdrTransfer(string transfer, string primaries) =>
+            transfer.Contains("pq", StringComparison.OrdinalIgnoreCase) ||
+            transfer.Contains("hlg", StringComparison.OrdinalIgnoreCase) ||
+            primaries.Contains("bt2020", StringComparison.OrdinalIgnoreCase);
+
+        private static string BuildAudioSummary(string json)
+        {
+            try
+            {
+                var streams = JsonSerializer.Deserialize<List<LibraryAudioStreamMetadata>>(json) ?? new();
+                if (streams.Count == 0) return "";
+                LibraryAudioStreamMetadata best = streams.OrderByDescending(x => x.Channels ?? 0).First();
+                string channels = best.Channels.HasValue ? $"{best.Channels.Value} ch" : "";
+                return $"Audio: {best.Codec.ToUpperInvariant()} {channels}".Trim();
+            }
+            catch { return ""; }
         }
 
         private static IReadOnlyList<ulong> DeserializeHashes(byte[] bytes)
@@ -553,6 +603,12 @@ namespace MediaFlux.Services.LibraryCatalog
             command.Parameters.AddWithValue("$codec_differs", query.CodecDiffers.HasValue ? (query.CodecDiffers.Value ? 1 : 0) : -1);
             command.Parameters.AddWithValue("$resolution_differs", query.ResolutionDiffers.HasValue ? (query.ResolutionDiffers.Value ? 1 : 0) : -1);
             command.Parameters.AddWithValue("$location", (object?)query.LocationId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$include_inactive", query.IncludeInactive ? 1 : 0);
+            command.Parameters.AddWithValue("$include_family_pairs", query.IncludeFamilyPairs ? 1 : 0);
+            command.Parameters.AddWithValue("$active", (int)LibraryMatchEligibilityState.Active);
+            command.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
+            command.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
+            command.Parameters.AddWithValue("$location_unavailable", (int)LibraryLocationAvailability.Unavailable);
         }
     }
 }

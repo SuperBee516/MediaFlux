@@ -41,6 +41,10 @@ namespace MediaFlux
         private CheckBox chkAllowUnreviewedVisualBulkCleanup = null!;
         private NumericUpDown nudVisualBulkCleanupConfidence = null!;
         private Label lblVisualBulkCleanupWarning = null!;
+        private CheckBox chkSemiAutomaticVisualKeeperApproval = null!;
+        private NumericUpDown nudVisualMassReviewMaximumMatches = null!;
+        private NumericUpDown nudVisualMassReviewMinimumMargin = null!;
+        private NumericUpDown nudVisualMassReviewMinimumConfidence = null!;
         internal const string VisualBulkCleanupRiskWarning = "Visual similarity is probabilistic. Enabling this option may propose unreviewed false positives for permanent deletion. Every plan is previewed and requires confirmation, but you must verify each proposed keeper and deletion.";
 
         public SettingsForm(
@@ -56,6 +60,7 @@ namespace MediaFlux
             InitializeExplorerIntegrationControls();
             Config = cfg;
             InitializeLibraryAnalyzerCleanupControls(cfg);
+            InitializeLibraryAnalyzerReviewProductivityControls(cfg);
             InitializeSmartRecommendationControls(cfg);
             InitializeDvdSettingsControls(cfg);
             _duplicateKeeperPreferences = (cfg.DuplicateKeeperPreferences ?? new DuplicateKeeperPreferences()).Clone();
@@ -593,6 +598,42 @@ namespace MediaFlux
             lblVisualBulkCleanupWarning.Visible = chkAllowUnreviewedVisualBulkCleanup.Checked;
         }
 
+        private void InitializeLibraryAnalyzerReviewProductivityControls(Config cfg)
+        {
+            var group = new GroupBox { Text = "Library Analyzer Review Productivity", Location = new Point(820, 890), Size = new Size(390, 155) };
+            chkSemiAutomaticVisualKeeperApproval = new CheckBox
+            {
+                Text = "Semi-Automatic Visual Keeper Approval",
+                AutoSize = true,
+                Location = new Point(15, 24),
+                Checked = cfg.SemiAutomaticVisualKeeperApproval
+            };
+            var maximumLabel = new Label { Text = "Mass review maximum:", AutoSize = true, Location = new Point(15, 58) };
+            nudVisualMassReviewMaximumMatches = new NumericUpDown
+            {
+                Minimum = 1, Maximum = 1000, Location = new Point(165, 54), Size = new Size(75, 23),
+                Value = Math.Clamp(cfg.VisualMassReviewMaximumMatches, 1, 1000)
+            };
+            var marginLabel = new Label { Text = "Minimum score margin:", AutoSize = true, Location = new Point(15, 86) };
+            nudVisualMassReviewMinimumMargin = new NumericUpDown
+            {
+                Minimum = 0, Maximum = 100, DecimalPlaces = 1, Increment = 0.5M, Location = new Point(165, 82), Size = new Size(75, 23),
+                Value = (decimal)Math.Clamp(cfg.VisualMassReviewMinimumAutomationMargin, 0, 100)
+            };
+            var confidenceLabel = new Label { Text = "Minimum visual confidence:", AutoSize = true, Location = new Point(15, 114) };
+            nudVisualMassReviewMinimumConfidence = new NumericUpDown
+            {
+                Minimum = 76, Maximum = 100, DecimalPlaces = 1, Increment = 0.5M, Location = new Point(165, 110), Size = new Size(75, 23),
+                Value = (decimal)Math.Clamp(cfg.VisualMassReviewMinimumConfidence, 76, 100)
+            };
+            group.Controls.AddRange(new Control[]
+            {
+                chkSemiAutomaticVisualKeeperApproval, maximumLabel, nudVisualMassReviewMaximumMatches,
+                marginLabel, nudVisualMassReviewMinimumMargin, confidenceLabel, nudVisualMassReviewMinimumConfidence
+            });
+            Controls.Add(group);
+        }
+
         private void btnClearDuplicateSignatureCache_Click(object sender, EventArgs e)
         {
             var confirm = MessageBox.Show(
@@ -755,6 +796,10 @@ namespace MediaFlux
             Config.LibraryAnalyzerCleanupMode = comboLibraryAnalyzerCleanupMode.SelectedIndex switch { 1 => "RecycleBin", 2 => "Quarantine", _ => "PermanentDelete" };
             Config.AllowUnreviewedVisualBulkCleanup = chkAllowUnreviewedVisualBulkCleanup.Checked;
             Config.VisualBulkCleanupMinimumConfidence = (double)nudVisualBulkCleanupConfidence.Value;
+            Config.SemiAutomaticVisualKeeperApproval = chkSemiAutomaticVisualKeeperApproval.Checked;
+            Config.VisualMassReviewMaximumMatches = (int)nudVisualMassReviewMaximumMatches.Value;
+            Config.VisualMassReviewMinimumAutomationMargin = (double)nudVisualMassReviewMinimumMargin.Value;
+            Config.VisualMassReviewMinimumConfidence = (double)nudVisualMassReviewMinimumConfidence.Value;
             Config.ShowDuplicateReferenceFolderOnMain = chkShowDuplicateReferenceFolderOnMain.Checked;
             Config.EnablePersistentMediaInfoCache = chkEnablePersistentMediaInfoCache.Checked;
             Config.FfmpegPath = txtFfmpegPath.Text.Trim();

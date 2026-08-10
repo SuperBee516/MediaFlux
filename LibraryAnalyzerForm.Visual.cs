@@ -144,9 +144,11 @@ namespace MediaFlux
             AddButton(actions, "Protect / unprotect file", ToggleVisualProtection_Click);
             AddButton(actions, "Mark reviewed", MarkVisualReviewed_Click);
             AddButton(actions, "Ignore / restore match", ToggleVisualIgnored_Click);
+            AddButton(actions, "Re-analyze selected match", QueueSelectedVisualGroup_Click);
             AddButton(actions, "Review cleanup plan…", ReviewSelectedVisualCleanup_Click);
             AddButton(actions, "Delete both…", DeleteBothVisual_Click);
             AddButton(actions, "Bulk delete recommended duplicates…", ReviewBulkVisualCleanup_Click);
+            AddButton(actions, "Mass review by keeper rules…", async (_, _) => await PreviewMassReviewAsync());
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
             var next = new Button { Text = "Next", AutoSize = true };
@@ -219,6 +221,13 @@ namespace MediaFlux
             }
             catch (Exception ex) { ShowError("Visual similarity analysis failed. No media files were changed.", ex); }
             finally { _visualProgress.Visible = false; }
+        }
+
+        private void QueueSelectedVisualGroup_Click(object? sender, EventArgs e)
+        {
+            if (SelectedVisualGroup() is not { } group) return;
+            long[] fileIds = _runtime.VisualCatalog.GetVisualGroupMembers(group.GroupId).Select(x => x.FileId).ToArray();
+            if (fileIds.Length > 0) _runtime.Reanalysis.QueueFiles(fileIds, LibraryReanalysisWork.VisualFingerprint);
         }
 
         private async Task RefreshVisualGroupsAsync(long? preferredGroupId = null)
@@ -303,7 +312,8 @@ namespace MediaFlux
             long? location = _visualLocation.SelectedItem is LocationChoice choice && choice.Id > 0 ? choice.Id : null;
             return new VisualGroupQuery(Search: _visualSearch.Text, LocationId: location, Reviewed: reviewed, Ignored: ignored, NotMatch: notMatch,
                 CodecDiffers: codec, ResolutionDiffers: resolution, MinimumConfidence: (double)_visualConfidence.Value,
-                SortColumn: _visualSort.Text.ToLowerInvariant(), Descending: true, Offset: _visualPage * VisualPageSize, Limit: VisualPageSize);
+                SortColumn: _visualSort.Text.ToLowerInvariant(), Descending: true, Offset: _visualPage * VisualPageSize, Limit: VisualPageSize,
+                IncludeInactive: _visualReview.SelectedIndex == 5);
         }
 
         private void RefreshVisualLocationFilter(IReadOnlyList<LibraryLocationRecord> locations)
@@ -380,7 +390,7 @@ namespace MediaFlux
             try
             {
                 LibraryUserDataRestoreResult result = await Task.Run(() => _runtime.AnalysisCatalog.RestoreUserDataBackup(dialog.FileName));
-                MessageBox.Show(this, $"Decision restore completed.\r\n\r\nExact decisions: {result.DuplicateDecisions:N0}\r\nProtected paths: {result.FileProtections:N0}\r\nVisual decisions: {result.VisualDecisions:N0}", "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, $"Decision restore completed.\r\n\r\nExact decisions: {result.DuplicateDecisions:N0}\r\nProtected paths: {result.FileProtections:N0}\r\nVisual pair decisions: {result.VisualDecisions:N0}\r\nVisual family decisions: {result.FamilyDecisions:N0}", "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 await RefreshSelectedTabAsync();
             }
             catch (Exception ex) { ShowError("User decisions could not be restored. No media files were changed.", ex); }

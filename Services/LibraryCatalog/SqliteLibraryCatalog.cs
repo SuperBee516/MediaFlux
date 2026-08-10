@@ -312,6 +312,8 @@ namespace MediaFlux.Services.LibraryCatalog
                     membershipCommand.Parameters["$availability"].Value = (int)entry.Availability;
                     membershipCommand.Parameters["$last_seen"].Value = seenTicks;
                     membershipCommand.ExecuteNonQuery();
+                    UpsertPresenceObservationCore(connection, transaction, scan.LocationId, fileId,
+                        LibraryPresenceObservationState.Present, "authoritative-scan", "File observed during scan.");
                     written++;
                 }
 

@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 7;
+        public const int CurrentVersion = 9;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -507,6 +507,153 @@ namespace MediaFlux.Services.LibraryCatalog
                         ADD COLUMN not_match INTEGER NOT NULL DEFAULT 0 CHECK (not_match IN (0,1));
                     ALTER TABLE visual_cleanup_plan_items
                         ADD COLUMN cleanup_intent INTEGER NOT NULL DEFAULT 0 CHECK (cleanup_intent IN (0,1));
+                    """),
+                new LibraryCatalogMigration(
+                    8,
+                    "Catalog eligibility, targeted recovery, and decision history",
+                    """
+                    CREATE TABLE library_presence_observations (
+                        location_id INTEGER NOT NULL,
+                        file_id INTEGER NOT NULL,
+                        state INTEGER NOT NULL CHECK(state BETWEEN 0 AND 6),
+                        consecutive_observations INTEGER NOT NULL DEFAULT 0 CHECK(consecutive_observations >= 0),
+                        related_file_id INTEGER NULL REFERENCES indexed_files(id) ON DELETE SET NULL,
+                        source TEXT NOT NULL DEFAULT '',
+                        details TEXT NOT NULL DEFAULT '',
+                        last_observed_utc_ticks INTEGER NOT NULL,
+                        PRIMARY KEY(location_id,file_id),
+                        FOREIGN KEY(location_id,file_id)
+                            REFERENCES file_location_memberships(location_id,file_id) ON DELETE CASCADE
+                    ) STRICT;
+                    CREATE INDEX ix_presence_observations_state
+                        ON library_presence_observations(state,last_observed_utc_ticks,file_id);
+                    CREATE INDEX ix_presence_observations_file_state
+                        ON library_presence_observations(file_id,state);
+
+                    CREATE TABLE library_reanalysis_queue (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                        work_mask INTEGER NOT NULL CHECK(work_mask BETWEEN 1 AND 7),
+                        status INTEGER NOT NULL CHECK(status BETWEEN 0 AND 3),
+                        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                        maximum_attempts INTEGER NOT NULL DEFAULT 3 CHECK(maximum_attempts BETWEEN 1 AND 10),
+                        batch_id TEXT NOT NULL DEFAULT '',
+                        error_text TEXT NOT NULL DEFAULT '',
+                        next_attempt_utc_ticks INTEGER NULL,
+                        created_utc_ticks INTEGER NOT NULL,
+                        updated_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+                    CREATE UNIQUE INDEX ux_reanalysis_active_file
+                        ON library_reanalysis_queue(file_id) WHERE status IN (0,1);
+                    CREATE INDEX ix_reanalysis_claim
+                        ON library_reanalysis_queue(status,next_attempt_utc_ticks,id);
+
+                    CREATE TABLE library_decision_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        target_kind INTEGER NOT NULL CHECK(target_kind BETWEEN 0 AND 4),
+                        target_key TEXT NOT NULL,
+                        event_kind INTEGER NOT NULL CHECK(event_kind BETWEEN 0 AND 6),
+                        before_state TEXT NOT NULL,
+                        after_state TEXT NOT NULL,
+                        batch_id TEXT NOT NULL DEFAULT '',
+                        source TEXT NOT NULL DEFAULT '',
+                        reversal_of_event_id INTEGER NULL REFERENCES library_decision_events(id) ON DELETE RESTRICT,
+                        reversed_by_event_id INTEGER NULL REFERENCES library_decision_events(id) ON DELETE RESTRICT,
+                        occurred_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+                    CREATE INDEX ix_decision_events_recent
+                        ON library_decision_events(occurred_utc_ticks DESC,id DESC);
+                    CREATE INDEX ix_decision_events_target
+                        ON library_decision_events(target_kind,target_key,id DESC);
+                    CREATE UNIQUE INDEX ux_decision_event_reversal
+                        ON library_decision_events(reversal_of_event_id)
+                        WHERE reversal_of_event_id IS NOT NULL;
+
+                    ALTER TABLE visual_similarity_groups
+                        ADD COLUMN lifecycle_state INTEGER NOT NULL DEFAULT 0 CHECK(lifecycle_state BETWEEN 0 AND 5);
+                    ALTER TABLE visual_similarity_groups
+                        ADD COLUMN lifecycle_reason TEXT NOT NULL DEFAULT '';
+                    ALTER TABLE visual_similarity_groups
+                        ADD COLUMN lifecycle_updated_utc_ticks INTEGER NULL;
+                    CREATE INDEX ix_visual_groups_lifecycle
+                        ON visual_similarity_groups(analysis_run_id,lifecycle_state,confidence_score DESC,id);
+                    """),
+                new LibraryCatalogMigration(
+                    9,
+                    "Conservative visual duplicate families",
+                    """
+                    CREATE TABLE visual_families (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        family_key TEXT NOT NULL UNIQUE,
+                        analysis_run_id INTEGER NOT NULL REFERENCES visual_analysis_runs(id) ON DELETE CASCADE,
+                        member_count INTEGER NOT NULL CHECK(member_count >= 3),
+                        minimum_confidence REAL NOT NULL CHECK(minimum_confidence BETWEEN 0 AND 100),
+                        reclaimable_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reclaimable_bytes >= 0),
+                        suggested_keeper_file_id INTEGER NULL REFERENCES indexed_files(id) ON DELETE SET NULL,
+                        lifecycle_state INTEGER NOT NULL DEFAULT 0 CHECK(lifecycle_state BETWEEN 0 AND 5),
+                        lifecycle_reason TEXT NOT NULL DEFAULT '',
+                        updated_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+                    CREATE INDEX ix_visual_families_active
+                        ON visual_families(analysis_run_id,lifecycle_state,minimum_confidence DESC,id);
+
+                    CREATE TABLE visual_family_members (
+                        family_id INTEGER NOT NULL REFERENCES visual_families(id) ON DELETE CASCADE,
+                        file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                        minimum_member_confidence REAL NOT NULL CHECK(minimum_member_confidence BETWEEN 0 AND 100),
+                        PRIMARY KEY(family_id,file_id)
+                    ) STRICT;
+                    CREATE INDEX ix_visual_family_members_file
+                        ON visual_family_members(file_id,family_id);
+
+                    CREATE TABLE visual_family_edges (
+                        family_id INTEGER NOT NULL REFERENCES visual_families(id) ON DELETE CASCADE,
+                        visual_group_id INTEGER NOT NULL REFERENCES visual_similarity_groups(id) ON DELETE CASCADE,
+                        left_file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                        right_file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                        confidence_score REAL NOT NULL CHECK(confidence_score BETWEEN 0 AND 100),
+                        evidence_text TEXT NOT NULL DEFAULT '',
+                        PRIMARY KEY(family_id,visual_group_id),
+                        UNIQUE(family_id,left_file_id,right_file_id)
+                    ) STRICT;
+                    CREATE INDEX ix_visual_family_edges_group
+                        ON visual_family_edges(visual_group_id,family_id);
+
+                    CREATE TABLE visual_family_decisions (
+                        family_key TEXT PRIMARY KEY,
+                        manual_keeper_path_key TEXT NOT NULL DEFAULT '',
+                        reviewed INTEGER NOT NULL DEFAULT 0 CHECK(reviewed IN(0,1)),
+                        ignored INTEGER NOT NULL DEFAULT 0 CHECK(ignored IN(0,1)),
+                        updated_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+
+                    DROP INDEX ux_decision_event_reversal;
+                    DROP INDEX ix_decision_events_target;
+                    DROP INDEX ix_decision_events_recent;
+                    ALTER TABLE library_decision_events RENAME TO library_decision_events_v8;
+                    CREATE TABLE library_decision_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        target_kind INTEGER NOT NULL CHECK(target_kind BETWEEN 0 AND 5),
+                        target_key TEXT NOT NULL,
+                        event_kind INTEGER NOT NULL CHECK(event_kind BETWEEN 0 AND 6),
+                        before_state TEXT NOT NULL,
+                        after_state TEXT NOT NULL,
+                        batch_id TEXT NOT NULL DEFAULT '',
+                        source TEXT NOT NULL DEFAULT '',
+                        reversal_of_event_id INTEGER NULL REFERENCES library_decision_events(id) ON DELETE RESTRICT,
+                        reversed_by_event_id INTEGER NULL REFERENCES library_decision_events(id) ON DELETE RESTRICT,
+                        occurred_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+                    INSERT INTO library_decision_events
+                        SELECT * FROM library_decision_events_v8;
+                    DROP TABLE library_decision_events_v8;
+                    CREATE INDEX ix_decision_events_recent
+                        ON library_decision_events(occurred_utc_ticks DESC,id DESC);
+                    CREATE INDEX ix_decision_events_target
+                        ON library_decision_events(target_kind,target_key,id DESC);
+                    CREATE UNIQUE INDEX ux_decision_event_reversal
+                        ON library_decision_events(reversal_of_event_id)
+                        WHERE reversal_of_event_id IS NOT NULL;
                     """)
             };
 
