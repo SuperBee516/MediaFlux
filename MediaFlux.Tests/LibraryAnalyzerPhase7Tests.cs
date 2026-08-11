@@ -106,6 +106,59 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
     }
 
     [Fact]
+    public async Task VisualReviewUsesCurrentBalancedRecommendationInsteadOfStalePersistedSuggestion()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "balanced-review"); Directory.CreateDirectory(library);
+        string larger = Write(library, "File A.mkv", 852_350);
+        string efficient = Write(library, "File B.mkv", 462_300);
+        AddInventoryAndMetadata(catalog, library, new[] { larger, efficient }, path =>
+            path == larger ? ("hevc", 1920, 1080, 3_280_000L) : ("hevc", 1920, 1080, 1_780_000L));
+        await AnalyzeVisualAsync(catalog, new[] { larger, efficient });
+        VisualSimilarityGroupRecord group = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
+        IReadOnlyList<VisualSimilarityMemberRecord> members = catalog.GetVisualGroupMembers(group.GroupId);
+        VisualSimilarityMemberRecord largerMember = members.Single(x => x.FullPath == larger);
+        VisualSimilarityMemberRecord efficientMember = members.Single(x => x.FullPath == efficient);
+        var preferences = new DuplicateKeeperPreferences
+        {
+            VisualKeeperStrategy = DuplicateKeeperPreferences.VisualBalanced
+        };
+
+        catalog.SetVisualSuggestedKeeper(group.GroupId, largerMember.FileId);
+        using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new CurrentMetadataProbe(),
+            new FakeVisualExtractor(_ => Array.Empty<ulong>()), keeperPreferences: preferences);
+        // Verify the review presentation ignores stale derived state and uses the
+        // fresh quality-aware result for explanation, identity, and actions.
+        Assert.Equal(largerMember.FileId, catalog.GetVisualGroup(group.GroupId)!.SuggestedKeeperFileId);
+        group = catalog.GetVisualGroup(group.GroupId)!;
+        members = catalog.GetVisualGroupMembers(group.GroupId);
+        LibraryKeeperExplanation explanation = runtime.KeeperExplanations.Explain(members, preferences, group.ConfidenceScore);
+        Assert.True(explanation.RecommendedKeeperFileId == efficientMember.FileId,
+            $"Expected File B ({efficientMember.FileId}); actual {explanation.RecommendedKeeperFileId?.ToString() ?? "none"}. {explanation.Summary}");
+        Assert.Contains("Prefer smaller/more-efficient copy", explanation.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("1.78 Mbps", explanation.Summary, StringComparison.OrdinalIgnoreCase);
+
+        long? currentSuggestion = LibraryAnalyzerForm.ResolveVisualReviewSuggestedKeeperFileId(group, explanation);
+        LibraryAnalyzerForm.VisualReviewKeeperPresentation largerPresentation =
+            LibraryAnalyzerForm.ResolveVisualReviewKeeperPresentation(largerMember, null, currentSuggestion);
+        LibraryAnalyzerForm.VisualReviewKeeperPresentation efficientPresentation =
+            LibraryAnalyzerForm.ResolveVisualReviewKeeperPresentation(efficientMember, null, currentSuggestion);
+        Assert.Equal("Candidate", largerPresentation.StatusText);
+        Assert.Equal("Set as keeper", largerPresentation.ActionText);
+        Assert.Equal("Suggested keeper", efficientPresentation.StatusText);
+        Assert.Equal("Keep (suggested)", efficientPresentation.ActionText);
+
+        runtime.UpdateVisualKeeperPreferences(preferences);
+        Assert.Equal(efficientMember.FileId, catalog.GetVisualGroup(group.GroupId)!.SuggestedKeeperFileId);
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, efficientMember.FileId, true, false));
+        runtime.UpdateVisualKeeperPreferences(new DuplicateKeeperPreferences
+        {
+            VisualKeeperStrategy = DuplicateKeeperPreferences.PreserveMaximumQuality
+        });
+        Assert.Equal(efficientMember.FileId, catalog.GetVisualGroup(group.GroupId)!.ManualKeeperFileId);
+    }
+
+    [Fact]
     public void StorageOptimizationExcludesDuplicateMembersAndRanksCatalogCandidates()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();
@@ -130,12 +183,14 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
                 using SqliteLibraryCatalog catalog = CreateCatalog();
                 string library = Path.Combine(_root, "semi-auto"); Directory.CreateDirectory(library);
-                string recommended = Write(library, "recommended.mkv", 50_000);
-                string manual = Write(library, "manual.mp4", 30_000);
-                string nextRecommended = Write(library, "next-recommended.mkv", 55_000);
-                string nextManual = Write(library, "next-manual.mp4", 35_000);
+                string recommended = Write(library, "recommended.mkv", 85_235);
+                string manual = Write(library, "manual.mp4", 46_230);
+                string nextRecommended = Write(library, "next-recommended.mkv", 90_000);
+                string nextManual = Write(library, "next-manual.mp4", 48_000);
                 AddInventoryAndMetadata(catalog, library, new[] { recommended, manual, nextRecommended, nextManual },
-                    path => path == recommended ? ("hevc", 1920, 1080, 8_000_000L) : ("h264", 1280, 720, 2_000_000L));
+                    path => path == recommended || path == nextRecommended
+                        ? ("hevc", 1920, 1080, 3_280_000L)
+                        : ("hevc", 1920, 1080, 1_780_000L));
                 ulong[] firstMatch = { 0x1111111111111111, 0x2111111111111111, 0x3111111111111111, 0x4111111111111111, 0x5111111111111111, 0x6111111111111111 };
                 ulong[] nextMatch = { 0xAAAAAAAAAAAAAAAA, 0xBAAAAAAAAAAAAAAA, 0xCAAAAAAAAAAAAAAA, 0xDAAAAAAAAAAAAAAA, 0xEAAAAAAAAAAAAAAA, 0xFAAAAAAAAAAAAAAA };
                 using (var visual = new LibraryVisualAnalysisCoordinator(catalog,
@@ -145,11 +200,12 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                     visual.AnalyzeAsync().GetAwaiter().GetResult();
                 }
                 VisualSimilarityGroupRecord group = catalog.QueryVisualGroups(new VisualGroupQuery()).Groups.First();
-                long suggested = group.SuggestedKeeperFileId ?? throw new Xunit.Sdk.XunitException("Expected a suggested keeper.");
-                long manualId = catalog.GetVisualGroupMembers(group.GroupId).Single(member => member.FileId != suggested).FileId;
-                Assert.NotEqual(suggested, manualId);
-                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new EmptyMetadataProbe(),
+                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new CurrentMetadataProbe(),
                     new FakeVisualExtractor(_ => Array.Empty<ulong>()));
+                IReadOnlyList<VisualSimilarityMemberRecord> groupMembers = catalog.GetVisualGroupMembers(group.GroupId);
+                long suggested = runtime.KeeperExplanations.Explain(groupMembers, new DuplicateKeeperPreferences(), group.ConfidenceScore)
+                    .RecommendedKeeperFileId ?? throw new Xunit.Sdk.XunitException("Expected a current suggested keeper.");
+                long manualId = groupMembers.Single(member => member.FileId != suggested).FileId;
                 bool semiAutomaticEnabled = false;
                 using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
                     AutomationOptionsProvider: () => new LibraryVisualReviewAutomationOptions(SemiAutomaticKeeperApproval: semiAutomaticEnabled)));
@@ -228,13 +284,13 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
                 using SqliteLibraryCatalog catalog = CreateCatalog();
                 string library = Path.Combine(_root, "double-click"); Directory.CreateDirectory(library);
-                string first = Write(library, "first.mkv", 50_000);
-                string second = Write(library, "second.mp4", 30_000);
+                string first = Write(library, "first.mkv", 85_235);
+                string second = Write(library, "second.mp4", 46_230);
                 AddInventoryAndMetadata(catalog, library, new[] { first, second },
-                    path => path == first ? ("hevc", 1920, 1080, 8_000_000L) : ("h264", 1280, 720, 2_000_000L));
+                    path => path == first ? ("hevc", 1920, 1080, 3_280_000L) : ("hevc", 1920, 1080, 1_780_000L));
                 AnalyzeVisualAsync(catalog, new[] { first, second }).GetAwaiter().GetResult();
                 VisualSimilarityGroupRecord before = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
-                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new EmptyMetadataProbe(),
+                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new CurrentMetadataProbe(),
                     new FakeVisualExtractor(_ => Array.Empty<ulong>()));
                 using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
                     AutomationOptions: new LibraryVisualReviewAutomationOptions(SemiAutomaticKeeperApproval: true)));
@@ -440,6 +496,13 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         public string ToolVersion => "phase7-empty-probe";
         public Task<MediaProbeResult> ProbeAsync(string path, CancellationToken cancellationToken) =>
             Task.FromResult(new MediaProbeResult { Success = false, ErrorMessage = "Not used by this test." });
+    }
+
+    private sealed class CurrentMetadataProbe : ILibraryMetadataProbe
+    {
+        public string ToolVersion => "probe";
+        public Task<MediaProbeResult> ProbeAsync(string path, CancellationToken cancellationToken) =>
+            Task.FromResult(new MediaProbeResult { Success = false, ErrorMessage = "Current metadata should not be reprobed." });
     }
 
     private static T GetPrivateField<T>(object instance, string name) =>
