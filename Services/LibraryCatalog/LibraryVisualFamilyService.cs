@@ -26,8 +26,10 @@ public sealed class LibraryVisualFamilyService
 
     public LibraryKeeperExplanation Explain(long familyId)
     {
+        VisualFamilyRecord? family = _families.GetVisualFamily(familyId);
         IReadOnlyList<VisualFamilyMemberRecord> members = _families.GetVisualFamilyMembers(familyId);
-        return new LibraryKeeperExplanationService().Explain(members.Select(ToVisualMember).ToArray(), _preferences);
+        return new LibraryKeeperExplanationService().Explain(members.Select(ToVisualMember).ToArray(), _preferences,
+            family?.MinimumConfidence ?? 100);
     }
 
     public long? RefreshSuggestedKeeper(long familyId, double minimumAutomationMargin)
@@ -38,7 +40,7 @@ public sealed class LibraryVisualFamilyService
         IReadOnlyList<VisualFamilyMemberRecord> members = _families.GetVisualFamilyMembers(familyId);
         DuplicateKeeperEvaluation automation = DuplicateKeeperScoringService.EvaluateAutomation(
             members.Select(member => LibraryVisualDuplicateCleanupService.ToLegacyItem(ToVisualMember(member))).ToArray(),
-            _preferences, DuplicateKeeperScoringContext.Visual);
+            _preferences, DuplicateKeeperScoringContext.Visual, family.MinimumConfidence);
         long? keeperId = automation.RequiresReview || automation.Keeper == null || automation.Margin < minimumAutomationMargin
             ? null
             : members.FirstOrDefault(x => string.Equals(x.FullPath, automation.Keeper.Path, StringComparison.OrdinalIgnoreCase))?.FileId;
@@ -103,5 +105,5 @@ public sealed class LibraryVisualFamilyService
     private static VisualSimilarityMemberRecord ToVisualMember(VisualFamilyMemberRecord member) => new(
         member.FamilyId, member.FileId, member.FullPath, member.LocationPath, member.SizeBytes, member.LastWriteUtc,
         member.Availability, member.VideoCodec, member.Width, member.Height, member.TotalBitRate, member.DurationSeconds,
-        member.IsProtected, member.IsSuggestedKeeper, member.IsManualKeeper, member.IsHdr, member.AudioSummary);
+        member.IsProtected, member.IsSuggestedKeeper, member.IsManualKeeper, member.IsHdr, member.AudioSummary, member.FrameRate);
 }

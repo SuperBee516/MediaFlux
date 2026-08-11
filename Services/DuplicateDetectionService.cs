@@ -248,6 +248,7 @@ namespace MediaFlux.Services
                     info.Height ?? 0,
                     info.DurationSeconds ?? 0,
                     info.BitrateKbps ?? 0,
+                    info.Fps ?? 0,
                     IsReferenceProtected(path, referenceRoots),
                     cacheEntry?.ExactHash ?? string.Empty,
                     cacheEntry?.FrameHashes?.ToList() ?? new List<ulong>());
@@ -488,7 +489,7 @@ namespace MediaFlux.Services
                     p.Modified,
                     p.IsReferenceProtected,
                     "",
-                    "Review duplicate"))
+                    "Review duplicate") { FrameRate = p.FrameRate })
                 .ToList();
 
             var group = new DuplicateGroup(
@@ -758,6 +759,7 @@ namespace MediaFlux.Services
             int Height,
             double DurationSeconds,
             int BitrateKbps,
+            double FrameRate,
             bool IsReferenceProtected,
             string ExactHash,
             List<ulong> FrameHashes);
@@ -839,5 +841,8 @@ namespace MediaFlux.Services
         DateTime Modified,
         bool IsReferenceProtected,
         string KeeperReason,
-        string Recommendation);
+        string Recommendation)
+    {
+        public double FrameRate { get; init; }
+    }
 }

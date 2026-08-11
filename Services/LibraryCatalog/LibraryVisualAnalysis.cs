@@ -384,7 +384,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     IReadOnlyList<VisualSimilarityMemberRecord> members = _catalog.GetVisualGroupMembers(group.GroupId);
                     DuplicateKeeperEvaluation score = DuplicateKeeperScoringService.Evaluate(
                         members.Select(LibraryVisualDuplicateCleanupService.ToLegacyItem).ToArray(), preferences,
-                        DuplicateKeeperScoringContext.Visual);
+                        DuplicateKeeperScoringContext.Visual, group.ConfidenceScore);
                     long? keeper = score.RequiresReview || score.Keeper == null ? null :
                         members.First(x => string.Equals(x.FullPath, score.Keeper.Path, StringComparison.OrdinalIgnoreCase)).FileId;
                     _catalog.SetVisualSuggestedKeeper(group.GroupId, keeper);

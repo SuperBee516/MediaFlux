@@ -308,7 +308,7 @@ namespace MediaFlux
                     body.Controls.Clear();
                     DuplicatePreviewCacheService.PruneOlderThan(VisualPreviewCacheRoot, TimeSpan.FromDays(30));
                     long position = ((long)_visualPage * VisualPageSize) + _visualGroupsGrid.SelectedRows[0].Index + 1;
-                    LibraryKeeperExplanation keeperDetails = _runtime.KeeperExplanations.Explain(members, _visualKeeperPreferences);
+                    LibraryKeeperExplanation keeperDetails = _runtime.KeeperExplanations.Explain(members, _visualKeeperPreferences, group.ConfidenceScore);
                     if (pendingKeeperGroupId != group.GroupId)
                     {
                         pendingKeeperGroupId = null;

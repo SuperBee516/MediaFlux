@@ -174,7 +174,7 @@ public sealed partial class SqliteLibraryCatalog : ILibraryVisualFamilyCatalog
                    x.size_bytes,x.last_write_utc_ticks,x.availability_state,COALESCE(md.video_codec,''),md.width,md.height,md.total_bitrate,md.duration_seconds,
                    EXISTS(SELECT 1 FROM duplicate_file_protections p WHERE p.path_key=x.path_key),COALESCE(x.id=f.suggested_keeper_file_id,0),
                    COALESCE(x.path_key=COALESCE(d.manual_keeper_path_key,''),0),COALESCE(md.color_transfer,''),COALESCE(md.color_primaries,''),
-                   COALESCE(md.audio_streams_json,'[]'),fm.minimum_member_confidence
+                   COALESCE(md.audio_streams_json,'[]'),fm.minimum_member_confidence,md.frame_rate
             FROM visual_family_members fm JOIN visual_families f ON f.id=fm.family_id JOIN indexed_files x ON x.id=fm.file_id
             LEFT JOIN media_metadata md ON md.file_id=x.id LEFT JOIN visual_family_decisions d ON d.family_key=f.family_key
             WHERE fm.family_id=$id ORDER BY x.full_path;
@@ -188,7 +188,8 @@ public sealed partial class SqliteLibraryCatalog : ILibraryVisualFamilyCatalog
                 reader.IsDBNull(8) ? null : reader.GetInt32(8), reader.IsDBNull(9) ? null : reader.GetInt32(9),
                 reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetDouble(11),
                 reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0,
-                IsHdrTransfer(reader.GetString(15), reader.GetString(16)), BuildAudioSummary(reader.GetString(17)), reader.GetDouble(18)));
+                IsHdrTransfer(reader.GetString(15), reader.GetString(16)), BuildAudioSummary(reader.GetString(17)), reader.GetDouble(18),
+                reader.IsDBNull(19) ? null : reader.GetDouble(19)));
         return result;
     }
 

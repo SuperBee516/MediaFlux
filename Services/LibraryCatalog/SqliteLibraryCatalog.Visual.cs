@@ -497,7 +497,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 SELECT g.id,f.id,f.full_path,COALESCE((SELECT l.path FROM file_location_memberships x JOIN library_locations l ON l.id=x.location_id WHERE x.file_id=f.id ORDER BY l.path LIMIT 1),''),
                        f.size_bytes,f.last_write_utc_ticks,f.availability_state,COALESCE(m.video_codec,''),m.width,m.height,m.total_bitrate,m.duration_seconds,
                        EXISTS(SELECT 1 FROM duplicate_file_protections p WHERE p.path_key=f.path_key),f.id=g.suggested_keeper_file_id,
-                       f.path_key=COALESCE(d.manual_keeper_path_key,''),COALESCE(m.color_transfer,''),COALESCE(m.color_primaries,''),COALESCE(m.audio_streams_json,'[]')
+                       f.path_key=COALESCE(d.manual_keeper_path_key,''),COALESCE(m.color_transfer,''),COALESCE(m.color_primaries,''),COALESCE(m.audio_streams_json,'[]'),m.frame_rate
                 FROM visual_similarity_groups g
                 JOIN indexed_files f ON f.id IN(g.left_file_id,g.right_file_id)
                 LEFT JOIN media_metadata m ON m.file_id=f.id
@@ -508,7 +508,7 @@ namespace MediaFlux.Services.LibraryCatalog
             using SqliteDataReader reader = command.ExecuteReader();
             var result = new List<VisualSimilarityMemberRecord>(2);
             while (reader.Read())
-                result.Add(new VisualSimilarityMemberRecord(reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4), FromUtcTicks(reader.GetInt64(5)), (IndexedFileAvailability)reader.GetInt32(6), reader.GetString(7), reader.IsDBNull(8) ? null : reader.GetInt32(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetDouble(11), reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0, IsHdrTransfer(reader.GetString(15), reader.GetString(16)), BuildAudioSummary(reader.GetString(17))));
+                result.Add(new VisualSimilarityMemberRecord(reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4), FromUtcTicks(reader.GetInt64(5)), (IndexedFileAvailability)reader.GetInt32(6), reader.GetString(7), reader.IsDBNull(8) ? null : reader.GetInt32(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetDouble(11), reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0, IsHdrTransfer(reader.GetString(15), reader.GetString(16)), BuildAudioSummary(reader.GetString(17)), reader.IsDBNull(18) ? null : reader.GetDouble(18)));
             return result;
         }
 

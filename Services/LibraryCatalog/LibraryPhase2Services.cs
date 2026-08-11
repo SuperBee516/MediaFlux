@@ -6,11 +6,11 @@ namespace MediaFlux.Services.LibraryCatalog;
 public sealed class LibraryKeeperExplanationService
 {
     public LibraryKeeperExplanation Explain(IReadOnlyList<VisualSimilarityMemberRecord> members,
-        DuplicateKeeperPreferences preferences)
+        DuplicateKeeperPreferences preferences, double visualConfidence = 100)
     {
         DuplicateItem[] items = members.Select(LibraryVisualDuplicateCleanupService.ToLegacyItem).ToArray();
-        DuplicateKeeperEvaluation evaluation = DuplicateKeeperScoringService.Evaluate(items, preferences, DuplicateKeeperScoringContext.Visual);
-        DuplicateKeeperEvaluation automation = DuplicateKeeperScoringService.EvaluateAutomation(items, preferences, DuplicateKeeperScoringContext.Visual);
+        DuplicateKeeperEvaluation evaluation = DuplicateKeeperScoringService.Evaluate(items, preferences, DuplicateKeeperScoringContext.Visual, visualConfidence);
+        DuplicateKeeperEvaluation automation = DuplicateKeeperScoringService.EvaluateAutomation(items, preferences, DuplicateKeeperScoringContext.Visual, visualConfidence);
         long? keeperId = evaluation.Keeper == null ? null : members.FirstOrDefault(x =>
             string.Equals(x.FullPath, evaluation.Keeper.Path, StringComparison.OrdinalIgnoreCase))?.FileId;
         VisualSimilarityMemberRecord? keeper = keeperId.HasValue ? members.FirstOrDefault(x => x.FileId == keeperId.Value) : null;
@@ -113,7 +113,8 @@ public sealed class LibraryMassReviewService
         else if (members.Any(x => x.IsProtected)) exclusion = "A protected member requires manual review.";
         else if (members.Any(x => x.Availability != IndexedFileAvailability.Present)) exclusion = "A member is unavailable.";
         DuplicateKeeperEvaluation automation = DuplicateKeeperScoringService.EvaluateAutomation(
-            members.Select(LibraryVisualDuplicateCleanupService.ToLegacyItem).ToArray(), _preferences, DuplicateKeeperScoringContext.Visual);
+            members.Select(LibraryVisualDuplicateCleanupService.ToLegacyItem).ToArray(), _preferences, DuplicateKeeperScoringContext.Visual,
+            group.ConfidenceScore);
         if (string.IsNullOrEmpty(exclusion) && (automation.RequiresReview || automation.Keeper == null || automation.Margin < options.MinimumAutomationMargin))
             exclusion = $"Automation margin {automation.Margin:0.0} is below {options.MinimumAutomationMargin:0.0}.";
         VisualSimilarityMemberRecord? keeper = automation.Keeper == null ? null : members.FirstOrDefault(x =>

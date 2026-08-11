@@ -20,7 +20,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         using SqliteLibraryCatalog catalog = CreateCatalog();
         string library = Path.Combine(_root, "mass"); Directory.CreateDirectory(library);
         string a = Write(library, "a.mkv", 40_000), b = Write(library, "b.mp4", 30_000);
-        AddInventoryAndMetadata(catalog, library, new[] { a, b }, path => path == a ? ("hevc", 1920, 1080, 8_000_000L) : ("h264", 1280, 720, 2_000_000L));
+        AddInventoryAndMetadata(catalog, library, new[] { a, b }, path => path == a ? ("hevc", 1920, 1080, 8_000_000L) : ("h264", 1920, 1080, 2_000_000L));
         await AnalyzeVisualAsync(catalog, new[] { a, b });
         var eligibility = new LibraryMatchEligibilityService(catalog, catalog);
         var service = new LibraryMassReviewService(catalog, eligibility, new DuplicateKeeperPreferences
@@ -59,7 +59,8 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         await AnalyzeVisualAsync(catalog, new[] { keeper, duplicate });
         VisualSimilarityGroupRecord visual = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
         IReadOnlyList<VisualSimilarityMemberRecord> members = catalog.GetVisualGroupMembers(visual.GroupId);
-        LibraryKeeperExplanation explanation = new LibraryKeeperExplanationService().Explain(members, new DuplicateKeeperPreferences());
+        LibraryKeeperExplanation explanation = new LibraryKeeperExplanationService().Explain(members,
+            new DuplicateKeeperPreferences { MinimumScoreMargin = 0 });
         Assert.NotNull(explanation.RecommendedKeeperFileId);
         Assert.Contains(explanation.Factors, factor => factor.Contains("resolution", StringComparison.OrdinalIgnoreCase));
         var dashboard = new LibraryRecommendationService(catalog, new LibraryDuplicateCleanupService(catalog, catalog),
@@ -68,6 +69,40 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         LibraryCleanupRecommendationCategory reviewedCategory = dashboard.Categories.Single(x => x.Name == "Reviewed visual duplicates");
         Assert.Equal(1, exactCategory.MatchCount);
         Assert.Equal(0, reviewedCategory.MatchCount);
+    }
+
+    [Fact]
+    public void VisualKeeperRulesUiShowsStrategiesSafetyFloorsAndQualityAwareExample()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                using var form = new DuplicateKeeperPreferencesForm(new DuplicateKeeperPreferences(),
+                    DuplicateKeeperScoringContext.Visual);
+                ComboBox strategy = Descendants<ComboBox>(form).First(combo =>
+                    combo.Items.Contains(DuplicateKeeperPreferences.StorageOptimized));
+                Assert.Contains(DuplicateKeeperPreferences.PreserveMaximumQuality, strategy.Items.Cast<string>());
+                Assert.Contains(DuplicateKeeperPreferences.VisualBalanced, strategy.Items.Cast<string>());
+                Assert.Contains(DuplicateKeeperPreferences.StorageOptimized, strategy.Items.Cast<string>());
+                Assert.Contains(DuplicateKeeperPreferences.Custom, strategy.Items.Cast<string>());
+                string visibleText = string.Join(" ", Descendants<Label>(form).Select(x => x.Text));
+                Assert.Contains("Estimated quality floor", visibleText, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("Visual confidence floor", visibleText, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("% of higher-bitrate copy", visibleText, StringComparison.OrdinalIgnoreCase);
+                Label preview = Descendants<GroupBox>(form).Single(x => x.Text == "Live example").Controls.OfType<Label>().Single();
+                Assert.Contains("good", preview.Text, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("45.8%", preview.Text, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("visual confidence", preview.Text, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(10)));
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
     [Fact]
@@ -376,7 +411,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
             var probe = new MediaProbeResult
             {
                 Success = true, FormatName = Path.GetExtension(path), DurationSeconds = 60, BitRate = values.BitRate,
-                Streams = new[] { new MediaProbeStreamInfo { CodecType = "video", CodecName = values.Codec, Width = values.Width, Height = values.Height } }
+                Streams = new[] { new MediaProbeStreamInfo { CodecType = "video", CodecName = values.Codec, Width = values.Width, Height = values.Height, FrameRate = 30 } }
             };
             catalog.SaveMediaMetadata(LibraryMetadataMapper.Map(new LibraryEnrichmentRequest(mutation.FileId, mutation.FullPath, "", file.Length, file.LastWriteTimeUtc),
                 probe, 1, "probe", DateTime.UtcNow, null));

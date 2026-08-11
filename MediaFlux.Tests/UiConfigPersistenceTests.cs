@@ -87,31 +87,28 @@ public sealed class UiConfigPersistenceTests : IDisposable
     }
 
     [Fact]
-    public void VisualComparableBitrateThresholdPersistsNormalizesAndIsHonored()
+    public void VisualKeeperStrategyAndSafetyFloorsPersistAndNormalize()
     {
         string legacyPath = Path.Combine(_root, "legacy-keeper-rules.json");
         File.WriteAllText(legacyPath, "{}");
         Config legacy = Config.Load(legacyPath);
-        Assert.True(legacy.DuplicateKeeperPreferences.PreferSmallerComparableVisualCopy);
-        Assert.Equal(85, legacy.DuplicateKeeperPreferences.ComparableVisualBitratePercent);
+        Assert.Equal(DuplicateKeeperPreferences.VisualBalanced, legacy.DuplicateKeeperPreferences.VisualKeeperStrategy);
 
         string path = Path.Combine(_root, "keeper-rules.json");
-        legacy.DuplicateKeeperPreferences.ComparableVisualBitratePercent = 90;
+        legacy.DuplicateKeeperPreferences.VisualKeeperStrategy = DuplicateKeeperPreferences.StorageOptimized;
+        legacy.DuplicateKeeperPreferences.VisualQualityFloor = 50;
+        legacy.DuplicateKeeperPreferences.VisualConfidenceFloor = 96;
         legacy.Save(path);
         Config loaded = Config.Load(path);
-        Assert.Equal(90, loaded.DuplicateKeeperPreferences.ComparableVisualBitratePercent);
+        Assert.Equal(DuplicateKeeperPreferences.StorageOptimized, loaded.DuplicateKeeperPreferences.VisualKeeperStrategy);
+        Assert.Equal(50, loaded.DuplicateKeeperPreferences.VisualQualityFloor);
+        Assert.Equal(96, loaded.DuplicateKeeperPreferences.VisualConfidenceFloor);
 
-        DuplicateItem larger = new("larger.mkv", 443_690_000, "hevc", 1920, 1080, 1237, 2_870,
-            DateTime.Today, DateTime.Today, false, "", "");
-        DuplicateItem smaller = new("smaller.mkv", 393_370_000, "hevc", 1920, 1080, 1237, 2_540,
-            DateTime.Today, DateTime.Today, false, "", "");
-        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
-            new[] { larger, smaller }, loaded.DuplicateKeeperPreferences, DuplicateKeeperScoringContext.Visual);
-        Assert.Equal(larger.Path, result.Keeper?.Path);
-
-        loaded.DuplicateKeeperPreferences.ComparableVisualBitratePercent = 1;
+        loaded.DuplicateKeeperPreferences.VisualQualityFloor = 1;
+        loaded.DuplicateKeeperPreferences.VisualConfidenceFloor = 1;
         loaded.DuplicateKeeperPreferences.Normalize();
-        Assert.Equal(50, loaded.DuplicateKeeperPreferences.ComparableVisualBitratePercent);
+        Assert.Equal(25, loaded.DuplicateKeeperPreferences.VisualQualityFloor);
+        Assert.Equal(76, loaded.DuplicateKeeperPreferences.VisualConfidenceFloor);
     }
 
     public void Dispose()

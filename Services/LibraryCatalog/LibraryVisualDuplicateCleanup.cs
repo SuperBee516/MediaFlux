@@ -81,7 +81,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     if(keeper==null)
                     {
                         DuplicateKeeperPreferences preferences; lock (_preferencesSync) preferences=_preferences.Clone();
-                        DuplicateKeeperEvaluation score=DuplicateKeeperScoringService.Evaluate(members.Select(ToLegacyItem).ToArray(),preferences,DuplicateKeeperScoringContext.Visual);
+                        DuplicateKeeperEvaluation score=DuplicateKeeperScoringService.Evaluate(members.Select(ToLegacyItem).ToArray(),preferences,DuplicateKeeperScoringContext.Visual,group.ConfidenceScore);
                         if(score.RequiresReview || score.Keeper==null) { excluded++; continue; }
                         keeper=members.First(x=>string.Equals(x.FullPath,score.Keeper.Path,StringComparison.OrdinalIgnoreCase));
                         reason=score.Explanation;
@@ -277,7 +277,7 @@ namespace MediaFlux.Services.LibraryCatalog
             fact.SourceSizeBytes == member.SizeBytes && fact.SourceLastWriteUtc.Ticks == member.LastWriteUtc.Ticks;
         private IndexedFileRecord? FileRecord(VisualSimilarityMemberRecord m)=>_inventory.GetFileByPath(m.FullPath);
         private bool SamePhysicalFile(VisualSimilarityMemberRecord a,VisualSimilarityMemberRecord b){var x=FileRecord(a);var y=FileRecord(b);return x!=null&&y!=null&&!string.IsNullOrWhiteSpace(x.VolumeId)&&!string.IsNullOrWhiteSpace(x.FileIdentity)&&string.Equals(x.VolumeId,y.VolumeId,StringComparison.OrdinalIgnoreCase)&&string.Equals(x.FileIdentity,y.FileIdentity,StringComparison.OrdinalIgnoreCase);}
-        internal static DuplicateItem ToLegacyItem(VisualSimilarityMemberRecord m)=>new(m.FullPath,m.SizeBytes,m.VideoCodec,m.Width??0,m.Height??0,m.DurationSeconds??0,m.TotalBitRate.HasValue?(int)Math.Clamp(m.TotalBitRate.Value/1000,0,int.MaxValue):0,m.LastWriteUtc,m.LastWriteUtc,m.IsProtected,"","");
+        internal static DuplicateItem ToLegacyItem(VisualSimilarityMemberRecord m)=>new(m.FullPath,m.SizeBytes,m.VideoCodec,m.Width??0,m.Height??0,m.DurationSeconds??0,m.TotalBitRate.HasValue?(int)Math.Clamp(m.TotalBitRate.Value/1000,0,int.MaxValue):0,m.LastWriteUtc,m.LastWriteUtc,m.IsProtected,"","") { FrameRate=m.FrameRate??0 };
         private LibraryHashCandidate ToHashCandidate(VisualSimilarityMemberRecord m){IndexedFileRecord f=FileRecord(m)!;return new LibraryHashCandidate(f.Id,f.FullPath,f.PathKey,f.SizeBytes,f.LastWriteTimeUtc,f.VolumeId,f.FileIdentity);}
         private string Recycle(string path){_actions.Recycle(path);return "Recycle Bin";} private string DeletePermanent(string path){_actions.DeletePermanent(path);return "Permanently deleted";}
         private void Record(VisualCleanupPlanRecord plan,VisualCleanupPlanItemRecord item,DuplicateCleanupItemStatus status,string destination,string message){_visual.UpdateVisualCleanupPlanItem(plan.PlanId,item.FileId,status,destination,status==DuplicateCleanupItemStatus.Succeeded?"":message);_visual.AppendVisualCleanupAudit(plan.PlanId,item.FileId,item.SourcePath,destination,plan.Action,status,message);}

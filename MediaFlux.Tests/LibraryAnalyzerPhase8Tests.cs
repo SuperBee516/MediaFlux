@@ -96,12 +96,13 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();
         string[] files = CreateFiles(catalog, "keeper", 3,
-            (0, "hevc", 3840, 2160, 16_000_000), (1, "hevc", 1920, 1080, 8_000_000), (2, "h264", 1280, 720, 3_000_000));
+            (0, "hevc", 1920, 1080, 16_000_000), (1, "hevc", 1920, 1080, 8_000_000), (2, "h264", 1920, 1080, 3_000_000));
         SeedPairs(catalog, files, (0, 1, 98), (0, 2, 97), (1, 2, 96));
         catalog.RebuildVisualFamilies();
         VisualFamilyRecord family = Assert.Single(catalog.QueryVisualFamilies(new VisualFamilyQuery()).Families);
         var service = new LibraryVisualFamilyService(catalog,
-            new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog), new DuplicateKeeperPreferences());
+            new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog),
+            new DuplicateKeeperPreferences { MinimumScoreMargin = 0 });
         Assert.Null(service.RefreshSuggestedKeeper(family.FamilyId, 101));
         long expected = catalog.GetFileByPath(files[0])!.Id;
         Assert.Equal(expected, service.RefreshSuggestedKeeper(family.FamilyId, 0));
@@ -370,7 +371,7 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
             var probe = new MediaProbeResult
             {
                 Success = true, FormatName = ".mkv", DurationSeconds = 60, BitRate = values.Bitrate,
-                Streams = new[] { new MediaProbeStreamInfo { CodecType = "video", CodecName = values.Codec, Width = values.Width, Height = values.Height } }
+                Streams = new[] { new MediaProbeStreamInfo { CodecType = "video", CodecName = values.Codec, Width = values.Width, Height = values.Height, FrameRate = 30 } }
             };
             catalog.SaveMediaMetadata(LibraryMetadataMapper.Map(new LibraryEnrichmentRequest(mutation.FileId, mutation.FullPath, "", file.Length, file.LastWriteTimeUtc),
                 probe, 1, "phase3-probe", DateTime.UtcNow, null));

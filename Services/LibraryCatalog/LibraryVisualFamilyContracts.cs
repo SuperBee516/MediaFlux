@@ -40,7 +40,8 @@ public sealed record VisualFamilyMemberRecord(
     bool IsManualKeeper,
     bool IsHdr,
     string AudioSummary,
-    double MinimumMemberConfidence);
+    double MinimumMemberConfidence,
+    double? FrameRate = null);
 
 public sealed record VisualFamilyEdgeRecord(
     long FamilyId,

@@ -19,8 +19,8 @@ namespace MediaFlux
         private readonly NumericUpDown _modified = CreateWeightControl();
         private readonly CheckBox _preserveResolution = new();
         private readonly NumericUpDown _minimumMargin = new();
-        private readonly CheckBox _preferSmallerComparableVisualCopy = new();
-        private readonly NumericUpDown _comparableVisualBitratePercent = new();
+        private readonly NumericUpDown _visualQualityFloor = new();
+        private readonly NumericUpDown _visualConfidenceFloor = new();
         private readonly Label _profileDescription = new();
         private readonly Label _preview = new();
         private readonly TextBox _exactPreferredLocations = new();
@@ -58,16 +58,18 @@ namespace MediaFlux
             Controls.Add(layout);
 
             _profile.DropDownStyle = ComboBoxStyle.DropDownList;
-            _profile.Items.AddRange(new object[]
-            {
-                DuplicateKeeperPreferences.QualityFirst,
-                DuplicateKeeperPreferences.Balanced,
-                DuplicateKeeperPreferences.SaveStorage,
-                DuplicateKeeperPreferences.PreferModernCodecs,
-                DuplicateKeeperPreferences.Custom
-            });
-            _profile.SelectedItem = Preferences.Profile;
-            AddRow(layout, 0, "Keeper preference:", _profile, 31);
+            object[] profiles = scoringContext == DuplicateKeeperScoringContext.Visual
+                ? new object[] { DuplicateKeeperPreferences.PreserveMaximumQuality, DuplicateKeeperPreferences.VisualBalanced,
+                    DuplicateKeeperPreferences.StorageOptimized, DuplicateKeeperPreferences.Custom }
+                : new object[] { DuplicateKeeperPreferences.QualityFirst, DuplicateKeeperPreferences.Balanced,
+                    DuplicateKeeperPreferences.SaveStorage, DuplicateKeeperPreferences.PreferModernCodecs, DuplicateKeeperPreferences.Custom };
+            _profile.Items.AddRange(profiles);
+            _profile.SelectedItem = scoringContext == DuplicateKeeperScoringContext.Visual
+                ? Preferences.VisualKeeperStrategy
+                : Preferences.Profile;
+            AddRow(layout, 0, scoringContext == DuplicateKeeperScoringContext.Visual
+                ? "Automatic Keeper Strategy:"
+                : "Keeper preference:", _profile, 31);
 
             _profileDescription.AutoSize = false;
             _profileDescription.Dock = DockStyle.Fill;
@@ -92,7 +94,9 @@ namespace MediaFlux
             _codecPreference.SelectedItem = Preferences.CodecPreference;
             AddRow(layout, 7, "Codec order:", _codecPreference, 31);
 
-            _preserveResolution.Text = "Never prefer a lower resolution solely to save space";
+            _preserveResolution.Text = scoringContext == DuplicateKeeperScoringContext.Visual
+                ? "Material resolution differences always require manual review"
+                : "Never prefer a lower resolution solely to save space";
             _preserveResolution.AutoSize = true;
             _preserveResolution.Checked = Preferences.NeverSacrificeResolution;
             layout.Controls.Add(_preserveResolution, 0, 8);
@@ -100,38 +104,18 @@ namespace MediaFlux
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
 
             bool visualRules = scoringContext == DuplicateKeeperScoringContext.Visual;
-            var comparableRule = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                Visible = visualRules
-            };
-            _preferSmallerComparableVisualCopy.Text = "Prefer smaller file when same codec/resolution and bitrate is at least:";
-            _preferSmallerComparableVisualCopy.AutoSize = true;
-            _preferSmallerComparableVisualCopy.Checked = Preferences.PreferSmallerComparableVisualCopy;
-            _comparableVisualBitratePercent.Minimum = 50;
-            _comparableVisualBitratePercent.Maximum = 100;
-            _comparableVisualBitratePercent.Width = 58;
-            _comparableVisualBitratePercent.Value = Preferences.ComparableVisualBitratePercent;
-            comparableRule.Controls.Add(_preferSmallerComparableVisualCopy);
-            comparableRule.Controls.Add(_comparableVisualBitratePercent);
-            comparableRule.Controls.Add(new Label { Text = "% of higher-bitrate copy", AutoSize = true, Margin = new Padding(3, 6, 0, 0) });
-            layout.Controls.Add(comparableRule, 0, 9);
-            layout.SetColumnSpan(comparableRule, 2);
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, visualRules ? 38 : 0));
+            _visualQualityFloor.Minimum = 25;
+            _visualQualityFloor.Maximum = 75;
+            _visualQualityFloor.Value = Preferences.VisualQualityFloor;
+            _visualQualityFloor.Visible = visualRules;
+            AddRow(layout, 9, "Estimated quality floor:", _visualQualityFloor, visualRules ? 31 : 0);
 
-            var comparableHint = new Label
-            {
-                AutoSize = false,
-                Dock = DockStyle.Fill,
-                ForeColor = SystemColors.GrayText,
-                Visible = visualRules,
-                Text = "For otherwise equivalent visual copies, bitrate acts as a quality guardrail while storage savings decides which file to keep."
-            };
-            layout.Controls.Add(comparableHint, 0, 10);
-            layout.SetColumnSpan(comparableHint, 2);
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, visualRules ? 42 : 0));
+            _visualConfidenceFloor.Minimum = 76;
+            _visualConfidenceFloor.Maximum = 100;
+            _visualConfidenceFloor.DecimalPlaces = 1;
+            _visualConfidenceFloor.Value = (decimal)Preferences.VisualConfidenceFloor;
+            _visualConfidenceFloor.Visible = visualRules;
+            AddRow(layout, 10, "Visual confidence floor:", _visualConfidenceFloor, visualRules ? 31 : 0);
 
             _minimumMargin.Minimum = 0;
             _minimumMargin.Maximum = 25;
@@ -207,12 +191,8 @@ namespace MediaFlux
             _profile.SelectedIndexChanged += (_, __) => RefreshState();
             _codecPreference.SelectedIndexChanged += (_, __) => RefreshPreview();
             _preserveResolution.CheckedChanged += (_, __) => RefreshPreview();
-            _preferSmallerComparableVisualCopy.CheckedChanged += (_, __) =>
-            {
-                _comparableVisualBitratePercent.Enabled = _preferSmallerComparableVisualCopy.Checked;
-                RefreshPreview();
-            };
-            _comparableVisualBitratePercent.ValueChanged += (_, __) => RefreshPreview();
+            _visualQualityFloor.ValueChanged += (_, __) => RefreshPreview();
+            _visualConfidenceFloor.ValueChanged += (_, __) => RefreshPreview();
             _minimumMargin.ValueChanged += (_, __) => RefreshPreview();
             foreach (var control in new[] { _resolution, _quality, _storage, _codec, _modified })
                 control.ValueChanged += (_, __) => RefreshPreview();
@@ -250,14 +230,27 @@ namespace MediaFlux
             foreach (var control in new Control[] { _resolution, _quality, _storage, _codec, _modified })
                 control.Enabled = custom;
 
-            bool weighted = !string.Equals(_profile.SelectedItem?.ToString(), DuplicateKeeperPreferences.QualityFirst, StringComparison.Ordinal);
+            bool visual = _scoringContext == DuplicateKeeperScoringContext.Visual;
+            bool weighted = visual || !string.Equals(_profile.SelectedItem?.ToString(), DuplicateKeeperPreferences.QualityFirst, StringComparison.Ordinal);
             _codecPreference.Enabled = weighted;
-            _preserveResolution.Enabled = weighted;
+            _preserveResolution.Enabled = !visual && weighted;
             _minimumMargin.Enabled = weighted;
-            _comparableVisualBitratePercent.Enabled = _preferSmallerComparableVisualCopy.Checked;
+            _visualQualityFloor.Enabled = visual && custom;
+            _visualConfidenceFloor.Enabled = visual && custom;
+            if (visual && !custom)
+            {
+                (_visualQualityFloor.Value, _visualConfidenceFloor.Value) = _profile.SelectedItem?.ToString() switch
+                {
+                    DuplicateKeeperPreferences.PreserveMaximumQuality => (45, 92),
+                    DuplicateKeeperPreferences.StorageOptimized => (45, 95),
+                    _ => (45, 90)
+                };
+            }
             _profileDescription.Text = _profile.SelectedItem?.ToString() switch
             {
-                DuplicateKeeperPreferences.QualityFirst when _scoringContext == DuplicateKeeperScoringContext.Visual => "Visual default: protected file, resolution, codec preference, reported bitrate, larger size, then modified date.",
+                DuplicateKeeperPreferences.PreserveMaximumQuality => "Prioritizes quality sufficiency, while still applying diminishing returns above the codec/resolution/frame-rate quality range.",
+                DuplicateKeeperPreferences.VisualBalanced when visual => "Balances estimated quality, resolution, codec efficiency, visual confidence, and storage savings. Storage matters more once both copies are good quality.",
+                DuplicateKeeperPreferences.StorageOptimized => "Favors meaningful space savings only after the lower-bitrate copy clears the quality and confidence safety floors.",
                 DuplicateKeeperPreferences.QualityFirst => "Compatibility preset: protected reference, resolution, reported bitrate, larger size, then modified date. It reproduces the existing keeper order.",
                 DuplicateKeeperPreferences.Balanced => "Weights: resolution 40, quality 15, storage 30, codec 15. Designed to accept meaningful space savings without casually sacrificing resolution.",
                 DuplicateKeeperPreferences.SaveStorage => "Weights: resolution 30, quality 10, storage 45, codec 15. Strongly rewards smaller efficient encodes.",
@@ -271,7 +264,9 @@ namespace MediaFlux
         {
             var result = new DuplicateKeeperPreferences
             {
-                Profile = _profile.SelectedItem?.ToString() ?? DuplicateKeeperPreferences.QualityFirst,
+                Profile = _scoringContext == DuplicateKeeperScoringContext.Visual
+                    ? Preferences.Profile
+                    : _profile.SelectedItem?.ToString() ?? DuplicateKeeperPreferences.QualityFirst,
                 ResolutionWeight = (int)_resolution.Value,
                 QualityWeight = (int)_quality.Value,
                 StorageWeight = (int)_storage.Value,
@@ -280,8 +275,15 @@ namespace MediaFlux
                 CodecPreference = _codecPreference.SelectedItem?.ToString() ?? DuplicateKeeperPreferences.CodecModernFirst,
                 NeverSacrificeResolution = _preserveResolution.Checked,
                 MinimumScoreMargin = (int)_minimumMargin.Value,
-                PreferSmallerComparableVisualCopy = _preferSmallerComparableVisualCopy.Checked,
-                ComparableVisualBitratePercent = (int)_comparableVisualBitratePercent.Value,
+                // Retained only for backward-compatible settings serialization; the
+                // quality-aware visual model no longer uses the relative-bitrate rule.
+                PreferSmallerComparableVisualCopy = Preferences.PreferSmallerComparableVisualCopy,
+                ComparableVisualBitratePercent = Preferences.ComparableVisualBitratePercent,
+                VisualKeeperStrategy = _scoringContext == DuplicateKeeperScoringContext.Visual
+                    ? _profile.SelectedItem?.ToString() ?? DuplicateKeeperPreferences.VisualBalanced
+                    : Preferences.VisualKeeperStrategy,
+                VisualQualityFloor = (int)_visualQualityFloor.Value,
+                VisualConfidenceFloor = (double)_visualConfidenceFloor.Value,
                 ExactPreferredLocations = _exactPreferredLocations.Lines.ToList()
             };
             result.Normalize();
@@ -297,14 +299,14 @@ namespace MediaFlux
             long mib = 1024L * 1024L;
             var items = new List<DuplicateItem>
             {
-                new("Larger HEVC.mp4", (long)(443.69 * mib), "hevc", 1920, 1080, 1237, 2870, DateTime.Today, DateTime.Today, false, "", ""),
-                new("Smaller HEVC.mp4", (long)(393.37 * mib), "hevc", 1920, 1080, 1237, 2540, DateTime.Today, DateTime.Today, false, "", "")
+                new DuplicateItem("Larger HEVC.mp4", (long)(852 * mib), "hevc", 1920, 1080, 2077, 3280, DateTime.Today, DateTime.Today, false, "", "") { FrameRate = 30 },
+                new DuplicateItem("Smaller HEVC.mp4", (long)(462 * mib), "hevc", 1920, 1080, 2077, 1780, DateTime.Today, DateTime.Today, false, "", "") { FrameRate = 30 }
             };
-            var evaluation = DuplicateKeeperScoringService.Evaluate(items, preferences, _scoringContext);
+            var evaluation = DuplicateKeeperScoringService.Evaluate(items, preferences, _scoringContext, visualConfidence: 98);
             string result = evaluation.RequiresReview || evaluation.Keeper == null
                 ? "Result: Review required"
                 : $"Result: keep {Path.GetFileName(evaluation.Keeper.Path)}";
-            _preview.Text = "Same HEVC, 1080p, and duration: 443.69 MB at 2.87 Mbps vs 393.37 MB at 2.54 Mbps (88.5% bitrate retained)." +
+            _preview.Text = "HEVC 1920x1080 at 30 fps, high visual confidence (98%): 852 MB at 3.28 Mbps vs 462 MB at 1.78 Mbps." +
                             Environment.NewLine + result + Environment.NewLine + evaluation.Explanation;
         }
 

@@ -128,7 +128,8 @@ namespace MediaFlux.Services.LibraryCatalog
         bool IsSuggestedKeeper,
         bool IsManualKeeper,
         bool IsHdr = false,
-        string AudioSummary = "");
+        string AudioSummary = "",
+        double? FrameRate = null);
 
     public sealed record VisualGroupDecision(
         long GroupId,

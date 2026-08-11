@@ -10,6 +10,10 @@ namespace MediaFlux.Models
         public const string PreferModernCodecs = "Prefer modern codecs";
         public const string Custom = "Custom";
 
+        public const string PreserveMaximumQuality = "Preserve Maximum Quality";
+        public const string VisualBalanced = "Balanced";
+        public const string StorageOptimized = "Storage Optimized";
+
         public const string CodecNoPreference = "No codec preference";
         public const string CodecModernFirst = "Prefer modern codecs";
         public const string CodecH264First = "Prefer H.264 compatibility";
@@ -25,6 +29,9 @@ namespace MediaFlux.Models
         public int MinimumScoreMargin { get; set; } = 8;
         public bool PreferSmallerComparableVisualCopy { get; set; } = true;
         public int ComparableVisualBitratePercent { get; set; } = 85;
+        public string VisualKeeperStrategy { get; set; } = VisualBalanced;
+        public int VisualQualityFloor { get; set; } = 45;
+        public double VisualConfidenceFloor { get; set; } = 90;
         public List<string> ExactPreferredLocations { get; set; } = new();
 
         public DuplicateKeeperPreferences Clone()
@@ -42,6 +49,9 @@ namespace MediaFlux.Models
                 MinimumScoreMargin = MinimumScoreMargin,
                 PreferSmallerComparableVisualCopy = PreferSmallerComparableVisualCopy,
                 ComparableVisualBitratePercent = ComparableVisualBitratePercent,
+                VisualKeeperStrategy = VisualKeeperStrategy,
+                VisualQualityFloor = VisualQualityFloor,
+                VisualConfidenceFloor = VisualConfidenceFloor,
                 ExactPreferredLocations = ExactPreferredLocations?.ToList() ?? new()
             };
         }
@@ -69,6 +79,15 @@ namespace MediaFlux.Models
             ModifiedDateWeight = Math.Clamp(ModifiedDateWeight, 0, 100);
             MinimumScoreMargin = Math.Clamp(MinimumScoreMargin, 0, 25);
             ComparableVisualBitratePercent = Math.Clamp(ComparableVisualBitratePercent, 50, 100);
+            VisualKeeperStrategy = VisualKeeperStrategy switch
+            {
+                PreserveMaximumQuality => PreserveMaximumQuality,
+                StorageOptimized => StorageOptimized,
+                Custom => Custom,
+                _ => VisualBalanced
+            };
+            VisualQualityFloor = Math.Clamp(VisualQualityFloor, 25, 75);
+            VisualConfidenceFloor = Math.Clamp(VisualConfidenceFloor, 76, 100);
             ExactPreferredLocations = (ExactPreferredLocations ?? new())
                 .Where(path => !string.IsNullOrWhiteSpace(path))
                 .Select(path => path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
