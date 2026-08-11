@@ -21,6 +21,8 @@ namespace MediaFlux
         private readonly NumericUpDown _minimumMargin = new();
         private readonly NumericUpDown _visualQualityFloor = new();
         private readonly NumericUpDown _visualConfidenceFloor = new();
+        private readonly CheckBox _forceHighConfidenceNearTie = new();
+        private readonly NumericUpDown _highConfidenceNearTieThreshold = new();
         private readonly Label _profileDescription = new();
         private readonly Label _preview = new();
         private readonly TextBox _exactPreferredLocations = new();
@@ -43,7 +45,7 @@ namespace MediaFlux
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
-            ClientSize = new Size(760, scoringContext == DuplicateKeeperScoringContext.Visual ? 835 : 730);
+            ClientSize = new Size(760, scoringContext == DuplicateKeeperScoringContext.Visual ? 940 : 730);
             AutoScaleMode = AutoScaleMode.Font;
 
             var layout = new TableLayoutPanel
@@ -51,7 +53,7 @@ namespace MediaFlux
                 Dock = DockStyle.Fill,
                 Padding = new Padding(14),
                 ColumnCount = 2,
-                RowCount = 17
+                RowCount = 20
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 235));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -128,25 +130,53 @@ namespace MediaFlux
                 AutoSize = false,
                 Dock = DockStyle.Fill,
                 ForeColor = SystemColors.GrayText,
-                Text = "When the top scores are closer than this margin, no trash candidate is recommended until the user selects a keeper."
+                Text = visualRules
+                    ? "When scores are closer than this margin, review remains required unless the optional high-confidence near-tie fallback safely qualifies."
+                    : "When the top scores are closer than this margin, no trash candidate is recommended until the user selects a keeper."
             };
             layout.Controls.Add(marginHint, 0, 12);
             layout.SetColumnSpan(marginHint, 2);
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 47));
 
+            _forceHighConfidenceNearTie.Text = "Force automatic keeper on high-confidence near-ties";
+            _forceHighConfidenceNearTie.AutoSize = true;
+            _forceHighConfidenceNearTie.Checked = Preferences.ForceAutomaticKeeperOnHighConfidenceNearTies;
+            _forceHighConfidenceNearTie.Visible = visualRules;
+            layout.Controls.Add(_forceHighConfidenceNearTie, 0, 13);
+            layout.SetColumnSpan(_forceHighConfidenceNearTie, 2);
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, visualRules ? 34 : 0));
+
+            _highConfidenceNearTieThreshold.Minimum = 76;
+            _highConfidenceNearTieThreshold.Maximum = 100;
+            _highConfidenceNearTieThreshold.DecimalPlaces = 1;
+            _highConfidenceNearTieThreshold.Value = (decimal)Preferences.HighConfidenceNearTieThreshold;
+            _highConfidenceNearTieThreshold.Visible = visualRules;
+            AddRow(layout, 14, "Near-tie confidence threshold:", _highConfidenceNearTieThreshold, visualRules ? 31 : 0);
+
+            var nearTieHint = new Label
+            {
+                Dock = DockStyle.Fill,
+                ForeColor = SystemColors.GrayText,
+                Visible = visualRules,
+                Text = "Opt-in only. Hard safety reviews still win; this fallback applies only when otherwise-safe scores miss the normal winning margin."
+            };
+            layout.Controls.Add(nearTieHint, 0, 15);
+            layout.SetColumnSpan(nearTieHint, 2);
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, visualRules ? 42 : 0));
+
             _exactPreferredLocations.Multiline = true;
             _exactPreferredLocations.ScrollBars = ScrollBars.Vertical;
             _exactPreferredLocations.Dock = DockStyle.Fill;
             _exactPreferredLocations.Text = string.Join(Environment.NewLine, Preferences.ExactPreferredLocations);
-            AddRow(layout, 13, "Exact preferred roots (highest first):", _exactPreferredLocations, 62);
+            AddRow(layout, 16, "Preferred roots (highest first):", _exactPreferredLocations, 62);
 
             var exactHint = new Label
             {
                 Dock = DockStyle.Fill,
                 ForeColor = SystemColors.GrayText,
-                Text = "Exact duplicates are byte-identical. These roots are used before filename, folder depth, and file dates; video quality settings are ignored."
+                Text = "Exact duplicates use these roots before path/date tie-breakers. High-confidence visual near-ties use them late, after score and quality evidence."
             };
-            layout.Controls.Add(exactHint, 0, 14);
+            layout.Controls.Add(exactHint, 0, 17);
             layout.SetColumnSpan(exactHint, 2);
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
@@ -159,7 +189,7 @@ namespace MediaFlux
             _preview.Dock = DockStyle.Fill;
             _preview.AutoSize = false;
             previewBox.Controls.Add(_preview);
-            layout.Controls.Add(previewBox, 0, 15);
+            layout.Controls.Add(previewBox, 0, 18);
             layout.SetColumnSpan(previewBox, 2);
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 105));
 
@@ -174,10 +204,10 @@ namespace MediaFlux
             ok.Click += SaveAndClose;
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(ok);
-            layout.Controls.Add(buttons, 0, 16);
+            layout.Controls.Add(buttons, 0, 19);
             layout.SetColumnSpan(buttons, 2);
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-            layout.RowCount = 17;
+            layout.RowCount = 20;
 
             AcceptButton = ok;
             CancelButton = cancel;
@@ -194,6 +224,8 @@ namespace MediaFlux
             _visualQualityFloor.ValueChanged += (_, __) => RefreshPreview();
             _visualConfidenceFloor.ValueChanged += (_, __) => RefreshPreview();
             _minimumMargin.ValueChanged += (_, __) => RefreshPreview();
+            _forceHighConfidenceNearTie.CheckedChanged += (_, __) => RefreshState();
+            _highConfidenceNearTieThreshold.ValueChanged += (_, __) => RefreshPreview();
             foreach (var control in new[] { _resolution, _quality, _storage, _codec, _modified })
                 control.ValueChanged += (_, __) => RefreshPreview();
 
@@ -237,6 +269,7 @@ namespace MediaFlux
             _minimumMargin.Enabled = weighted;
             _visualQualityFloor.Enabled = visual && custom;
             _visualConfidenceFloor.Enabled = visual && custom;
+            _highConfidenceNearTieThreshold.Enabled = visual && _forceHighConfidenceNearTie.Checked;
             if (visual && !custom)
             {
                 (_visualQualityFloor.Value, _visualConfidenceFloor.Value) = _profile.SelectedItem?.ToString() switch
@@ -284,6 +317,8 @@ namespace MediaFlux
                     : Preferences.VisualKeeperStrategy,
                 VisualQualityFloor = (int)_visualQualityFloor.Value,
                 VisualConfidenceFloor = (double)_visualConfidenceFloor.Value,
+                ForceAutomaticKeeperOnHighConfidenceNearTies = _forceHighConfidenceNearTie.Checked,
+                HighConfidenceNearTieThreshold = (double)_highConfidenceNearTieThreshold.Value,
                 ExactPreferredLocations = _exactPreferredLocations.Lines.ToList()
             };
             result.Normalize();

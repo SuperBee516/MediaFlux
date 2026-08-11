@@ -19,7 +19,8 @@ namespace MediaFlux.Services
         double Margin,
         IReadOnlyDictionary<string, double> Scores,
         string Explanation,
-        DuplicateKeeperOutcome Outcome = DuplicateKeeperOutcome.PreferHigherQualityCopy);
+        DuplicateKeeperOutcome Outcome = DuplicateKeeperOutcome.PreferHigherQualityCopy,
+        bool UsedHighConfidenceNearTieFallback = false);
 
     public enum DuplicateKeeperScoringContext
     {
@@ -280,6 +281,14 @@ namespace MediaFlux.Services
             double margin = ranked.Count > 1 ? scores[winner.Path] - scores[ranked[1].Path] : 100;
             if (!hasProtectedCandidates && ranked.Count > 1 && margin + 0.001 < preferences.MinimumScoreMargin)
             {
+                if (preferences.ForceAutomaticKeeperOnHighConfidenceNearTies &&
+                    visualConfidence + 0.001 >= Math.Max(preferences.VisualConfidenceFloor,
+                        preferences.HighConfidenceNearTieThreshold))
+                {
+                    return ResolveHighConfidenceNearTie(candidates, preferences, quality, scores,
+                        visualConfidence, margin);
+                }
+
                 return new DuplicateKeeperEvaluation(null, true, margin, scores,
                     $"Manual review required: quality and storage signals are too close or conflicting " +
                     $"({scores[winner.Path]:0.0} vs {scores[ranked[1].Path]:0.0}; margin {margin:0.0}, required {preferences.MinimumScoreMargin}).",
@@ -306,6 +315,65 @@ namespace MediaFlux.Services
                 $"visual confidence contributes {visualConfidence:0.0}%; final score {scores[winner.Path]:0.0}, margin {margin:0.0}.";
             return new DuplicateKeeperEvaluation(winner, false, margin, scores, explanation,
                 efficientWinner ? DuplicateKeeperOutcome.PreferSmallerMoreEfficientCopy : DuplicateKeeperOutcome.PreferHigherQualityCopy);
+        }
+
+        private static DuplicateKeeperEvaluation ResolveHighConfidenceNearTie(
+            IReadOnlyCollection<DuplicateItem> candidates,
+            DuplicateKeeperPreferences preferences,
+            IReadOnlyDictionary<string, VisualQualityAssessment> quality,
+            IReadOnlyDictionary<string, double> scores,
+            double visualConfidence,
+            double margin)
+        {
+            double CodecPreference(DuplicateItem item) =>
+                string.Equals(preferences.CodecPreference, DuplicateKeeperPreferences.CodecNoPreference, StringComparison.Ordinal)
+                    ? 50
+                    : string.Equals(preferences.CodecPreference, DuplicateKeeperPreferences.CodecH264First, StringComparison.Ordinal)
+                        ? GetCodecScore(item.VideoCodec, preferences.CodecPreference)
+                        : VisualDuplicateQualityModel.GetCodecPreferenceScore(item.VideoCodec);
+            double BitrateAdequacy(DuplicateItem item) =>
+                item.BitrateKbps / Math.Max(1, quality[item.Path].GoodBitrateKbps);
+
+            List<DuplicateItem> fallbackRanked = candidates
+                .OrderByDescending(item => scores[item.Path])
+                .ThenByDescending(item => quality[item.Path].SufficiencyScore)
+                .ThenByDescending(GetPixels)
+                .ThenByDescending(CodecPreference)
+                .ThenByDescending(item => (int)quality[item.Path].Band)
+                .ThenByDescending(BitrateAdequacy)
+                .ThenBy(item => item.LengthBytes)
+                .ThenBy(item => PreferredLocationRank(item.Path, preferences.ExactPreferredLocations))
+                .ThenByDescending(item => preferences.ModifiedDateWeight > 0 ? item.Modified.Ticks : 0)
+                .ThenBy(item => NormalizePathIdentity(item.Path), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => NormalizePathIdentity(item.Path), StringComparer.Ordinal)
+                .ToList();
+            DuplicateItem winner = fallbackRanked[0];
+            long smallestSize = candidates.Min(item => item.LengthBytes);
+            bool selectedSmaller = winner.LengthBytes == smallestSize && candidates.Any(item => item.LengthBytes > smallestSize);
+            bool otherwiseEquivalent = candidates.All(item =>
+                Math.Abs(quality[item.Path].SufficiencyScore - quality[winner.Path].SufficiencyScore) <= 0.5 &&
+                GetPixels(item) == GetPixels(winner) &&
+                Math.Abs(CodecPreference(item) - CodecPreference(winner)) < 0.001 &&
+                Math.Abs(BitrateAdequacy(item) - BitrateAdequacy(winner)) <= 0.02);
+
+            string selectionReason;
+            if (selectedSmaller && otherwiseEquivalent)
+                selectionReason = "selected the smaller otherwise-equivalent copy";
+            else if (fallbackRanked.Count > 1 && scores[winner.Path] > scores[fallbackRanked[1].Path] + 0.001)
+                selectionReason = "selected the higher existing composite score";
+            else if (PreferredLocationRank(winner.Path, preferences.ExactPreferredLocations) < int.MaxValue)
+                selectionReason = "selected the configured preferred-root copy";
+            else
+                selectionReason = "used the stable metadata and normalized-path tie-break order";
+
+            DuplicateKeeperOutcome outcome = selectedSmaller
+                ? DuplicateKeeperOutcome.PreferSmallerMoreEfficientCopy
+                : DuplicateKeeperOutcome.PreferHigherQualityCopy;
+            string explanation = $"Scores were within the normal winning margin ({margin:0.0} below " +
+                $"{preferences.MinimumScoreMargin}); high-confidence near-tie fallback {selectionReason}. " +
+                $"Visual confidence {visualConfidence:0.0}% met the {Math.Max(preferences.VisualConfidenceFloor, preferences.HighConfidenceNearTieThreshold):0.0}% fallback threshold; " +
+                $"selected score {scores[winner.Path]:0.0}.";
+            return new DuplicateKeeperEvaluation(winner, false, margin, scores, explanation, outcome, true);
         }
 
         private static (double Resolution, double Quality, double Storage, double Codec, double Confidence)
@@ -517,6 +585,22 @@ namespace MediaFlux.Services
             if (h264) return 65;
             return 45;
         }
+
+        private static int PreferredLocationRank(string path, IReadOnlyList<string> roots)
+        {
+            for (int index = 0; index < roots.Count; index++)
+            {
+                string root = roots[index].TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (path.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+                    path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                    path.StartsWith(root + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    return index;
+            }
+            return int.MaxValue;
+        }
+
+        private static string NormalizePathIdentity(string path) =>
+            (path ?? string.Empty).Trim().Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
 
         private static long GetPixels(DuplicateItem item) => (long)item.Width * item.Height;
     }

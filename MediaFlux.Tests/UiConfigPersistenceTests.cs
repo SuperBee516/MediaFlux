@@ -93,22 +93,30 @@ public sealed class UiConfigPersistenceTests : IDisposable
         File.WriteAllText(legacyPath, "{}");
         Config legacy = Config.Load(legacyPath);
         Assert.Equal(DuplicateKeeperPreferences.VisualBalanced, legacy.DuplicateKeeperPreferences.VisualKeeperStrategy);
+        Assert.False(legacy.DuplicateKeeperPreferences.ForceAutomaticKeeperOnHighConfidenceNearTies);
+        Assert.Equal(99, legacy.DuplicateKeeperPreferences.HighConfidenceNearTieThreshold);
 
         string path = Path.Combine(_root, "keeper-rules.json");
         legacy.DuplicateKeeperPreferences.VisualKeeperStrategy = DuplicateKeeperPreferences.StorageOptimized;
         legacy.DuplicateKeeperPreferences.VisualQualityFloor = 50;
         legacy.DuplicateKeeperPreferences.VisualConfidenceFloor = 96;
+        legacy.DuplicateKeeperPreferences.ForceAutomaticKeeperOnHighConfidenceNearTies = true;
+        legacy.DuplicateKeeperPreferences.HighConfidenceNearTieThreshold = 99.5;
         legacy.Save(path);
         Config loaded = Config.Load(path);
         Assert.Equal(DuplicateKeeperPreferences.StorageOptimized, loaded.DuplicateKeeperPreferences.VisualKeeperStrategy);
         Assert.Equal(50, loaded.DuplicateKeeperPreferences.VisualQualityFloor);
         Assert.Equal(96, loaded.DuplicateKeeperPreferences.VisualConfidenceFloor);
+        Assert.True(loaded.DuplicateKeeperPreferences.ForceAutomaticKeeperOnHighConfidenceNearTies);
+        Assert.Equal(99.5, loaded.DuplicateKeeperPreferences.HighConfidenceNearTieThreshold);
 
         loaded.DuplicateKeeperPreferences.VisualQualityFloor = 1;
         loaded.DuplicateKeeperPreferences.VisualConfidenceFloor = 1;
+        loaded.DuplicateKeeperPreferences.HighConfidenceNearTieThreshold = 101;
         loaded.DuplicateKeeperPreferences.Normalize();
         Assert.Equal(25, loaded.DuplicateKeeperPreferences.VisualQualityFloor);
         Assert.Equal(76, loaded.DuplicateKeeperPreferences.VisualConfidenceFloor);
+        Assert.Equal(100, loaded.DuplicateKeeperPreferences.HighConfidenceNearTieThreshold);
     }
 
     public void Dispose()

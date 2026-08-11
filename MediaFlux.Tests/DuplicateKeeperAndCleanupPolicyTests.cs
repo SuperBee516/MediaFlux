@@ -249,6 +249,150 @@ public sealed class DuplicateKeeperAndCleanupPolicyTests
     }
 
     [Fact]
+    public void HighConfidenceNearTieFallbackSelectsSmallerRealWorldHevcCopy()
+    {
+        DuplicateItem larger = Item("File A.mkv", 197_680_000, bitrate: 2_910, codec: "hevc");
+        DuplicateItem smaller = Item("File B.mkv", 197_480_000, bitrate: 2_910, codec: "hevc");
+
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { larger, smaller }, EnabledNearTiePreferences(), DuplicateKeeperScoringContext.Visual, 99.5);
+
+        Assert.False(result.RequiresReview);
+        Assert.True(result.UsedHighConfidenceNearTieFallback);
+        Assert.Equal(smaller.Path, result.Keeper?.Path);
+        Assert.Equal(DuplicateKeeperOutcome.PreferSmallerMoreEfficientCopy, result.Outcome);
+        Assert.Contains("smaller otherwise-equivalent copy", result.Explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void HighConfidenceNearTieRemainsReviewWhenFallbackDisabled()
+    {
+        DuplicateItem larger = Item("File A.mkv", 197_680_000, bitrate: 2_910, codec: "hevc");
+        DuplicateItem smaller = Item("File B.mkv", 197_480_000, bitrate: 2_910, codec: "hevc");
+
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { larger, smaller }, new DuplicateKeeperPreferences { MinimumScoreMargin = 5 },
+            DuplicateKeeperScoringContext.Visual, 99.5);
+
+        Assert.True(result.RequiresReview);
+        Assert.Null(result.Keeper);
+        Assert.False(result.UsedHighConfidenceNearTieFallback);
+    }
+
+    [Fact]
+    public void ExactScoreTieUsesStablePathIndependentOfInputOrder()
+    {
+        DuplicateItem first = Item(@"Z:\Media\same.mkv", 197_500_000, bitrate: 2_910, codec: "hevc");
+        DuplicateItem second = Item(@"A:\Media\same.mkv", 197_500_000, bitrate: 2_910, codec: "hevc");
+        DuplicateKeeperPreferences preferences = EnabledNearTiePreferences();
+
+        DuplicateKeeperEvaluation forward = DuplicateKeeperScoringService.Evaluate(
+            new[] { first, second }, preferences, DuplicateKeeperScoringContext.Visual, 99.5);
+        DuplicateKeeperEvaluation reversed = DuplicateKeeperScoringService.Evaluate(
+            new[] { second, first }, preferences, DuplicateKeeperScoringContext.Visual, 99.5);
+
+        Assert.Equal(second.Path, forward.Keeper?.Path);
+        Assert.Equal(forward.Keeper?.Path, reversed.Keeper?.Path);
+        Assert.True(forward.UsedHighConfidenceNearTieFallback);
+        Assert.Contains("stable metadata and normalized-path", forward.Explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NearTieRecommendationIsStableAcrossRepeatedReloadEvaluation()
+    {
+        DuplicateItem larger = Item("larger.mkv", 197_680_000, bitrate: 2_910, codec: "hevc");
+        DuplicateItem smaller = Item("smaller.mkv", 197_480_000, bitrate: 2_910, codec: "hevc");
+        DuplicateKeeperPreferences preferences = EnabledNearTiePreferences();
+
+        string? expected = DuplicateKeeperScoringService.Evaluate(new[] { larger, smaller }, preferences,
+            DuplicateKeeperScoringContext.Visual, 99.5).Keeper?.Path;
+        for (int reload = 0; reload < 5; reload++)
+        {
+            DuplicateKeeperEvaluation repeated = DuplicateKeeperScoringService.Evaluate(
+                reload % 2 == 0 ? new[] { smaller, larger } : new[] { larger, smaller },
+                preferences, DuplicateKeeperScoringContext.Visual, 99.5);
+            Assert.Equal(expected, repeated.Keeper?.Path);
+        }
+    }
+
+    [Fact]
+    public void ManualKeeperStillOverridesEnabledNearTieFallback()
+    {
+        DuplicateItem selected = Item("selected.mkv", 197_680_000, bitrate: 2_910, codec: "hevc") with
+        {
+            Recommendation = "Selected keeper",
+            KeeperReason = "User selected in review"
+        };
+        DuplicateItem smaller = Item("smaller.mkv", 197_480_000, bitrate: 2_910, codec: "hevc");
+
+        DuplicateGroup result = DuplicateKeeperScoringService.Apply(
+            Group("Strong visual match", selected, smaller), EnabledNearTiePreferences());
+
+        Assert.Equal(selected.Path, result.Items[0].Path);
+        Assert.Equal("Selected keeper", result.Items[0].Recommendation);
+    }
+
+    [Fact]
+    public void ProtectedKeeperStillOverridesEnabledNearTieFallback()
+    {
+        DuplicateItem protectedLarger = Item("protected.mkv", 197_680_000, bitrate: 2_910, isProtected: true, codec: "hevc");
+        DuplicateItem smaller = Item("smaller.mkv", 197_480_000, bitrate: 2_910, codec: "hevc");
+
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { protectedLarger, smaller }, EnabledNearTiePreferences(), DuplicateKeeperScoringContext.Visual, 99.5);
+
+        Assert.Equal(protectedLarger.Path, result.Keeper?.Path);
+        Assert.False(result.UsedHighConfidenceNearTieFallback);
+    }
+
+    [Fact]
+    public void NearTieFallbackCannotOverrideLowConfidenceOrQualityFloor()
+    {
+        DuplicateKeeperPreferences preferences = EnabledNearTiePreferences();
+        DuplicateItem normal = Item("normal.mkv", 197_680_000, bitrate: 2_910, codec: "hevc");
+        DuplicateItem peer = Item("peer.mkv", 197_480_000, bitrate: 2_910, codec: "hevc");
+        DuplicateItem inadequate = Item("inadequate.mkv", 197_480_000, bitrate: 700, codec: "hevc");
+
+        DuplicateKeeperEvaluation lowConfidence = DuplicateKeeperScoringService.Evaluate(
+            new[] { normal, peer }, preferences, DuplicateKeeperScoringContext.Visual, 85);
+        DuplicateKeeperEvaluation belowFallbackThreshold = DuplicateKeeperScoringService.Evaluate(
+            new[] { normal, peer }, preferences, DuplicateKeeperScoringContext.Visual, 98.9);
+        DuplicateKeeperEvaluation belowFloor = DuplicateKeeperScoringService.Evaluate(
+            new[] { normal, inadequate }, preferences, DuplicateKeeperScoringContext.Visual, 99.5);
+
+        Assert.True(lowConfidence.RequiresReview);
+        Assert.Contains("visual confidence", lowConfidence.Explanation, StringComparison.OrdinalIgnoreCase);
+        Assert.False(lowConfidence.UsedHighConfidenceNearTieFallback);
+        Assert.True(belowFallbackThreshold.RequiresReview);
+        Assert.False(belowFallbackThreshold.UsedHighConfidenceNearTieFallback);
+        Assert.True(belowFloor.RequiresReview);
+        Assert.Contains("quality floor", belowFloor.Explanation, StringComparison.OrdinalIgnoreCase);
+        Assert.False(belowFloor.UsedHighConfidenceNearTieFallback);
+    }
+
+    [Fact]
+    public void EnabledFallbackDoesNotChangeClearWinnerOrExactDuplicatePolicy()
+    {
+        DuplicateItem clearWinner = Item("1080p.mkv", 320, 1920, 1080, 2_800, codec: "hevc");
+        DuplicateItem lower = Item("720p.mkv", 300, 1280, 720, 2_100, codec: "hevc");
+        DuplicateKeeperPreferences enabled = EnabledNearTiePreferences();
+
+        DuplicateKeeperEvaluation normal = DuplicateKeeperScoringService.Evaluate(
+            new[] { clearWinner, lower }, new DuplicateKeeperPreferences { MinimumScoreMargin = 5 },
+            DuplicateKeeperScoringContext.Visual, 99.5);
+        DuplicateKeeperEvaluation fallbackEnabled = DuplicateKeeperScoringService.Evaluate(
+            new[] { clearWinner, lower }, enabled, DuplicateKeeperScoringContext.Visual, 99.5);
+        DuplicateGroup exact = DuplicateKeeperScoringService.Apply(
+            Group("Exact", lower, clearWinner), enabled);
+
+        Assert.Equal(normal.Keeper?.Path, fallbackEnabled.Keeper?.Path);
+        Assert.Equal(normal.Scores[clearWinner.Path], fallbackEnabled.Scores[clearWinner.Path], 6);
+        Assert.False(fallbackEnabled.UsedHighConfidenceNearTieFallback);
+        Assert.Equal(clearWinner.Path, exact.Items[0].Path);
+        Assert.DoesNotContain("near-tie fallback", exact.Items[0].KeeperReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void BitrateModelHasDiminishingReturns()
     {
         double low = VisualDuplicateQualityModel.Assess(Item("low.mkv", bitrate: 1_000, codec: "hevc")).SufficiencyScore;
@@ -374,6 +518,13 @@ public sealed class DuplicateKeeperAndCleanupPolicyTests
             0,
             items);
     }
+
+    private static DuplicateKeeperPreferences EnabledNearTiePreferences() => new()
+    {
+        MinimumScoreMargin = 5,
+        ForceAutomaticKeeperOnHighConfidenceNearTies = true,
+        HighConfidenceNearTieThreshold = 99
+    };
 
     private static DuplicateItem Item(
         string path,

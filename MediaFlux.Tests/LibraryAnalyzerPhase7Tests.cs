@@ -91,6 +91,9 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 string visibleText = string.Join(" ", Descendants<Label>(form).Select(x => x.Text));
                 Assert.Contains("Estimated quality floor", visibleText, StringComparison.OrdinalIgnoreCase);
                 Assert.Contains("Visual confidence floor", visibleText, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("Near-tie confidence threshold", visibleText, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains(Descendants<CheckBox>(form), checkBox =>
+                    checkBox.Text.Contains("Force automatic keeper", StringComparison.OrdinalIgnoreCase));
                 Assert.DoesNotContain("% of higher-bitrate copy", visibleText, StringComparison.OrdinalIgnoreCase);
                 Label preview = Descendants<GroupBox>(form).Single(x => x.Text == "Live example").Controls.OfType<Label>().Single();
                 Assert.Contains("good", preview.Text, StringComparison.OrdinalIgnoreCase);

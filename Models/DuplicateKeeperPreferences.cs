@@ -32,6 +32,8 @@ namespace MediaFlux.Models
         public string VisualKeeperStrategy { get; set; } = VisualBalanced;
         public int VisualQualityFloor { get; set; } = 45;
         public double VisualConfidenceFloor { get; set; } = 90;
+        public bool ForceAutomaticKeeperOnHighConfidenceNearTies { get; set; } = false;
+        public double HighConfidenceNearTieThreshold { get; set; } = 99;
         public List<string> ExactPreferredLocations { get; set; } = new();
 
         public DuplicateKeeperPreferences Clone()
@@ -52,6 +54,8 @@ namespace MediaFlux.Models
                 VisualKeeperStrategy = VisualKeeperStrategy,
                 VisualQualityFloor = VisualQualityFloor,
                 VisualConfidenceFloor = VisualConfidenceFloor,
+                ForceAutomaticKeeperOnHighConfidenceNearTies = ForceAutomaticKeeperOnHighConfidenceNearTies,
+                HighConfidenceNearTieThreshold = HighConfidenceNearTieThreshold,
                 ExactPreferredLocations = ExactPreferredLocations?.ToList() ?? new()
             };
         }
@@ -88,6 +92,7 @@ namespace MediaFlux.Models
             };
             VisualQualityFloor = Math.Clamp(VisualQualityFloor, 25, 75);
             VisualConfidenceFloor = Math.Clamp(VisualConfidenceFloor, 76, 100);
+            HighConfidenceNearTieThreshold = Math.Clamp(HighConfidenceNearTieThreshold, 76, 100);
             ExactPreferredLocations = (ExactPreferredLocations ?? new())
                 .Where(path => !string.IsNullOrWhiteSpace(path))
                 .Select(path => path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
