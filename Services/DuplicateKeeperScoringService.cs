@@ -206,13 +206,6 @@ namespace MediaFlux.Services
 
             long largestPixels = candidates.Max(GetPixels);
             long smallestPixels = candidates.Min(GetPixels);
-            if (smallestPixels < largestPixels * 0.80)
-            {
-                return new DuplicateKeeperEvaluation(null, true, 0, emptyScores,
-                    "Manual review required: the candidates have materially different resolutions.",
-                    DuplicateKeeperOutcome.ManualReviewRequired);
-            }
-
             var quality = candidates.ToDictionary(item => item.Path, VisualDuplicateQualityModel.Assess,
                 StringComparer.OrdinalIgnoreCase);
             if (quality.Values.Any(value => value.SufficiencyScore + 0.001 < preferences.VisualQualityFloor))
@@ -231,11 +224,41 @@ namespace MediaFlux.Services
                 storage *= 1.25;
             double totalWeight = resolution + qualityWeight + storage + codec + confidence;
             long smallestSize = candidates.Min(x => x.LengthBytes);
+            bool differentResolutions = smallestPixels != largestPixels;
+            var resolutionValue = new Dictionary<string, VisualResolutionValueAssessment>(StringComparer.OrdinalIgnoreCase);
+            var resolutionValueScores = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            if (differentResolutions)
+            {
+                DuplicateItem lowerResolutionReference = candidates
+                    .OrderBy(GetPixels)
+                    .ThenBy(x => x.LengthBytes)
+                    .First();
+                double storageCostSensitivity = ResolveResolutionStorageCostSensitivity(preferences);
+                foreach (DuplicateItem item in candidates)
+                {
+                    resolutionValue[item.Path] = VisualDuplicateQualityModel.AssessResolutionValue(
+                        item, lowerResolutionReference, quality[item.Path], quality[lowerResolutionReference.Path],
+                        visualConfidence, preferences.VisualConfidenceFloor, storageCostSensitivity);
+                }
+
+                double lowestUtility = resolutionValue.Values.Min(x => x.Utility);
+                double highestUtility = resolutionValue.Values.Max(x => x.Utility);
+                double midpoint = (lowestUtility + highestUtility) / 2;
+                foreach (DuplicateItem item in candidates)
+                {
+                    // Centering makes the tradeoff fair to both ends of the comparison;
+                    // tanh bounds extreme storage or resolution ratios without hard cutoffs.
+                    resolutionValueScores[item.Path] = 50 + 50 * Math.Tanh(
+                        (resolutionValue[item.Path].Utility - midpoint) / 0.55);
+                }
+            }
             var scores = allItems.ToDictionary(x => x.Path, _ => 0d, StringComparer.OrdinalIgnoreCase);
             foreach (DuplicateItem item in candidates)
             {
                 double resolutionScore = 100 * Math.Sqrt(GetPixels(item) / (double)largestPixels);
-                double storageScore = 100 * smallestSize / item.LengthBytes;
+                double storageScore = differentResolutions
+                    ? resolutionValueScores[item.Path]
+                    : 100 * smallestSize / item.LengthBytes;
                 double codecScore = string.Equals(preferences.CodecPreference, DuplicateKeeperPreferences.CodecNoPreference, StringComparison.Ordinal)
                     ? 50
                     : string.Equals(preferences.CodecPreference, DuplicateKeeperPreferences.CodecH264First, StringComparison.Ordinal)
@@ -243,6 +266,8 @@ namespace MediaFlux.Services
                         : VisualDuplicateQualityModel.GetCodecPreferenceScore(item.VideoCodec);
                 double qualityScore = quality[item.Path].SufficiencyScore;
                 double riskPenalty = qualityScore < 65 ? (65 - qualityScore) * 0.35 : 0;
+                if (differentResolutions)
+                    riskPenalty += resolutionValue[item.Path].UpscaleRisk * 8;
                 scores[item.Path] = Math.Clamp((resolutionScore * resolution + qualityScore * qualityWeight +
                     storageScore * storage + codecScore * codec + visualConfidence * confidence) / totalWeight - riskPenalty, 0, 100);
             }
@@ -267,9 +292,17 @@ namespace MediaFlux.Services
             bool efficientWinner = winner.LengthBytes == smallestSize && saved >= 5;
             string outcome = efficientWinner ? "Prefer smaller/more-efficient copy" : "Prefer higher-quality copy";
             string storageText = saved > 0.05 ? $"; saves {saved:0.#}% storage" : "; no material storage saving";
+            string resolutionValueText = string.Empty;
+            if (differentResolutions)
+            {
+                VisualResolutionValueAssessment value = resolutionValue[winner.Path];
+                resolutionValueText = $"; resolution value {value.PixelRatio:0.##}x pixels at {value.SizeRatio:0.##}x storage";
+                if (value.UpscaleRisk >= 0.15)
+                    resolutionValueText += $"; metadata-only upscale risk {value.UpscaleRisk * 100:0.#}%";
+            }
             string explanation = $"{outcome}: {preferences.VisualKeeperStrategy}; {winner.VideoCodec.ToUpperInvariant()} " +
                 $"{winner.Width}x{winner.Height} at {winner.FrameRate:0.##} fps and {winner.BitrateKbps / 1000d:0.##} Mbps is " +
-                $"estimated {VisualDuplicateQualityModel.FormatBand(winnerQuality.Band)} ({winnerQuality.SufficiencyScore:0.0}/100){storageText}; " +
+                $"estimated {VisualDuplicateQualityModel.FormatBand(winnerQuality.Band)} ({winnerQuality.SufficiencyScore:0.0}/100){storageText}{resolutionValueText}; " +
                 $"visual confidence contributes {visualConfidence:0.0}%; final score {scores[winner.Path]:0.0}, margin {margin:0.0}.";
             return new DuplicateKeeperEvaluation(winner, false, margin, scores, explanation,
                 efficientWinner ? DuplicateKeeperOutcome.PreferSmallerMoreEfficientCopy : DuplicateKeeperOutcome.PreferHigherQualityCopy);
@@ -283,6 +316,17 @@ namespace MediaFlux.Services
                 DuplicateKeeperPreferences.Custom => (preferences.ResolutionWeight, preferences.QualityWeight,
                     preferences.StorageWeight, preferences.CodecWeight, 10),
                 _ => (15, 35, 30, 10, 10)
+            };
+
+        private static double ResolveResolutionStorageCostSensitivity(DuplicateKeeperPreferences preferences) =>
+            preferences.VisualKeeperStrategy switch
+            {
+                DuplicateKeeperPreferences.PreserveMaximumQuality => 0.55,
+                DuplicateKeeperPreferences.StorageOptimized => 1.35,
+                DuplicateKeeperPreferences.Custom => Math.Clamp(
+                    0.55 + preferences.StorageWeight / (double)Math.Max(1, preferences.ResolutionWeight + preferences.StorageWeight),
+                    0.55, 1.55),
+                _ => 1.0
             };
 
         private static DuplicateKeeperEvaluation EvaluateLegacy(

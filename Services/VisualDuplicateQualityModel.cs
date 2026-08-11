@@ -23,6 +23,15 @@ namespace MediaFlux.Services
         string CodecIdentity,
         double FrameRate);
 
+    public sealed record VisualResolutionValueAssessment(
+        double Utility,
+        double PixelRatio,
+        double SizeRatio,
+        double StorageEfficiencyRatio,
+        double ConfidenceSupport,
+        double QualitySupport,
+        double UpscaleRisk);
+
     /// <summary>
     /// Estimated bitrate sufficiency for keeper comparison. This is deliberately
     /// a tunable signal, not a claim that bitrate measures perceptual quality.
@@ -96,6 +105,45 @@ namespace MediaFlux.Services
         public static double GetCodecPreferenceScore(string codec) =>
             CodecScales.TryGetValue(GetCodecIdentity(codec), out CodecScale? scale) ? scale.PreferenceScore : 50;
 
+        /// <summary>
+        /// Measures the practical value of a resolution increase relative to its storage cost.
+        /// Logarithms make successive pixel increases progressively less valuable. The quality
+        /// and confidence terms reduce the benefit when the extra resolution is weakly supported.
+        /// UpscaleRisk is metadata-only evidence, not a definitive upscale detector.
+        /// </summary>
+        public static VisualResolutionValueAssessment AssessResolutionValue(
+            DuplicateItem item,
+            DuplicateItem lowerResolutionReference,
+            VisualQualityAssessment quality,
+            VisualQualityAssessment referenceQuality,
+            double visualConfidence,
+            double visualConfidenceFloor,
+            double storageCostSensitivity)
+        {
+            double pixelRatio = GetPixels(item) / (double)Math.Max(1, GetPixels(lowerResolutionReference));
+            double sizeRatio = item.LengthBytes / (double)Math.Max(1, lowerResolutionReference.LengthBytes);
+            double storageEfficiencyRatio = pixelRatio / Math.Max(0.0001, sizeRatio);
+            double confidenceRange = Math.Max(0.001, 100 - visualConfidenceFloor);
+            double confidenceProgress = Math.Clamp((visualConfidence - visualConfidenceFloor) / confidenceRange, 0, 1);
+            double confidenceSupport = 0.35 + 0.65 * confidenceProgress;
+            double qualityDelta = quality.SufficiencyScore - referenceQuality.SufficiencyScore;
+            double qualitySupport = Math.Clamp(1 + qualityDelta / 50d, 0.35, 1);
+
+            double expectedBitrateRatio = quality.GoodBitrateKbps / Math.Max(1, referenceQuality.GoodBitrateKbps);
+            double actualBitrateRatio = item.BitrateKbps / (double)Math.Max(1, lowerResolutionReference.BitrateKbps);
+            double bitrateSupport = actualBitrateRatio / Math.Max(0.0001, expectedBitrateRatio);
+            double upscaleRisk = pixelRatio >= 1.5
+                ? Math.Clamp((0.90 - bitrateSupport) / 0.45, 0, 1) *
+                  Math.Clamp((-qualityDelta - 2) / 15d, 0, 1)
+                : 0;
+
+            double pixelBenefit = Math.Log(pixelRatio, 2) * confidenceSupport * qualitySupport;
+            double storageCost = Math.Log(Math.Max(0.0001, sizeRatio), 2) * storageCostSensitivity;
+            double utility = pixelBenefit - storageCost - upscaleRisk * 0.75;
+            return new VisualResolutionValueAssessment(utility, pixelRatio, sizeRatio,
+                storageEfficiencyRatio, confidenceSupport, qualitySupport, upscaleRisk);
+        }
+
         public static string FormatBand(VisualQualityBand band) => band switch
         {
             VisualQualityBand.BelowTarget => "below target",
@@ -122,5 +170,7 @@ namespace MediaFlux.Services
             if (value.Contains("mpeg4")) return "mpeg4";
             return value;
         }
+
+        private static long GetPixels(DuplicateItem item) => (long)item.Width * item.Height;
     }
 }

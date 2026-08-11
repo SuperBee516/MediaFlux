@@ -95,7 +95,7 @@ namespace MediaFlux
             AddRow(layout, 7, "Codec order:", _codecPreference, 31);
 
             _preserveResolution.Text = scoringContext == DuplicateKeeperScoringContext.Visual
-                ? "Material resolution differences always require manual review"
+                ? "Different resolutions use a quality, confidence, and storage-value tradeoff"
                 : "Never prefer a lower resolution solely to save space";
             _preserveResolution.AutoSize = true;
             _preserveResolution.Checked = Preferences.NeverSacrificeResolution;
@@ -248,9 +248,9 @@ namespace MediaFlux
             }
             _profileDescription.Text = _profile.SelectedItem?.ToString() switch
             {
-                DuplicateKeeperPreferences.PreserveMaximumQuality => "Prioritizes quality sufficiency, while still applying diminishing returns above the codec/resolution/frame-rate quality range.",
-                DuplicateKeeperPreferences.VisualBalanced when visual => "Balances estimated quality, resolution, codec efficiency, visual confidence, and storage savings. Storage matters more once both copies are good quality.",
-                DuplicateKeeperPreferences.StorageOptimized => "Favors meaningful space savings only after the lower-bitrate copy clears the quality and confidence safety floors.",
+                DuplicateKeeperPreferences.PreserveMaximumQuality => "Prioritizes supported resolution and quality gains, with diminishing returns and a relatively high tolerance for added storage.",
+                DuplicateKeeperPreferences.VisualBalanced when visual => "Preserves meaningful resolution gains when pixel growth is good value for the added storage, while retaining quality, confidence, codec, and score-margin safeguards.",
+                DuplicateKeeperPreferences.StorageOptimized => "Favors meaningful space savings after quality and confidence floors, and requires stronger value evidence before paying for higher resolution.",
                 DuplicateKeeperPreferences.QualityFirst => "Compatibility preset: protected reference, resolution, reported bitrate, larger size, then modified date. It reproduces the existing keeper order.",
                 DuplicateKeeperPreferences.Balanced => "Weights: resolution 40, quality 15, storage 30, codec 15. Designed to accept meaningful space savings without casually sacrificing resolution.",
                 DuplicateKeeperPreferences.SaveStorage => "Weights: resolution 30, quality 10, storage 45, codec 15. Strongly rewards smaller efficient encodes.",

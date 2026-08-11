@@ -110,14 +110,67 @@ public sealed class DuplicateKeeperAndCleanupPolicyTests
     }
 
     [Fact]
-    public void MaterialResolutionDifferenceRequiresManualReview()
+    public void RealWorldHevcResolutionValueCaseFavors1080pUnderBalanced()
     {
+        DuplicateItem high = Item("1080p.mkv", 449_190_000, 1920, 1080, 3_970, codec: "hevc") with { DurationSeconds = 950 };
+        DuplicateItem low = Item("720p.mkv", 280_210_000, 1280, 720, 2_470, codec: "hevc") with { DurationSeconds = 950 };
         DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
-            new[] { Item("4k.mkv", width: 3840, height: 2160, bitrate: 8_000, codec: "hevc"),
-                    Item("1080.mkv", width: 1920, height: 1080, bitrate: 2_000, codec: "hevc") },
-            new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual);
+            new[] { high, low }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual, 99.5);
+        Assert.False(result.RequiresReview);
+        Assert.Equal(high.Path, result.Keeper?.Path);
+        Assert.Equal(DuplicateKeeperOutcome.PreferHigherQualityCopy, result.Outcome);
+        Assert.Contains("2.25x pixels at 1.6x storage", result.Explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void HigherResolutionOnlySlightlyLargerIsPreferred()
+    {
+        DuplicateItem high = Item("1080p.mkv", 320, 1920, 1080, 2_800, codec: "hevc");
+        DuplicateItem low = Item("720p.mkv", 300, 1280, 720, 2_100, codec: "hevc");
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { high, low }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual, 99);
+        Assert.False(result.RequiresReview);
+        Assert.Equal(high.Path, result.Keeper?.Path);
+    }
+
+    [Fact]
+    public void DramaticallyLarger1080pCanLoseOnStorageTradeoff()
+    {
+        DuplicateItem high = Item("1080p.mkv", 1_200, 1920, 1080, 4_000, codec: "hevc");
+        DuplicateItem low = Item("720p.mkv", 300, 1280, 720, 2_100, codec: "hevc");
+        var preferences = new DuplicateKeeperPreferences { MinimumScoreMargin = 0 };
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { high, low }, preferences, DuplicateKeeperScoringContext.Visual, 99);
+        Assert.False(result.RequiresReview);
+        Assert.Equal(low.Path, result.Keeper?.Path);
+        Assert.Equal(DuplicateKeeperOutcome.PreferSmallerMoreEfficientCopy, result.Outcome);
+    }
+
+    [Fact]
+    public void InadequateHigherResolutionBitrateDoesNotWinAutomatically()
+    {
+        DuplicateItem high = Item("thin-1080p.mkv", 320, 1920, 1080, 700, codec: "hevc");
+        DuplicateItem low = Item("healthy-720p.mkv", 300, 1280, 720, 2_100, codec: "hevc");
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { high, low }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual, 99);
         Assert.True(result.RequiresReview);
-        Assert.Contains("different resolutions", result.Explanation, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(result.Keeper);
+        Assert.Contains("quality floor", result.Explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MetadataOnlyUpscaleRiskFlagsUnsupportedResolutionGain()
+    {
+        DuplicateItem high = Item("1080p.mkv", 340, 1920, 1080, 2_100, codec: "hevc");
+        DuplicateItem low = Item("720p.mkv", 300, 1280, 720, 2_100, codec: "hevc");
+        VisualQualityAssessment highQuality = VisualDuplicateQualityModel.Assess(high);
+        VisualQualityAssessment lowQuality = VisualDuplicateQualityModel.Assess(low);
+
+        VisualResolutionValueAssessment value = VisualDuplicateQualityModel.AssessResolutionValue(
+            high, low, highQuality, lowQuality, 99, 90, 1);
+
+        Assert.True(value.PixelRatio > 2);
+        Assert.True(value.UpscaleRisk >= 0.25);
     }
 
     [Fact]
@@ -128,6 +181,71 @@ public sealed class DuplicateKeeperAndCleanupPolicyTests
             new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual, 85);
         Assert.True(result.RequiresReview);
         Assert.Contains("visual confidence", result.Explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void HighConfidenceSupportsResolutionGainWhileNearFloorRemainsReviewable()
+    {
+        DuplicateItem high = Item("1080p.mkv", 450, 1920, 1080, 3_000, codec: "hevc");
+        DuplicateItem low = Item("720p.mkv", 300, 1280, 720, 2_100, codec: "hevc");
+        DuplicateKeeperEvaluation highConfidence = DuplicateKeeperScoringService.Evaluate(
+            new[] { high, low }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual, 99.5);
+        DuplicateKeeperEvaluation nearFloor = DuplicateKeeperScoringService.Evaluate(
+            new[] { high, low }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual, 90.1);
+        Assert.Equal(high.Path, highConfidence.Keeper?.Path);
+        Assert.True(nearFloor.RequiresReview);
+    }
+
+    [Fact]
+    public void SameResolutionBalancedBehaviorRemainsEfficientCopyPreference()
+    {
+        DuplicateItem larger = Item("larger.mkv", 852_000_000, bitrate: 3_280, codec: "hevc");
+        DuplicateItem smaller = Item("smaller.mkv", 462_000_000, bitrate: 1_780, codec: "hevc");
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { larger, smaller }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual, 98);
+        Assert.Equal(smaller.Path, result.Keeper?.Path);
+        Assert.Equal(DuplicateKeeperOutcome.PreferSmallerMoreEfficientCopy, result.Outcome);
+    }
+
+    [Fact]
+    public void ResolutionStrategiesExpressDifferentStorageTolerance()
+    {
+        DuplicateItem high = Item("1080p.mkv", 650, 1920, 1080, 3_200, codec: "hevc");
+        DuplicateItem low = Item("720p.mkv", 300, 1280, 720, 2_100, codec: "hevc");
+        var quality = new DuplicateKeeperPreferences
+        {
+            VisualKeeperStrategy = DuplicateKeeperPreferences.PreserveMaximumQuality,
+            MinimumScoreMargin = 0
+        };
+        var balanced = new DuplicateKeeperPreferences { MinimumScoreMargin = 0 };
+        var storage = new DuplicateKeeperPreferences
+        {
+            VisualKeeperStrategy = DuplicateKeeperPreferences.StorageOptimized,
+            MinimumScoreMargin = 0
+        };
+
+        DuplicateKeeperEvaluation qualityResult = DuplicateKeeperScoringService.Evaluate(
+            new[] { high, low }, quality, DuplicateKeeperScoringContext.Visual, 99);
+        DuplicateKeeperEvaluation balancedResult = DuplicateKeeperScoringService.Evaluate(
+            new[] { high, low }, balanced, DuplicateKeeperScoringContext.Visual, 99);
+        DuplicateKeeperEvaluation storageResult = DuplicateKeeperScoringService.Evaluate(
+            new[] { high, low }, storage, DuplicateKeeperScoringContext.Visual, 99);
+
+        Assert.Equal(high.Path, qualityResult.Keeper?.Path);
+        Assert.True(qualityResult.Scores[high.Path] - qualityResult.Scores[low.Path] >
+                    balancedResult.Scores[high.Path] - balancedResult.Scores[low.Path]);
+        Assert.Equal(low.Path, storageResult.Keeper?.Path);
+    }
+
+    [Fact]
+    public void ProtectedVisualCandidateStillOverridesResolutionValueScore()
+    {
+        DuplicateItem high = Item("1080p.mkv", 450, 1920, 1080, 3_500, codec: "hevc");
+        DuplicateItem protectedLow = Item("protected-720p.mkv", 300, 1280, 720, 2_100, isProtected: true, codec: "hevc");
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { high, protectedLow }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual, 99);
+        Assert.False(result.RequiresReview);
+        Assert.Equal(protectedLow.Path, result.Keeper?.Path);
     }
 
     [Fact]
