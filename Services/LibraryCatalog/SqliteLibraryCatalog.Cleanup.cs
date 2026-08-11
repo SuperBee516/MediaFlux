@@ -187,6 +187,24 @@ namespace MediaFlux.Services.LibraryCatalog
                 throw new ArgumentException("A cleanup plan must contain at least one item.", nameof(items));
             if (action == DuplicateCleanupAction.Quarantine && string.IsNullOrWhiteSpace(quarantineRoot))
                 throw new ArgumentException("A quarantine root is required.", nameof(quarantineRoot));
+            long planId = BeginCleanupPlan(action, quarantineRoot);
+            try
+            {
+                AppendCleanupPlanItems(planId, items);
+                MarkCleanupPlanReady(planId);
+                return planId;
+            }
+            catch
+            {
+                CompleteCleanupPlan(planId, DuplicateCleanupStatus.Failed, "Cleanup planning failed before the plan became ready.");
+                throw;
+            }
+        }
+
+        public long BeginCleanupPlan(DuplicateCleanupAction action, string quarantineRoot)
+        {
+            if (action == DuplicateCleanupAction.Quarantine && string.IsNullOrWhiteSpace(quarantineRoot))
+                throw new ArgumentException("A quarantine root is required.", nameof(quarantineRoot));
             ThrowIfDisposed();
             return WithWriteTransaction((connection, transaction) =>
             {
@@ -194,10 +212,31 @@ namespace MediaFlux.Services.LibraryCatalog
                 plan.Transaction = transaction;
                 plan.CommandText = "INSERT INTO duplicate_cleanup_plans(action,status,quarantine_root,created_utc_ticks) VALUES($action,$status,$root,$now) RETURNING id;";
                 plan.Parameters.AddWithValue("$action", (int)action);
-                plan.Parameters.AddWithValue("$status", (int)DuplicateCleanupStatus.Ready);
+                plan.Parameters.AddWithValue("$status", (int)DuplicateCleanupStatus.Draft);
                 plan.Parameters.AddWithValue("$root", quarantineRoot ?? "");
                 plan.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
-                long planId = Convert.ToInt64(plan.ExecuteScalar());
+                return Convert.ToInt64(plan.ExecuteScalar());
+            });
+        }
+
+        public void AppendCleanupPlanItems(long planId, IReadOnlyCollection<DuplicateCleanupPlanItemRecord> items)
+        {
+            ArgumentNullException.ThrowIfNull(items);
+            if (items.Count == 0) return;
+            if (items.Count > 500) throw new ArgumentOutOfRangeException(nameof(items), "Cleanup plan append batches are limited to 500 items.");
+            ThrowIfDisposed();
+            WithWriteTransaction<object?>((connection, transaction) =>
+            {
+                using (SqliteCommand validate = connection.CreateCommand())
+                {
+                    validate.Transaction = transaction;
+                    validate.CommandText = "SELECT status FROM duplicate_cleanup_plans WHERE id=$id;";
+                    validate.Parameters.AddWithValue("$id", planId);
+                    object? value = validate.ExecuteScalar();
+                    if (value == null) throw new KeyNotFoundException($"Cleanup plan {planId} does not exist.");
+                    if ((DuplicateCleanupStatus)Convert.ToInt32(value) != DuplicateCleanupStatus.Draft)
+                        throw new InvalidOperationException("Cleanup items can only be appended to a draft plan.");
+                }
 
                 using SqliteCommand item = connection.CreateCommand();
                 item.Transaction = transaction;
@@ -235,9 +274,215 @@ namespace MediaFlux.Services.LibraryCatalog
                     item.Parameters["$status"].Value = (int)DuplicateCleanupItemStatus.Planned;
                     item.ExecuteNonQuery();
                 }
-                return planId;
+                return null;
             });
         }
+
+        public int AppendEligibleCleanupGroups(long planId, IReadOnlyCollection<long> groupIds)
+        {
+            ArgumentNullException.ThrowIfNull(groupIds);
+            long[] ids = groupIds.Distinct().ToArray();
+            if (ids.Length == 0) return 0;
+            if (ids.Length > 500) throw new ArgumentOutOfRangeException(nameof(groupIds), "Cleanup planning batches are limited to 500 groups.");
+            ThrowIfDisposed();
+            return WithWriteTransaction((connection, transaction) =>
+            {
+                using (SqliteCommand validate = connection.CreateCommand())
+                {
+                    validate.Transaction = transaction;
+                    validate.CommandText = "SELECT status FROM duplicate_cleanup_plans WHERE id=$id;";
+                    validate.Parameters.AddWithValue("$id", planId);
+                    object? value = validate.ExecuteScalar();
+                    if (value == null) throw new KeyNotFoundException($"Cleanup plan {planId} does not exist.");
+                    if ((DuplicateCleanupStatus)Convert.ToInt32(value) != DuplicateCleanupStatus.Draft)
+                        throw new InvalidOperationException("Cleanup groups can only be appended to a draft plan.");
+                }
+                using SqliteCommand command = connection.CreateCommand();
+                command.Transaction = transaction;
+                string groupParameters = string.Join(",", ids.Select((_, index) => "$group" + index));
+                command.CommandText =
+                    """
+                    WITH selected_groups AS (
+                        SELECT g.id,g.full_algorithm,g.full_version,g.full_hash,COALESCE(d.ignored,0) ignored,
+                               COALESCE(
+                                   (SELECT keeper.id FROM indexed_files keeper
+                                    JOIN exact_duplicate_members km ON km.file_id=keeper.id AND km.group_id=g.id
+                                    WHERE keeper.path_key=d.manual_keeper_path_key LIMIT 1),
+                                   g.suggested_keeper_file_id) keeper_id
+                        FROM exact_duplicate_groups g
+                        LEFT JOIN duplicate_group_decisions d ON d.size_bytes=g.size_bytes AND d.full_algorithm=g.full_algorithm
+                            AND d.full_version=g.full_version AND d.full_hash=g.full_hash
+                        WHERE g.id IN (
+                    """ + groupParameters +
+                    """
+                        )
+                    )
+                    INSERT OR IGNORE INTO duplicate_cleanup_plan_items(
+                        plan_id,group_id,file_id,keeper_file_id,source_path,source_path_key,source_size_bytes,
+                        source_last_write_utc_ticks,source_volume_id,source_file_identity,full_hash,status,destination_path,validation_error)
+                    SELECT $plan,g.id,f.id,g.keeper_id,f.full_path,f.path_key,f.size_bytes,f.last_write_utc_ticks,
+                           f.volume_id,f.file_identity,h.full_hash,$planned,'',''
+                    FROM selected_groups g
+                    JOIN exact_duplicate_members m ON m.group_id=g.id
+                    JOIN indexed_files f ON f.id=m.file_id
+                    JOIN file_hash_facts h ON h.file_id=f.id
+                    JOIN indexed_files keeper ON keeper.id=g.keeper_id
+                    JOIN file_hash_facts keeper_hash ON keeper_hash.file_id=keeper.id
+                    WHERE g.ignored=0 AND g.keeper_id IS NOT NULL AND f.id<>g.keeper_id
+                      AND f.availability_state=$present AND keeper.availability_state=$present
+                      AND m.is_hard_link_alias=0
+                      AND NOT EXISTS(SELECT 1 FROM duplicate_file_protections p WHERE p.path_key=f.path_key)
+                      AND h.full_algorithm=g.full_algorithm AND h.full_version=g.full_version AND h.full_hash=g.full_hash
+                      AND h.source_size_bytes=f.size_bytes AND h.source_last_write_utc_ticks=f.last_write_utc_ticks
+                      AND keeper_hash.full_algorithm=g.full_algorithm AND keeper_hash.full_version=g.full_version AND keeper_hash.full_hash=g.full_hash
+                      AND keeper_hash.source_size_bytes=keeper.size_bytes AND keeper_hash.source_last_write_utc_ticks=keeper.last_write_utc_ticks
+                      AND NOT EXISTS(SELECT 1 FROM library_presence_observations o WHERE o.file_id IN(f.id,keeper.id) AND o.state<>$presence_present)
+                      AND EXISTS(SELECT 1 FROM file_location_memberships fm JOIN library_locations l ON l.id=fm.location_id
+                                 WHERE fm.file_id=f.id AND fm.availability_state=$present AND l.availability_state<$location_unavailable)
+                      AND EXISTS(SELECT 1 FROM file_location_memberships km JOIN library_locations kl ON kl.id=km.location_id
+                                 WHERE km.file_id=keeper.id AND km.availability_state=$present AND kl.availability_state<$location_unavailable)
+                      AND NOT EXISTS(SELECT 1 FROM duplicate_cleanup_plan_items existing WHERE existing.plan_id=$plan AND existing.file_id=f.id)
+                    ORDER BY g.id,f.id LIMIT 500;
+                    """;
+                command.Parameters.AddWithValue("$plan", planId);
+                command.Parameters.AddWithValue("$planned", (int)DuplicateCleanupItemStatus.Planned);
+                command.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
+                command.Parameters.AddWithValue("$presence_present", (int)LibraryPresenceObservationState.Present);
+                command.Parameters.AddWithValue("$location_unavailable", (int)LibraryLocationAvailability.Unavailable);
+                for (int index = 0; index < ids.Length; index++) command.Parameters.AddWithValue("$group" + index, ids[index]);
+                return command.ExecuteNonQuery();
+            });
+        }
+
+        public void MarkCleanupPlanReady(long planId) => TransitionCleanupPlan(planId, DuplicateCleanupStatus.Draft, DuplicateCleanupStatus.Ready, requireItems: true);
+
+        public void MarkCleanupPlanRunning(long planId) => TransitionCleanupPlan(planId, DuplicateCleanupStatus.Ready, DuplicateCleanupStatus.Running, requireItems: true);
+
+        private void TransitionCleanupPlan(long planId, DuplicateCleanupStatus from, DuplicateCleanupStatus to, bool requireItems)
+        {
+            ThrowIfDisposed();
+            WithWriteTransaction<object?>((connection, transaction) =>
+            {
+                using SqliteCommand command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    "UPDATE duplicate_cleanup_plans SET status=$to,completed_utc_ticks=NULL,error_text='' WHERE id=$id AND status=$from" +
+                    (requireItems ? " AND EXISTS(SELECT 1 FROM duplicate_cleanup_plan_items WHERE plan_id=$id)" : "") + ";";
+                command.Parameters.AddWithValue("$to", (int)to);
+                command.Parameters.AddWithValue("$from", (int)from);
+                command.Parameters.AddWithValue("$id", planId);
+                if (command.ExecuteNonQuery() != 1)
+                    throw new InvalidOperationException($"Cleanup plan {planId} could not transition from {from} to {to}.");
+                return null;
+            });
+        }
+
+        public int RecoverInterruptedCleanupPlans()
+        {
+            ThrowIfDisposed();
+            return WithWriteTransaction((connection, transaction) =>
+            {
+                int recovered = 0;
+                using (SqliteCommand drafts = connection.CreateCommand())
+                {
+                    drafts.Transaction = transaction;
+                    drafts.CommandText = "UPDATE duplicate_cleanup_plans SET status=$failed,completed_utc_ticks=$now,error_text='Interrupted while the cleanup plan was being prepared; the draft is not executable.' WHERE status=$draft;";
+                    drafts.Parameters.AddWithValue("$failed", (int)DuplicateCleanupStatus.Failed);
+                    drafts.Parameters.AddWithValue("$draft", (int)DuplicateCleanupStatus.Draft);
+                    drafts.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+                    recovered += drafts.ExecuteNonQuery();
+                }
+                using (SqliteCommand running = connection.CreateCommand())
+                {
+                    running.Transaction = transaction;
+                    running.CommandText = "UPDATE duplicate_cleanup_plans SET status=$ready,completed_utc_ticks=NULL,error_text='Recovered after interruption. Completed items remain final; remaining items require revalidation.' WHERE status=$running;";
+                    running.Parameters.AddWithValue("$ready", (int)DuplicateCleanupStatus.Ready);
+                    running.Parameters.AddWithValue("$running", (int)DuplicateCleanupStatus.Running);
+                    recovered += running.ExecuteNonQuery();
+                }
+                return recovered;
+            });
+        }
+
+        public DuplicateCleanupPlanSummary? GetCleanupPlanSummary(long planId, bool includeLocations = true)
+        {
+            ThrowIfDisposed();
+            using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT p.action,p.status,p.quarantine_root,p.created_utc_ticks,p.completed_utc_ticks,p.error_text,
+                       COUNT(i.file_id),COUNT(DISTINCT i.group_id),
+                       COALESCE(SUM(CASE WHEN i.status=$planned THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.status=$succeeded THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.status=$excluded THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.status=$failed THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(i.source_size_bytes),0),
+                       COALESCE(SUM(CASE WHEN i.status=$succeeded THEN i.source_size_bytes ELSE 0 END),0)
+                FROM duplicate_cleanup_plans p LEFT JOIN duplicate_cleanup_plan_items i ON i.plan_id=p.id
+                WHERE p.id=$id GROUP BY p.id;
+                """;
+            command.Parameters.AddWithValue("$id", planId);
+            command.Parameters.AddWithValue("$planned", (int)DuplicateCleanupItemStatus.Planned);
+            command.Parameters.AddWithValue("$succeeded", (int)DuplicateCleanupItemStatus.Succeeded);
+            command.Parameters.AddWithValue("$excluded", (int)DuplicateCleanupItemStatus.Excluded);
+            command.Parameters.AddWithValue("$failed", (int)DuplicateCleanupItemStatus.Failed);
+            using SqliteDataReader reader = command.ExecuteReader();
+            if (!reader.Read()) return null;
+            var header = new
+            {
+                Action = (DuplicateCleanupAction)reader.GetInt32(0), Status = (DuplicateCleanupStatus)reader.GetInt32(1), Root = reader.GetString(2),
+                Created = FromUtcTicks(reader.GetInt64(3)), Completed = reader.IsDBNull(4) ? (DateTime?)null : FromUtcTicks(reader.GetInt64(4)), Error = reader.GetString(5),
+                Total = reader.GetInt64(6), Groups = reader.GetInt64(7), Planned = reader.GetInt64(8), Succeeded = reader.GetInt64(9),
+                Excluded = reader.GetInt64(10), Failed = reader.GetInt64(11), Bytes = reader.GetInt64(12), Reclaimed = reader.GetInt64(13)
+            };
+            reader.Close();
+            if (!includeLocations)
+                return new DuplicateCleanupPlanSummary(planId, header.Action, header.Status, header.Root, header.Created, header.Completed, header.Error,
+                    header.Total, header.Groups, header.Planned, header.Succeeded, header.Excluded, header.Failed, header.Bytes, header.Reclaimed, Array.Empty<ExactDuplicateReclaimLocation>());
+            using SqliteCommand locations = connection.CreateCommand();
+            locations.CommandText =
+                """
+                WITH item_locations AS (
+                    SELECT i.file_id,i.source_size_bytes,
+                           (SELECT MIN(m.location_id) FROM file_location_memberships m WHERE m.file_id=i.file_id) location_id
+                    FROM duplicate_cleanup_plan_items i WHERE i.plan_id=$id
+                )
+                SELECT l.id,l.path,COUNT(*),COALESCE(SUM(x.source_size_bytes),0)
+                FROM item_locations x JOIN library_locations l ON l.id=x.location_id
+                GROUP BY l.id,l.path ORDER BY 4 DESC,l.path;
+                """;
+            locations.Parameters.AddWithValue("$id", planId);
+            using SqliteDataReader locationReader = locations.ExecuteReader();
+            var buckets = new List<ExactDuplicateReclaimLocation>();
+            while (locationReader.Read()) buckets.Add(new ExactDuplicateReclaimLocation(locationReader.GetInt64(0), locationReader.GetString(1), locationReader.GetInt64(2), locationReader.GetInt64(3)));
+            return new DuplicateCleanupPlanSummary(planId, header.Action, header.Status, header.Root, header.Created, header.Completed, header.Error,
+                header.Total, header.Groups, header.Planned, header.Succeeded, header.Excluded, header.Failed, header.Bytes, header.Reclaimed, buckets);
+        }
+
+        public IReadOnlyList<DuplicateCleanupPlanItemRecord> GetCleanupPlanItemsBatch(
+            long planId, long afterGroupId, long afterFileId, int limit, DuplicateCleanupItemStatus? status = null)
+        {
+            ThrowIfDisposed();
+            limit = Math.Clamp(limit, 1, 500);
+            using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+            using SqliteCommand items = connection.CreateCommand();
+            items.CommandText = "SELECT plan_id,group_id,file_id,keeper_file_id,source_path,source_path_key,source_size_bytes,source_last_write_utc_ticks,source_volume_id,source_file_identity,full_hash,status,destination_path,validation_error FROM duplicate_cleanup_plan_items WHERE plan_id=$id AND (group_id>$group OR (group_id=$group AND file_id>$file)) AND ($status IS NULL OR status=$status) ORDER BY group_id,file_id LIMIT $limit;";
+            items.Parameters.AddWithValue("$id", planId);
+            items.Parameters.AddWithValue("$group", afterGroupId);
+            items.Parameters.AddWithValue("$file", afterFileId);
+            items.Parameters.AddWithValue("$status", status.HasValue ? (int)status.Value : DBNull.Value);
+            items.Parameters.AddWithValue("$limit", limit);
+            using SqliteDataReader reader = items.ExecuteReader();
+            var result = new List<DuplicateCleanupPlanItemRecord>(limit);
+            while (reader.Read()) result.Add(ReadCleanupPlanItem(reader));
+            return result;
+        }
+
+        private static DuplicateCleanupPlanItemRecord ReadCleanupPlanItem(SqliteDataReader reader) => new(
+            reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetString(4), reader.GetString(5), reader.GetInt64(6),
+            FromUtcTicks(reader.GetInt64(7)), reader.GetString(8), reader.GetString(9), (byte[])reader[10],
+            (DuplicateCleanupItemStatus)reader.GetInt32(11), reader.GetString(12), reader.GetString(13));
 
         public DuplicateCleanupPlanRecord? GetCleanupPlan(long planId)
         {
@@ -261,7 +506,7 @@ namespace MediaFlux.Services.LibraryCatalog
             items.Parameters.AddWithValue("$id", planId);
             using SqliteDataReader reader = items.ExecuteReader();
             var result = new List<DuplicateCleanupPlanItemRecord>();
-            while (reader.Read()) result.Add(new DuplicateCleanupPlanItemRecord(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetString(4), reader.GetString(5), reader.GetInt64(6), FromUtcTicks(reader.GetInt64(7)), reader.GetString(8), reader.GetString(9), (byte[])reader[10], (DuplicateCleanupItemStatus)reader.GetInt32(11), reader.GetString(12), reader.GetString(13)));
+            while (reader.Read()) result.Add(ReadCleanupPlanItem(reader));
             return new DuplicateCleanupPlanRecord(planId, action, status, root, created, completed, error, result);
         }
 
@@ -279,6 +524,45 @@ namespace MediaFlux.Services.LibraryCatalog
                 command.Parameters.AddWithValue("$plan", planId);
                 command.Parameters.AddWithValue("$file", fileId);
                 command.ExecuteNonQuery();
+                return null;
+            });
+        }
+
+        public void RecordCleanupPlanItemOutcome(
+            long planId, long fileId, string sourcePath, string destinationPath, DuplicateCleanupAction action,
+            DuplicateCleanupItemStatus status, string validationError, string auditMessage)
+        {
+            if (status is DuplicateCleanupItemStatus.Planned or DuplicateCleanupItemStatus.Validated)
+                throw new ArgumentException("A persisted cleanup outcome must be succeeded, excluded, or failed.", nameof(status));
+            ThrowIfDisposed();
+            WithWriteTransaction<object?>((connection, transaction) =>
+            {
+                using (SqliteCommand update = connection.CreateCommand())
+                {
+                    update.Transaction = transaction;
+                    update.CommandText = "UPDATE duplicate_cleanup_plan_items SET status=$status,destination_path=$destination,validation_error=$error WHERE plan_id=$plan AND file_id=$file AND status IN($planned,$validated);";
+                    update.Parameters.AddWithValue("$status", (int)status);
+                    update.Parameters.AddWithValue("$destination", destinationPath ?? "");
+                    update.Parameters.AddWithValue("$error", validationError ?? "");
+                    update.Parameters.AddWithValue("$plan", planId);
+                    update.Parameters.AddWithValue("$file", fileId);
+                    update.Parameters.AddWithValue("$planned", (int)DuplicateCleanupItemStatus.Planned);
+                    update.Parameters.AddWithValue("$validated", (int)DuplicateCleanupItemStatus.Validated);
+                    if (update.ExecuteNonQuery() != 1)
+                        throw new InvalidOperationException($"Cleanup item {fileId} was already finalized or no longer exists.");
+                }
+                using SqliteCommand audit = connection.CreateCommand();
+                audit.Transaction = transaction;
+                audit.CommandText = "INSERT INTO duplicate_cleanup_audit(plan_id,file_id,source_path,destination_path,action,outcome,message,occurred_utc_ticks) VALUES($plan,$file,$source,$destination,$action,$outcome,$message,$now);";
+                audit.Parameters.AddWithValue("$plan", planId);
+                audit.Parameters.AddWithValue("$file", fileId);
+                audit.Parameters.AddWithValue("$source", sourcePath ?? "");
+                audit.Parameters.AddWithValue("$destination", destinationPath ?? "");
+                audit.Parameters.AddWithValue("$action", (int)action);
+                audit.Parameters.AddWithValue("$outcome", (int)status);
+                audit.Parameters.AddWithValue("$message", auditMessage ?? "");
+                audit.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+                audit.ExecuteNonQuery();
                 return null;
             });
         }

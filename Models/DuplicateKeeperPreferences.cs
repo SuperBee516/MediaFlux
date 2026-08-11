@@ -23,6 +23,7 @@ namespace MediaFlux.Models
         public string CodecPreference { get; set; } = CodecModernFirst;
         public bool NeverSacrificeResolution { get; set; } = true;
         public int MinimumScoreMargin { get; set; } = 8;
+        public List<string> ExactPreferredLocations { get; set; } = new();
 
         public DuplicateKeeperPreferences Clone()
         {
@@ -36,7 +37,8 @@ namespace MediaFlux.Models
                 ModifiedDateWeight = ModifiedDateWeight,
                 CodecPreference = CodecPreference,
                 NeverSacrificeResolution = NeverSacrificeResolution,
-                MinimumScoreMargin = MinimumScoreMargin
+                MinimumScoreMargin = MinimumScoreMargin,
+                ExactPreferredLocations = ExactPreferredLocations?.ToList() ?? new()
             };
         }
 
@@ -62,6 +64,11 @@ namespace MediaFlux.Models
             CodecWeight = Math.Clamp(CodecWeight, 0, 100);
             ModifiedDateWeight = Math.Clamp(ModifiedDateWeight, 0, 100);
             MinimumScoreMargin = Math.Clamp(MinimumScoreMargin, 0, 25);
+            ExactPreferredLocations = (ExactPreferredLocations ?? new())
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             if (ResolutionWeight + QualityWeight + StorageWeight + CodecWeight + ModifiedDateWeight == 0)
                 ResolutionWeight = 1;

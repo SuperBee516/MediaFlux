@@ -1,5 +1,6 @@
 using Microsoft.VisualBasic.FileIO;
 using MediaFlux.Services;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services.LibraryCatalog
 {
@@ -33,7 +34,8 @@ namespace MediaFlux.Services.LibraryCatalog
         int Succeeded,
         int Excluded,
         int Failed,
-        string ErrorText);
+        string ErrorText,
+        long ReclaimedBytes = 0);
 
     public sealed record ExactCleanupCandidate(
         long GroupId,
@@ -43,24 +45,36 @@ namespace MediaFlux.Services.LibraryCatalog
 
     public sealed class LibraryDuplicateCleanupService
     {
+        public const int CleanupBatchSize = 500;
         private readonly ILibraryCatalog _inventory;
         private readonly ILibraryAnalysisCatalog _analysis;
         private readonly ILibraryRecoveryCatalog? _recovery;
         private readonly ILibraryDuplicateFileActions _actions;
         private readonly ILibraryFileIdentityProvider _identityProvider;
         private readonly Func<bool> _isEncodingActive;
+        private DuplicateKeeperPreferences _keeperPreferences;
 
         public LibraryDuplicateCleanupService(
             ILibraryCatalog inventory,
             ILibraryAnalysisCatalog analysis,
             Func<bool>? isEncodingActive = null)
-            : this(inventory, analysis, new WindowsLibraryDuplicateFileActions(), new WindowsLibraryFileIdentityProvider(), isEncodingActive)
+            : this(inventory, analysis, null, new WindowsLibraryDuplicateFileActions(), new WindowsLibraryFileIdentityProvider(), isEncodingActive)
+        {
+        }
+
+        public LibraryDuplicateCleanupService(
+            ILibraryCatalog inventory,
+            ILibraryAnalysisCatalog analysis,
+            DuplicateKeeperPreferences? keeperPreferences,
+            Func<bool>? isEncodingActive = null)
+            : this(inventory, analysis, keeperPreferences, new WindowsLibraryDuplicateFileActions(), new WindowsLibraryFileIdentityProvider(), isEncodingActive)
         {
         }
 
         internal LibraryDuplicateCleanupService(
             ILibraryCatalog inventory,
             ILibraryAnalysisCatalog analysis,
+            DuplicateKeeperPreferences? keeperPreferences,
             ILibraryDuplicateFileActions actions,
             ILibraryFileIdentityProvider identityProvider,
             Func<bool>? isEncodingActive = null)
@@ -71,6 +85,16 @@ namespace MediaFlux.Services.LibraryCatalog
             _actions = actions ?? throw new ArgumentNullException(nameof(actions));
             _identityProvider = identityProvider ?? throw new ArgumentNullException(nameof(identityProvider));
             _isEncodingActive = isEncodingActive ?? (() => false);
+            _keeperPreferences = keeperPreferences?.Clone() ?? new DuplicateKeeperPreferences();
+            _keeperPreferences.Normalize();
+        }
+
+        public void UpdateKeeperPreferences(DuplicateKeeperPreferences preferences)
+        {
+            ArgumentNullException.ThrowIfNull(preferences);
+            DuplicateKeeperPreferences copy = preferences.Clone();
+            copy.Normalize();
+            _keeperPreferences = copy;
         }
 
         // This is the same catalog-side safety screen used while creating a cleanup
@@ -90,10 +114,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     if (group.Ignored) continue;
                     IReadOnlyList<ExactDuplicateMemberRecord> members = _analysis.GetDuplicateGroupMembers(group.GroupId);
                     if (members.Count < 2) continue;
-                    ExactDuplicateMemberRecord keeper = members.FirstOrDefault(x => x.IsManualKeeper)
-                        ?? members.FirstOrDefault(x => x.IsSuggestedKeeper)
-                        ?? members.FirstOrDefault(x => x.IsProtected)
-                        ?? members[0];
+                    ExactDuplicateMemberRecord keeper = SelectKeeper(members);
                     LibraryFileHashFact? keeperFact = _analysis.GetFileHashFact(keeper.FileId);
                     if (keeperFact?.FullHash == null || !File.Exists(keeper.FullPath)) continue;
                     var legacyItems = members.Select(member => LibraryDuplicateAnalysisCoordinator.ToLegacyItem(member) with
@@ -124,118 +145,179 @@ namespace MediaFlux.Services.LibraryCatalog
             return candidates;
         }
 
-        public DuplicateCleanupPlanRecord CreatePlan(
+        public DuplicateCleanupPlanSummary CreatePlan(
             IReadOnlyCollection<long> groupIds,
             DuplicateCleanupAction action,
-            string quarantineRoot = "")
+            string quarantineRoot = "",
+            CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(groupIds);
             if (groupIds.Count == 0) throw new ArgumentException("Select at least one exact duplicate group.", nameof(groupIds));
-            var items = new List<DuplicateCleanupPlanItemRecord>();
-            foreach (long groupId in groupIds.Distinct())
+            long planId = _analysis.BeginCleanupPlan(action, quarantineRoot);
+            try
             {
-                ExactDuplicateGroupRecord? groupRecord = _analysis.GetDuplicateGroup(groupId);
-                if (groupRecord == null || groupRecord.Ignored) continue;
-                IReadOnlyList<ExactDuplicateMemberRecord> members = _analysis.GetDuplicateGroupMembers(groupId);
-                if (members.Count < 2) continue;
-                ExactDuplicateMemberRecord keeper = members.FirstOrDefault(x => x.IsManualKeeper)
-                    ?? members.FirstOrDefault(x => x.IsSuggestedKeeper)
-                    ?? members.FirstOrDefault(x => x.IsProtected)
-                    ?? members[0];
-                LibraryFileHashFact? keeperFact = _analysis.GetFileHashFact(keeper.FileId);
-                if (keeperFact?.FullHash == null) continue;
-                var legacyItems = members.Select(member => LibraryDuplicateAnalysisCoordinator.ToLegacyItem(member) with
-                {
-                    Recommendation = member.FileId == keeper.FileId ? (member.IsProtected ? "Protected keeper" : "Selected keeper") :
-                        member.IsProtected ? "Protected reference" : "Trash candidate",
-                    KeeperReason = member.FileId == keeper.FileId ? "Catalog keeper" : "Not selected to keep"
-                }).ToList();
-                var legacyGroup = new DuplicateGroup((int)Math.Min(int.MaxValue, groupId), "Exact", 100, "Matching size and SHA-256", "Catalog SHA-256", 0, 0, 0, 0, legacyItems);
-                var usedPhysical = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { keeper.PhysicalIdentityKey };
-                foreach (ExactDuplicateMemberRecord member in members)
-                {
-                    DuplicateItem legacy = legacyItems.First(x => string.Equals(x.Path, member.FullPath, StringComparison.OrdinalIgnoreCase));
-                    if (member.FileId == keeper.FileId || member.Availability != IndexedFileAvailability.Present || member.IsProtected ||
-                       member.IsHardLinkAlias || !usedPhysical.Add(member.PhysicalIdentityKey) ||
-                       !DuplicateCleanupPolicy.CanCleanupItem(legacyGroup, legacy)) continue;
-                    LibraryFileHashFact? fact = _analysis.GetFileHashFact(member.FileId);
-                    if (fact?.FullHash == null || !fact.FullHash.SequenceEqual(keeperFact.FullHash)) continue;
-                    items.Add(new DuplicateCleanupPlanItemRecord(0, groupId, member.FileId, keeper.FileId, member.FullPath, member.PathKey,
-                        member.SizeBytes, member.LastWriteUtc, member.VolumeId, member.FileIdentity, fact.FullHash,
-                        DuplicateCleanupItemStatus.Planned, "", ""));
-                }
-            }
-            if (items.Count == 0) throw new InvalidOperationException("No safe cleanup candidates remain after keeper, protection, availability, and hard-link checks.");
-            long planId = _analysis.CreateCleanupPlan(action, quarantineRoot, items);
-            return _analysis.GetCleanupPlan(planId) ?? throw new InvalidOperationException("The cleanup plan could not be reloaded.");
-        }
-
-        public async Task<DuplicateCleanupExecutionResult> ExecutePlanAsync(long planId, CancellationToken cancellationToken = default)
-        {
-            if (_isEncodingActive()) throw new InvalidOperationException("Stop the active encode before duplicate cleanup.");
-            DuplicateCleanupPlanRecord plan = _analysis.GetCleanupPlan(planId) ?? throw new KeyNotFoundException($"Cleanup plan {planId} does not exist.");
-            if (plan.Status != DuplicateCleanupStatus.Ready) throw new InvalidOperationException("Only a ready cleanup plan can be executed.");
-            int succeeded = 0, excluded = 0, failed = 0;
-            string fatal = "";
-            foreach (IGrouping<long, DuplicateCleanupPlanItemRecord> groupItems in plan.Items.GroupBy(x => x.GroupId))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                long keeperId = groupItems.Select(x => x.KeeperFileId).Distinct().Single();
-                ExactDuplicateMemberRecord? keeper = _analysis.GetDuplicateGroupMembers(groupItems.Key).FirstOrDefault(x => x.FileId == keeperId);
-                byte[] expected = groupItems.First().FullHash;
-                string? keeperError = await ValidateMemberAsync(keeper, expected, cancellationToken).ConfigureAwait(false);
-                if (keeperError != null)
-                {
-                    foreach (DuplicateCleanupPlanItemRecord item in groupItems)
-                    {
-                        Exclude(plan, item, "Keeper validation failed: " + keeperError);
-                        excluded++;
-                    }
-                    continue;
-                }
-                foreach (DuplicateCleanupPlanItemRecord item in groupItems)
+                foreach (long[] batch in groupIds.Distinct().Chunk(CleanupBatchSize))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    keeperError = await ValidateMemberAsync(keeper, expected, cancellationToken).ConfigureAwait(false);
-                    if (keeperError != null)
+                    AppendGroupBatch(planId, batch, cancellationToken);
+                }
+                return FinishPlan(planId);
+            }
+            catch (OperationCanceledException)
+            {
+                _analysis.CompleteCleanupPlan(planId, DuplicateCleanupStatus.Failed, "Cleanup planning was canceled before the plan became ready.");
+                throw;
+            }
+            catch
+            {
+                _analysis.CompleteCleanupPlan(planId, DuplicateCleanupStatus.Failed, "Cleanup planning failed before the plan became ready.");
+                throw;
+            }
+        }
+
+        public DuplicateCleanupPlanSummary CreatePlanForAllEligible(
+            DuplicateCleanupAction action,
+            string quarantineRoot = "",
+            CancellationToken cancellationToken = default)
+        {
+            long planId = _analysis.BeginCleanupPlan(action, quarantineRoot);
+            long afterGroupId = 0;
+            try
+            {
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    IReadOnlyList<long> groupIds = _analysis.GetCleanupEligibleDuplicateGroupIds(afterGroupId, CleanupBatchSize);
+                    if (groupIds.Count == 0) break;
+                    AppendGroupBatch(planId, groupIds, cancellationToken);
+                    afterGroupId = groupIds[^1];
+                    if (groupIds.Count < CleanupBatchSize) break;
+                }
+                return FinishPlan(planId);
+            }
+            catch (OperationCanceledException)
+            {
+                _analysis.CompleteCleanupPlan(planId, DuplicateCleanupStatus.Failed, "Cleanup planning was canceled before the plan became ready.");
+                throw;
+            }
+            catch
+            {
+                _analysis.CompleteCleanupPlan(planId, DuplicateCleanupStatus.Failed, "Cleanup planning failed before the plan became ready.");
+                throw;
+            }
+        }
+
+        private DuplicateCleanupPlanSummary FinishPlan(long planId)
+        {
+            DuplicateCleanupPlanSummary draft = _analysis.GetCleanupPlanSummary(planId, includeLocations: false)
+                ?? throw new InvalidOperationException("The cleanup plan could not be reloaded.");
+            if (draft.TotalItems == 0)
+            {
+                _analysis.CompleteCleanupPlan(planId, DuplicateCleanupStatus.Failed,
+                    "No safe cleanup candidates remain after keeper, protection, availability, hard-link, and hash checks.");
+                throw new InvalidOperationException("No safe cleanup candidates remain after keeper, protection, availability, hard-link, and hash checks.");
+            }
+            _analysis.MarkCleanupPlanReady(planId);
+            return _analysis.GetCleanupPlanSummary(planId) ?? throw new InvalidOperationException("The ready cleanup plan could not be reloaded.");
+        }
+
+        private void AppendGroupBatch(long planId, IReadOnlyCollection<long> groupIds, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int inserted = _analysis.AppendEligibleCleanupGroups(planId, groupIds);
+                if (inserted < CleanupBatchSize) return;
+            }
+        }
+
+        public async Task<DuplicateCleanupExecutionResult> ExecutePlanAsync(
+            long planId,
+            CancellationToken cancellationToken = default,
+            IProgress<DuplicateCleanupProgress>? progress = null)
+        {
+            if (_isEncodingActive()) throw new InvalidOperationException("Stop the active encode before duplicate cleanup.");
+            DuplicateCleanupPlanSummary plan = _analysis.GetCleanupPlanSummary(planId, includeLocations: false) ?? throw new KeyNotFoundException($"Cleanup plan {planId} does not exist.");
+            if (plan.Status != DuplicateCleanupStatus.Ready) throw new InvalidOperationException("Only a ready cleanup plan can be executed.");
+            _analysis.MarkCleanupPlanRunning(planId);
+            long succeeded = plan.SucceededItems, excluded = plan.ExcludedItems, failed = plan.FailedItems, reclaimed = plan.ReclaimedBytes;
+            string fatal = "";
+            long afterGroupId = 0, afterFileId = 0;
+            try
+            {
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    IReadOnlyList<DuplicateCleanupPlanItemRecord> batch = _analysis.GetCleanupPlanItemsBatch(
+                        planId, afterGroupId, afterFileId, CleanupBatchSize, DuplicateCleanupItemStatus.Planned);
+                    if (batch.Count == 0) break;
+                    foreach (DuplicateCleanupPlanItemRecord item in batch)
                     {
-                        Exclude(plan, item, "Keeper validation failed immediately before action: " + keeperError);
-                        excluded++;
-                        continue;
-                    }
-                    ExactDuplicateMemberRecord? current = _analysis.GetDuplicateGroupMembers(item.GroupId).FirstOrDefault(x => x.FileId == item.FileId);
-                    string? validation = await ValidatePlanItemAsync(item, current, expected, cancellationToken).ConfigureAwait(false);
-                    if (validation != null)
-                    {
-                        Exclude(plan, item, validation); excluded++; continue;
-                    }
-                    string destination = "";
-                    try
-                    {
-                        destination = plan.Action switch
+                        cancellationToken.ThrowIfCancellationRequested();
+                        ExactDuplicateGroupRecord? group = _analysis.GetDuplicateGroup(item.GroupId);
+                        long? currentKeeperId = group?.ManualKeeperFileId ?? group?.SuggestedKeeperFileId;
+                        if (group == null || group.Ignored || currentKeeperId != item.KeeperFileId)
                         {
-                            DuplicateCleanupAction.RecycleBin => Recycle(item.SourcePath),
-                            DuplicateCleanupAction.Quarantine => _actions.Quarantine(item.SourcePath, plan.QuarantineRoot, item.GroupId, item.FileId),
-                            DuplicateCleanupAction.PermanentDelete => DeletePermanent(item.SourcePath),
-                            _ => throw new InvalidOperationException("Unknown cleanup action.")
-                        };
-                        _analysis.UpdateCleanupPlanItem(plan.PlanId, item.FileId, DuplicateCleanupItemStatus.Succeeded, destination, "");
-                        _analysis.AppendCleanupAudit(plan.PlanId, item.FileId, item.SourcePath, destination, plan.Action, DuplicateCleanupItemStatus.Succeeded, "Validated exact duplicate cleanup succeeded.");
-                        _recovery?.MarkFileRemovedByCleanup(item.FileId, item.SourcePath,
-                            $"Exact cleanup plan {plan.PlanId} completed using {plan.Action}.");
-                        succeeded++;
+                            Exclude(planId, plan.Action, item, group?.Ignored == true ? "The duplicate group is now ignored." : "The keeper decision changed or the group is no longer active.");
+                            excluded++;
+                            continue;
+                        }
+                        IReadOnlyList<ExactDuplicateMemberRecord> currentMembers = _analysis.GetDuplicateGroupMembers(
+                            item.GroupId, new[] { item.KeeperFileId, item.FileId });
+                        ExactDuplicateMemberRecord? keeper = currentMembers.FirstOrDefault(member => member.FileId == item.KeeperFileId);
+                        ExactDuplicateMemberRecord? current = currentMembers.FirstOrDefault(member => member.FileId == item.FileId);
+                        string? keeperError = await ValidateMemberAsync(keeper, item.FullHash, cancellationToken).ConfigureAwait(false);
+                        if (keeperError != null)
+                        {
+                            Exclude(planId, plan.Action, item, "Keeper validation failed immediately before action: " + keeperError);
+                            excluded++;
+                            continue;
+                        }
+                        string? validation = await ValidatePlanItemAsync(item, current, item.FullHash, cancellationToken).ConfigureAwait(false);
+                        if (validation != null)
+                        {
+                            Exclude(planId, plan.Action, item, validation); excluded++; continue;
+                        }
+                        string destination = "";
+                        try
+                        {
+                            destination = plan.Action switch
+                            {
+                                DuplicateCleanupAction.RecycleBin => Recycle(item.SourcePath),
+                                DuplicateCleanupAction.Quarantine => _actions.Quarantine(item.SourcePath, plan.QuarantineRoot, item.GroupId, item.FileId),
+                                DuplicateCleanupAction.PermanentDelete => DeletePermanent(item.SourcePath),
+                                _ => throw new InvalidOperationException("Unknown cleanup action.")
+                            };
+                            _analysis.RecordCleanupPlanItemOutcome(planId, item.FileId, item.SourcePath, destination, plan.Action,
+                                DuplicateCleanupItemStatus.Succeeded, "", "Validated exact duplicate cleanup succeeded.");
+                            _recovery?.MarkFileRemovedByCleanup(item.FileId, item.SourcePath,
+                                $"Exact cleanup plan {planId} completed using {plan.Action}.");
+                            succeeded++; reclaimed += item.SourceSizeBytes;
+                        }
+                        catch (Exception ex)
+                        {
+                            _analysis.RecordCleanupPlanItemOutcome(planId, item.FileId, item.SourcePath, destination, plan.Action,
+                                DuplicateCleanupItemStatus.Failed, ex.Message, ex.Message);
+                            failed++;
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        _analysis.UpdateCleanupPlanItem(plan.PlanId, item.FileId, DuplicateCleanupItemStatus.Failed, destination, ex.Message);
-                        _analysis.AppendCleanupAudit(plan.PlanId, item.FileId, item.SourcePath, destination, plan.Action, DuplicateCleanupItemStatus.Failed, ex.Message);
-                        failed++;
-                    }
+                    DuplicateCleanupPlanItemRecord last = batch[^1];
+                    afterGroupId = last.GroupId;
+                    afterFileId = last.FileId;
+                    progress?.Report(new DuplicateCleanupProgress(planId, plan.TotalItems, succeeded + excluded + failed,
+                        succeeded, excluded, failed, reclaimed));
                 }
             }
-            DuplicateCleanupStatus final = failed > 0 ? DuplicateCleanupStatus.Failed : DuplicateCleanupStatus.Completed;
+            catch (OperationCanceledException)
+            {
+                fatal = $"Canceled after {succeeded:N0} successful action(s).";
+            }
+            DuplicateCleanupStatus final = failed > 0 || fatal.Length > 0 ? DuplicateCleanupStatus.Failed : DuplicateCleanupStatus.Completed;
             _analysis.CompleteCleanupPlan(planId, final, fatal);
-            return new DuplicateCleanupExecutionResult(planId, succeeded, excluded, failed, fatal);
+            DuplicateCleanupPlanSummary completed = _analysis.GetCleanupPlanSummary(planId, includeLocations: false)
+                ?? throw new InvalidOperationException("The completed cleanup plan could not be reloaded.");
+            return new DuplicateCleanupExecutionResult(planId, checked((int)completed.SucceededItems), checked((int)completed.ExcludedItems),
+                checked((int)completed.FailedItems), completed.ErrorText, completed.ReclaimedBytes);
         }
 
         private async Task<string?> ValidatePlanItemAsync(DuplicateCleanupPlanItemRecord item, ExactDuplicateMemberRecord? current, byte[] expected, CancellationToken token)
@@ -272,10 +354,19 @@ namespace MediaFlux.Services.LibraryCatalog
 
         private string Recycle(string path) { _actions.Recycle(path); return "Recycle Bin"; }
         private string DeletePermanent(string path) { _actions.DeletePermanent(path); return "Permanently deleted"; }
-        private void Exclude(DuplicateCleanupPlanRecord plan, DuplicateCleanupPlanItemRecord item, string message)
+        private void Exclude(long planId, DuplicateCleanupAction action, DuplicateCleanupPlanItemRecord item, string message)
         {
-            _analysis.UpdateCleanupPlanItem(plan.PlanId, item.FileId, DuplicateCleanupItemStatus.Excluded, "", message);
-            _analysis.AppendCleanupAudit(plan.PlanId, item.FileId, item.SourcePath, "", plan.Action, DuplicateCleanupItemStatus.Excluded, message);
+            _analysis.RecordCleanupPlanItemOutcome(planId, item.FileId, item.SourcePath, "", action,
+                DuplicateCleanupItemStatus.Excluded, message, message);
+        }
+
+        private ExactDuplicateMemberRecord SelectKeeper(IReadOnlyList<ExactDuplicateMemberRecord> members)
+        {
+            ExactDuplicateMemberRecord? manual = members.FirstOrDefault(member => member.IsManualKeeper);
+            if (manual != null) return manual;
+            ExactDuplicateMemberRecord? suggested = members.FirstOrDefault(member => member.IsSuggestedKeeper);
+            if (suggested != null) return suggested;
+            return ExactDuplicateKeeperPolicy.Select(members, _keeperPreferences).Keeper;
         }
     }
 }

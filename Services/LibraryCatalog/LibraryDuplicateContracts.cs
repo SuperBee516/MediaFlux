@@ -121,6 +121,7 @@ namespace MediaFlux.Services.LibraryCatalog
         string PathKey,
         string LocationPath,
         long SizeBytes,
+        DateTime? CreationUtc,
         DateTime LastWriteUtc,
         string VolumeId,
         string FileIdentity,
@@ -135,6 +136,12 @@ namespace MediaFlux.Services.LibraryCatalog
         bool IsProtected,
         bool IsSuggestedKeeper,
         bool IsManualKeeper);
+
+    public sealed record ExactDuplicateReclaimLocation(
+        long LocationId,
+        string LocationPath,
+        long FileCount,
+        long ReclaimableBytes);
 
     public sealed record DuplicateGroupDecision(
         long GroupId,
@@ -182,6 +189,33 @@ namespace MediaFlux.Services.LibraryCatalog
         string ErrorText,
         IReadOnlyList<DuplicateCleanupPlanItemRecord> Items);
 
+    public sealed record DuplicateCleanupPlanSummary(
+        long PlanId,
+        DuplicateCleanupAction Action,
+        DuplicateCleanupStatus Status,
+        string QuarantineRoot,
+        DateTime CreatedUtc,
+        DateTime? CompletedUtc,
+        string ErrorText,
+        long TotalItems,
+        long TotalGroups,
+        long PlannedItems,
+        long SucceededItems,
+        long ExcludedItems,
+        long FailedItems,
+        long PlannedBytes,
+        long ReclaimedBytes,
+        IReadOnlyList<ExactDuplicateReclaimLocation> Locations);
+
+    public sealed record DuplicateCleanupProgress(
+        long PlanId,
+        long TotalItems,
+        long ProcessedItems,
+        long SucceededItems,
+        long ExcludedItems,
+        long FailedItems,
+        long ReclaimedBytes);
+
     public sealed record DuplicateCleanupPlanItemRecord(
         long PlanId,
         long GroupId,
@@ -219,17 +253,33 @@ namespace MediaFlux.Services.LibraryCatalog
         void SaveHashBatch(IReadOnlyCollection<LibraryHashWrite> writes, LibraryHashKind kind, string algorithm, int version);
         long RebuildExactDuplicateGroups(DuplicateAnalysisHandle run, string fullAlgorithm, int fullVersion);
         IReadOnlyList<long> GetDuplicateGroupIds(long analysisRunId, long afterGroupId, int limit);
+        IReadOnlyList<long> GetCleanupEligibleDuplicateGroupIds(long afterGroupId, int limit);
         ExactDuplicateGroupPage QueryDuplicateGroups(DuplicateGroupQuery query);
         ExactDuplicateGroupRecord? GetDuplicateGroup(long groupId);
         IReadOnlyList<ExactDuplicateMemberRecord> GetDuplicateGroupMembers(long groupId);
+        IReadOnlyList<ExactDuplicateMemberRecord> GetDuplicateGroupMembers(long groupId, IReadOnlyCollection<long> fileIds);
         void SetSuggestedKeeper(long groupId, long? fileId);
         void SaveDuplicateDecision(DuplicateGroupDecision decision);
         void SetFileProtection(long fileId, bool isProtected, string reason = "");
+        IReadOnlyList<ExactDuplicateReclaimLocation> GetExactDuplicateReclaimByLocation();
         LibraryStatistics GetLibraryStatistics(int topCount = 10);
         long CreateCleanupPlan(
             DuplicateCleanupAction action,
             string quarantineRoot,
             IReadOnlyCollection<DuplicateCleanupPlanItemRecord> items);
+        long BeginCleanupPlan(DuplicateCleanupAction action, string quarantineRoot);
+        void AppendCleanupPlanItems(long planId, IReadOnlyCollection<DuplicateCleanupPlanItemRecord> items);
+        int AppendEligibleCleanupGroups(long planId, IReadOnlyCollection<long> groupIds);
+        void MarkCleanupPlanReady(long planId);
+        void MarkCleanupPlanRunning(long planId);
+        int RecoverInterruptedCleanupPlans();
+        DuplicateCleanupPlanSummary? GetCleanupPlanSummary(long planId, bool includeLocations = true);
+        IReadOnlyList<DuplicateCleanupPlanItemRecord> GetCleanupPlanItemsBatch(
+            long planId,
+            long afterGroupId,
+            long afterFileId,
+            int limit,
+            DuplicateCleanupItemStatus? status = null);
         DuplicateCleanupPlanRecord? GetCleanupPlan(long planId);
         void UpdateCleanupPlanItem(
             long planId,
@@ -237,6 +287,15 @@ namespace MediaFlux.Services.LibraryCatalog
             DuplicateCleanupItemStatus status,
             string destinationPath,
             string validationError);
+        void RecordCleanupPlanItemOutcome(
+            long planId,
+            long fileId,
+            string sourcePath,
+            string destinationPath,
+            DuplicateCleanupAction action,
+            DuplicateCleanupItemStatus status,
+            string validationError,
+            string auditMessage);
         void CompleteCleanupPlan(long planId, DuplicateCleanupStatus status, string errorText = "");
         void AppendCleanupAudit(
             long planId,

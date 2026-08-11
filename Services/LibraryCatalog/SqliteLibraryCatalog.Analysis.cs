@@ -327,6 +327,19 @@ namespace MediaFlux.Services.LibraryCatalog
             return locations;
         }
 
+        public IReadOnlyDictionary<long, long> GetLocationFileCounts()
+        {
+            ThrowIfDisposed();
+            using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT l.id,COUNT(m.file_id) FROM library_locations l LEFT JOIN file_location_memberships m ON m.location_id=l.id GROUP BY l.id;";
+            using SqliteDataReader reader = command.ExecuteReader();
+            var result = new Dictionary<long, long>();
+            while (reader.Read()) result[reader.GetInt64(0)] = reader.GetInt64(1);
+            return result;
+        }
+
         public void RemoveLocation(long locationId, bool removeOrphanedFiles)
         {
             ThrowIfDisposed();

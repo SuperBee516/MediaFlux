@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 9;
+        public const int CurrentVersion = 10;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -654,6 +654,13 @@ namespace MediaFlux.Services.LibraryCatalog
                     CREATE UNIQUE INDEX ux_decision_event_reversal
                         ON library_decision_events(reversal_of_event_id)
                         WHERE reversal_of_event_id IS NOT NULL;
+                    """),
+                new LibraryCatalogMigration(
+                    10,
+                    "Paged exact cleanup execution",
+                    """
+                    CREATE INDEX ix_cleanup_items_plan_status_group_file
+                        ON duplicate_cleanup_plan_items(plan_id,status,group_id,file_id);
                     """)
             };
 

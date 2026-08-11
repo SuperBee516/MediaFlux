@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
 using MediaFlux.Services.LibraryCatalog;
 
 namespace MediaFlux
@@ -18,11 +19,17 @@ namespace MediaFlux
         private readonly Label _duplicateStatus = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0), Text = "Exact analysis has not run." };
         private readonly Label _duplicatePageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
         private readonly ProgressBar _duplicateProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
+        private readonly Label _duplicateReclaimByLocation = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0), ForeColor = SystemColors.GrayText };
+        private readonly ContextMenuStrip _duplicateGroupsMenu = new();
+        private readonly ContextMenuStrip _duplicateMembersMenu = new();
         private readonly Button _duplicateApplyButton = new() { Name = "DuplicateApplyButton", Text = "Apply", Dock = DockStyle.Top, Height = 30 };
         private readonly TableLayoutPanel _duplicateControlArea = new() { Name = "DuplicateControlArea" };
         private int _duplicatePage;
         private long _duplicateTotal;
         private bool _loadingDuplicateGroups;
+        private CancellationTokenSource? _exactCleanupCancellation;
+        private int _duplicateMemberLoadVersion;
+        private readonly SemaphoreSlim _duplicateMemberRefreshLock = new(1, 1);
 
         private void BuildDuplicatesTab()
         {
@@ -37,10 +44,12 @@ namespace MediaFlux
             _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             var analysis = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false, Padding = new Padding(0, 4, 0, 2) };
-            AddButton(analysis, "Analyze exact duplicates", AnalyzeDuplicates_Click);
+            AddButton(analysis, "Run Analysis", AnalyzeDuplicates_Click);
             AddButton(analysis, "Pause", (_, _) => _runtime.Duplicates.Pause());
             AddButton(analysis, "Resume", (_, _) => _runtime.Duplicates.Resume());
             AddButton(analysis, "Cancel", (_, _) => _runtime.Duplicates.Cancel());
+            AddButton(analysis, "Keeper rules…", ExactKeeperRules_Click);
+            AddButton(analysis, "Cancel Cleanup", (_, _) => _exactCleanupCancellation?.Cancel());
             _duplicateControlArea.Controls.Add(analysis, 0, 0);
 
             var filtersBox = new GroupBox { Text = "Filters", Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 7) };
@@ -101,6 +110,8 @@ namespace MediaFlux
             AddDuplicateMemberColumn("Path", "File location", 420);
             AddDuplicateMemberColumn("Root", "Root", 180);
             AddDuplicateMemberColumn("Size", "Size", 85);
+            AddDuplicateMemberColumn("Created", "Created", 135);
+            AddDuplicateMemberColumn("Modified", "Modified", 135);
             AddDuplicateMemberColumn("Codec", "Codec", 75);
             AddDuplicateMemberColumn("Resolution", "Resolution", 85);
             AddDuplicateMemberColumn("Bitrate", "Bitrate", 85);
@@ -112,6 +123,9 @@ namespace MediaFlux
             AddButton(actions, "Mark reviewed", MarkReviewed_Click);
             AddButton(actions, "Ignore / restore group", ToggleIgnored_Click);
             AddButton(actions, "Re-analyze selected group", QueueSelectedExactGroup_Click);
+            AddButton(actions, "Select all except keeper", SelectAllExceptKeeper_Click);
+            AddButton(actions, "Delete Selected Groups…", DeleteSelectedGroups_Click);
+            AddButton(actions, "Delete All Eligible…", DeleteAllEligible_Click);
             AddButton(actions, $"Preview {CleanupActionLabel(_cleanupOptions.PreferredAction)} cleanup…", PreviewPreferredCleanup_Click);
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
@@ -122,7 +136,7 @@ namespace MediaFlux
             pager.Controls.Add(next); pager.Controls.Add(previous); pager.Controls.Add(_duplicatePageLabel);
 
             var status = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, WrapContents = false };
-            status.Controls.Add(_duplicateProgress); status.Controls.Add(_duplicateStatus);
+            status.Controls.Add(_duplicateProgress); status.Controls.Add(_duplicateStatus); status.Controls.Add(_duplicateReclaimByLocation);
             var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 240, Panel1MinSize = 140, Panel2MinSize = 140 };
             split.Panel1.Controls.Add(_duplicateGroupsGrid);
             split.Panel2.Controls.Add(_duplicateMembersGrid);
@@ -132,6 +146,7 @@ namespace MediaFlux
             tab.Controls.Add(actions);
             tab.Controls.Add(_duplicateControlArea);
             _tabs.TabPages.Add(tab);
+            ConfigureExactContextMenus();
         }
 
         private async void ResetDuplicateFilters_Click(object? sender, EventArgs e)
@@ -182,6 +197,7 @@ namespace MediaFlux
             {
                 ExactDuplicateGroupPage page = await Task.Run(() => _runtime.AnalysisCatalog.QueryDuplicateGroups(BuildDuplicateQuery()));
                 if (IsDisposed) return;
+                long[] selectedGroupIds = SelectedGroups().Select(group => group.GroupId).ToArray();
                 _duplicateTotal = page.TotalCount;
                 _duplicateGroupsGrid.Rows.Clear();
                 foreach (ExactDuplicateGroupRecord group in page.Groups)
@@ -192,37 +208,67 @@ namespace MediaFlux
                         group.ProtectedMemberCount, Convert.ToHexString(group.FullHash.AsSpan(0, Math.Min(8, group.FullHash.Length))) + "…");
                     _duplicateGroupsGrid.Rows[row].Tag = group;
                 }
+                foreach (DataGridViewRow row in _duplicateGroupsGrid.Rows)
+                    row.Selected = row.Tag is ExactDuplicateGroupRecord group && selectedGroupIds.Contains(group.GroupId);
+                if (_duplicateGroupsGrid.SelectedRows.Count == 0 && _duplicateGroupsGrid.Rows.Count > 0)
+                    _duplicateGroupsGrid.Rows[0].Selected = true;
                 long first = _duplicateTotal == 0 ? 0 : (long)_duplicatePage * DuplicatePageSize + 1;
                 long last = Math.Min(_duplicateTotal, ((long)_duplicatePage + 1) * DuplicatePageSize);
                 _duplicatePageLabel.Text = $"{first:N0}–{last:N0} of {_duplicateTotal:N0}";
+                await RefreshExactReclaimByLocationAsync();
                 await RefreshDuplicateMembersAsync();
             }
             finally { _loadingDuplicateGroups = false; }
         }
 
+        private async Task RefreshExactReclaimByLocationAsync()
+        {
+            IReadOnlyList<ExactDuplicateReclaimLocation> locations = await Task.Run(() => _runtime.AnalysisCatalog.GetExactDuplicateReclaimByLocation());
+            if (IsDisposed) return;
+            _duplicateReclaimByLocation.Text = locations.Count == 0
+                ? "No reclaimable exact copies"
+                : string.Join("  ·  ", locations.Take(3).Select(item => $"{CompactLocation(item.LocationPath)}: {FormatBytes(item.ReclaimableBytes)}")) +
+                  (locations.Count > 3 ? $"  ·  +{locations.Count - 3:N0} more" : "");
+        }
+
+        private static string CompactLocation(string path)
+        {
+            string? root = Path.GetPathRoot(path);
+            return string.IsNullOrWhiteSpace(root) ? path : root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        }
+
         private async Task RefreshDuplicateMembersAsync()
         {
-            if (_duplicateGroupsGrid.SelectedRows.Count == 0) { _duplicateMembersGrid.Rows.Clear(); return; }
-            long groupId = Convert.ToInt64(_duplicateGroupsGrid.SelectedRows[0].Cells[0].Value);
-            LibraryMatchEligibility eligibility = await Task.Run(() => _runtime.MatchEligibility.EvaluateExactGroup(groupId));
-            if (!eligibility.IsActive)
+            int version = Interlocked.Increment(ref _duplicateMemberLoadVersion);
+            await _duplicateMemberRefreshLock.WaitAsync();
+            try
             {
+                if (version != Volatile.Read(ref _duplicateMemberLoadVersion) || IsDisposed) return;
+                if (_duplicateGroupsGrid.SelectedRows.Count == 0) { _duplicateMembersGrid.Rows.Clear(); return; }
+                long groupId = Convert.ToInt64(_duplicateGroupsGrid.SelectedRows[0].Cells[0].Value);
+                LibraryMatchEligibility eligibility = await Task.Run(() => _runtime.MatchEligibility.EvaluateExactGroup(groupId));
+                if (version != Volatile.Read(ref _duplicateMemberLoadVersion) || IsDisposed) return;
+                if (!eligibility.IsActive)
+                {
+                    _duplicateMembersGrid.Rows.Clear();
+                    _duplicateStatus.Text = $"Match suspended: {eligibility.Reason}";
+                    if (!_loadingDuplicateGroups) await RefreshDuplicateGroupsAsync();
+                    return;
+                }
+                IReadOnlyList<ExactDuplicateMemberRecord> members = await Task.Run(() => _runtime.AnalysisCatalog.GetDuplicateGroupMembers(groupId));
+                if (version != Volatile.Read(ref _duplicateMemberLoadVersion) || IsDisposed) return;
                 _duplicateMembersGrid.Rows.Clear();
-                _duplicateStatus.Text = $"Match suspended: {eligibility.Reason}";
-                if (!_loadingDuplicateGroups) await RefreshDuplicateGroupsAsync();
-                return;
+                foreach (ExactDuplicateMemberRecord member in members)
+                {
+                    string keeper = member.IsManualKeeper ? "Manual" : member.IsSuggestedKeeper ? "Suggested" : member.IsHardLinkAlias ? "Hard-link alias" : "Candidate";
+                    int row = _duplicateMembersGrid.Rows.Add(keeper, member.IsProtected ? "Yes" : "No", member.FullPath, member.LocationPath,
+                        FormatBytes(member.SizeBytes), member.CreationUtc?.ToLocalTime().ToString("g") ?? "Unknown", member.LastWriteUtc.ToLocalTime().ToString("g"),
+                        member.VideoCodec, member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
+                        member.TotalBitRate.HasValue ? $"{member.TotalBitRate / 1_000_000d:0.##} Mbps" : "", member.PhysicalIdentityKey);
+                    _duplicateMembersGrid.Rows[row].Tag = member;
+                }
             }
-            IReadOnlyList<ExactDuplicateMemberRecord> members = await Task.Run(() => _runtime.AnalysisCatalog.GetDuplicateGroupMembers(groupId));
-            if (IsDisposed) return;
-            _duplicateMembersGrid.Rows.Clear();
-            foreach (ExactDuplicateMemberRecord member in members)
-            {
-                string keeper = member.IsManualKeeper ? "Manual" : member.IsSuggestedKeeper ? "Suggested" : member.IsHardLinkAlias ? "Hard-link alias" : "Candidate";
-                int row = _duplicateMembersGrid.Rows.Add(keeper, member.IsProtected ? "Yes" : "No", member.FullPath, member.LocationPath,
-                    FormatBytes(member.SizeBytes), member.VideoCodec, member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
-                    member.TotalBitRate.HasValue ? $"{member.TotalBitRate / 1_000_000d:0.##} Mbps" : "", member.PhysicalIdentityKey);
-                _duplicateMembersGrid.Rows[row].Tag = member;
-            }
+            finally { _duplicateMemberRefreshLock.Release(); }
         }
 
         private DuplicateGroupQuery BuildDuplicateQuery()
@@ -274,6 +320,122 @@ namespace MediaFlux
             await RefreshDuplicateGroupsAsync();
         }
 
+        private void ConfigureExactContextMenus()
+        {
+            AddVisualMenuItem(_duplicateMembersMenu, "Set as Keeper", "Keeper", () => { SetManualKeeper_Click(null, EventArgs.Empty); return Task.CompletedTask; });
+            AddVisualMenuItem(_duplicateMembersMenu, "Protect", "Protect", () => { ToggleProtection_Click(null, EventArgs.Empty); return Task.CompletedTask; });
+            AddVisualMenuItem(_duplicateMembersMenu, "Play Video", "Play", () => { if (SelectedMember() is { } m) PlayLibraryVideo(m.FullPath); return Task.CompletedTask; });
+            AddVisualMenuItem(_duplicateMembersMenu, "Open File Location", "Folder", () => { if (SelectedMember() is { } m) OpenLibraryFileLocation(m.FullPath); return Task.CompletedTask; });
+            _duplicateMembersMenu.Items.Add(new ToolStripSeparator());
+            AddVisualMenuItem(_duplicateMembersMenu, "Select All Except Keeper", "SelectOthers", () => { SelectAllExceptKeeper(); return Task.CompletedTask; });
+            _duplicateMembersMenu.Opening += DuplicateMembersMenu_Opening;
+            AttachVisualContextMenu(_duplicateMembersGrid, _duplicateMembersMenu);
+
+            AddVisualMenuItem(_duplicateGroupsMenu, "Mark Reviewed", "Reviewed", async () => await MarkSelectedExactGroupsReviewedAsync());
+            AddVisualMenuItem(_duplicateGroupsMenu, "Ignore Group", "Ignore", async () => await ToggleSelectedExactGroupsIgnoredAsync());
+            AddVisualMenuItem(_duplicateGroupsMenu, "Re-analyze Group", "Reanalyze", () => { QueueSelectedExactGroup_Click(null, EventArgs.Empty); return Task.CompletedTask; });
+            _duplicateGroupsMenu.Items.Add(new ToolStripSeparator());
+            AddVisualMenuItem(_duplicateGroupsMenu, "Delete Duplicates in Group…", "Delete", async () => await PreviewCleanupAsync(SelectedGroupIds(), DuplicateCleanupAction.PermanentDelete));
+            AddVisualMenuItem(_duplicateGroupsMenu, "Protect Keeper", "ProtectKeeper", async () => await ProtectSelectedExactKeeperAsync());
+            AddVisualMenuItem(_duplicateGroupsMenu, "Open Keeper Location", "OpenKeeper", () => { OpenSelectedExactKeeperLocation(); return Task.CompletedTask; });
+            _duplicateGroupsMenu.Opening += DuplicateGroupsMenu_Opening;
+            AttachVisualContextMenu(_duplicateGroupsGrid, _duplicateGroupsMenu);
+        }
+
+        private void DuplicateMembersMenu_Opening(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            ExactDuplicateMemberRecord? member = SelectedMember();
+            ExactDuplicateGroupRecord? group = SelectedGroup();
+            bool valid = member != null && group != null && member.GroupId == group.GroupId;
+            SetMenuState(_duplicateMembersMenu, "Keeper", valid && !member!.IsManualKeeper);
+            SetMenuState(_duplicateMembersMenu, "Protect", valid, member?.IsProtected == true ? "Unprotect" : "Protect");
+            SetMenuState(_duplicateMembersMenu, "Play", valid && File.Exists(member!.FullPath));
+            SetMenuState(_duplicateMembersMenu, "Folder", valid && Directory.Exists(Path.GetDirectoryName(member!.FullPath)));
+            SetMenuState(_duplicateMembersMenu, "SelectOthers", group != null && _duplicateMembersGrid.Rows.Count > 1);
+            e.Cancel = !valid;
+        }
+
+        private void DuplicateGroupsMenu_Opening(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            ExactDuplicateGroupRecord[] groups = SelectedGroups();
+            ExactDuplicateGroupRecord? first = groups.FirstOrDefault();
+            SetMenuState(_duplicateGroupsMenu, "Reviewed", groups.Any(group => !group.Reviewed));
+            SetMenuState(_duplicateGroupsMenu, "Ignore", groups.Length > 0, first?.Ignored == true ? "Restore Group" : "Ignore Group");
+            SetMenuState(_duplicateGroupsMenu, "Reanalyze", groups.Length > 0);
+            SetMenuState(_duplicateGroupsMenu, "Delete", groups.Length > 0 && groups.Any(group => !group.Ignored), groups.Length > 1 ? "Delete Selected Groups…" : "Delete Duplicates in Group…");
+            SetMenuState(_duplicateGroupsMenu, "ProtectKeeper", groups.Length == 1);
+            SetMenuState(_duplicateGroupsMenu, "OpenKeeper", groups.Length == 1);
+            e.Cancel = groups.Length == 0;
+        }
+
+        private async Task MarkSelectedExactGroupsReviewedAsync()
+        {
+            foreach (ExactDuplicateGroupRecord group in SelectedGroups())
+                _runtime.AnalysisCatalog.SaveDuplicateDecision(new DuplicateGroupDecision(group.GroupId, group.ManualKeeperFileId, true, group.Ignored));
+            await RefreshDuplicateGroupsAsync();
+        }
+
+        private async Task ToggleSelectedExactGroupsIgnoredAsync()
+        {
+            ExactDuplicateGroupRecord[] groups = SelectedGroups();
+            if (groups.Length == 0) return;
+            bool ignored = !groups[0].Ignored;
+            foreach (ExactDuplicateGroupRecord group in groups)
+                _runtime.AnalysisCatalog.SaveDuplicateDecision(new DuplicateGroupDecision(group.GroupId, group.ManualKeeperFileId, true, ignored));
+            await RefreshDuplicateGroupsAsync();
+        }
+
+        private ExactDuplicateMemberRecord? KeeperForGroup(long groupId)
+        {
+            IReadOnlyList<ExactDuplicateMemberRecord> members = _runtime.AnalysisCatalog.GetDuplicateGroupMembers(groupId);
+            return members.Count == 0 ? null : ExactDuplicateKeeperPolicy.Select(members, _visualKeeperPreferences).Keeper;
+        }
+
+        private async Task ProtectSelectedExactKeeperAsync()
+        {
+            if (SelectedGroup() is not { } group || KeeperForGroup(group.GroupId) is not { } keeper) return;
+            _runtime.AnalysisCatalog.SetFileProtection(keeper.FileId, true, "Exact duplicate keeper protected in Library Analyzer");
+            await RefreshDuplicateGroupsAsync();
+        }
+
+        private void OpenSelectedExactKeeperLocation()
+        {
+            if (SelectedGroup() is { } group && KeeperForGroup(group.GroupId) is { } keeper)
+                OpenLibraryFileLocation(keeper.FullPath);
+        }
+
+        private async void ExactKeeperRules_Click(object? sender, EventArgs e)
+        {
+            using var dialog = new DuplicateKeeperPreferencesForm(_visualKeeperPreferences);
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            _visualKeeperPreferences = dialog.Preferences.Clone();
+            _reviewOptions.KeeperPreferencesChanged?.Invoke(_visualKeeperPreferences.Clone());
+            await Task.Run(() =>
+            {
+                _runtime.UpdateExactKeeperPreferences(_visualKeeperPreferences);
+                _runtime.Duplicates.RefreshKeeperRecommendations();
+            });
+            await RefreshDuplicateGroupsAsync();
+        }
+
+        private void SelectAllExceptKeeper_Click(object? sender, EventArgs e) => SelectAllExceptKeeper();
+
+        private void SelectAllExceptKeeper()
+        {
+            if (SelectedGroup() is not { } group || KeeperForGroup(group.GroupId) is not { } keeper) return;
+            IReadOnlyList<long> selectedIds = ExactDuplicateSelectionPolicy.SelectAllExceptKeeper(
+                _duplicateMembersGrid.Rows.Cast<DataGridViewRow>().Select(row => row.Tag).OfType<ExactDuplicateMemberRecord>().ToArray(), keeper.FileId);
+            _duplicateMembersGrid.ClearSelection();
+            foreach (DataGridViewRow row in _duplicateMembersGrid.Rows)
+                row.Selected = row.Tag is ExactDuplicateMemberRecord member && selectedIds.Contains(member.FileId);
+        }
+
+        private async void DeleteSelectedGroups_Click(object? sender, EventArgs e) =>
+            await PreviewCleanupAsync(SelectedGroupIds(), DuplicateCleanupAction.PermanentDelete);
+
+        private async void DeleteAllEligible_Click(object? sender, EventArgs e) =>
+            await PreviewCleanupAsync(null, DuplicateCleanupAction.PermanentDelete);
+
         private async void PreviewRecycle_Click(object? sender, EventArgs e) => await PreviewCleanupAsync(DuplicateCleanupAction.RecycleBin);
         private async void PreviewQuarantine_Click(object? sender, EventArgs e) => await PreviewCleanupAsync(DuplicateCleanupAction.Quarantine);
         private async void PreviewPreferredCleanup_Click(object? sender, EventArgs e) => await PreviewCleanupAsync(_cleanupOptions.PreferredAction);
@@ -285,10 +447,12 @@ namespace MediaFlux
             _ => "permanent-delete"
         };
 
-        private async Task PreviewCleanupAsync(DuplicateCleanupAction action)
+        private async Task PreviewCleanupAsync(DuplicateCleanupAction action) =>
+            await PreviewCleanupAsync(SelectedGroupIds(), action);
+
+        private async Task PreviewCleanupAsync(IReadOnlyCollection<long>? groupIds, DuplicateCleanupAction action)
         {
-            long[] groupIds = _duplicateGroupsGrid.SelectedRows.Cast<DataGridViewRow>().Select(row => Convert.ToInt64(row.Cells[0].Value)).Distinct().ToArray();
-            if (groupIds.Length == 0) return;
+            if (groupIds is { Count: 0 }) return;
             string quarantine = _cleanupOptions.QuarantineFolder;
             if (action == DuplicateCleanupAction.Quarantine && !Directory.Exists(quarantine))
             {
@@ -296,24 +460,90 @@ namespace MediaFlux
                 if (folder.ShowDialog(this) != DialogResult.OK) return;
                 quarantine = Path.Combine(folder.SelectedPath, $"MediaFlux Duplicate Quarantine {DateTime.Now:yyyy-MM-dd HHmmss}");
             }
+            _exactCleanupCancellation?.Dispose();
+            _exactCleanupCancellation = new CancellationTokenSource();
+            _duplicateProgress.Visible = true;
             try
             {
-                DuplicateCleanupPlanRecord plan = _runtime.DuplicateCleanup.CreatePlan(groupIds, action, quarantine);
-                long bytes = plan.Items.Sum(item => item.SourceSizeBytes);
-                string message = $"Cleanup preview\r\n\r\nAction: {action}\r\nFiles: {plan.Items.Count:N0}\r\nPotential storage: {FormatBytes(bytes)}\r\n" +
-                                 $"Groups: {plan.Items.Select(item => item.GroupId).Distinct().Count():N0}\r\n\r\n" +
+                CancellationToken token = _exactCleanupCancellation.Token;
+                DuplicateCleanupPlanSummary plan = await Task.Run(() => groupIds == null
+                    ? _runtime.DuplicateCleanup.CreatePlanForAllEligible(action, quarantine, token)
+                    : _runtime.DuplicateCleanup.CreatePlan(groupIds, action, quarantine, token), token);
+                string locationSummary = BuildCleanupLocationSummary(plan);
+                string message = $"Cleanup preview\r\n\r\nAction: {action}\r\n\r\n{plan.TotalGroups:N0} groups\r\n{plan.TotalItems:N0} files to remove\r\n" +
+                                 $"{plan.TotalGroups:N0} keepers retained\r\n0 protected files affected\r\n{FormatBytes(plan.PlannedBytes)} reclaimable\r\n" + locationSummary + "\r\n" +
                                  "Every keeper and candidate will be revalidated by path, size, modified time, stable identity, and SHA-256 immediately before action. " +
                                  "Protected, changed, unavailable, and hard-link alias files are excluded.\r\n\r\nExecute this plan?";
                 if (action == DuplicateCleanupAction.PermanentDelete)
                     message = "WARNING: This action permanently deletes files and cannot be undone.\r\n\r\n" + message;
                 if (MessageBox.Show(this, message, "Confirm exact duplicate cleanup", MessageBoxButtons.YesNo,
                         MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-                DuplicateCleanupExecutionResult result = await _runtime.DuplicateCleanup.ExecutePlanAsync(plan.PlanId);
-                MessageBox.Show(this, $"Cleanup plan {result.PlanId} finished.\r\n\r\nSucceeded: {result.Succeeded:N0}\r\nExcluded by revalidation: {result.Excluded:N0}\r\nFailed: {result.Failed:N0}\r\n\r\nRescan affected locations to reconcile the catalog.",
-                    "Library Analyzer cleanup", MessageBoxButtons.OK, result.Failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                var progress = new Progress<DuplicateCleanupProgress>(value =>
+                    _duplicateStatus.Text = $"Cleanup {value.ProcessedItems:N0}/{value.TotalItems:N0} · {FormatBytes(value.ReclaimedBytes)} reclaimed");
+                DuplicateCleanupExecutionResult result = await Task.Run(
+                    async () => await _runtime.DuplicateCleanup.ExecutePlanAsync(plan.PlanId, token, progress).ConfigureAwait(false), token);
+                MessageBox.Show(this, $"Cleanup plan {result.PlanId} finished.\r\n\r\nSucceeded: {result.Succeeded:N0}\r\nExcluded by revalidation: {result.Excluded:N0}\r\nFailed: {result.Failed:N0}\r\nActual reclaimed: {FormatBytes(result.ReclaimedBytes)}\r\n" +
+                    (string.IsNullOrWhiteSpace(result.ErrorText) ? "" : $"Status: {result.ErrorText}\r\n") + "\r\nRescan affected locations to reconcile the catalog.",
+                    "Library Analyzer cleanup", MessageBoxButtons.OK,
+                    result.Failed == 0 && string.IsNullOrWhiteSpace(result.ErrorText) ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
                 await RefreshDuplicateGroupsAsync();
+                await RefreshOverviewAsync();
+                await RefreshLocationsAsync();
+            }
+            catch (OperationCanceledException)
+            {
+                MessageBox.Show(this, "Cleanup planning was canceled. No unvalidated file was changed.", "Library Analyzer cleanup", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex) { ShowError("The cleanup plan could not be completed. No unvalidated files were changed.", ex); }
+            finally
+            {
+                _duplicateProgress.Visible = false;
+                _exactCleanupCancellation?.Dispose();
+                _exactCleanupCancellation = null;
+            }
+        }
+
+        private static string BuildCleanupLocationSummary(DuplicateCleanupPlanSummary plan)
+        {
+            if (plan.Locations.Count == 0) return "";
+            return "\r\nBy location:\r\n" + string.Join("\r\n", plan.Locations.Select(item => $"  {item.LocationPath} — {FormatBytes(item.ReclaimableBytes)}")) + "\r\n";
+        }
+
+        private void PlayLibraryVideo(string path)
+        {
+            if (!File.Exists(path)) return;
+            try
+            {
+                if (_reviewOptions.VideoLauncher != null) _reviewOptions.VideoLauncher(path);
+                else if (!string.IsNullOrWhiteSpace(_reviewOptions.ExternalPlayerPath) && File.Exists(_reviewOptions.ExternalPlayerPath))
+                    Process.Start(new ProcessStartInfo { FileName = _reviewOptions.ExternalPlayerPath, Arguments = $"\"{path}\"", UseShellExecute = true });
+                else Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MediaFlux.Services.ErrorLogService.Append(Application.StartupPath, "Open Library Analyzer video failed", path, ex);
+                MessageBox.Show(this, "The selected video could not be opened.\r\n\r\n" + ex.Message, "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void OpenLibraryFileLocation(string path)
+        {
+            string? directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return;
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = File.Exists(path) ? $"/select,\"{path}\"" : $"\"{directory}\"",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                MediaFlux.Services.ErrorLogService.Append(Application.StartupPath, "Open Library Analyzer file location failed", path, ex);
+                MessageBox.Show(this, "The containing folder could not be opened.", "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         private void Duplicates_ProgressChanged(object? sender, LibraryDuplicateAnalysisProgress e)
@@ -327,7 +557,9 @@ namespace MediaFlux
             ConfigureProgress(_duplicateProgress, true, completed, total, completed > 0 && total > 0);
         }
 
-        private ExactDuplicateGroupRecord? SelectedGroup() => _duplicateGroupsGrid.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault()?.Tag as ExactDuplicateGroupRecord;
+        private ExactDuplicateGroupRecord[] SelectedGroups() => _duplicateGroupsGrid.SelectedRows.Cast<DataGridViewRow>().Select(row => row.Tag).OfType<ExactDuplicateGroupRecord>().ToArray();
+        private long[] SelectedGroupIds() => SelectedGroups().Select(group => group.GroupId).Distinct().ToArray();
+        private ExactDuplicateGroupRecord? SelectedGroup() => SelectedGroups().FirstOrDefault();
         private ExactDuplicateMemberRecord? SelectedMember() => _duplicateMembersGrid.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault()?.Tag as ExactDuplicateMemberRecord;
         private void AddDuplicateGroupColumn(string name, string header, int width, bool visible = true) =>
             _duplicateGroupsGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width, Visible = visible });

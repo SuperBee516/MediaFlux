@@ -54,7 +54,8 @@ namespace MediaFlux
             {
                 if (e.Button != MouseButtons.Right || e.RowIndex < 0)
                     return;
-                grid.ClearSelection();
+                if (!grid.Rows[e.RowIndex].Selected)
+                    grid.ClearSelection();
                 grid.Rows[e.RowIndex].Selected = true;
                 if (e.ColumnIndex >= 0)
                     grid.CurrentCell = grid.Rows[e.RowIndex].Cells[e.ColumnIndex];
@@ -660,32 +661,7 @@ namespace MediaFlux
 
         private void PlayVisualMember(VisualSimilarityMemberRecord member)
         {
-            if (!File.Exists(member.FullPath))
-            {
-                MessageBox.Show(this, "The selected video is unavailable.", "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            try
-            {
-                if (_reviewOptions.VideoLauncher != null)
-                {
-                    _reviewOptions.VideoLauncher(member.FullPath);
-                    return;
-                }
-                if (!string.IsNullOrWhiteSpace(_reviewOptions.ExternalPlayerPath) && File.Exists(_reviewOptions.ExternalPlayerPath))
-                {
-                    Process.Start(new ProcessStartInfo { FileName = _reviewOptions.ExternalPlayerPath, Arguments = $"\"{member.FullPath}\"", UseShellExecute = true });
-                }
-                else
-                {
-                    Process.Start(new ProcessStartInfo { FileName = member.FullPath, UseShellExecute = true });
-                }
-            }
-            catch (Exception ex)
-            {
-                ErrorLogService.Append(Application.StartupPath, "Open Library Analyzer visual review video failed", member.FullPath, ex);
-                MessageBox.Show(this, "The selected video could not be opened.\r\n\r\n" + ex.Message, "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+            PlayLibraryVideo(member.FullPath);
         }
 
         private void OpenSelectedVisualMemberFolder()
@@ -696,23 +672,7 @@ namespace MediaFlux
 
         private void OpenVisualMemberFolder(VisualSimilarityMemberRecord member)
         {
-            string? directory = Path.GetDirectoryName(member.FullPath);
-            if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
-                return;
-            try
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "explorer.exe",
-                    Arguments = File.Exists(member.FullPath) ? $"/select,\"{member.FullPath}\"" : $"\"{directory}\"",
-                    UseShellExecute = true
-                });
-            }
-            catch (Exception ex)
-            {
-                ErrorLogService.Append(Application.StartupPath, "Open Library Analyzer visual member folder failed", member.FullPath, ex);
-                MessageBox.Show(this, "The containing folder could not be opened.", "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+            OpenLibraryFileLocation(member.FullPath);
         }
 
         private void CopySelectedVisualMemberPath()

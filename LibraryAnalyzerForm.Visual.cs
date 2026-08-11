@@ -41,7 +41,7 @@ namespace MediaFlux
             _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             var analysis = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false, Padding = new Padding(0, 4, 0, 2) };
-            AddButton(analysis, "Analyze visual similarity", AnalyzeVisualSimilarity_Click);
+            AddButton(analysis, "Run Analysis", AnalyzeVisualSimilarity_Click);
             AddButton(analysis, "Pause", (_, _) => _runtime.VisualSimilarity.Pause());
             AddButton(analysis, "Resume", (_, _) => _runtime.VisualSimilarity.Resume());
             AddButton(analysis, "Cancel", (_, _) => _runtime.VisualSimilarity.Cancel());
@@ -206,7 +206,11 @@ namespace MediaFlux
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             _visualKeeperPreferences = dialog.Preferences.Clone();
             _reviewOptions.KeeperPreferencesChanged?.Invoke(_visualKeeperPreferences.Clone());
-            await Task.Run(() => _runtime.UpdateVisualKeeperPreferences(_visualKeeperPreferences));
+            await Task.Run(() =>
+            {
+                _runtime.UpdateVisualKeeperPreferences(_visualKeeperPreferences);
+                _runtime.UpdateExactKeeperPreferences(_visualKeeperPreferences);
+            });
             await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
         }
 

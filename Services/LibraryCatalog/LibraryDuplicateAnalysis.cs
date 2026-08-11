@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using MediaFlux.Services;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services.LibraryCatalog
 {
@@ -107,6 +108,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly Func<string, bool> _isProtectedPath;
         private readonly AsyncPauseGate _pause = new();
         private readonly LibraryStorageScheduler _storageScheduler;
+        private DuplicateKeeperPreferences _keeperPreferences;
         private readonly object _sync = new();
         private CancellationTokenSource? _activeCancellation;
         private TaskCompletionSource? _activeCompletion;
@@ -118,7 +120,8 @@ namespace MediaFlux.Services.LibraryCatalog
             LibraryDuplicateAnalysisOptions? options = null,
             Func<bool>? isEncodingActive = null,
             Func<string, bool>? isProtectedPath = null,
-            LibraryStorageScheduler? storageScheduler = null)
+            LibraryStorageScheduler? storageScheduler = null,
+            DuplicateKeeperPreferences? keeperPreferences = null)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             _options = options ?? new LibraryDuplicateAnalysisOptions();
@@ -127,6 +130,36 @@ namespace MediaFlux.Services.LibraryCatalog
             _isEncodingActive = isEncodingActive ?? (() => false);
             _isProtectedPath = isProtectedPath ?? (_ => false);
             _storageScheduler = storageScheduler ?? new LibraryStorageScheduler();
+            _keeperPreferences = keeperPreferences?.Clone() ?? new DuplicateKeeperPreferences();
+            _keeperPreferences.Normalize();
+        }
+
+        public void UpdateKeeperPreferences(DuplicateKeeperPreferences preferences)
+        {
+            ArgumentNullException.ThrowIfNull(preferences);
+            DuplicateKeeperPreferences copy = preferences.Clone();
+            copy.Normalize();
+            lock (_sync) _keeperPreferences = copy;
+        }
+
+        public void RefreshKeeperRecommendations()
+        {
+            int offset = 0;
+            while (true)
+            {
+                ExactDuplicateGroupPage page = _catalog.QueryDuplicateGroups(new DuplicateGroupQuery(Offset: offset, Limit: 500));
+                if (page.Groups.Count == 0) return;
+                foreach (ExactDuplicateGroupRecord group in page.Groups)
+                {
+                    IReadOnlyList<ExactDuplicateMemberRecord> members = _catalog.GetDuplicateGroupMembers(group.GroupId);
+                    if (members.Count == 0 || members.Any(member => member.IsManualKeeper)) continue;
+                    DuplicateKeeperPreferences preferences;
+                    lock (_sync) preferences = _keeperPreferences.Clone();
+                    _catalog.SetSuggestedKeeper(group.GroupId, ExactDuplicateKeeperPolicy.Select(members, preferences).Keeper.FileId);
+                }
+                offset += page.Groups.Count;
+                if (offset >= page.TotalCount) return;
+            }
         }
 
         public event EventHandler<LibraryDuplicateAnalysisProgress>? ProgressChanged;
@@ -264,12 +297,9 @@ namespace MediaFlux.Services.LibraryCatalog
                     foreach (ExactDuplicateMemberRecord member in members.Where(member => !member.IsProtected && _isProtectedPath(member.FullPath)))
                         _catalog.SetFileProtection(member.FileId, true, "Configured duplicate reference path");
                     members = _catalog.GetDuplicateGroupMembers(id);
-                    var items = members.Select(ToLegacyItem).ToList();
-                    var group = new DuplicateGroup((int)Math.Min(int.MaxValue, id), "Exact", 100, "Matching size and SHA-256", "Catalog SHA-256", 0, 0, 0, 0, items);
-                    DuplicateGroup scored = DuplicateKeeperScoringService.Apply(group, null);
-                    DuplicateItem? keeper = scored.Items.FirstOrDefault(item => item.Recommendation is "Suggested keeper" or "Protected keeper");
-                    long? keeperId = keeper == null ? null : members.First(item => string.Equals(item.FullPath, keeper.Path, StringComparison.OrdinalIgnoreCase)).FileId;
-                    _catalog.SetSuggestedKeeper(id, keeperId);
+                    DuplicateKeeperPreferences preferences;
+                    lock (_sync) preferences = _keeperPreferences.Clone();
+                    _catalog.SetSuggestedKeeper(id, ExactDuplicateKeeperPolicy.Select(members, preferences).Keeper.FileId);
                 }
                 after = ids[^1];
             }

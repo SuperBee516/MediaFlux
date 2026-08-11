@@ -296,6 +296,7 @@ namespace MediaFlux.Services.LibraryCatalog
             string error = "",
             bool markMembershipsUnavailable = false);
         IReadOnlyList<LibraryLocationRecord> GetLocations(bool includeDisabled = true);
+        IReadOnlyDictionary<long, long> GetLocationFileCounts();
         void RemoveLocation(long locationId, bool removeOrphanedFiles);
         int RecoverInterruptedWork();
 

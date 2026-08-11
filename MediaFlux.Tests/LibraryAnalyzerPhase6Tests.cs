@@ -14,7 +14,7 @@ public sealed class LibraryAnalyzerPhase6Tests : IDisposable
     public void VersionEightAddsRecoverySchemaAndDecisionBackupSupport()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();
-        Assert.Equal(9, catalog.GetDiagnostics().SchemaVersion);
+        Assert.Equal(LibraryCatalogMigrations.CurrentVersion, catalog.GetDiagnostics().SchemaVersion);
         using var connection = new SqliteConnection($"Data Source={catalog.DatabasePath}"); connection.Open();
         foreach (string table in new[] { "library_presence_observations", "library_reanalysis_queue", "library_decision_events" })
         {
@@ -115,7 +115,7 @@ public sealed class LibraryAnalyzerPhase6Tests : IDisposable
         ExactDuplicateGroupRecord group = Assert.Single(catalog.QueryDuplicateGroups(new DuplicateGroupQuery()).Groups);
         catalog.SaveDuplicateDecision(new DuplicateGroupDecision(group.GroupId, catalog.GetFileByPath(keeper)!.Id, true, false));
         var cleanup = new LibraryDuplicateCleanupService(catalog, catalog);
-        DuplicateCleanupPlanRecord plan = cleanup.CreatePlan(new[] { group.GroupId }, DuplicateCleanupAction.Quarantine, Path.Combine(_root, "quarantine"));
+        DuplicateCleanupPlanSummary plan = cleanup.CreatePlan(new[] { group.GroupId }, DuplicateCleanupAction.Quarantine, Path.Combine(_root, "quarantine"));
         Assert.Equal(1, (await cleanup.ExecutePlanAsync(plan.PlanId)).Succeeded);
         Assert.Empty(catalog.QueryDuplicateGroups(new DuplicateGroupQuery()).Groups);
         Assert.Single(catalog.QueryDuplicateGroups(new DuplicateGroupQuery(IncludeInactive: true)).Groups);

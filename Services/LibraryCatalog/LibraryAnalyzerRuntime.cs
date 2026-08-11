@@ -48,6 +48,7 @@ namespace MediaFlux.Services.LibraryCatalog
             _catalog.RecoverInterruptedWork();
             _catalog.RecoverInterruptedDuplicateWork();
             _catalog.RecoverInterruptedVisualWork();
+            _catalog.RecoverInterruptedCleanupPlans();
             LibraryStorageScheduler scheduler = storageScheduler ?? new LibraryStorageScheduler();
             _enrichment = new LibraryEnrichmentCoordinator(
                 _catalog,
@@ -64,14 +65,15 @@ namespace MediaFlux.Services.LibraryCatalog
                 _catalog,
                 isEncodingActive: isEncodingActive,
                 isProtectedPath: path => protectedRoots.Any(root => Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase)),
-                storageScheduler: scheduler);
+                storageScheduler: scheduler,
+                keeperPreferences: keeperPreferences);
             _visual = new LibraryVisualAnalysisCoordinator(
                 _catalog,
                 visualExtractor,
                 isEncodingActive: isEncodingActive,
                 storageScheduler: scheduler,
                 keeperPreferences: keeperPreferences);
-            DuplicateCleanup = new LibraryDuplicateCleanupService(_catalog, _catalog, isEncodingActive);
+            DuplicateCleanup = new LibraryDuplicateCleanupService(_catalog, _catalog, keeperPreferences, isEncodingActive);
             VisualDuplicateCleanup = new LibraryVisualDuplicateCleanupService(_catalog, _catalog, _catalog, keeperPreferences, isEncodingActive);
             MatchEligibility = new LibraryMatchEligibilityService(_catalog, _catalog);
             _reanalysis = new LibraryReanalysisCoordinator(_catalog, _enrichment, _duplicates, _visual);
@@ -128,6 +130,13 @@ namespace MediaFlux.Services.LibraryCatalog
             VisualDuplicateCleanup.UpdateKeeperPreferences(preferences);
             MassReview.UpdatePreferences(preferences);
             VisualFamilies.UpdateKeeperPreferences(preferences);
+        }
+
+        public void UpdateExactKeeperPreferences(MediaFlux.Models.DuplicateKeeperPreferences preferences)
+        {
+            ArgumentNullException.ThrowIfNull(preferences);
+            _duplicates.UpdateKeeperPreferences(preferences);
+            DuplicateCleanup.UpdateKeeperPreferences(preferences);
         }
 
         public void Dispose()

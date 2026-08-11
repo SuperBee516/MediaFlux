@@ -4,6 +4,26 @@ namespace MediaFlux.Services.LibraryCatalog
 {
     public sealed partial class SqliteLibraryCatalog
     {
+        public IReadOnlyList<long> GetCleanupEligibleDuplicateGroupIds(long afterGroupId, int limit)
+        {
+            ThrowIfDisposed();
+            int boundedLimit = Math.Clamp(limit, 1, 500);
+            using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT g.id FROM exact_duplicate_groups g " +
+                "LEFT JOIN duplicate_group_decisions d ON d.size_bytes=g.size_bytes AND d.full_algorithm=g.full_algorithm AND d.full_version=g.full_version AND d.full_hash=g.full_hash " +
+                "WHERE g.analysis_run_id=(SELECT MAX(id) FROM duplicate_analysis_runs WHERE status=$completed) " +
+                "AND g.id>$after AND COALESCE(d.ignored,0)=0 ORDER BY g.id LIMIT $limit;";
+            command.Parameters.AddWithValue("$completed", (int)DuplicateAnalysisStatus.Completed);
+            command.Parameters.AddWithValue("$after", Math.Max(0, afterGroupId));
+            command.Parameters.AddWithValue("$limit", boundedLimit);
+            using SqliteDataReader reader = command.ExecuteReader();
+            var groupIds = new List<long>(boundedLimit);
+            while (reader.Read()) groupIds.Add(reader.GetInt64(0));
+            return groupIds;
+        }
+
         public ExactDuplicateGroupPage QueryDuplicateGroups(DuplicateGroupQuery query)
         {
             ArgumentNullException.ThrowIfNull(query);
@@ -70,15 +90,32 @@ namespace MediaFlux.Services.LibraryCatalog
         }
 
         public IReadOnlyList<ExactDuplicateMemberRecord> GetDuplicateGroupMembers(long groupId)
+            => ReadDuplicateGroupMembers(groupId, afterFileId: 0, limit: null, fileIds: null);
+
+        public IReadOnlyList<ExactDuplicateMemberRecord> GetDuplicateGroupMembers(long groupId, IReadOnlyCollection<long> fileIds)
+        {
+            ArgumentNullException.ThrowIfNull(fileIds);
+            if (fileIds.Count == 0) return Array.Empty<ExactDuplicateMemberRecord>();
+            return ReadDuplicateGroupMembers(groupId, 0, null, fileIds.Distinct().ToArray());
+        }
+
+        private IReadOnlyList<ExactDuplicateMemberRecord> ReadDuplicateGroupMembers(
+            long groupId,
+            long afterFileId,
+            int? limit,
+            IReadOnlyCollection<long>? fileIds)
         {
             ThrowIfDisposed();
             using SqliteConnection connection = _database.OpenConnection(readOnly: true);
             using SqliteCommand command = connection.CreateCommand();
+            string idFilter = fileIds == null
+                ? " AND f.id>$after"
+                : " AND f.id IN (" + string.Join(",", fileIds.Select((_, index) => "$file" + index)) + ")";
             command.CommandText =
                 """
                 SELECT m.group_id,f.id,f.full_path,f.path_key,
                        COALESCE((SELECT MIN(l.path) FROM file_location_memberships fm JOIN library_locations l ON l.id=fm.location_id WHERE fm.file_id=f.id),''),
-                       f.size_bytes,f.last_write_utc_ticks,f.volume_id,f.file_identity,m.physical_identity_key,m.is_hard_link_alias,
+                       f.size_bytes,f.creation_utc_ticks,f.last_write_utc_ticks,f.volume_id,f.file_identity,m.physical_identity_key,m.is_hard_link_alias,
                        f.availability_state,COALESCE(meta.video_codec,''),meta.width,meta.height,meta.total_bitrate,meta.duration_seconds,
                        CASE WHEN p.path_key IS NULL THEN 0 ELSE 1 END,
                        CASE WHEN g.suggested_keeper_file_id=f.id THEN 1 ELSE 0 END,
@@ -88,22 +125,32 @@ namespace MediaFlux.Services.LibraryCatalog
                 LEFT JOIN media_metadata meta ON meta.file_id=f.id
                 LEFT JOIN duplicate_file_protections p ON p.path_key=f.path_key
                 LEFT JOIN duplicate_group_decisions d ON d.size_bytes=g.size_bytes AND d.full_algorithm=g.full_algorithm AND d.full_version=g.full_version AND d.full_hash=g.full_hash
-                WHERE m.group_id=$group ORDER BY m.is_hard_link_alias,f.path_key;
-                """;
+                WHERE m.group_id=$group
+                """ + idFilter + (limit.HasValue || fileIds != null ? " ORDER BY f.id" : " ORDER BY m.is_hard_link_alias,f.path_key") +
+                (limit.HasValue ? " LIMIT $limit;" : ";");
             command.Parameters.AddWithValue("$group", groupId);
+            if (fileIds == null) command.Parameters.AddWithValue("$after", afterFileId);
+            else
+            {
+                int index = 0;
+                foreach (long fileId in fileIds) command.Parameters.AddWithValue("$file" + index++, fileId);
+            }
+            if (limit.HasValue) command.Parameters.AddWithValue("$limit", limit.Value);
             using SqliteDataReader reader = command.ExecuteReader();
             var result = new List<ExactDuplicateMemberRecord>();
             while (reader.Read())
             {
-                result.Add(new ExactDuplicateMemberRecord(
-                    reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetInt64(5),
-                    FromUtcTicks(reader.GetInt64(6)), reader.GetString(7), reader.GetString(8), reader.GetString(9), reader.GetInt32(10) != 0,
-                    (IndexedFileAvailability)reader.GetInt32(11), reader.GetString(12), reader.IsDBNull(13) ? null : reader.GetInt32(13),
-                    reader.IsDBNull(14) ? null : reader.GetInt32(14), reader.IsDBNull(15) ? null : reader.GetInt64(15),
-                    reader.IsDBNull(16) ? null : reader.GetDouble(16), reader.GetInt32(17) != 0, reader.GetInt32(18) != 0, reader.GetInt32(19) != 0));
+                result.Add(ReadExactDuplicateMember(reader));
             }
             return result;
         }
+
+        private static ExactDuplicateMemberRecord ReadExactDuplicateMember(SqliteDataReader reader) => new(
+            reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetInt64(5),
+            reader.IsDBNull(6) ? null : FromUtcTicks(reader.GetInt64(6)), FromUtcTicks(reader.GetInt64(7)), reader.GetString(8), reader.GetString(9), reader.GetString(10), reader.GetInt32(11) != 0,
+            (IndexedFileAvailability)reader.GetInt32(12), reader.GetString(13), reader.IsDBNull(14) ? null : reader.GetInt32(14),
+            reader.IsDBNull(15) ? null : reader.GetInt32(15), reader.IsDBNull(16) ? null : reader.GetInt64(16),
+            reader.IsDBNull(17) ? null : reader.GetDouble(17), reader.GetInt32(18) != 0, reader.GetInt32(19) != 0, reader.GetInt32(20) != 0);
 
         public ExactDuplicateGroupRecord? GetDuplicateGroup(long groupId)
         {
@@ -213,6 +260,44 @@ namespace MediaFlux.Services.LibraryCatalog
                     after.PathKey, LibraryDecisionEventKind.ProtectionChanged, Serialize(before), Serialize(after), "", "library-analyzer");
                 return null;
             });
+        }
+
+        public IReadOnlyList<ExactDuplicateReclaimLocation> GetExactDuplicateReclaimByLocation()
+        {
+            ThrowIfDisposed();
+            using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                WITH active_groups AS (
+                    SELECT g.id,
+                           COALESCE((SELECT f.id FROM indexed_files f WHERE f.path_key=d.manual_keeper_path_key LIMIT 1),g.suggested_keeper_file_id) keeper_id
+                    FROM exact_duplicate_groups g
+                    LEFT JOIN duplicate_group_decisions d ON d.size_bytes=g.size_bytes AND d.full_algorithm=g.full_algorithm AND d.full_version=g.full_version AND d.full_hash=g.full_hash
+                    WHERE g.analysis_run_id=(SELECT MAX(id) FROM duplicate_analysis_runs WHERE status=$completed)
+                      AND COALESCE(d.ignored,0)=0
+                ), candidates AS (
+                    SELECT m.group_id,m.file_id,f.size_bytes,
+                           COALESCE((SELECT MIN(fm.location_id) FROM file_location_memberships fm WHERE fm.file_id=f.id AND fm.availability_state=$present),0) location_id,
+                           ROW_NUMBER() OVER(PARTITION BY m.group_id,m.physical_identity_key ORDER BY m.is_hard_link_alias,f.path_key) physical_rank
+                    FROM active_groups a
+                    JOIN exact_duplicate_members m ON m.group_id=a.id
+                    JOIN indexed_files f ON f.id=m.file_id
+                    WHERE f.availability_state=$present AND m.is_hard_link_alias=0 AND f.id<>a.keeper_id
+                      AND NOT EXISTS(SELECT 1 FROM duplicate_file_protections p WHERE p.path_key=f.path_key)
+                )
+                SELECT l.id,l.path,COUNT(*),COALESCE(SUM(c.size_bytes),0)
+                FROM candidates c JOIN library_locations l ON l.id=c.location_id
+                WHERE c.physical_rank=1
+                GROUP BY l.id,l.path ORDER BY 4 DESC,l.path;
+                """;
+            command.Parameters.AddWithValue("$completed", (int)DuplicateAnalysisStatus.Completed);
+            command.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
+            using SqliteDataReader reader = command.ExecuteReader();
+            var result = new List<ExactDuplicateReclaimLocation>();
+            while (reader.Read())
+                result.Add(new ExactDuplicateReclaimLocation(reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3)));
+            return result;
         }
 
         public LibraryStatistics GetLibraryStatistics(int topCount = 10)

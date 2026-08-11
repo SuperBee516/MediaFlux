@@ -38,6 +38,8 @@ namespace MediaFlux
         private long _totalFiles;
         private bool _loadingFiles;
         private bool _scanning;
+        private bool _loadingLocations;
+        private long? _preferredLocationSelectionId;
         private volatile LibraryScanProgress? _latestScanProgress;
         private volatile LibraryEnrichmentProgress? _latestEnrichmentProgress;
         private volatile LibraryDuplicateAnalysisProgress? _latestDuplicateProgress;
@@ -84,6 +86,8 @@ namespace MediaFlux
             FormClosed += (_, _) =>
             {
                 Interlocked.Increment(ref _visualMemberLoadVersion);
+                Interlocked.Increment(ref _duplicateMemberLoadVersion);
+                _exactCleanupCancellation?.Cancel();
                 _refreshTimer.Stop();
                 _activityTimer.Stop();
                 _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
@@ -286,7 +290,8 @@ namespace MediaFlux
                 return;
             try
             {
-                _runtime.Catalog.UpsertLocation(new LibraryLocationUpsert(dialog.SelectedPath));
+                LibraryLocationRecord added = _runtime.Catalog.UpsertLocation(new LibraryLocationUpsert(dialog.SelectedPath));
+                _preferredLocationSelectionId = added.Id;
                 await RefreshAllAsync();
             }
             catch (Exception ex)
@@ -435,32 +440,66 @@ namespace MediaFlux
 
         private async Task RefreshLocationsAsync()
         {
-            IReadOnlyList<LibraryLocationRecord> locations = await Task.Run(() => _runtime.Catalog.GetLocations());
-            var rows = new List<object[]>();
-            foreach (LibraryLocationRecord location in locations)
+            if (_loadingLocations || IsDisposed) return;
+            _loadingLocations = true;
+            try
             {
-                long count = await Task.Run(() => _runtime.Catalog.QueryFiles(new LibraryFileQuery(
-                    LocationId: location.Id,
-                    Limit: 1)).TotalCount);
-                rows.Add(new object[]
+                var snapshot = await Task.Run(() =>
                 {
-                    location.Id,
-                    location.Path,
-                    location.IsEnabled ? "Yes" : "No",
-                    location.Availability,
-                    count.ToString("N0"),
-                    location.LastCompletedScanUtc?.ToLocalTime().ToString("g") ?? "Never",
-                    location.LastError
+                    IReadOnlyList<LibraryLocationRecord> locations = _runtime.Catalog.GetLocations();
+                    IReadOnlyDictionary<long, long> counts = _runtime.Catalog.GetLocationFileCounts();
+                    return (locations, counts);
                 });
+                if (IsDisposed) return;
+                long[] selectedIds = SelectedLocationIds().ToArray();
+                ReconcileLocationRows(snapshot.locations, snapshot.counts, selectedIds, _preferredLocationSelectionId);
+                _preferredLocationSelectionId = null;
+                RefreshLocationFilter(snapshot.locations);
+                RefreshDuplicateLocationFilter(snapshot.locations);
+                RefreshVisualLocationFilter(snapshot.locations);
             }
-            if (IsDisposed)
-                return;
-            _locationsGrid.Rows.Clear();
-            foreach (object[] row in rows)
-                _locationsGrid.Rows.Add(row);
-            RefreshLocationFilter(locations);
-            RefreshDuplicateLocationFilter(locations);
-            RefreshVisualLocationFilter(locations);
+            finally { _loadingLocations = false; }
+        }
+
+        private void ReconcileLocationRows(
+            IReadOnlyList<LibraryLocationRecord> locations,
+            IReadOnlyDictionary<long, long> counts,
+            IReadOnlyCollection<long> previousSelection,
+            long? preferredSelection)
+        {
+            var existing = _locationsGrid.Rows.Cast<DataGridViewRow>()
+                .Where(row => row.Cells[0].Value != null)
+                .ToDictionary(row => Convert.ToInt64(row.Cells[0].Value, CultureInfo.InvariantCulture));
+            var currentIds = locations.Select(location => location.Id).ToHashSet();
+            _locationsGrid.SuspendLayout();
+            try
+            {
+                foreach (LibraryLocationRecord location in locations)
+                {
+                    object[] values =
+                    {
+                        location.Id, location.Path, location.IsEnabled ? "Yes" : "No", location.Availability,
+                        counts.GetValueOrDefault(location.Id).ToString("N0"),
+                        location.LastCompletedScanUtc?.ToLocalTime().ToString("g") ?? "Never", location.LastError
+                    };
+                    if (existing.TryGetValue(location.Id, out DataGridViewRow? row))
+                    {
+                        for (int column = 0; column < values.Length; column++) row.Cells[column].Value = values[column];
+                    }
+                    else _locationsGrid.Rows.Add(values);
+                }
+                foreach (DataGridViewRow row in _locationsGrid.Rows.Cast<DataGridViewRow>().Where(row =>
+                             row.Cells[0].Value != null && !currentIds.Contains(Convert.ToInt64(row.Cells[0].Value, CultureInfo.InvariantCulture))).ToArray())
+                    _locationsGrid.Rows.Remove(row);
+
+                if (_locationsGrid.Rows.Count > 1)
+                    _locationsGrid.Sort(_locationsGrid.Columns["Path"], System.ComponentModel.ListSortDirection.Ascending);
+                IReadOnlyList<long> selection = LibraryLocationSelectionPolicy.Resolve(previousSelection, locations.Select(location => location.Id).ToArray(), preferredSelection);
+                _locationsGrid.ClearSelection();
+                foreach (DataGridViewRow row in _locationsGrid.Rows)
+                    row.Selected = row.Cells[0].Value != null && selection.Contains(Convert.ToInt64(row.Cells[0].Value, CultureInfo.InvariantCulture));
+            }
+            finally { _locationsGrid.ResumeLayout(); }
         }
 
         private async Task RefreshFilesAsync()

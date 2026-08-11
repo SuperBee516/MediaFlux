@@ -21,6 +21,7 @@ namespace MediaFlux
         private readonly NumericUpDown _minimumMargin = new();
         private readonly Label _profileDescription = new();
         private readonly Label _preview = new();
+        private readonly TextBox _exactPreferredLocations = new();
         private readonly DuplicateKeeperScoringContext _scoringContext;
 
         public DuplicateKeeperPreferences Preferences { get; private set; }
@@ -40,7 +41,7 @@ namespace MediaFlux
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
-            ClientSize = new Size(650, 625);
+            ClientSize = new Size(680, 730);
             AutoScaleMode = AutoScaleMode.Font;
 
             var layout = new TableLayoutPanel
@@ -48,7 +49,7 @@ namespace MediaFlux
                 Dock = DockStyle.Fill,
                 Padding = new Padding(14),
                 ColumnCount = 2,
-                RowCount = 11
+                RowCount = 15
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 235));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -113,6 +114,22 @@ namespace MediaFlux
             layout.SetColumnSpan(marginHint, 2);
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 47));
 
+            _exactPreferredLocations.Multiline = true;
+            _exactPreferredLocations.ScrollBars = ScrollBars.Vertical;
+            _exactPreferredLocations.Dock = DockStyle.Fill;
+            _exactPreferredLocations.Text = string.Join(Environment.NewLine, Preferences.ExactPreferredLocations);
+            AddRow(layout, 11, "Exact preferred roots (highest first):", _exactPreferredLocations, 62);
+
+            var exactHint = new Label
+            {
+                Dock = DockStyle.Fill,
+                ForeColor = SystemColors.GrayText,
+                Text = "Exact duplicates are byte-identical. These roots are used before filename, folder depth, and file dates; video quality settings are ignored."
+            };
+            layout.Controls.Add(exactHint, 0, 12);
+            layout.SetColumnSpan(exactHint, 2);
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+
             var previewBox = new GroupBox
             {
                 Text = "Live example",
@@ -122,7 +139,7 @@ namespace MediaFlux
             _preview.Dock = DockStyle.Fill;
             _preview.AutoSize = false;
             previewBox.Controls.Add(_preview);
-            layout.Controls.Add(previewBox, 0, 11);
+            layout.Controls.Add(previewBox, 0, 13);
             layout.SetColumnSpan(previewBox, 2);
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 105));
 
@@ -137,10 +154,10 @@ namespace MediaFlux
             ok.Click += SaveAndClose;
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(ok);
-            layout.Controls.Add(buttons, 0, 12);
+            layout.Controls.Add(buttons, 0, 14);
             layout.SetColumnSpan(buttons, 2);
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-            layout.RowCount = 13;
+            layout.RowCount = 15;
 
             AcceptButton = ok;
             CancelButton = cancel;
@@ -219,7 +236,8 @@ namespace MediaFlux
                 ModifiedDateWeight = (int)_modified.Value,
                 CodecPreference = _codecPreference.SelectedItem?.ToString() ?? DuplicateKeeperPreferences.CodecModernFirst,
                 NeverSacrificeResolution = _preserveResolution.Checked,
-                MinimumScoreMargin = (int)_minimumMargin.Value
+                MinimumScoreMargin = (int)_minimumMargin.Value,
+                ExactPreferredLocations = _exactPreferredLocations.Lines.ToList()
             };
             result.Normalize();
             return result;

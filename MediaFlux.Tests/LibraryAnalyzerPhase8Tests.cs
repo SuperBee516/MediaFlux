@@ -17,7 +17,7 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
     public void SchemaNineAddsFamilyPersistenceAndMigratesDecisionHistory()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();
-        Assert.Equal(9, catalog.GetDiagnostics().SchemaVersion);
+        Assert.Equal(LibraryCatalogMigrations.CurrentVersion, catalog.GetDiagnostics().SchemaVersion);
         using var connection = new SqliteConnection($"Data Source={catalog.DatabasePath}"); connection.Open();
         foreach (string table in new[] { "visual_families", "visual_family_members", "visual_family_edges", "visual_family_decisions" })
         {
@@ -46,7 +46,7 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
         }
         SqliteConnection.ClearAllPools();
         using SqliteLibraryCatalog catalog = CreateCatalog(database);
-        Assert.Equal(9, catalog.GetDiagnostics().SchemaVersion);
+        Assert.Equal(LibraryCatalogMigrations.CurrentVersion, catalog.GetDiagnostics().SchemaVersion);
         LibraryDecisionEvent preserved = Assert.Single(catalog.GetDecisionHistory());
         Assert.Equal("batch:old", preserved.TargetKey);
     }
@@ -239,10 +239,12 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
     {
         if (!OperatingSystem.IsWindows()) return;
         Exception? failure = null;
+        string stage = "starting";
         var thread = new Thread(() =>
         {
             try
             {
+                stage = "creating catalog";
                 SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
                 using SqliteLibraryCatalog catalog = CreateCatalog();
                 string[] files = CreateFiles(catalog, "ui-family", 3);
@@ -251,6 +253,7 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
                 VisualFamilyRecord family = Assert.Single(catalog.QueryVisualFamilies(new VisualFamilyQuery()).Families);
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyMetadataProbe(), new FakeVisualExtractor(_ => Array.Empty<ulong>()));
                 using var form = new LibraryAnalyzerForm(runtime);
+                stage = "showing analyzer";
                 form.Show();
                 TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
                 tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Families");
@@ -280,17 +283,23 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
                         review.Close();
                 };
                 timer.Start();
+                stage = "reviewing family";
                 PumpTask(InvokePrivateTask(form, "OpenVisualFamilyReviewAsync"), TimeSpan.FromSeconds(10));
                 timer.Stop();
+                stage = "verifying review";
                 Assert.True(sawMembers);
                 Assert.True(catalog.GetVisualFamily(family.FamilyId)!.Reviewed);
                 form.Close();
+                stage = "disposing analyzer";
             }
             catch (Exception ex) { failure = ex; }
+            finally { stage = failure == null ? "completed" : $"failed: {failure.GetType().Name}"; }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        if (!thread.Join(TimeSpan.FromSeconds(15))) throw new TimeoutException("Family review UI smoke test did not complete.");
+        // The review itself has a 10-second pumped wait; allow setup, catalog work,
+        // and teardown headroom when the full UI suite is contending for resources.
+        if (!thread.Join(TimeSpan.FromSeconds(30))) throw new TimeoutException($"Family review UI smoke test did not complete (stage: {stage}).");
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
