@@ -815,6 +815,7 @@ namespace MediaFlux
             MediaFlux.Models.DuplicateKeeperPreferences? KeeperPreferences = null,
             Action<MediaFlux.Models.DuplicateKeeperPreferences>? KeeperPreferencesChanged = null,
             LibraryVisualReviewAutomationOptions? AutomationOptions = null,
+            Func<LibraryVisualReviewAutomationOptions>? AutomationOptionsProvider = null,
             Action<IReadOnlyList<string>>? AddToEncodeQueue = null);
     }
 }

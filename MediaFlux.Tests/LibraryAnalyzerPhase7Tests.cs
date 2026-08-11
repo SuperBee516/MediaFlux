@@ -84,7 +84,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
     }
 
     [Fact]
-    public void SemiAutomaticReviewPreselectsRecommendationAndManualChoiceWins()
+    public void SemiAutomaticReviewUsesReviewedNextToPersistThePendingKeeperAndAdvance()
     {
         if (!OperatingSystem.IsWindows()) return;
         Exception? failure = null;
@@ -97,56 +97,77 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 string library = Path.Combine(_root, "semi-auto"); Directory.CreateDirectory(library);
                 string recommended = Write(library, "recommended.mkv", 50_000);
                 string manual = Write(library, "manual.mp4", 30_000);
-                AddInventoryAndMetadata(catalog, library, new[] { recommended, manual },
+                string nextRecommended = Write(library, "next-recommended.mkv", 55_000);
+                string nextManual = Write(library, "next-manual.mp4", 35_000);
+                AddInventoryAndMetadata(catalog, library, new[] { recommended, manual, nextRecommended, nextManual },
                     path => path == recommended ? ("hevc", 1920, 1080, 8_000_000L) : ("h264", 1280, 720, 2_000_000L));
-                AnalyzeVisualAsync(catalog, new[] { recommended, manual }).GetAwaiter().GetResult();
-                VisualSimilarityGroupRecord group = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
+                ulong[] firstMatch = { 0x1111111111111111, 0x2111111111111111, 0x3111111111111111, 0x4111111111111111, 0x5111111111111111, 0x6111111111111111 };
+                ulong[] nextMatch = { 0xAAAAAAAAAAAAAAAA, 0xBAAAAAAAAAAAAAAA, 0xCAAAAAAAAAAAAAAA, 0xDAAAAAAAAAAAAAAA, 0xEAAAAAAAAAAAAAAA, 0xFAAAAAAAAAAAAAAA };
+                using (var visual = new LibraryVisualAnalysisCoordinator(catalog,
+                    new FakeVisualExtractor(path => path.StartsWith(Path.Combine(library, "next-"), StringComparison.OrdinalIgnoreCase) ? nextMatch : firstMatch),
+                    new LibraryVisualAnalysisOptions(1, 2, 8, 128, 3, 70)))
+                {
+                    visual.AnalyzeAsync().GetAwaiter().GetResult();
+                }
+                VisualSimilarityGroupRecord group = catalog.QueryVisualGroups(new VisualGroupQuery()).Groups.First();
                 long suggested = group.SuggestedKeeperFileId ?? throw new Xunit.Sdk.XunitException("Expected a suggested keeper.");
-                long manualId = catalog.GetFileByPath(manual)!.Id;
+                long manualId = catalog.GetVisualGroupMembers(group.GroupId).Single(member => member.FileId != suggested).FileId;
                 Assert.NotEqual(suggested, manualId);
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new EmptyMetadataProbe(),
                     new FakeVisualExtractor(_ => Array.Empty<ulong>()));
+                bool semiAutomaticEnabled = false;
                 using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
-                    AutomationOptions: new LibraryVisualReviewAutomationOptions(SemiAutomaticKeeperApproval: true)));
+                    AutomationOptionsProvider: () => new LibraryVisualReviewAutomationOptions(SemiAutomaticKeeperApproval: semiAutomaticEnabled)));
                 form.Show();
                 TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
                 tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Visual");
                 PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
                 DataGridView groups = GetPrivateField<DataGridView>(form, "_visualGroupsGrid");
-                PumpUntil(() => groups.Rows.Count == 1);
-                DataGridViewRow row = Assert.Single(groups.Rows.Cast<DataGridViewRow>());
+                PumpUntil(() => groups.Rows.Count > 1);
+                DataGridViewRow row = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == group.GroupId);
                 groups.ClearSelection();
                 row.Selected = true;
                 groups.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 Application.DoEvents();
+                semiAutomaticEnabled = true;
+                bool sawSelectedKeeper = false;
                 bool overrideClicked = false;
-                bool accepted = false;
+                bool reviewedNextClicked = false;
+                bool advancedToNextGroup = false;
                 using var timer = new System.Windows.Forms.Timer { Interval = 40 };
                 timer.Tick += (_, _) =>
                 {
                     Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Match", StringComparison.Ordinal));
                     if (review == null) return;
+                    sawSelectedKeeper = Descendants<Button>(review).Any(button => button.Text == "Keeper selected" && button.BackColor == Color.FromArgb(46, 125, 50));
+                    Assert.DoesNotContain(Descendants<Button>(review), button => button.Text == "Accept + Next");
                     if (!overrideClicked && Descendants<Button>(review).FirstOrDefault(button => button.Text == "Set as keeper") is { } setKeeper)
                     {
                         overrideClicked = true;
                         setKeeper.PerformClick();
                         return;
                     }
-                    if (overrideClicked && !accepted && Descendants<Button>(review).FirstOrDefault(button => button.Text == "Accept + Next") is { } next)
+                    if (overrideClicked && !reviewedNextClicked)
                     {
-                        accepted = true;
-                        next.PerformClick();
+                        Assert.Null(catalog.GetVisualGroup(group.GroupId)?.ManualKeeperFileId);
+                        reviewedNextClicked = true;
+                        Descendants<Button>(review).Single(button => button.Text == "Reviewed + Next").PerformClick();
                         return;
                     }
-                    if (accepted && catalog.GetVisualGroup(group.GroupId)?.ManualKeeperFileId == manualId)
+                    advancedToNextGroup = groups.SelectedRows.Count == 1 &&
+                        ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId != group.GroupId &&
+                        Descendants<Button>(review).Any(button => button.Text == "Keeper selected" && button.BackColor == Color.FromArgb(46, 125, 50));
+                    if (reviewedNextClicked && advancedToNextGroup && catalog.GetVisualGroup(group.GroupId)?.ManualKeeperFileId == manualId)
                         review.Close();
                 };
                 timer.Start();
                 PumpTask(InvokePrivateTask(form, "OpenVisualReviewAsync"), TimeSpan.FromSeconds(10));
                 timer.Stop();
                 VisualSimilarityGroupRecord completed = catalog.GetVisualGroup(group.GroupId)!;
+                Assert.True(sawSelectedKeeper);
                 Assert.True(overrideClicked);
-                Assert.True(accepted);
+                Assert.True(reviewedNextClicked);
+                Assert.True(advancedToNextGroup);
                 Assert.True(completed.Reviewed);
                 Assert.Equal(manualId, completed.ManualKeeperFileId);
                 form.Close();
@@ -201,7 +222,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                     Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Match", StringComparison.Ordinal));
                     if (review == null) return;
                     sawReview = true;
-                    sawSemiAutomaticSelection = Descendants<Button>(review).Any(button => button.Text == "Selected for Next");
+                    sawSemiAutomaticSelection = Descendants<Button>(review).Any(button => button.Text == "Keeper selected" && button.BackColor == Color.FromArgb(46, 125, 50));
                     review.Close();
                 };
                 timer.Start();

@@ -60,6 +60,11 @@ namespace MediaFlux
                                 _config.VisualMassReviewMaximumMatches,
                                 _config.VisualMassReviewMinimumAutomationMargin,
                                 _config.VisualMassReviewMinimumConfidence),
+                            AutomationOptionsProvider: () => new LibraryVisualReviewAutomationOptions(
+                                _config.SemiAutomaticVisualKeeperApproval,
+                                _config.VisualMassReviewMaximumMatches,
+                                _config.VisualMassReviewMinimumAutomationMargin,
+                                _config.VisualMassReviewMinimumConfidence),
                             AddToEncodeQueue: paths => _ = ImportEncodePathsAsync(
                                 paths, includeSubfolders: false, applyCodecFilters: true,
                                 replaceExisting: false, rememberRoots: false)));
