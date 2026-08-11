@@ -73,6 +73,51 @@ public sealed class DuplicateKeeperAndCleanupPolicyTests
         Assert.Equal(hevc.Path, visual.Keeper?.Path);
     }
 
+    [Theory]
+    [InlineData("hevc")]
+    [InlineData("h264")]
+    public void VisualRulePrefersSmallerSameCodecResolutionCopyAtComparableBitrate(string codec)
+    {
+        DuplicateItem larger = Item("larger.mkv", 443_690_000, bitrate: 2_870, codec: codec);
+        DuplicateItem smaller = Item("smaller.mkv", 393_370_000, bitrate: 2_540, codec: codec);
+
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { larger, smaller }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual);
+
+        Assert.False(result.RequiresReview);
+        Assert.Equal(smaller.Path, result.Keeper?.Path);
+        Assert.Contains("88.5%", result.Explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void VisualRuleFallsBackToQualityLogicBelowThreshold()
+    {
+        DuplicateItem larger = Item("larger.mkv", 500, bitrate: 5_000, codec: "hevc");
+        DuplicateItem smaller = Item("smaller.mkv", 300, bitrate: 4_000, codec: "hevc");
+
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { larger, smaller }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual);
+
+        Assert.Equal(larger.Path, result.Keeper?.Path);
+        Assert.Contains("bitrate", result.Explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void VisualRuleDoesNotOverrideResolutionOrCodecPreference()
+    {
+        DuplicateItem highResolution = Item("4k-h264.mkv", 300, 3840, 2160, 2_000, codec: "h264");
+        DuplicateItem lowResolution = Item("1080p-h264.mkv", 500, 1920, 1080, 2_100, codec: "h264");
+        DuplicateKeeperEvaluation resolution = DuplicateKeeperScoringService.Evaluate(
+            new[] { highResolution, lowResolution }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual);
+        Assert.Equal(highResolution.Path, resolution.Keeper?.Path);
+
+        DuplicateItem h264 = Item("h264.mkv", 300, bitrate: 5_000, codec: "h264");
+        DuplicateItem hevc = Item("hevc.mkv", 500, bitrate: 5_100, codec: "hevc");
+        DuplicateKeeperEvaluation codec = DuplicateKeeperScoringService.Evaluate(
+            new[] { h264, hevc }, new DuplicateKeeperPreferences(), DuplicateKeeperScoringContext.Visual);
+        Assert.Equal(hevc.Path, codec.Keeper?.Path);
+    }
+
     [Fact]
     public void WeightedScoresInsideMinimumMarginRequireManualReview()
     {

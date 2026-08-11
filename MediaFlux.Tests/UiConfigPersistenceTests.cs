@@ -1,4 +1,5 @@
 using MediaFlux.Models;
+using MediaFlux.Services;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -83,6 +84,34 @@ public sealed class UiConfigPersistenceTests : IDisposable
         Assert.Equal(1_000, loaded.VisualMassReviewMaximumMatches);
         Assert.Equal(0, loaded.VisualMassReviewMinimumAutomationMargin);
         Assert.Equal(76, loaded.VisualMassReviewMinimumConfidence);
+    }
+
+    [Fact]
+    public void VisualComparableBitrateThresholdPersistsNormalizesAndIsHonored()
+    {
+        string legacyPath = Path.Combine(_root, "legacy-keeper-rules.json");
+        File.WriteAllText(legacyPath, "{}");
+        Config legacy = Config.Load(legacyPath);
+        Assert.True(legacy.DuplicateKeeperPreferences.PreferSmallerComparableVisualCopy);
+        Assert.Equal(85, legacy.DuplicateKeeperPreferences.ComparableVisualBitratePercent);
+
+        string path = Path.Combine(_root, "keeper-rules.json");
+        legacy.DuplicateKeeperPreferences.ComparableVisualBitratePercent = 90;
+        legacy.Save(path);
+        Config loaded = Config.Load(path);
+        Assert.Equal(90, loaded.DuplicateKeeperPreferences.ComparableVisualBitratePercent);
+
+        DuplicateItem larger = new("larger.mkv", 443_690_000, "hevc", 1920, 1080, 1237, 2_870,
+            DateTime.Today, DateTime.Today, false, "", "");
+        DuplicateItem smaller = new("smaller.mkv", 393_370_000, "hevc", 1920, 1080, 1237, 2_540,
+            DateTime.Today, DateTime.Today, false, "", "");
+        DuplicateKeeperEvaluation result = DuplicateKeeperScoringService.Evaluate(
+            new[] { larger, smaller }, loaded.DuplicateKeeperPreferences, DuplicateKeeperScoringContext.Visual);
+        Assert.Equal(larger.Path, result.Keeper?.Path);
+
+        loaded.DuplicateKeeperPreferences.ComparableVisualBitratePercent = 1;
+        loaded.DuplicateKeeperPreferences.Normalize();
+        Assert.Equal(50, loaded.DuplicateKeeperPreferences.ComparableVisualBitratePercent);
     }
 
     public void Dispose()

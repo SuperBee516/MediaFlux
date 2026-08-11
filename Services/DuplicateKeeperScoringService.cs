@@ -69,6 +69,13 @@ namespace MediaFlux.Services
             var protectedItems = items.Where(item => item.IsReferenceProtected).ToList();
             var candidates = protectedItems.Count > 0 ? protectedItems : items;
 
+            if (context == DuplicateKeeperScoringContext.Visual &&
+                preferences.PreferSmallerComparableVisualCopy &&
+                TryEvaluateSmallerComparableVisualCopy(items, candidates, preferences.ComparableVisualBitratePercent, out var comparableEvaluation))
+            {
+                return comparableEvaluation;
+            }
+
             if (string.Equals(preferences.Profile, DuplicateKeeperPreferences.QualityFirst, StringComparison.Ordinal))
             {
                 return context == DuplicateKeeperScoringContext.Visual
@@ -155,6 +162,57 @@ namespace MediaFlux.Services
                 preferences.ModifiedDateWeight = 0;
             }
             return Evaluate(sourceItems, preferences, context);
+        }
+
+        private static bool TryEvaluateSmallerComparableVisualCopy(
+            IReadOnlyCollection<DuplicateItem> allItems,
+            IReadOnlyCollection<DuplicateItem> candidates,
+            int minimumBitratePercent,
+            out DuplicateKeeperEvaluation evaluation)
+        {
+            evaluation = default!;
+            if (candidates.Count < 2 ||
+                candidates.Any(item => item.Width <= 0 || item.Height <= 0 || item.LengthBytes <= 0 || item.BitrateKbps <= 0))
+            {
+                return false;
+            }
+
+            DuplicateItem first = candidates.First();
+            string codec = GetCodecIdentity(first.VideoCodec);
+            if (string.IsNullOrEmpty(codec) || candidates.Any(item =>
+                    item.Width != first.Width ||
+                    item.Height != first.Height ||
+                    !string.Equals(GetCodecIdentity(item.VideoCodec), codec, StringComparison.Ordinal)))
+            {
+                return false;
+            }
+
+            long largestSize = candidates.Max(item => item.LengthBytes);
+            DuplicateItem smaller = candidates
+                .OrderBy(item => item.LengthBytes)
+                .ThenByDescending(item => item.BitrateKbps)
+                .ThenByDescending(item => item.Modified)
+                .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
+                .First();
+            if (smaller.LengthBytes >= largestSize)
+                return false;
+
+            int higherBitrate = candidates.Max(item => item.BitrateKbps);
+            double retainedPercent = smaller.BitrateKbps * 100d / higherBitrate;
+            if (retainedPercent + 0.0001 < minimumBitratePercent)
+                return false;
+
+            var scores = allItems.ToDictionary(
+                item => item.Path,
+                item => string.Equals(item.Path, smaller.Path, StringComparison.OrdinalIgnoreCase) ? 100d : 0d,
+                StringComparer.OrdinalIgnoreCase);
+            int savedPercent = (int)Math.Round((largestSize - smaller.LengthBytes) * 100d / largestSize);
+            string explanation = smaller.IsReferenceProtected
+                ? "Visual keeper rule: protected file"
+                : $"Visual keeper rule: same {smaller.Width}x{smaller.Height} {smaller.VideoCodec.ToUpperInvariant()} copies; " +
+                  $"the smaller file retains {retainedPercent:0.0}% of the higher bitrate (minimum {minimumBitratePercent}%) and saves {savedPercent}% storage.";
+            evaluation = new DuplicateKeeperEvaluation(smaller, false, 100, scores, explanation);
+            return true;
         }
 
         private static DuplicateKeeperEvaluation EvaluateLegacy(
@@ -393,6 +451,16 @@ namespace MediaFlux.Services
 
         private static double GetConfiguredCodecScore(string codec, string preference) =>
             string.Equals(preference, DuplicateKeeperPreferences.CodecNoPreference, StringComparison.Ordinal) ? 50 : GetCodecScore(codec, preference);
+
+        private static string GetCodecIdentity(string codec)
+        {
+            string value = codec?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (value.Contains("av1")) return "av1";
+            if (value.Contains("hevc") || value.Contains("h265") || value.Contains("x265")) return "hevc";
+            if (value.Contains("h264") || value.Contains("avc") || value.Contains("x264")) return "h264";
+            if (value.Contains("vp9")) return "vp9";
+            return value;
+        }
 
         private static long GetPixels(DuplicateItem item) => (long)item.Width * item.Height;
     }

@@ -23,6 +23,8 @@ namespace MediaFlux.Models
         public string CodecPreference { get; set; } = CodecModernFirst;
         public bool NeverSacrificeResolution { get; set; } = true;
         public int MinimumScoreMargin { get; set; } = 8;
+        public bool PreferSmallerComparableVisualCopy { get; set; } = true;
+        public int ComparableVisualBitratePercent { get; set; } = 85;
         public List<string> ExactPreferredLocations { get; set; } = new();
 
         public DuplicateKeeperPreferences Clone()
@@ -38,6 +40,8 @@ namespace MediaFlux.Models
                 CodecPreference = CodecPreference,
                 NeverSacrificeResolution = NeverSacrificeResolution,
                 MinimumScoreMargin = MinimumScoreMargin,
+                PreferSmallerComparableVisualCopy = PreferSmallerComparableVisualCopy,
+                ComparableVisualBitratePercent = ComparableVisualBitratePercent,
                 ExactPreferredLocations = ExactPreferredLocations?.ToList() ?? new()
             };
         }
@@ -64,6 +68,7 @@ namespace MediaFlux.Models
             CodecWeight = Math.Clamp(CodecWeight, 0, 100);
             ModifiedDateWeight = Math.Clamp(ModifiedDateWeight, 0, 100);
             MinimumScoreMargin = Math.Clamp(MinimumScoreMargin, 0, 25);
+            ComparableVisualBitratePercent = Math.Clamp(ComparableVisualBitratePercent, 50, 100);
             ExactPreferredLocations = (ExactPreferredLocations ?? new())
                 .Where(path => !string.IsNullOrWhiteSpace(path))
                 .Select(path => path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
