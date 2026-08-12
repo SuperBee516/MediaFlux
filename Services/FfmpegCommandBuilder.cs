@@ -75,7 +75,14 @@ namespace MediaFlux.Services
                 QualityValue = validated.QualityValue,
                 ConcurrentEncoderSessions =
                     validated.ConcurrentEncoderSessions,
-                IsAsfFamilyInput = isAsfFamilyInput
+                IsAsfFamilyInput = isAsfFamilyInput,
+                UseGpuResidentHighBitDepthOutput =
+                    validated.UseGpu &&
+                    wantsTenBit &&
+                    selection.EncoderId.Equals(
+                        VideoEncoderIds.Nvenc,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    request.NvencHighBitDepthOutputSupported
             };
 
             var builder = new StringBuilder();

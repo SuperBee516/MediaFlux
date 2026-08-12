@@ -366,8 +366,11 @@ namespace MediaFlux.Services
                 targetVideoKbps,
                 plannedMappedKbps);
             double estimateMb = targetTotalKbps * durationSec / 8192.0;
-            double boundedEstimate =
-                Math.Max(0.1, Math.Min(srcMb * 0.98, estimateMb));
+            // Keep the projection honest when the selected settings are not
+            // expected to save space. Smart Encode can then recommend Skip or
+            // Review instead of turning a no-benefit encode into an artificial
+            // fixed-size reduction.
+            double projectedEstimate = Math.Max(0.1, estimateMb);
 
             string videoSource = usedMeasuredVideoBitrate
                 ? "ffprobe video stream"
@@ -384,11 +387,11 @@ namespace MediaFlux.Services
                 $"attachments excluded={sourceAttachmentStreamCount}/" +
                 $"{sourceAttachmentSizeBytes} bytes; " +
                 $"mode={mode}; target video={targetVideoKbps:0} kbps, " +
-                $"target total={targetTotalKbps:0} kbps, output={boundedEstimate:0.##} MB.";
+                $"target total={targetTotalKbps:0} kbps, output={projectedEstimate:0.##} MB.";
 
             return new SizeEstimateBreakdown
             {
-                EstimatedOutputMb = boundedEstimate,
+                EstimatedOutputMb = projectedEstimate,
                 SourceTotalBitrateKbps = sourceTotalKbps,
                 SourceVideoBitrateKbps = sourceVideoKbps,
                 PlannedAudioBitrateKbps = plannedAudioKbps,

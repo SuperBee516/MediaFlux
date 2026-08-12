@@ -37,6 +37,10 @@ namespace MediaFlux.Services
             string,
             Lazy<FfmpegEncoderCapabilities>> Cache =
             new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<
+            string,
+            Lazy<bool>> EncoderOptionCache =
+            new(StringComparer.OrdinalIgnoreCase);
 
         public static FfmpegEncoderCapabilities GetCapabilities(
             string ffmpegPath)
@@ -80,7 +84,70 @@ namespace MediaFlux.Services
             return encoders;
         }
 
-        internal static void ClearCache() => Cache.Clear();
+        internal static IReadOnlySet<string> ParseEncoderOptionNames(
+            string output)
+        {
+            var options = new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(output))
+                return options;
+
+            using var reader = new StringReader(output);
+            while (reader.ReadLine() is { } line)
+            {
+                string trimmed = line.TrimStart();
+                if (trimmed.Length < 2 || trimmed[0] != '-')
+                {
+                    continue;
+                }
+
+                int end = trimmed.IndexOfAny([' ', '\t'], 1);
+                string option = (end > 1
+                        ? trimmed[1..end]
+                        : trimmed[1..])
+                    .Trim();
+                if (option.Length > 0)
+                    options.Add(option);
+            }
+
+            return options;
+        }
+
+        internal static bool SupportsEncoderOption(
+            string ffmpegPath,
+            string encoderName,
+            string optionName)
+        {
+            if (string.IsNullOrWhiteSpace(encoderName) ||
+                encoderName.Any(character =>
+                    !char.IsLetterOrDigit(character) &&
+                    character is not '_' and not '-') ||
+                string.IsNullOrWhiteSpace(optionName))
+            {
+                return false;
+            }
+
+            string normalizedOption = optionName.Trim().TrimStart('-');
+            if (normalizedOption.Length == 0)
+                return false;
+
+            string key =
+                $"{CreateCacheKey(ffmpegPath)}|{encoderName}|{normalizedOption}";
+            return EncoderOptionCache.GetOrAdd(
+                key,
+                _ => new Lazy<bool>(
+                    () => InspectEncoderOption(
+                        ffmpegPath,
+                        encoderName,
+                        normalizedOption),
+                    LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        }
+
+        internal static void ClearCache()
+        {
+            Cache.Clear();
+            EncoderOptionCache.Clear();
+        }
 
         private static string CreateCacheKey(string ffmpegPath)
         {
@@ -181,6 +248,62 @@ namespace MediaFlux.Services
                     inspectionSucceeded: false,
                     [],
                     $"FFmpeg encoder inspection failed: {ex.Message}");
+            }
+        }
+
+        private static bool InspectEncoderOption(
+            string ffmpegPath,
+            string encoderName,
+            string optionName)
+        {
+            if (string.IsNullOrWhiteSpace(ffmpegPath) ||
+                !File.Exists(ffmpegPath))
+            {
+                return false;
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = ffmpegPath,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                ErrorDialog = false,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            startInfo.ArgumentList.Add("-hide_banner");
+            startInfo.ArgumentList.Add("-h");
+            startInfo.ArgumentList.Add($"encoder={encoderName}");
+
+            using var process = new Process { StartInfo = startInfo };
+            try
+            {
+                process.Start();
+                Task<string> standardOutput =
+                    process.StandardOutput.ReadToEndAsync();
+                Task<string> standardError =
+                    process.StandardError.ReadToEndAsync();
+                using var timeout = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(10));
+                process.WaitForExitAsync(timeout.Token)
+                    .GetAwaiter()
+                    .GetResult();
+                string output = standardOutput.GetAwaiter().GetResult() +
+                                Environment.NewLine +
+                                standardError.GetAwaiter().GetResult();
+                return process.ExitCode == 0 &&
+                       ParseEncoderOptionNames(output).Contains(optionName);
+            }
+            catch (OperationCanceledException)
+            {
+                TryTerminate(process);
+                return false;
+            }
+            catch
+            {
+                TryTerminate(process);
+                return false;
             }
         }
 

@@ -43,6 +43,15 @@ namespace MediaFlux.Services.Encoders
                 return;
             }
 
+            if (context.UseGpuResidentHighBitDepthOutput)
+            {
+                if (context.Selection.CodecFamily == VideoCodecFamily.Hevc)
+                    builder.Append("-profile:v main10 ");
+
+                builder.Append("-highbitdepth 1 ");
+                return;
+            }
+
             if (context.Selection.CodecFamily == VideoCodecFamily.Hevc)
             {
                 builder.Append(

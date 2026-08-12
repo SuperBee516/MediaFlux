@@ -51,6 +51,64 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void NvencHevcTenBitUsesGpuResidentHighBitDepthWhenSupported()
+    {
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            tenBit: true,
+            nvencHighBitDepthOutputSupported: true);
+
+        string arguments = CreateBuilder().Build(request);
+
+        Assert.Contains(
+            "-hwaccel cuda -hwaccel_output_format cuda ",
+            arguments);
+        Assert.Contains(
+            "-c:v hevc_nvenc -profile:v main10 -highbitdepth 1 ",
+            arguments);
+        Assert.DoesNotContain("format=p010le", arguments);
+        Assert.DoesNotContain("-pix_fmt p010le", arguments);
+    }
+
+    [Fact]
+    public void NvencHevcTenBitScalingStaysOnCudaWhenSupported()
+    {
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            tenBit: true,
+            nvencHighBitDepthOutputSupported: true,
+            scaleMode: EncodingService.ScaleMode.To1080p);
+
+        string arguments = CreateBuilder().Build(request);
+
+        Assert.Contains(
+            "-vf scale_cuda=-2:1080:interp_algo=lanczos ",
+            arguments);
+        Assert.Contains("-highbitdepth 1 ", arguments);
+        Assert.DoesNotContain("scale=-2:1080:flags=lanczos", arguments);
+    }
+
+    [Fact]
+    public void NvencHevcTenBitRetainsCompatibilityPathWhenUnsupported()
+    {
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            tenBit: true);
+
+        string arguments = CreateBuilder().Build(request);
+
+        Assert.StartsWith("-y -hwaccel cuda -i ", arguments);
+        Assert.Contains("-vf format=p010le ", arguments);
+        Assert.Contains(
+            "-profile:v main10 -pix_fmt p010le ",
+            arguments);
+        Assert.DoesNotContain("-highbitdepth", arguments);
+    }
+
+    [Fact]
     public void QsvHevcQualityCommandMatchesExistingBehavior()
     {
         FfmpegCommandRequest request = CreateRequest(
@@ -437,7 +495,8 @@ public sealed class FfmpegCommandBuilderTests
         int knownAudioStreamCount = 0,
         double knownMappedAncillaryBitrateKbps = 0,
         EncodingService.ScaleMode scaleMode =
-            EncodingService.ScaleMode.None)
+            EncodingService.ScaleMode.None,
+        bool nvencHighBitDepthOutputSupported = false)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -457,7 +516,8 @@ public sealed class FfmpegCommandBuilderTests
             copyDataStreams,
             knownAudioStreamCount,
             knownMappedAncillaryBitrateKbps,
-            scaleMode);
+            scaleMode,
+            nvencHighBitDepthOutputSupported);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -476,7 +536,8 @@ public sealed class FfmpegCommandBuilderTests
         int knownAudioStreamCount = 0,
         double knownMappedAncillaryBitrateKbps = 0,
         EncodingService.ScaleMode scaleMode =
-            EncodingService.ScaleMode.None)
+            EncodingService.ScaleMode.None,
+        bool nvencHighBitDepthOutputSupported = false)
     {
 
         return new FfmpegCommandRequest
@@ -506,7 +567,9 @@ public sealed class FfmpegCommandBuilderTests
             CopySubtitles = copySubtitles,
             CopyDataStreams = copyDataStreams,
             ForceMp4CompatibleAudio = false,
-            KnownDuration = knownDuration ?? TimeSpan.FromMinutes(10)
+            KnownDuration = knownDuration ?? TimeSpan.FromMinutes(10),
+            NvencHighBitDepthOutputSupported =
+                nvencHighBitDepthOutputSupported
         };
     }
 }

@@ -14,6 +14,7 @@ namespace MediaFlux.Services.Encoders
         public required int QualityValue { get; init; }
         public required bool ConcurrentEncoderSessions { get; init; }
         public required bool IsAsfFamilyInput { get; init; }
+        public required bool UseGpuResidentHighBitDepthOutput { get; init; }
     }
 
     internal interface IVideoEncoderProvider

@@ -30,6 +30,25 @@ public sealed class EncoderCapabilityAndValidationTests
     }
 
     [Fact]
+    public void EncoderOptionParserFindsHighBitDepthSupport()
+    {
+        const string output =
+            """
+            Encoder hevc_nvenc [NVIDIA NVENC hevc encoder]:
+              -preset            <int>        E..V....... Set the encoding preset
+              -highbitdepth      <boolean>    E..V....... Enable 10 bit encode for 8 bit input
+              -split_encode_mode <int>        E..V....... Specifies the split encoding mode
+            """;
+
+        IReadOnlySet<string> actual =
+            FfmpegEncoderCapabilityService.ParseEncoderOptionNames(output);
+
+        Assert.Contains("highbitdepth", actual);
+        Assert.Contains("split_encode_mode", actual);
+        Assert.DoesNotContain("Encoder", actual);
+    }
+
+    [Fact]
     public void Libx265NormalizationRemovesGpuOnlyState()
     {
         ResolvedVideoEncoder encoder = EncoderRegistry.Default.Resolve(

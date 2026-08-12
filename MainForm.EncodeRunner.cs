@@ -553,16 +553,6 @@ namespace MediaFlux
                     if (fallbackEstimate > 0)
                         targetMb = fallbackEstimate;
                 }
-
-                // Never “compress” to something basically the same size as source
-                double srcMb = isDvdEncode
-                    ? dvdOptions!.Candidate.CombinedSizeBytes / (1024d * 1024d)
-                    : GetMbOnDisk(file);
-                if (srcMb > 0 && targetMb.HasValue && targetMb.Value >= srcMb * 0.98)
-                {
-                    // force at least some reduction
-                    targetMb = Math.Max(srcMb * 0.90, srcMb - 10);
-                }
             }
 
             _runningEncodeJobs[row] = isDvdEncode
@@ -673,6 +663,12 @@ namespace MediaFlux
 
                 if (!result.Success)
                     throw new InvalidOperationException("Encoding returned failure.");
+
+                if (!isDvdEncode)
+                {
+                    jobLog.AppendLine(
+                        $"[MediaFlux] FFmpeg arguments: {result.DiagnosticArguments}");
+                }
 
                 // On success, mark 100% and clear ETA
                 System.Threading.Interlocked.Increment(ref _encodeSucceededCount);

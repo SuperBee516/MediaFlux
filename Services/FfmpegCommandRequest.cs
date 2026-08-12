@@ -20,5 +20,6 @@ namespace MediaFlux.Services
         public required bool CopyDataStreams { get; init; }
         public required bool ForceMp4CompatibleAudio { get; init; }
         public required TimeSpan KnownDuration { get; init; }
+        public bool NvencHighBitDepthOutputSupported { get; init; }
     }
 }

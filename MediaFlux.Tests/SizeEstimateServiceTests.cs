@@ -72,6 +72,37 @@ public sealed class SizeEstimateServiceTests
     }
 
     [Fact]
+    public void AutoEstimateReportsNoSavingsInsteadOfForcingReduction()
+    {
+        const double durationSeconds = 3_600;
+        const int videoKbps = 1_500;
+        const int audioKbps = 192;
+        double sourceMb =
+            (videoKbps + audioKbps) * durationSeconds / 8192d;
+
+        SizeEstimateBreakdown estimate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                sourceMb,
+                durationSeconds,
+                width: 1920,
+                height: 1080,
+                fps: 24,
+                sourceVideoBitrateKbps: videoKbps,
+                sourceCodec: "av1",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: audioKbps,
+                sourceAudioStreamCount: 1);
+
+        Assert.True(estimate.EstimatedOutputMb > sourceMb);
+        Assert.Contains(
+            $"output={estimate.EstimatedOutputMb:0.##} MB",
+            estimate.Diagnostic);
+    }
+
+    [Fact]
     public void AutoEstimatePreservesMeasuredAudioInsteadOfCappingIt()
     {
         double ordinaryAudio = SizeEstimateService.EstimateAutoTargetMbSmart(

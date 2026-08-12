@@ -192,6 +192,59 @@ public sealed class LiveEncoderWorkflowTests
             AssertAudioStream(probe, codec: "aac", channels: 1);
             AssertNoSubtitleStreams(probe);
             AssertTitleMetadata(probe);
+
+            EncodingService.EncodeResult tenBitResult =
+                await service.EncodeWithResultAsync(new EncodingRequest
+                {
+                    Input = EncodingInputSource.FromFile(source),
+                    OutputFolder = root,
+                    Suffix = "_nvenc_ten_bit",
+                    Encoder = encoder,
+                    UseGpu = true,
+                    EncoderPreset = "p1",
+                    QualityValue = 30,
+                    TenBit = true,
+                    CopySubtitles = true
+                });
+
+            Assert.True(
+                tenBitResult.Success,
+                BuildFailureMessage(tenBitResult, log));
+            bool supportsHighBitDepthOutput =
+                FfmpegEncoderCapabilityService.SupportsEncoderOption(
+                    tools.FfmpegPath,
+                    "hevc_nvenc",
+                    "highbitdepth");
+            if (supportsHighBitDepthOutput)
+            {
+                Assert.Contains(
+                    "-hwaccel_output_format cuda ",
+                    tenBitResult.DiagnosticArguments);
+                Assert.Contains(
+                    "-highbitdepth 1 ",
+                    tenBitResult.DiagnosticArguments);
+            }
+            else
+            {
+                Assert.Contains(
+                    "-vf format=p010le ",
+                    tenBitResult.DiagnosticArguments);
+            }
+
+            using JsonDocument tenBitProbe = await ProbeAsync(
+                tools,
+                tenBitResult.OutputPath);
+            AssertVideoStream(
+                tenBitProbe,
+                codec: "hevc",
+                pixelFormat: "yuv420p10le",
+                width: 320,
+                height: 180);
+            Assert.Contains(
+                log,
+                line => line.Contains(
+                    "Video pipeline:",
+                    StringComparison.Ordinal));
         }
         finally
         {

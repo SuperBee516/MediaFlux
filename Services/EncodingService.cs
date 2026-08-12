@@ -555,6 +555,16 @@ namespace MediaFlux.Services
                 qualityValue,
                 encoderSelection);
 
+            string pipelineDiagnostic = DescribeVideoPipeline(
+                inputSource,
+                videoCodec,
+                useGpu,
+                tenBit,
+                ffArgs);
+            callback($"[MediaFlux] Video pipeline: {pipelineDiagnostic}");
+            _log?.Invoke(
+                $"[EncodingService] Video pipeline: {pipelineDiagnostic}");
+
             _log?.Invoke(
                 $"[EncodingService] Starting ffmpeg for '{inputSource.SourcePath}' " +
                 $"using '{input}' -> '{output}'");
@@ -877,6 +887,18 @@ namespace MediaFlux.Services
                         encoderSelection.EncoderId,
                         encoderSelection.CodecFamily);
             EnsureEncoderAvailable(resolved.Selection);
+            bool supportsGpuResidentHighBitDepthOutput =
+                useGpu &&
+                tenBit &&
+                resolved.Selection.EncoderId.Equals(
+                    VideoEncoderIds.Nvenc,
+                    StringComparison.OrdinalIgnoreCase) &&
+                resolved.Selection.CodecFamily is
+                    VideoCodecFamily.Hevc or VideoCodecFamily.Av1 &&
+                FfmpegEncoderCapabilityService.SupportsEncoderOption(
+                    _ffmpegPath,
+                    resolved.Selection.FfmpegCodec,
+                    "highbitdepth");
             var request = new FfmpegCommandRequest
             {
                 Input = input,
@@ -894,7 +916,9 @@ namespace MediaFlux.Services
                 CopySubtitles = copySubtitles,
                 CopyDataStreams = copyDataStreams,
                 ForceMp4CompatibleAudio = forceMp4CompatibleAudio,
-                KnownDuration = knownDuration
+                KnownDuration = knownDuration,
+                NvencHighBitDepthOutputSupported =
+                    supportsGpuResidentHighBitDepthOutput
             };
 
             var builder = new FfmpegCommandBuilder(
@@ -902,6 +926,41 @@ namespace MediaFlux.Services
                 GetPrimaryAudioBitrateKbps,
                 _log);
             return builder.Build(request);
+        }
+
+        private static string DescribeVideoPipeline(
+            EncodingInputSource input,
+            string videoCodec,
+            bool useGpu,
+            bool tenBit,
+            string ffmpegArguments)
+        {
+            bool isNvenc =
+                useGpu &&
+                videoCodec.EndsWith(
+                    "_nvenc",
+                    StringComparison.OrdinalIgnoreCase);
+            if (!isNvenc)
+                return "software-frame path to the selected encoder";
+
+            if (input.Kind == EncodingInputKind.File &&
+                IsAsfFamilyInput(input.SourcePath))
+            {
+                return "software decode (WMV/ASF compatibility) -> NVENC";
+            }
+
+            if (ffmpegArguments.Contains(
+                    "-hwaccel_output_format cuda",
+                    StringComparison.Ordinal))
+            {
+                return tenBit
+                    ? "NVDEC/CUDA frames kept on GPU -> NVENC 10-bit output"
+                    : "NVDEC/CUDA frames kept on GPU -> NVENC";
+            }
+
+            return tenBit
+                ? "NVDEC -> host 10-bit conversion -> NVENC (FFmpeg compatibility fallback)"
+                : "NVDEC -> NVENC";
         }
 
         private void EnsureEncoderAvailable(
