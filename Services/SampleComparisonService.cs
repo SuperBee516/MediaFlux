@@ -17,6 +17,7 @@ namespace MediaFlux.Services
         public int QualityValue { get; init; } = 24;
         public bool TenBit { get; init; }
         public int? AudioChannels { get; init; }
+        public double AdditionalMappedBitrateKbps { get; init; }
         public int ClipSeconds { get; init; } = 25;
     }
 
@@ -37,23 +38,41 @@ namespace MediaFlux.Services
             string workingFolder,
             IReadOnlyList<SampleComparisonClip> clips,
             double projectedFinalMb,
+            double projectedLowerMb,
+            double projectedUpperMb,
             double averageBitrateKbps,
             double encodeSpeed,
-            TimeSpan estimatedCompletion)
+            TimeSpan estimatedCompletion,
+            SmartEncodeConfidence projectionConfidence,
+            int sampleCount,
+            double sampledMediaSeconds,
+            bool usedDurationFallback)
         {
             _workingFolder = workingFolder;
             Clips = clips;
             ProjectedFinalMb = projectedFinalMb;
+            ProjectedLowerMb = projectedLowerMb;
+            ProjectedUpperMb = projectedUpperMb;
             AverageBitrateKbps = averageBitrateKbps;
             EncodeSpeed = encodeSpeed;
             EstimatedCompletion = estimatedCompletion;
+            ProjectionConfidence = projectionConfidence;
+            SampleCount = sampleCount;
+            SampledMediaSeconds = sampledMediaSeconds;
+            UsedDurationFallback = usedDurationFallback;
         }
 
         public IReadOnlyList<SampleComparisonClip> Clips { get; }
         public double ProjectedFinalMb { get; }
+        public double ProjectedLowerMb { get; }
+        public double ProjectedUpperMb { get; }
         public double AverageBitrateKbps { get; }
         public double EncodeSpeed { get; }
         public TimeSpan EstimatedCompletion { get; }
+        public SmartEncodeConfidence ProjectionConfidence { get; }
+        public int SampleCount { get; }
+        public double SampledMediaSeconds { get; }
+        public bool UsedDurationFallback { get; }
         public string WorkingFolder => _workingFolder;
 
         public void Dispose()
@@ -75,21 +94,54 @@ namespace MediaFlux.Services
     {
         internal SampleProjectionResult(
             double projectedFinalMb,
+            double projectedLowerMb,
+            double projectedUpperMb,
             double averageBitrateKbps,
             double encodeSpeed,
-            TimeSpan estimatedCompletion)
+            TimeSpan estimatedCompletion,
+            SmartEncodeConfidence projectionConfidence,
+            int sampleCount,
+            double sampledMediaSeconds,
+            bool usedDurationFallback)
         {
             ProjectedFinalMb = projectedFinalMb;
+            ProjectedLowerMb = projectedLowerMb;
+            ProjectedUpperMb = projectedUpperMb;
             AverageBitrateKbps = averageBitrateKbps;
             EncodeSpeed = encodeSpeed;
             EstimatedCompletion = estimatedCompletion;
+            ProjectionConfidence = projectionConfidence;
+            SampleCount = sampleCount;
+            SampledMediaSeconds = sampledMediaSeconds;
+            UsedDurationFallback = usedDurationFallback;
         }
 
         public double ProjectedFinalMb { get; }
+        public double ProjectedLowerMb { get; }
+        public double ProjectedUpperMb { get; }
         public double AverageBitrateKbps { get; }
         public double EncodeSpeed { get; }
         public TimeSpan EstimatedCompletion { get; }
+        public SmartEncodeConfidence ProjectionConfidence { get; }
+        public int SampleCount { get; }
+        public double SampledMediaSeconds { get; }
+        public bool UsedDurationFallback { get; }
     }
+
+    internal readonly record struct SampleProjectionMeasurement(
+        long EncodedBytes,
+        double MeasuredDurationSeconds,
+        double RequestedDurationSeconds);
+
+    internal sealed record SampleProjectionCalculation(
+        double ProjectedFinalMb,
+        double ProjectedLowerMb,
+        double ProjectedUpperMb,
+        double AverageBitrateKbps,
+        SmartEncodeConfidence Confidence,
+        int SampleCount,
+        double SampledMediaSeconds,
+        bool UsedDurationFallback);
 
     /// <summary>
     /// Generates short beginning/middle/end source clips, encodes them with the
@@ -101,6 +153,7 @@ namespace MediaFlux.Services
         private const int MaxCapturedFfmpegCharacters = 256 * 1024;
         private readonly string _appPath;
         private readonly string _ffmpegPath;
+        private readonly MediaInfoService _sampleMediaInfoService;
         private readonly string? _configuredFfmpegPath;
         private readonly string? _configuredFfprobePath;
         private readonly Action<string>? _log;
@@ -115,10 +168,15 @@ namespace MediaFlux.Services
             _appPath = appPath;
             _configuredFfmpegPath = configuredFfmpegPath;
             _configuredFfprobePath = configuredFfprobePath;
-            _ffmpegPath = FfmpegToolResolver.Resolve(
+            FfmpegToolPaths toolPaths = FfmpegToolResolver.Resolve(
                 appPath,
                 configuredFfmpegPath,
-                configuredFfprobePath).FfmpegPath;
+                configuredFfprobePath);
+            _ffmpegPath = toolPaths.FfmpegPath;
+            _sampleMediaInfoService = new MediaInfoService(
+                appPath,
+                toolPaths.FfprobePath,
+                persistentCacheEnabled: false);
             _log = log;
         }
 
@@ -165,9 +223,15 @@ namespace MediaFlux.Services
 
             return new SampleProjectionResult(
                 result.ProjectedFinalMb,
+                result.ProjectedLowerMb,
+                result.ProjectedUpperMb,
                 result.AverageBitrateKbps,
                 result.EncodeSpeed,
-                result.EstimatedCompletion);
+                result.EstimatedCompletion,
+                result.ProjectionConfidence,
+                result.SampleCount,
+                result.SampledMediaSeconds,
+                result.UsedDurationFallback);
         }
 
         private async Task<SampleComparisonResult> GenerateCoreAsync(
@@ -193,8 +257,7 @@ namespace MediaFlux.Services
             Directory.CreateDirectory(root);
 
             var clips = new List<SampleComparisonClip>();
-            var encodedSizes = new List<long>();
-            double encodedMediaSeconds = 0;
+            var projectionMeasurements = new List<SampleProjectionMeasurement>();
             var encodeStopwatch = new Stopwatch();
 
             try
@@ -217,9 +280,13 @@ namespace MediaFlux.Services
                         progress,
                         cancellationToken).ConfigureAwait(false);
 
+                    double preparedDurationSeconds =
+                        _sampleMediaInfoService.GetDurationSeconds(originalPath);
+                    if (preparedDurationSeconds <= 0)
+                        preparedDurationSeconds = position.Duration.TotalSeconds;
                     double? sampleTargetMb = settings.ProjectedTargetMb.HasValue
                         ? settings.ProjectedTargetMb.Value *
-                          (position.Duration.TotalSeconds / sourceDuration.TotalSeconds)
+                          (preparedDurationSeconds / sourceDuration.TotalSeconds)
                         : null;
 
                     progress?.Report($"Encoding {position.Label.ToLowerInvariant()} sample ({i + 1} of {positions.Count})…");
@@ -270,8 +337,12 @@ namespace MediaFlux.Services
                     }
 
                     long encodedBytes = new FileInfo(encoded.OutputPath).Length;
-                    encodedSizes.Add(encodedBytes);
-                    encodedMediaSeconds += position.Duration.TotalSeconds;
+                    double measuredDurationSeconds =
+                        _sampleMediaInfoService.GetDurationSeconds(encoded.OutputPath);
+                    projectionMeasurements.Add(new SampleProjectionMeasurement(
+                        encodedBytes,
+                        measuredDurationSeconds,
+                        position.Duration.TotalSeconds));
                     clips.Add(new SampleComparisonClip
                     {
                         Label = position.Label,
@@ -282,12 +353,14 @@ namespace MediaFlux.Services
                     });
                 }
 
-                double averageKbps = encodedMediaSeconds > 0
-                    ? encodedSizes.Sum() * 8d / 1000d / encodedMediaSeconds
-                    : 0;
-                double projectedMb = averageKbps * sourceDuration.TotalSeconds / 8192d;
+                SampleProjectionCalculation projection = CalculateProjection(
+                    projectionMeasurements,
+                    sourceDuration.TotalSeconds,
+                    settings.ProjectedTargetMb.HasValue
+                        ? 0
+                        : settings.AdditionalMappedBitrateKbps);
                 double speed = encodeStopwatch.Elapsed.TotalSeconds > 0
-                    ? encodedMediaSeconds / encodeStopwatch.Elapsed.TotalSeconds
+                    ? projection.SampledMediaSeconds / encodeStopwatch.Elapsed.TotalSeconds
                     : 0;
                 TimeSpan eta = speed > 0
                     ? TimeSpan.FromSeconds(sourceDuration.TotalSeconds / speed)
@@ -300,10 +373,16 @@ namespace MediaFlux.Services
                 return new SampleComparisonResult(
                     root,
                     clips,
-                    projectedMb,
-                    averageKbps,
+                    projection.ProjectedFinalMb,
+                    projection.ProjectedLowerMb,
+                    projection.ProjectedUpperMb,
+                    projection.AverageBitrateKbps,
                     speed,
-                    eta);
+                    eta,
+                    projection.Confidence,
+                    projection.SampleCount,
+                    projection.SampledMediaSeconds,
+                    projection.UsedDurationFallback);
             }
             catch
             {
@@ -321,12 +400,108 @@ namespace MediaFlux.Services
                 Math.Max(1, sourceDuration.TotalSeconds));
             double maxStart = Math.Max(0, sourceDuration.TotalSeconds - clipSeconds);
 
+            if (sourceDuration.TotalSeconds <= clipSeconds * 1.5)
+            {
+                return new[]
+                {
+                    ("Full video", TimeSpan.Zero, sourceDuration)
+                };
+            }
+
+            if (sourceDuration.TotalSeconds < clipSeconds * 3)
+            {
+                return new[]
+                {
+                    ("Beginning", TimeSpan.Zero, TimeSpan.FromSeconds(clipSeconds)),
+                    ("End", TimeSpan.FromSeconds(maxStart), TimeSpan.FromSeconds(clipSeconds))
+                };
+            }
+
             return new[]
             {
                 ("Beginning", TimeSpan.Zero, TimeSpan.FromSeconds(clipSeconds)),
                 ("Middle", TimeSpan.FromSeconds(maxStart / 2d), TimeSpan.FromSeconds(clipSeconds)),
                 ("End", TimeSpan.FromSeconds(maxStart), TimeSpan.FromSeconds(clipSeconds))
             };
+        }
+
+        internal static SampleProjectionCalculation CalculateProjection(
+            IReadOnlyList<SampleProjectionMeasurement> measurements,
+            double sourceDurationSeconds,
+            double additionalMappedBitrateKbps = 0)
+        {
+            if (measurements == null || measurements.Count == 0 || sourceDurationSeconds <= 0)
+            {
+                return new SampleProjectionCalculation(
+                    0, 0, 0, 0, SmartEncodeConfidence.Low, 0, 0, false);
+            }
+
+            var rates = new List<double>(measurements.Count);
+            long totalBytes = 0;
+            double totalSeconds = 0;
+            bool usedDurationFallback = false;
+            foreach (SampleProjectionMeasurement measurement in measurements)
+            {
+                if (measurement.EncodedBytes <= 0)
+                    continue;
+
+                double seconds = measurement.MeasuredDurationSeconds > 0
+                    ? measurement.MeasuredDurationSeconds
+                    : measurement.RequestedDurationSeconds;
+                if (seconds <= 0)
+                    continue;
+
+                usedDurationFallback |= measurement.MeasuredDurationSeconds <= 0;
+                totalBytes += measurement.EncodedBytes;
+                totalSeconds += seconds;
+                rates.Add(measurement.EncodedBytes / seconds);
+            }
+
+            if (rates.Count == 0 || totalSeconds <= 0)
+            {
+                return new SampleProjectionCalculation(
+                    0, 0, 0, 0, SmartEncodeConfidence.Low, 0, 0, usedDurationFallback);
+            }
+
+            double bytesPerSecond = totalBytes / totalSeconds;
+            double projectedMb =
+                bytesPerSecond * sourceDurationSeconds / (1024d * 1024d);
+            projectedMb += Math.Max(0, additionalMappedBitrateKbps) *
+                           sourceDurationSeconds / 8192d;
+            double averageRate = rates.Average();
+            double variance = rates.Sum(rate => Math.Pow(rate - averageRate, 2)) /
+                              rates.Count;
+            double relativeSpread = averageRate > 0
+                ? Math.Sqrt(variance) / averageRate
+                : 1;
+            double uncertaintyPercent = Math.Clamp(
+                Math.Max(8, relativeSpread * 110),
+                8,
+                40);
+            if (usedDurationFallback)
+                uncertaintyPercent = Math.Max(uncertaintyPercent, 25);
+
+            double coverageRatio = Math.Min(1, totalSeconds / sourceDurationSeconds);
+            SmartEncodeConfidence confidence =
+                usedDurationFallback || relativeSpread > 0.30
+                    ? SmartEncodeConfidence.Low
+                    : coverageRatio >= 0.80
+                        ? SmartEncodeConfidence.High
+                    : rates.Count < 2
+                        ? SmartEncodeConfidence.Low
+                    : relativeSpread > 0.15
+                        ? SmartEncodeConfidence.Medium
+                        : SmartEncodeConfidence.High;
+
+            return new SampleProjectionCalculation(
+                projectedMb,
+                projectedMb * (1 - uncertaintyPercent / 100d),
+                projectedMb * (1 + uncertaintyPercent / 100d),
+                totalBytes * 8d / 1000d / totalSeconds,
+                confidence,
+                rates.Count,
+                totalSeconds,
+                usedDurationFallback);
         }
 
         internal async Task PrepareSourceClipAsync(
@@ -371,7 +546,7 @@ namespace MediaFlux.Services
             return
                 $"-hide_banner -nostats -loglevel error -y -fflags +genpts " +
                 $"-ss {Seconds(start.TotalSeconds)} -i {Quote(sourcePath)} " +
-                $"-t {Seconds(duration.TotalSeconds)} -map 0:v:0 -map 0:a:0? " +
+                $"-t {Seconds(duration.TotalSeconds)} -map 0:v:0 -map 0:a? " +
                 $"-c copy -avoid_negative_ts make_zero {Quote(outputPath)}";
         }
 
@@ -384,7 +559,7 @@ namespace MediaFlux.Services
             return
                 $"-hide_banner -nostats -loglevel error -y -fflags +genpts " +
                 $"-ss {Seconds(start.TotalSeconds)} -i {Quote(sourcePath)} " +
-                $"-t {Seconds(duration.TotalSeconds)} -map 0:v:0 -map 0:a:0? " +
+                $"-t {Seconds(duration.TotalSeconds)} -map 0:v:0 -map 0:a? " +
                 $"-c:v ffv1 -level 3 -c:a aac -b:a 192k " +
                 $"-avoid_negative_ts make_zero {Quote(outputPath)}";
         }

@@ -204,6 +204,8 @@ namespace MediaFlux
                 QualityValue = validated.QualityValue,
                 TenBit = validated.TenBit,
                 AudioChannels = audioChannels,
+                AdditionalMappedBitrateKbps =
+                    meta?.EstimatedPlannedMappedAncillaryBitrateKbps ?? 0,
                 ClipSeconds = 25
             };
         }

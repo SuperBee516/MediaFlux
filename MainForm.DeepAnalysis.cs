@@ -93,8 +93,14 @@ namespace MediaFlux
                     {
                         SampleComparisonSettings currentSettings =
                             BuildSampleComparisonSettings(row, meta.Path, durationSeconds);
+                        string profileText = meta.CustomCompressionProfile ??
+                            comboCompressionProfile.SelectedItem?.ToString() ??
+                            comboCompressionProfile.Text;
                         SampleComparisonSettings projectionSettings =
-                            BuildDeepProjectionSettings(currentSettings);
+                            BuildDeepProjectionSettings(
+                                currentSettings,
+                                profileText,
+                                applyProfileScale: !_config.StorageSavings.Enabled);
                         var progress = new Progress<string>(message =>
                         {
                             string status =
@@ -110,10 +116,30 @@ namespace MediaFlux
                             progress,
                             token);
 
+                        double metadataEstimateMb =
+                            _estimatedSizeMap.TryGetValue(meta.Path, out double currentEstimate)
+                                ? currentEstimate
+                                : 0;
+                        bool appliedCalibratedEstimate =
+                            chkAutoTargetSize.Checked &&
+                            meta.CustomTargetMb is not > 0 &&
+                            !_config.StorageSavings.Enabled &&
+                            result.ProjectedOutputMb is > 0;
+                        if (appliedCalibratedEstimate)
+                        {
+                            ApplyCalibratedEstimate(
+                                row,
+                                meta,
+                                result,
+                                metadataEstimateMb);
+                        }
+
                         SmartEncodeRecommendation? baseline =
-                            meta.BaselineEncodeRecommendation ??
-                            meta.EncodeRecommendation ??
-                            BuildBaselineRecommendation(row, meta, projectionSettings);
+                            appliedCalibratedEstimate
+                                ? BuildBaselineRecommendation(row, meta, projectionSettings)
+                                : meta.BaselineEncodeRecommendation ??
+                                  meta.EncodeRecommendation ??
+                                  BuildBaselineRecommendation(row, meta, projectionSettings);
                         if (baseline == null)
                         {
                             failed++;
@@ -231,9 +257,16 @@ namespace MediaFlux
                 });
         }
 
-        private static SampleComparisonSettings BuildDeepProjectionSettings(
-            SampleComparisonSettings current)
+        internal static SampleComparisonSettings BuildDeepProjectionSettings(
+            SampleComparisonSettings current,
+            string compressionProfile,
+            bool applyProfileScale)
         {
+            double profileScale = applyProfileScale
+                ? SizeEstimateService.GetCompressionMultiplier(compressionProfile)
+                : 1;
+            int calibratedQuality = (int)Math.Round(
+                current.QualityValue - 12 * Math.Log(profileScale, 2));
             return new SampleComparisonSettings
             {
                 Encoder = current.Encoder,
@@ -244,11 +277,57 @@ namespace MediaFlux
                 ProjectedTargetMb = null,
                 ScaleMode = current.ScaleMode,
                 EncoderPreset = current.EncoderPreset,
-                QualityValue = current.QualityValue,
+                // The metadata estimator expresses the selected file-size profile
+                // as a bitrate scale. Apply the mathematically equivalent quality
+                // offset so the quality-mode samples preserve that user control.
+                QualityValue = calibratedQuality,
                 TenBit = current.TenBit,
                 AudioChannels = current.AudioChannels,
+                AdditionalMappedBitrateKbps = current.AdditionalMappedBitrateKbps,
                 ClipSeconds = 8
             };
+        }
+
+        private void ApplyCalibratedEstimate(
+            DataGridViewRow row,
+            RowMeta meta,
+            DeepMediaAnalysisResult result,
+            double metadataEstimateMb)
+        {
+            double calibratedMb = result.ProjectedOutputMb!.Value;
+            if (_estimatedSizeMap.TryGetValue(meta.Path, out double previousEstimate))
+                _queueTotalEstimatedMb += calibratedMb - previousEstimate;
+            else
+                _queueTotalEstimatedMb += calibratedMb;
+
+            _estimatedSizeMap[meta.Path] = calibratedMb;
+            _queueTotalsDirty = false;
+            double sourceMb = meta.SrcMb > 0
+                ? meta.SrcMb
+                : new FileInfo(meta.Path).Length / (1024d * 1024d);
+            row.Cells["colEstimatedSize"].Value =
+                $"{FormatSize(calibratedMb)}  {PercentReduction(sourceMb, calibratedMb)} (calibrated)";
+            row.Cells["colEstimatedSize"].Tag =
+                new Tuple<double, double>(sourceMb, calibratedMb);
+
+            string range = result.ProjectedOutputLowerMb is > 0 &&
+                           result.ProjectedOutputUpperMb is > 0
+                ? $" Expected range: {FormatSize(result.ProjectedOutputLowerMb.Value)}–" +
+                  $"{FormatSize(result.ProjectedOutputUpperMb.Value)}."
+                : string.Empty;
+            string comparison = metadataEstimateMb > 0
+                ? $" Fast metadata estimate: {FormatSize(metadataEstimateMb)}."
+                : string.Empty;
+            row.Cells["colEstimatedSize"].ToolTipText =
+                $"Calibrated from {result.ProjectionSampleCount} representative quality-mode " +
+                $"sample(s) using the selected encoder settings ({result.ProjectionConfidence} confidence)." +
+                range + comparison;
+            meta.EstimateDiagnostic =
+                $"Calibrated sample estimate: output={calibratedMb:0.##} MB, " +
+                $"range={result.ProjectedOutputLowerMb:0.##}–{result.ProjectedOutputUpperMb:0.##} MB, " +
+                $"confidence={result.ProjectionConfidence}, samples={result.ProjectionSampleCount}, " +
+                $"sampled={result.SampledMediaSeconds:0.##} sec, metadata={metadataEstimateMb:0.##} MB.";
+            UpdateSizeTotals();
         }
 
         private void ApplyContentHintToSelectedRows(SmartEncodeContentHint hint)

@@ -1,3 +1,4 @@
+using MediaFlux.Models;
 using MediaFlux.Services;
 using Xunit;
 
@@ -5,6 +6,107 @@ namespace MediaFlux.Tests;
 
 public sealed class SampleComparisonServiceTests
 {
+    [Fact]
+    public void ProjectionUsesMeasuredDurationsInsteadOfRequestedClipLengths()
+    {
+        long tenMiB = 10L * 1024 * 1024;
+        SampleProjectionCalculation result = SampleComparisonService.CalculateProjection(
+            new[]
+            {
+                new SampleProjectionMeasurement(tenMiB, 8, 8),
+                new SampleProjectionMeasurement(tenMiB, 9, 8),
+                new SampleProjectionMeasurement(tenMiB, 10, 8)
+            },
+            sourceDurationSeconds: 60);
+
+        Assert.Equal(66.67, result.ProjectedFinalMb, precision: 2);
+        Assert.Equal(27, result.SampledMediaSeconds, precision: 3);
+        Assert.False(result.UsedDurationFallback);
+        Assert.NotEqual(75, result.ProjectedFinalMb);
+    }
+
+    [Fact]
+    public void ProjectionReportsRangeAndHighConfidenceForConsistentSamples()
+    {
+        SampleProjectionCalculation result = SampleComparisonService.CalculateProjection(
+            new[]
+            {
+                new SampleProjectionMeasurement(8L * 1024 * 1024, 8, 8),
+                new SampleProjectionMeasurement(9L * 1024 * 1024, 9, 8),
+                new SampleProjectionMeasurement(10L * 1024 * 1024, 10, 8)
+            },
+            sourceDurationSeconds: 120);
+
+        Assert.Equal(SmartEncodeConfidence.High, result.Confidence);
+        Assert.Equal(120, result.ProjectedFinalMb, precision: 2);
+        Assert.Equal(110.4, result.ProjectedLowerMb, precision: 2);
+        Assert.Equal(129.6, result.ProjectedUpperMb, precision: 2);
+    }
+
+    [Fact]
+    public void MissingMeasuredDurationFallsBackAndWidensRange()
+    {
+        SampleProjectionCalculation result = SampleComparisonService.CalculateProjection(
+            new[]
+            {
+                new SampleProjectionMeasurement(8L * 1024 * 1024, 0, 8),
+                new SampleProjectionMeasurement(0, 0, 8)
+            },
+            sourceDurationSeconds: 80);
+
+        Assert.True(result.UsedDurationFallback);
+        Assert.Equal(SmartEncodeConfidence.Low, result.Confidence);
+        Assert.Equal(1.25, result.ProjectedUpperMb / result.ProjectedFinalMb, precision: 2);
+        Assert.Equal(1, result.SampleCount);
+    }
+
+    [Fact]
+    public void SamplePositionsAvoidRedundantOverlappingClipsForShortVideos()
+    {
+        var shortVideo = SampleComparisonService.BuildSamplePositions(
+            TimeSpan.FromSeconds(10),
+            requestedClipSeconds: 8);
+        var mediumVideo = SampleComparisonService.BuildSamplePositions(
+            TimeSpan.FromSeconds(20),
+            requestedClipSeconds: 8);
+        var longVideo = SampleComparisonService.BuildSamplePositions(
+            TimeSpan.FromMinutes(30),
+            requestedClipSeconds: 8);
+
+        Assert.Single(shortVideo);
+        Assert.Equal("Full video", shortVideo[0].Label);
+        Assert.Equal(2, mediumVideo.Count);
+        Assert.Equal(3, longVideo.Count);
+    }
+
+    [Fact]
+    public void FullVideoSampleHasHighConfidenceDespiteSingleSample()
+    {
+        SampleProjectionCalculation result = SampleComparisonService.CalculateProjection(
+            new[]
+            {
+                new SampleProjectionMeasurement(5L * 1024 * 1024, 10, 10)
+            },
+            sourceDurationSeconds: 10);
+
+        Assert.Equal(SmartEncodeConfidence.High, result.Confidence);
+        Assert.Equal(5, result.ProjectedFinalMb, precision: 2);
+    }
+
+    [Fact]
+    public void ProjectionAddsMappedAncillaryStreamBudget()
+    {
+        SampleProjectionCalculation result = SampleComparisonService.CalculateProjection(
+            new[]
+            {
+                new SampleProjectionMeasurement(1L * 1024 * 1024, 10, 10)
+            },
+            sourceDurationSeconds: 100,
+            additionalMappedBitrateKbps: 819.2);
+
+        Assert.Equal(20, result.ProjectedFinalMb, precision: 2);
+    }
+
     [Fact]
     public void StreamCopyArgumentsGenerateTimestampsBeforeOpeningInput()
     {
@@ -20,6 +122,7 @@ public sealed class SampleComparisonServiceTests
         Assert.True(genPts >= 0);
         Assert.True(input > genPts);
         Assert.Contains("-c copy", arguments);
+        Assert.Contains("-map 0:a?", arguments);
         Assert.Contains("-avoid_negative_ts make_zero", arguments);
     }
 

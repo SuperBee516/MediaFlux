@@ -147,6 +147,8 @@ namespace MediaFlux
                                 rm.EstimateDiagnostic = item.EstimateDiagnostic;
                                 rm.EstimatedPlannedAudioBitrateKbps =
                                     item.PlannedAudioBitrateKbps;
+                                rm.EstimatedPlannedMappedAncillaryBitrateKbps =
+                                    item.PlannedMappedAncillaryBitrateKbps;
                             }
                             else
                             {
@@ -160,7 +162,9 @@ namespace MediaFlux
                                     Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0,
                                     EstimateDiagnostic = item.EstimateDiagnostic,
                                     EstimatedPlannedAudioBitrateKbps =
-                                        item.PlannedAudioBitrateKbps
+                                        item.PlannedAudioBitrateKbps,
+                                    EstimatedPlannedMappedAncillaryBitrateKbps =
+                                        item.PlannedMappedAncillaryBitrateKbps
                                 };
                             }
 

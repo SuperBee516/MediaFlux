@@ -7,6 +7,32 @@ namespace MediaFlux.Tests;
 
 public sealed class DeepMediaAnalysisServiceTests
 {
+    [Theory]
+    [InlineData("Very High Quality (Largest File)", 23)]
+    [InlineData("High Quality", 25)]
+    [InlineData("Medium Quality (Default)", 27)]
+    [InlineData("Low Quality (Smaller File)", 29)]
+    [InlineData("Very Low Quality (Smallest File)", 32)]
+    public void CalibratedSamplesPreserveCompressionProfileAsQualityOffset(
+        string profile,
+        int expectedQuality)
+    {
+        var current = new SampleComparisonSettings
+        {
+            QualityValue = 22,
+            ClipSeconds = 25
+        };
+
+        SampleComparisonSettings calibrated = MainForm.BuildDeepProjectionSettings(
+            current,
+            profile,
+            applyProfileScale: true);
+
+        Assert.Equal(expectedQuality, calibrated.QualityValue);
+        Assert.Null(calibrated.ProjectedTargetMb);
+        Assert.Equal(8, calibrated.ClipSeconds);
+    }
+
     [Fact]
     public void ParsesAndAggregatesIdetMultiFrameStatistics()
     {

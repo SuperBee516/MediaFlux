@@ -105,7 +105,7 @@ namespace MediaFlux
             menu.Items.Add("Copy Source Path", null, CopySourcePathFromContextMenu_Click);
             menu.Items.Add("Copy Output Preview", null, CopyOutputPreviewFromContextMenu_Click);
             menu.Items.Add("View Smart Encode Recommendation…", null, ViewRecommendationDetails_Click);
-            menu.Items.Add("Deep Analyze Selected", null, DeepAnalyzeSelected_Click);
+            menu.Items.Add("Calibrate Estimate / Deep Analyze Selected", null, DeepAnalyzeSelected_Click);
             menu.Items.Add("Remux Selected to MKV (Stream Copy)", null, RemuxSelectedToMkv_Click);
             menu.Items.Add("Open Duplicate Manager", null, ShowDuplicateManager_Click);
             menu.Items.Add("Include Selected Exact Duplicate(s) in Encode", null, IncludeSelectedDuplicateRowsInEncode_Click);

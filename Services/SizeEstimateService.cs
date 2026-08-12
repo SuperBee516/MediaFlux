@@ -436,7 +436,7 @@ namespace MediaFlux.Services
         }
 
         // Same mapping you currently have in MainForm
-        private static double GetCompressionMultiplier(string profile)
+        internal static double GetCompressionMultiplier(string profile)
         {
             switch (profile)
             {

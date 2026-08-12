@@ -48,6 +48,7 @@ namespace MediaFlux.Services
             public SmartEncodeRecommendation? Recommendation { get; }
             public string EstimateDiagnostic { get; }
             public double PlannedAudioBitrateKbps { get; }
+            public double PlannedMappedAncillaryBitrateKbps { get; }
 
             public SmartEstimateResult(
                 int generation,
@@ -62,7 +63,8 @@ namespace MediaFlux.Services
                 string? unavailableReason,
                 SmartEncodeRecommendation? recommendation,
                 string estimateDiagnostic,
-                double plannedAudioBitrateKbps)
+                double plannedAudioBitrateKbps,
+                double plannedMappedAncillaryBitrateKbps)
             {
                 Generation = generation;
                 Path = path;
@@ -77,6 +79,8 @@ namespace MediaFlux.Services
                 Recommendation = recommendation;
                 EstimateDiagnostic = estimateDiagnostic;
                 PlannedAudioBitrateKbps = plannedAudioBitrateKbps;
+                PlannedMappedAncillaryBitrateKbps =
+                    plannedMappedAncillaryBitrateKbps;
             }
         }
 
@@ -383,7 +387,8 @@ namespace MediaFlux.Services
                     new SmartEstimateResult(
                         item.Generation, item.Path, srcMb, estMb, durSec, res, codec, fps,
                         item.IsCustom, unavailableReason, recommendation, estimateDiagnostic,
-                        estimateBreakdown?.PlannedAudioBitrateKbps ?? 0));
+                        estimateBreakdown?.PlannedAudioBitrateKbps ?? 0,
+                        estimateBreakdown?.PlannedMappedAncillaryBitrateKbps ?? 0));
             }
             catch (Exception ex)
             {
@@ -393,7 +398,7 @@ namespace MediaFlux.Services
                     new SmartEstimateResult(
                         item.Generation, item.Path, 0, 0, 0, null, null, 0,
                         item.IsCustom, "Metadata unavailable", null,
-                        $"Estimate failed: {ex.Message}", 0));
+                        $"Estimate failed: {ex.Message}", 0, 0));
             }
         }
 

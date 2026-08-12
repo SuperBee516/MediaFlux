@@ -173,7 +173,9 @@ namespace MediaFlux.Services
 
                 if (differencePercent <= 15)
                 {
-                    confidence = SmartEncodeConfidence.High;
+                    confidence = analysis.ProjectionSampleCount > 0
+                        ? analysis.ProjectionConfidence
+                        : SmartEncodeConfidence.High;
                     reasons.Add(
                         $"Beginning/middle/end samples project {analysis.ProjectedOutputMb.Value:0.#} MB, " +
                         "which agrees with the current estimate.");
@@ -195,6 +197,15 @@ namespace MediaFlux.Services
                         0,
                         $"Beginning/middle/end samples project {analysis.ProjectedOutputMb.Value:0.#} MB " +
                         $"instead of {intendedOutputMb:0.#} MB ({differencePercent:0}% difference).");
+                }
+
+                if (analysis.ProjectedOutputLowerMb is > 0 &&
+                    analysis.ProjectedOutputUpperMb is > 0)
+                {
+                    reasons.Add(
+                        $"Calibrated range: {analysis.ProjectedOutputLowerMb.Value:0.#}–" +
+                        $"{analysis.ProjectedOutputUpperMb.Value:0.#} MB " +
+                        $"({analysis.ProjectionConfidence.ToString().ToLowerInvariant()} confidence).");
                 }
             }
             else

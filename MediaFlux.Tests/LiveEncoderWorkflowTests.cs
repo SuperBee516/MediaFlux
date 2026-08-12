@@ -17,6 +17,73 @@ public sealed class LiveEncoderWorkflowTests
         "MEDIAFLUX_LIVE_NVENC";
 
     [Fact]
+    public async Task RepresentativeProjectionTracksFullQualityEncodeWhenEnabled()
+    {
+        ToolPaths? tools = GetLiveToolPaths();
+        if (tools == null)
+            return;
+
+        string root = CreateWorkingFolder();
+        try
+        {
+            string source = await CreateSourceAsync(tools, root);
+            VideoEncoderSelection encoder = EncoderRegistry.Default.Resolve(
+                VideoEncoderIds.Libx265,
+                VideoCodecFamily.Hevc).Selection;
+            var sampleService = new SampleComparisonService(
+                Path.GetDirectoryName(tools.FfmpegPath)!,
+                tools.FfmpegPath,
+                tools.FfprobePath);
+            SampleProjectionResult projection = await sampleService.GenerateProjectionAsync(
+                source,
+                TimeSpan.FromSeconds(3),
+                new SampleComparisonSettings
+                {
+                    Encoder = encoder,
+                    UseGpu = false,
+                    EncoderPreset = "ultrafast",
+                    QualityValue = 30,
+                    ClipSeconds = 8
+                },
+                progress: null,
+                CancellationToken.None);
+
+            var encodingService = new EncodingService(
+                Path.GetDirectoryName(tools.FfmpegPath)!,
+                _ => { },
+                logCallback: null,
+                ffmpegPath: tools.FfmpegPath,
+                ffprobePath: tools.FfprobePath);
+            EncodingService.EncodeResult actual = await encodingService.EncodeWithResultAsync(
+                new EncodingRequest
+                {
+                    Input = EncodingInputSource.FromFile(source),
+                    OutputFolder = root,
+                    Suffix = "_projection_actual",
+                    Encoder = encoder,
+                    UseGpu = false,
+                    EncoderPreset = "ultrafast",
+                    QualityValue = 30,
+                    CopySubtitles = false
+                });
+
+            Assert.True(actual.Success);
+            double actualMb = new FileInfo(actual.OutputPath).Length / (1024d * 1024d);
+            double errorPercent = Math.Abs(projection.ProjectedFinalMb - actualMb) /
+                                  actualMb * 100;
+            Assert.InRange(errorPercent, 0, 10);
+            Assert.Single(SampleComparisonService.BuildSamplePositions(
+                TimeSpan.FromSeconds(3),
+                requestedClipSeconds: 8));
+            Assert.False(projection.UsedDurationFallback);
+        }
+        finally
+        {
+            DeleteWorkingFolder(root);
+        }
+    }
+
+    [Fact]
     public async Task Libx265RunsQualityAndTargetSizeWorkflowsWhenEnabled()
     {
         ToolPaths? tools = GetLiveToolPaths();

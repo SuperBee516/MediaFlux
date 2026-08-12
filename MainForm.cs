@@ -1645,6 +1645,7 @@ namespace MediaFlux
             public SmartEncodeRecommendation? BaselineEncodeRecommendation = null;
             public string EstimateDiagnostic = "";
             public double EstimatedPlannedAudioBitrateKbps = 0;
+            public double EstimatedPlannedMappedAncillaryBitrateKbps = 0;
             public DeepMediaAnalysisResult? DeepAnalysis = null;
             public SmartEncodeContentHint ContentHint = SmartEncodeContentHint.Auto;
             public bool ExcludedFromEncodeAsDuplicate = false;

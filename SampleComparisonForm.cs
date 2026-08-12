@@ -113,7 +113,12 @@ namespace MediaFlux
 
             metrics.Controls.Add(CreateMetric(
                 "Projected final size",
-                result.ProjectedFinalMb > 0 ? $"{result.ProjectedFinalMb:N1} MB" : "Unavailable"), 0, 0);
+                result.ProjectedFinalMb > 0
+                    ? result.ProjectedLowerMb > 0 && result.ProjectedUpperMb > 0
+                        ? $"{result.ProjectedFinalMb:N1} MB\r\n" +
+                          $"{result.ProjectedLowerMb:N1}–{result.ProjectedUpperMb:N1} MB"
+                        : $"{result.ProjectedFinalMb:N1} MB"
+                    : "Unavailable"), 0, 0);
             metrics.Controls.Add(CreateMetric(
                 "Measured bitrate",
                 result.AverageBitrateKbps > 0 ? $"{result.AverageBitrateKbps:N0} kbps" : "Unavailable"), 1, 0);

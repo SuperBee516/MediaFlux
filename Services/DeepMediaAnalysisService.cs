@@ -90,6 +90,14 @@ namespace MediaFlux.Services
             return new DeepMediaAnalysisResult
             {
                 ProjectedOutputMb = projection?.ProjectedFinalMb,
+                ProjectedOutputLowerMb = projection?.ProjectedLowerMb,
+                ProjectedOutputUpperMb = projection?.ProjectedUpperMb,
+                ProjectionConfidence = projection?.ProjectionConfidence ??
+                    SmartEncodeConfidence.Low,
+                ProjectionSampleCount = projection?.SampleCount ?? 0,
+                SampledMediaSeconds = projection?.SampledMediaSeconds ?? 0,
+                UsedProjectionDurationFallback =
+                    projection?.UsedDurationFallback ?? false,
                 AverageBitrateKbps = projection?.AverageBitrateKbps ?? 0,
                 EncodeSpeed = projection?.EncodeSpeed ?? 0,
                 EstimatedCompletion = projection?.EstimatedCompletion ?? TimeSpan.Zero,
