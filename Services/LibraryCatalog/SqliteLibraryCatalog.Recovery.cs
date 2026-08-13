@@ -402,6 +402,7 @@ namespace MediaFlux.Services.LibraryCatalog
             ReadDerivedEvidenceIssues(connection, result, limit);
             ReadRunIssues(connection, result, limit);
             ReadCleanupAndQueueIssues(connection, result, limit);
+            ReadIntegrityIssues(connection, result, limit);
             return result.Take(limit).ToArray();
         }
 
@@ -896,6 +897,40 @@ namespace MediaFlux.Services.LibraryCatalog
             using SqliteCommand queue = c.CreateCommand(); queue.CommandText = "SELECT q.id,q.file_id,f.full_path,q.error_text FROM library_reanalysis_queue q JOIN indexed_files f ON f.id=q.file_id WHERE q.status=3 ORDER BY q.updated_utc_ticks DESC LIMIT $limit;"; queue.Parameters.AddWithValue("$limit", limit);
             using SqliteDataReader qr = queue.ExecuteReader(); while (qr.Read()) result.Add(new LibraryHealthIssue($"reanalysis:{qr.GetInt64(0)}", LibraryHealthIssueKind.ReanalysisFailure, LibraryHealthSeverity.Error,
                 "Targeted re-analysis exhausted its retries", qr.GetString(2) + Environment.NewLine + qr.GetString(3), "Verify availability, then queue the file again.", qr.GetInt64(1), SuggestedReanalysis: LibraryReanalysisWork.All));
+        }
+
+        private static void ReadIntegrityIssues(SqliteConnection c, List<LibraryHealthIssue> result, int limit)
+        {
+            using SqliteCommand command = c.CreateCommand();
+            command.CommandText = """
+                SELECT f.id,f.full_path,r.result_state,r.scrub_type,r.error_category,r.details,
+                       CASE WHEN r.method_version<>1 OR r.source_size_bytes<>f.size_bytes OR r.source_last_write_utc_ticks<>f.last_write_utc_ticks OR
+                                      (r.source_volume_id<>'' AND r.source_volume_id<>f.volume_id) OR
+                                      (r.source_file_identity<>'' AND r.source_file_identity<>f.file_identity) THEN 1 ELSE 0 END stale
+                FROM media_integrity_results r JOIN indexed_files f ON f.id=r.file_id
+                WHERE r.result_state IN(5,8) OR (r.result_state IN(3,4,5) AND
+                      (r.method_version<>1 OR r.source_size_bytes<>f.size_bytes OR r.source_last_write_utc_ticks<>f.last_write_utc_ticks OR
+                       (r.source_volume_id<>'' AND r.source_volume_id<>f.volume_id) OR
+                       (r.source_file_identity<>'' AND r.source_file_identity<>f.file_identity)))
+                ORDER BY r.updated_utc_ticks DESC LIMIT $limit;
+                """;
+            command.Parameters.AddWithValue("$limit", limit);
+            using SqliteDataReader reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                long fileId = reader.GetInt64(0); string path = reader.GetString(1); bool stale = reader.GetInt32(6) != 0;
+                LibraryIntegrityResultState state = (LibraryIntegrityResultState)reader.GetInt32(2);
+                LibraryIntegrityScrubType type = (LibraryIntegrityScrubType)reader.GetInt32(3);
+                LibraryHealthIssueKind kind = stale ? LibraryHealthIssueKind.IntegrityResultStale :
+                    state == LibraryIntegrityResultState.Cancelled ? LibraryHealthIssueKind.IntegrityCheckInterrupted : LibraryHealthIssueKind.IntegrityCheckFailed;
+                string title = stale ? "Media integrity result is stale" : state == LibraryIntegrityResultState.Cancelled ? "Media integrity check was interrupted" : "Media integrity verification failed";
+                string action = stale ? "Re-analyze metadata, then run Quick Scrub." : $"Retry {type} Scrub; use Full Scrub for deeper verification when appropriate.";
+                result.Add(new LibraryHealthIssue($"integrity:{fileId}", kind,
+                    state == LibraryIntegrityResultState.Failed && !stale ? LibraryHealthSeverity.Error : LibraryHealthSeverity.Warning,
+                    title, path + Environment.NewLine + reader.GetString(5), action, fileId,
+                    SuggestedReanalysis: stale ? LibraryReanalysisWork.Metadata : LibraryReanalysisWork.None,
+                    SuggestedIntegrityScrub: stale ? LibraryIntegrityScrubType.Quick : type));
+            }
         }
 
         private static void ReadQuarantineCandidates(SqliteConnection c, List<LibraryQuarantineRestoreItem> result, bool visual, int limit)

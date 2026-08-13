@@ -76,13 +76,19 @@ namespace MediaFlux
         private async void QueueHealthReanalysis_Click(object? sender, EventArgs e)
         {
             LibraryHealthIssue[] issues = _healthGrid.SelectedRows.Cast<DataGridViewRow>().Select(x => x.Tag)
-                .OfType<LibraryHealthIssue>().Where(x => x.FileId.HasValue && x.SuggestedReanalysis != LibraryReanalysisWork.None).ToArray();
+                .OfType<LibraryHealthIssue>().Where(x => x.FileId.HasValue &&
+                    (x.SuggestedReanalysis != LibraryReanalysisWork.None || x.SuggestedIntegrityScrub.HasValue)).ToArray();
             if (issues.Length == 0) return;
             string batch = Guid.NewGuid().ToString("N");
             await Task.Run(() =>
             {
                 foreach (LibraryHealthIssue issue in issues)
-                    _runtime.Reanalysis.Queue(issue.FileId!.Value, issue.SuggestedReanalysis, batch);
+                {
+                    if (issue.SuggestedReanalysis != LibraryReanalysisWork.None)
+                        _runtime.Reanalysis.Queue(issue.FileId!.Value, issue.SuggestedReanalysis, batch);
+                    if (issue.SuggestedIntegrityScrub.HasValue)
+                        _runtime.Integrity.QueueFiles(new[] { issue.FileId!.Value }, issue.SuggestedIntegrityScrub.Value, batch);
+                }
             });
             await RefreshHealthAsync();
         }

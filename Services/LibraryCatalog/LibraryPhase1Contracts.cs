@@ -77,7 +77,10 @@ namespace MediaFlux.Services.LibraryCatalog
         UnresolvedCleanup,
         ReanalysisFailure,
         CatalogIntegrity,
-        RestorableQuarantine
+        RestorableQuarantine,
+        IntegrityCheckFailed,
+        IntegrityResultStale,
+        IntegrityCheckInterrupted
     }
 
     public enum LibraryHealthSeverity
@@ -148,7 +151,8 @@ namespace MediaFlux.Services.LibraryCatalog
         long? GroupId = null,
         long? LocationId = null,
         LibraryReanalysisWork SuggestedReanalysis = LibraryReanalysisWork.None,
-        long? CleanupAuditId = null);
+        long? CleanupAuditId = null,
+        LibraryIntegrityScrubType? SuggestedIntegrityScrub = null);
 
     public sealed record LibraryHealthSnapshot(
         IReadOnlyList<LibraryHealthIssue> Issues,

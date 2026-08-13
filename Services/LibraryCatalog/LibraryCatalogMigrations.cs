@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 10;
+        public const int CurrentVersion = 11;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -661,6 +661,48 @@ namespace MediaFlux.Services.LibraryCatalog
                     """
                     CREATE INDEX ix_cleanup_items_plan_status_group_file
                         ON duplicate_cleanup_plan_items(plan_id,status,group_id,file_id);
+                    """),
+                new LibraryCatalogMigration(
+                    11,
+                    "Persistent media integrity scrubbing",
+                    """
+                    CREATE TABLE media_integrity_results (
+                        file_id INTEGER PRIMARY KEY REFERENCES indexed_files(id) ON DELETE CASCADE,
+                        method_version INTEGER NOT NULL CHECK(method_version > 0),
+                        scrub_type INTEGER NOT NULL CHECK(scrub_type BETWEEN 0 AND 1),
+                        result_state INTEGER NOT NULL CHECK(result_state BETWEEN 0 AND 8),
+                        source_size_bytes INTEGER NOT NULL CHECK(source_size_bytes >= 0),
+                        source_last_write_utc_ticks INTEGER NOT NULL,
+                        source_volume_id TEXT NOT NULL DEFAULT '',
+                        source_file_identity TEXT NOT NULL DEFAULT '',
+                        checked_utc_ticks INTEGER NULL,
+                        bytes_checked INTEGER NOT NULL DEFAULT 0 CHECK(bytes_checked >= 0),
+                        media_duration_checked_seconds REAL NOT NULL DEFAULT 0 CHECK(media_duration_checked_seconds >= 0),
+                        elapsed_seconds REAL NOT NULL DEFAULT 0 CHECK(elapsed_seconds >= 0),
+                        error_category INTEGER NOT NULL DEFAULT 0 CHECK(error_category BETWEEN 0 AND 11),
+                        details TEXT NOT NULL DEFAULT '',
+                        tool_version TEXT NOT NULL DEFAULT '',
+                        updated_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+                    CREATE INDEX ix_integrity_results_state_checked
+                        ON media_integrity_results(result_state,checked_utc_ticks,file_id);
+
+                    CREATE TABLE media_integrity_queue (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                        scrub_type INTEGER NOT NULL CHECK(scrub_type BETWEEN 0 AND 1),
+                        status INTEGER NOT NULL CHECK(status BETWEEN 0 AND 4),
+                        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                        maximum_attempts INTEGER NOT NULL DEFAULT 3 CHECK(maximum_attempts BETWEEN 1 AND 10),
+                        batch_id TEXT NOT NULL DEFAULT '',
+                        error_text TEXT NOT NULL DEFAULT '',
+                        created_utc_ticks INTEGER NOT NULL,
+                        updated_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+                    CREATE UNIQUE INDEX ux_integrity_queue_active_file
+                        ON media_integrity_queue(file_id) WHERE status IN (0,1);
+                    CREATE INDEX ix_integrity_queue_claim
+                        ON media_integrity_queue(status,scrub_type,id);
                     """)
             };
 

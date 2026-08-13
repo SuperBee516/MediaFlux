@@ -404,11 +404,13 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 Label recommendationsIntro = Descendants<Label>(form).Single(label => label.Name == "CleanupRecommendationsIntro");
                 Label optimizationIntro = Descendants<Label>(form).Single(label => label.Name == "LibraryPoliciesIntro");
                 Label reclamationIntro = Descendants<Label>(form).Single(label => label.Name == "StorageReclamationIntro");
+                Label integrityIntro = Descendants<Label>(form).Single(label => label.Name == "MediaIntegrityIntro");
                 Label exactStatus = GetPrivateField<Label>(form, "_duplicateStatus");
                 Color accent = visualNotice.ForeColor;
                 Assert.Equal(accent, recommendationsIntro.ForeColor);
                 Assert.Equal(accent, optimizationIntro.ForeColor);
                 Assert.Equal(accent, reclamationIntro.ForeColor);
+                Assert.Equal(accent, integrityIntro.ForeColor);
                 Assert.Equal(accent, exactStatus.ForeColor);
                 Assert.True(accent.B > accent.R && accent.B > accent.G, "The Library Analyzer accent should be visibly blue.");
                 form.Close();

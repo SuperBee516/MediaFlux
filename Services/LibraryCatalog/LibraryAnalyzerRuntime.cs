@@ -24,7 +24,8 @@ namespace MediaFlux.Services.LibraryCatalog
                 new FfmpegVisualFingerprintExtractor(applicationDirectory, configuredFfmpegPath),
                 isEncodingActive,
                 protectedPaths,
-                keeperPreferences: keeperPreferences)
+                keeperPreferences: keeperPreferences,
+                integrityFfmpegPath: FfmpegToolResolver.Resolve(applicationDirectory, configuredFfmpegPath).FfmpegPath)
         {
         }
 
@@ -41,7 +42,9 @@ namespace MediaFlux.Services.LibraryCatalog
             ILibraryFileIdentityProvider? identityProvider = null,
             ILibraryChangeJournalProvider? changeJournal = null,
             LibraryStorageScheduler? storageScheduler = null,
-            MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null)
+            MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null,
+            string integrityFfmpegPath = "",
+            IMediaToolProcessRunner? integrityProcessRunner = null)
         {
             _catalog = catalog;
             _catalog.Initialize();
@@ -87,6 +90,8 @@ namespace MediaFlux.Services.LibraryCatalog
             VisualFamilies = new LibraryVisualFamilyService(_catalog, VisualDuplicateCleanup, keeperPreferences);
             ReclamationOpportunities = new StorageReclamationOpportunitySource(_catalog, _catalog, _catalog, _catalog,
                 DuplicateCleanup, VisualDuplicateCleanup, VisualFamilies, PolicyEvaluation);
+            Integrity = new LibraryIntegrityCoordinator(_catalog,
+                new LibraryIntegrityScrubService(integrityFfmpegPath, integrityProcessRunner), scheduler, isEncodingActive);
             Recommendations.AttachFamilies(_catalog, VisualFamilies);
             Scanner = new LibraryScanCoordinator(
                 _catalog,
@@ -125,6 +130,8 @@ namespace MediaFlux.Services.LibraryCatalog
         public LibraryRecommendationService Recommendations { get; }
         public LibraryPolicyEvaluationService PolicyEvaluation { get; }
         public StorageReclamationOpportunitySource ReclamationOpportunities { get; }
+        public ILibraryIntegrityCatalog IntegrityCatalog => _catalog;
+        public LibraryIntegrityCoordinator Integrity { get; }
         public string ReclamationRevision => _catalog.GetPolicyFactsRevision();
         public ILibraryVisualFamilyCatalog FamilyCatalog => _catalog;
         public LibraryVisualFamilyService VisualFamilies { get; }
@@ -151,6 +158,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 return;
             _disposed = true;
             Scanner.CancelAndWait(TimeSpan.FromSeconds(10));
+            Integrity.Dispose();
             _reanalysis.Dispose();
             _duplicates.CancelAndWait(TimeSpan.FromSeconds(10));
             _visual.CancelAndWait(TimeSpan.FromSeconds(10));
