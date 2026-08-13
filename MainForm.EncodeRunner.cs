@@ -479,6 +479,7 @@ namespace MediaFlux
             long? sourceSizeBytes = isDvdEncode
                 ? dvdOptions!.Candidate.CombinedSizeBytes
                 : TryGetFileSizeBytes(file);
+            int? statisticsSourceHeight = isDvdEncode ? dvdOptions!.Candidate.VideoHeight : null;
 
             // Capture encoder + codec as one immutable selection for this job.
             // This prevents a UI change between reads from producing an invalid
@@ -720,6 +721,7 @@ namespace MediaFlux
                 {
                     MediaInfoService.MediaInfo mediaInfo =
                         _mediaInfoService.GetInfo(file);
+                    statisticsSourceHeight = mediaInfo.Height;
                     inputSource = EncodingInputSource.FromFile(
                         file,
                         mediaInfo.AudioBitrateKbps is > 0
@@ -915,7 +917,15 @@ namespace MediaFlux
                     outputSizeBytes,
                     durationSec > 0 ? durationSec : null,
                     meta.StatisticsProcessingSeconds,
-                    $"Validated and finalized. {sourceDeletion.Message}");
+                    $"Validated and finalized. {sourceDeletion.Message}",
+                    encoderId: encoderSnapshot.Validated.Resolved.Selection.EncoderId,
+                    encoderPreset: encoderSnapshot.Validated.Preset,
+                    sourceResolutionTier: EncodingRuntimeEstimatorService.ResolutionTier(statisticsSourceHeight),
+                    outputResolutionTier: EncodingRuntimeEstimatorService.ResolutionTier(RuntimeOutputHeight(statisticsSourceHeight, scaleMode)),
+                    outputBitDepth: encoderSnapshot.Validated.TenBit ? 10 : 8,
+                    scalingApplied: RuntimeOutputHeight(statisticsSourceHeight, scaleMode) is int outputHeight &&
+                        statisticsSourceHeight is int sourceHeight && outputHeight != sourceHeight,
+                    concurrentEncoderSessions: encoderSnapshot.Validated.ConcurrentEncoderSessions);
 
                 try
                 {

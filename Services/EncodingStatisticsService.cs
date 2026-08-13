@@ -24,9 +24,9 @@ namespace MediaFlux.Services
         Custom
     }
 
-    public sealed class EncodingStatisticsRecord
+    public sealed record EncodingStatisticsRecord
     {
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = 2;
         public string Id { get; set; } = Guid.NewGuid().ToString("N");
         public DateTime StartUtc { get; set; }
         public DateTime EndUtc { get; set; }
@@ -39,6 +39,14 @@ namespace MediaFlux.Services
         public long? OutputSizeBytes { get; set; }
         public double? MediaDurationSeconds { get; set; }
         public double ProcessingSeconds { get; set; }
+        public string EncoderId { get; set; } = "";
+        public string EncoderPreset { get; set; } = "";
+        public string SourceResolutionTier { get; set; } = "";
+        public string OutputResolutionTier { get; set; } = "";
+        public int? OutputBitDepth { get; set; }
+        public bool? ScalingApplied { get; set; }
+        public bool? ConcurrentEncoderSessions { get; set; }
+        public bool IsSampleJob { get; set; }
         public string Notes { get; set; } = "";
     }
 
@@ -179,6 +187,11 @@ namespace MediaFlux.Services
             record.OutputPath ??= "";
             record.Codec = NormalizeGroupValue(record.Codec);
             record.Encoder = NormalizeGroupValue(record.Encoder);
+            record.EncoderId = record.EncoderId?.Trim() ?? "";
+            record.EncoderPreset = record.EncoderPreset?.Trim() ?? "";
+            record.SourceResolutionTier = record.SourceResolutionTier?.Trim() ?? "";
+            record.OutputResolutionTier = record.OutputResolutionTier?.Trim() ?? "";
+            if (record.OutputBitDepth is not (8 or 10 or 12 or 16)) record.OutputBitDepth = null;
             record.Notes ??= "";
             record.ProcessingSeconds =
                 double.IsFinite(record.ProcessingSeconds)

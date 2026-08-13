@@ -25,6 +25,14 @@ public enum LibraryPolicyConfidence
     High = 2
 }
 
+public enum RuntimeEstimateConfidence
+{
+    Unknown = 0,
+    Low = 1,
+    Medium = 2,
+    High = 3
+}
+
 public sealed class LibraryPolicyDefinition
 {
     public const int CurrentSchemaVersion = 1;
@@ -134,6 +142,8 @@ public sealed class LibraryPolicyEvaluationResult
     public string PolicyName { get; init; } = "";
     public long FileId { get; init; }
     public string FullPath { get; init; } = "";
+    public string LocationPath { get; init; } = "";
+    public string PhysicalIdentityKey { get; init; } = "";
     public LibraryPolicyComplianceState State { get; init; }
     public LibraryPolicySuggestedAction SuggestedAction { get; init; }
     public double OpportunityScore { get; init; }
@@ -157,6 +167,15 @@ public sealed class LibraryPolicyEvaluationResult
     public int? MaximumOutputHeight { get; init; }
     public bool PreserveHdr { get; init; }
     public OutputContainerSelection TargetContainer { get; init; }
+    public double? SourceDurationSeconds { get; init; }
+    public int? SourceHeight { get; init; }
+    public int? SourceBitDepth { get; init; }
+    public double? EstimatedProcessingSeconds { get; init; }
+    public double? EstimatedSpeedX { get; init; }
+    public double? SavingsEfficiencyBytesPerHour { get; init; }
+    public RuntimeEstimateConfidence RuntimeConfidence { get; init; }
+    public int RuntimeSampleCount { get; init; }
+    public string RuntimeExplanation { get; init; } = "";
 }
 
 public sealed record LibraryPolicyQueueItem(
@@ -174,4 +193,8 @@ public sealed record LibraryPolicyQueueItem(
     bool PreserveHdr,
     OutputContainerSelection TargetContainer,
     long? ProjectedOutputBytes,
-    LibraryPolicyConfidence Confidence);
+    LibraryPolicyConfidence Confidence,
+    double? EstimatedProcessingSeconds = null,
+    double? SavingsEfficiencyBytesPerHour = null,
+    RuntimeEstimateConfidence RuntimeConfidence = RuntimeEstimateConfidence.Unknown,
+    string RuntimeExplanation = "");

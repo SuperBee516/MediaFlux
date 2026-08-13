@@ -76,6 +76,7 @@ namespace MediaFlux
             BuildHealthTab();
             BuildRecommendationsTab();
             BuildStorageOptimizationTab();
+            BuildStorageReclamationTab();
             _runtime.Enrichment.ProgressChanged += Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged += Duplicates_ProgressChanged;
             _runtime.VisualSimilarity.ProgressChanged += VisualSimilarity_ProgressChanged;
@@ -90,6 +91,7 @@ namespace MediaFlux
                 Interlocked.Increment(ref _visualMemberLoadVersion);
                 Interlocked.Increment(ref _duplicateMemberLoadVersion);
                 _exactCleanupCancellation?.Cancel();
+                _reclamationBuildCancellation?.Cancel();
                 _refreshTimer.Stop();
                 _activityTimer.Stop();
                 _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
@@ -420,6 +422,8 @@ namespace MediaFlux
                 await RefreshRecommendationsAsync();
             else if (_tabs.SelectedIndex == 9)
                 await RefreshStorageOptimizationAsync();
+            else if (_tabs.SelectedIndex == 10)
+                RefreshStorageReclamationStaleness();
         }
 
         private async Task RefreshOverviewAsync()
@@ -821,6 +825,8 @@ namespace MediaFlux
             Action<IReadOnlyList<string>>? AddToEncodeQueue = null,
             LibraryPolicyStore? PolicyStore = null,
             LibraryPolicyCapabilitySnapshot? PolicyCapabilities = null,
-            Func<IReadOnlyList<LibraryPolicyQueueItem>, Task>? AddPolicyCandidatesToEncodeQueue = null);
+            Func<IReadOnlyList<LibraryPolicyQueueItem>, Task>? AddPolicyCandidatesToEncodeQueue = null,
+            StorageReclamationPlanStore? ReclamationPlanStore = null,
+            EncodingRuntimeEstimatorService? RuntimeEstimator = null);
     }
 }

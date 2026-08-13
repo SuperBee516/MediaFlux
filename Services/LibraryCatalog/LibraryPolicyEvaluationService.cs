@@ -93,6 +93,9 @@ public sealed class LibraryPolicyEvaluationEngine
             PolicyName = policy.Name,
             FileId = file.FileId,
             FullPath = file.FullPath,
+            LocationPath = file.LocationPath,
+            PhysicalIdentityKey = !string.IsNullOrWhiteSpace(file.VolumeId) && !string.IsNullOrWhiteSpace(file.FileIdentity)
+                ? $"{file.VolumeId}|{file.FileIdentity}" : file.FullPath,
             State = state,
             SuggestedAction = action,
             OpportunityScore = Math.Round(Math.Clamp(score, 0, 100), 1),
@@ -115,7 +118,10 @@ public sealed class LibraryPolicyEvaluationEngine
             PreserveSourceResolution = policy.PreserveSourceResolution,
             MaximumOutputHeight = policy.MaximumOutputHeight,
             PreserveHdr = policy.PreserveHdr,
-            TargetContainer = policy.TargetContainer
+            TargetContainer = policy.TargetContainer,
+            SourceDurationSeconds = file.DurationSeconds,
+            SourceHeight = file.Height,
+            SourceBitDepth = file.BitDepth
         };
 
         if (file.ProbeStatus != LibraryProbeStatus.Succeeded || string.IsNullOrWhiteSpace(file.VideoCodec))
@@ -450,6 +456,34 @@ public sealed class LibraryPolicyEvaluationService
             _pageCache.Clear();
             _pageCacheOrder.Clear();
         }
+    }
+
+    public IReadOnlyList<LibraryPolicyEvaluationResult> EvaluateForPlanning(
+        LibraryPolicyDefinition policy,
+        LibraryPolicyCapabilitySnapshot capabilities,
+        bool includeReviewRequired,
+        int maximumResults = 50_000,
+        CancellationToken cancellationToken = default)
+    {
+        maximumResults = Math.Clamp(maximumResults, 1, 50_000);
+        var results = new List<LibraryPolicyEvaluationResult>(Math.Min(maximumResults, 4096));
+        for (int offset = 0; results.Count < maximumResults; offset += BatchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            IReadOnlyList<LibraryPolicyFileFacts> facts = _catalog.QueryPolicyFileFacts(offset, BatchSize);
+            foreach (LibraryPolicyFileFacts fact in facts)
+            {
+                LibraryPolicyEvaluationResult result = _engine.Evaluate(policy, fact, capabilities);
+                if (result.State == LibraryPolicyComplianceState.OptimizationCandidate ||
+                    includeReviewRequired && result.State == LibraryPolicyComplianceState.ReviewRequired)
+                {
+                    results.Add(result);
+                    if (results.Count >= maximumResults) break;
+                }
+            }
+            if (facts.Count < BatchSize) break;
+        }
+        return results;
     }
 
     private static string BuildEvaluationKey(LibraryPolicyDefinition policy, LibraryPolicyCapabilitySnapshot capabilities) =>

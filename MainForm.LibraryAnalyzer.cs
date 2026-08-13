@@ -76,7 +76,8 @@ namespace MediaFlux
                                 replaceExisting: false, rememberRoots: false),
                             PolicyStore: policyStore,
                             PolicyCapabilities: policyCapabilities,
-                            AddPolicyCandidatesToEncodeQueue: AddLibraryPolicyCandidatesToQueueAsync));
+                            AddPolicyCandidatesToEncodeQueue: AddLibraryPolicyCandidatesToQueueAsync,
+                            RuntimeEstimator: new EncodingRuntimeEstimatorService(_encodingStatisticsService)));
                     _libraryAnalyzerForm.FormClosed += (_, _) => _libraryAnalyzerForm = null;
                     _libraryAnalyzerForm.Show(this);
                 }

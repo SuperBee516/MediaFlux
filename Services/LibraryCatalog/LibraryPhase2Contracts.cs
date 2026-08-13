@@ -105,7 +105,10 @@ public sealed record LibraryPolicyFileFacts(
     bool IsExactDuplicate,
     bool IsReviewedVisualCleanupCandidate,
     bool IsReviewedFamilyCleanupCandidate,
-    bool HasUnreviewedVisualMatch);
+    bool HasUnreviewedVisualMatch,
+    string VolumeId = "",
+    string FileIdentity = "",
+    string LocationPath = "");
 
 public sealed record LibraryPolicyResultQuery(
     MediaFlux.Models.LibraryPolicyComplianceState? State = null,

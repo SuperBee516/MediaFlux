@@ -449,6 +449,20 @@ namespace MediaFlux
                 : $"{duration.Minutes}:{duration.Seconds:00}";
         }
 
+        private static int? RuntimeOutputHeight(int? sourceHeight, EncodingService.ScaleMode scaleMode)
+        {
+            if (sourceHeight is not > 0) return null;
+            int requested = scaleMode switch
+            {
+                EncodingService.ScaleMode.To720p => 720,
+                EncodingService.ScaleMode.To1080p => 1080,
+                EncodingService.ScaleMode.To1440p => 1440,
+                EncodingService.ScaleMode.To4K => 2160,
+                _ => sourceHeight.Value
+            };
+            return Math.Min(sourceHeight.Value, requested);
+        }
+
         private void RecordEncodingStatistics(
             string operationId,
             DateTime startUtc,
@@ -462,7 +476,15 @@ namespace MediaFlux
             long? outputSizeBytes,
             double? mediaDurationSeconds,
             double processingSeconds,
-            string notes = "")
+            string notes = "",
+            string encoderId = "",
+            string encoderPreset = "",
+            string sourceResolutionTier = "",
+            string outputResolutionTier = "",
+            int? outputBitDepth = null,
+            bool? scalingApplied = null,
+            bool? concurrentEncoderSessions = null,
+            bool isSampleJob = false)
         {
             try
             {
@@ -481,6 +503,14 @@ namespace MediaFlux
                         OutputSizeBytes = outputSizeBytes,
                         MediaDurationSeconds = mediaDurationSeconds,
                         ProcessingSeconds = processingSeconds,
+                        EncoderId = encoderId,
+                        EncoderPreset = encoderPreset,
+                        SourceResolutionTier = sourceResolutionTier,
+                        OutputResolutionTier = outputResolutionTier,
+                        OutputBitDepth = outputBitDepth,
+                        ScalingApplied = scalingApplied,
+                        ConcurrentEncoderSessions = concurrentEncoderSessions,
+                        IsSampleJob = isSampleJob,
                         Notes = notes
                     });
 

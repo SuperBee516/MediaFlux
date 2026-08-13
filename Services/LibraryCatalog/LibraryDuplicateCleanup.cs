@@ -175,6 +175,41 @@ namespace MediaFlux.Services.LibraryCatalog
             }
         }
 
+        public DuplicateCleanupPlanSummary CreatePlanForCandidates(
+            IReadOnlyCollection<ExactCleanupCandidate> approvedCandidates,
+            DuplicateCleanupAction action,
+            string quarantineRoot = "",
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(approvedCandidates);
+            if (approvedCandidates.Count == 0) throw new ArgumentException("Select at least one exact duplicate candidate.", nameof(approvedCandidates));
+            HashSet<(long GroupId, long FileId)> currentlyEligible = GetEligibleCandidates(50_000)
+                .Select(item => (item.GroupId, item.FileId)).ToHashSet();
+            var items = new List<DuplicateCleanupPlanItemRecord>();
+            foreach (ExactCleanupCandidate approved in approvedCandidates
+                         .DistinctBy(item => (item.GroupId, item.FileId)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!currentlyEligible.Contains((approved.GroupId, approved.FileId))) continue;
+                ExactDuplicateGroupRecord? group = _analysis.GetDuplicateGroup(approved.GroupId);
+                IReadOnlyList<ExactDuplicateMemberRecord> members = _analysis.GetDuplicateGroupMembers(
+                    approved.GroupId, new[] { approved.FileId, approved.KeeperFileId });
+                ExactDuplicateMemberRecord? candidate = members.FirstOrDefault(item => item.FileId == approved.FileId);
+                ExactDuplicateMemberRecord? keeper = members.FirstOrDefault(item => item.FileId == approved.KeeperFileId);
+                LibraryFileHashFact? hash = _analysis.GetFileHashFact(approved.FileId);
+                if (group == null || group.Ignored || candidate == null || keeper == null || hash?.FullHash == null ||
+                    group.ManualKeeperFileId.GetValueOrDefault(group.SuggestedKeeperFileId ?? 0) != keeper.FileId)
+                    continue;
+                items.Add(new DuplicateCleanupPlanItemRecord(0, approved.GroupId, candidate.FileId, keeper.FileId,
+                    candidate.FullPath, candidate.PathKey, candidate.SizeBytes, candidate.LastWriteUtc,
+                    candidate.VolumeId, candidate.FileIdentity, hash.FullHash, DuplicateCleanupItemStatus.Planned, "", ""));
+            }
+            if (items.Count == 0) throw new InvalidOperationException("No selected exact candidates remain eligible after revalidation.");
+            long planId = _analysis.CreateCleanupPlan(action, quarantineRoot, items);
+            return _analysis.GetCleanupPlanSummary(planId)
+                ?? throw new InvalidOperationException("The selected exact cleanup plan could not be reloaded.");
+        }
+
         public DuplicateCleanupPlanSummary CreatePlanForAllEligible(
             DuplicateCleanupAction action,
             string quarantineRoot = "",

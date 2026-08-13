@@ -65,6 +65,18 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
     }
 
     [Fact]
+    public void VersionOneJsonRecordLoadsWithNewWorkloadFieldsAbsent()
+    {
+        File.WriteAllText(_statisticsPath,
+            "{\"SchemaVersion\":1,\"Id\":\"legacy\",\"StartUtc\":\"2026-01-01T00:00:00Z\",\"EndUtc\":\"2026-01-01T00:10:00Z\",\"Outcome\":0,\"Codec\":\"hevc_nvenc\",\"Encoder\":\"NVIDIA NVENC\",\"MediaDurationSeconds\":1200,\"ProcessingSeconds\":600}" + Environment.NewLine);
+        EncodingStatisticsRecord record = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+        Assert.Equal(1, record.SchemaVersion);
+        Assert.Equal("", record.EncoderId);
+        Assert.Null(record.OutputBitDepth);
+        Assert.Null(record.ConcurrentEncoderSessions);
+    }
+
+    [Fact]
     public void IncompleteOutputsNeverContributeToStorageSavings()
     {
         var service = new EncodingStatisticsService(_statisticsPath);

@@ -111,7 +111,11 @@ public sealed partial class SqliteLibraryCatalog
                           JOIN visual_analysis_runs ur ON ur.id=ug.analysis_run_id AND ur.status=1
                           LEFT JOIN visual_group_decisions ud ON ud.group_key=ug.group_key
                           WHERE f.id IN(ug.left_file_id,ug.right_file_id) AND ug.lifecycle_state=0
-                            AND COALESCE(ud.reviewed,0)=0 AND COALESCE(ud.ignored,0)=0)
+                            AND COALESCE(ud.reviewed,0)=0 AND COALESCE(ud.ignored,0)=0),
+                   COALESCE(f.volume_id,''),COALESCE(f.file_identity,''),
+                   COALESCE((SELECT l.path FROM file_location_memberships fm
+                             JOIN library_locations l ON l.id=fm.location_id
+                             WHERE fm.file_id=f.id AND fm.availability_state=0 ORDER BY l.id LIMIT 1),'')
             FROM indexed_files f
             LEFT JOIN media_metadata m ON m.file_id=f.id
             WHERE f.availability_state=0
@@ -132,7 +136,8 @@ public sealed partial class SqliteLibraryCatalog
                 Deserialize<List<LibraryAudioStreamMetadata>>(reader.GetString(16)),
                 Deserialize<List<LibrarySubtitleStreamMetadata>>(reader.GetString(17)),
                 reader.GetInt32(18), reader.GetInt32(19), (LibraryProbeStatus)reader.GetInt32(20), reader.GetString(21),
-                reader.GetBoolean(22), reader.GetBoolean(23), reader.GetBoolean(24), reader.GetBoolean(25), reader.GetBoolean(26)));
+                reader.GetBoolean(22), reader.GetBoolean(23), reader.GetBoolean(24), reader.GetBoolean(25), reader.GetBoolean(26),
+                reader.GetString(27), reader.GetString(28), reader.GetString(29)));
         }
         return facts;
     }
@@ -150,6 +155,9 @@ public sealed partial class SqliteLibraryCatalog
             "(SELECT COUNT(*)||':'||COALESCE(MAX(updated_utc_ticks),0) FROM duplicate_group_decisions)||'|'||" +
             "(SELECT COUNT(*)||':'||COALESCE(MAX(updated_utc_ticks),0) FROM visual_group_decisions)||'|'||" +
             "(SELECT COUNT(*)||':'||COALESCE(MAX(updated_utc_ticks),0) FROM visual_family_decisions)||'|'||" +
+            "(SELECT COUNT(*)||':'||COALESCE(MAX(updated_utc_ticks),0) FROM exact_duplicate_groups)||'|'||" +
+            "(SELECT COUNT(*)||':'||COALESCE(MAX(updated_utc_ticks),0) FROM visual_similarity_groups)||'|'||" +
+            "(SELECT COUNT(*)||':'||COALESCE(MAX(updated_utc_ticks),0) FROM visual_families)||'|'||" +
             "(SELECT COALESCE(MAX(id),0) FROM duplicate_analysis_runs)||'|'||" +
             "(SELECT COALESCE(MAX(id),0) FROM visual_analysis_runs);";
         return Convert.ToString(command.ExecuteScalar()) ?? "0";

@@ -105,12 +105,15 @@ namespace MediaFlux
             _optimizationGrid.Columns.Add("Projected", "Projected output");
             _optimizationGrid.Columns.Add("Savings", "Projected savings");
             _optimizationGrid.Columns.Add("Confidence", "Confidence");
+            _optimizationGrid.Columns.Add("Runtime", "Estimated encode time");
+            _optimizationGrid.Columns.Add("Efficiency", "Savings / hour");
+            _optimizationGrid.Columns.Add("RuntimeConfidence", "Runtime confidence");
             _optimizationGrid.Columns.Add("Current", "Current characteristics");
             _optimizationGrid.Columns.Add("Proposed", "Proposed characteristics");
             _optimizationGrid.Columns.Add("Rationale", "Reasons / review gates");
             _optimizationGrid.Columns.Add("Path", "Path");
-            _optimizationGrid.Columns[10].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-            _optimizationGrid.Columns[11].Width = 320;
+            _optimizationGrid.Columns["Rationale"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+            _optimizationGrid.Columns["Path"].Width = 320;
             tab.Controls.Add(_optimizationGrid);
             tab.Controls.Add(_optimizationStatus);
             tab.Controls.Add(_policySummary);
@@ -142,10 +145,17 @@ namespace MediaFlux
                 string reasons = string.Join(" ", candidate.Reasons.Concat(candidate.ReviewReasons));
                 string savings = candidate.ProjectedReclaimableBytes.HasValue
                     ? $"{FormatBytes(candidate.ProjectedReclaimableBytes.Value)} ({candidate.ProjectedSavingsPercent:0.#}%)" : "Unknown";
+                EncodingRuntimeEstimate estimate = candidate.State == LibraryPolicyComplianceState.OptimizationCandidate &&
+                    candidate.SuggestedAction == LibraryPolicySuggestedAction.Reencode && _reviewOptions.RuntimeEstimator != null
+                    ? _reviewOptions.RuntimeEstimator.Estimate(candidate) : new EncodingRuntimeEstimate();
+                double? efficiencyGb = estimate.EstimatedProcessingSeconds is > 0 && candidate.ProjectedReclaimableBytes is > 0
+                    ? candidate.ProjectedReclaimableBytes.Value * 3600d / estimate.EstimatedProcessingSeconds.Value / (1024d * 1024 * 1024) : null;
                 int rowIndex = _optimizationGrid.Rows.Add(candidate.FileId, PolicyStateLabel(candidate.State), candidate.SuggestedAction,
                     $"{candidate.OpportunityScore:0.0}", FormatBytes(candidate.OriginalSizeBytes),
                     candidate.ProjectedOutputBytes.HasValue ? FormatBytes(candidate.ProjectedOutputBytes.Value) : "Unknown",
-                    savings, candidate.Confidence, candidate.CurrentCharacteristics, candidate.ProposedCharacteristics, reasons, candidate.FullPath);
+                    savings, candidate.Confidence, FormatRuntimeHours(estimate.EstimatedProcessingSeconds / 3600d), FormatEfficiency(efficiencyGb),
+                    estimate.Confidence == RuntimeEstimateConfidence.Unknown ? "Unknown" : estimate.Confidence,
+                    candidate.CurrentCharacteristics, candidate.ProposedCharacteristics, reasons, candidate.FullPath);
                 _optimizationGrid.Rows[rowIndex].Tag = candidate;
             }
             _policyFilteredCount = result.Page.TotalCount;
@@ -167,12 +177,17 @@ namespace MediaFlux
                 .Select(candidate => candidate!)
                 .GroupBy(candidate => candidate.FullPath, StringComparer.OrdinalIgnoreCase).Select(group => group.First())
                 .ToArray();
-            LibraryPolicyQueueItem[] items = candidates.Select(candidate => new LibraryPolicyQueueItem(
-                    candidate.FullPath, candidate.PolicyId, candidate.PolicyName, candidate.ProposedCodec,
-                    candidate.EncoderId, candidate.EncoderPreset, candidate.EncodingPresetName, candidate.QualityValue,
-                    candidate.PreferredBitDepth, candidate.PreserveSourceResolution,
-                    candidate.MaximumOutputHeight, candidate.PreserveHdr, candidate.TargetContainer,
-                    candidate.ProjectedOutputBytes, candidate.Confidence))
+            LibraryPolicyQueueItem[] items = candidates.Select(candidate =>
+                {
+                    EncodingRuntimeEstimate estimate = _reviewOptions.RuntimeEstimator?.Estimate(candidate) ?? new EncodingRuntimeEstimate();
+                    double? efficiency = estimate.EstimatedProcessingSeconds is > 0 && candidate.ProjectedReclaimableBytes is > 0
+                        ? candidate.ProjectedReclaimableBytes.Value * 3600d / estimate.EstimatedProcessingSeconds.Value : null;
+                    return new LibraryPolicyQueueItem(candidate.FullPath, candidate.PolicyId, candidate.PolicyName, candidate.ProposedCodec,
+                        candidate.EncoderId, candidate.EncoderPreset, candidate.EncodingPresetName, candidate.QualityValue,
+                        candidate.PreferredBitDepth, candidate.PreserveSourceResolution, candidate.MaximumOutputHeight, candidate.PreserveHdr,
+                        candidate.TargetContainer, candidate.ProjectedOutputBytes, candidate.Confidence, estimate.EstimatedProcessingSeconds,
+                        efficiency, estimate.Confidence, estimate.CohortExplanation);
+                })
                 .ToArray();
             if (items.Length == 0)
             {
@@ -212,6 +227,7 @@ namespace MediaFlux
                 _policySelection.SelectedItem = _policySelection.Items.Cast<PolicyChoice>().FirstOrDefault(item => item.Policy.Id.Equals(previous, StringComparison.OrdinalIgnoreCase));
             else
                 _policySelection.SelectedIndex = -1;
+            ReloadReclamationPolicies();
         }
 
         private void EditPolicy(LibraryPolicyDefinition? source)

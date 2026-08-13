@@ -111,6 +111,31 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
     }
 
     [Fact]
+    public async Task ReclamationHandoffCanPlanOneSelectedCandidateWithoutExpandingItsGroup()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog(Path.Combine(_root, "selected-reclamation.db"));
+        string root = Path.Combine(_root, "selected-reclamation"); Directory.CreateDirectory(root);
+        byte[] content = Enumerable.Repeat((byte)73, 128_000).ToArray();
+        string keeper = Write(root, "keeper.mkv", content);
+        string firstCopy = Write(root, "copy-a.mkv", content);
+        string secondCopy = Write(root, "copy-b.mkv", content);
+        AddInventory(catalog, root, keeper, firstCopy, secondCopy);
+        using var coordinator = new LibraryDuplicateAnalysisCoordinator(catalog, new LibraryDuplicateAnalysisOptions(1, 8, 32 * 1024));
+        Assert.Equal(DuplicateAnalysisStatus.Completed, (await coordinator.AnalyzeAsync()).Status);
+        ExactDuplicateGroupRecord group = GroupContaining(catalog, keeper);
+        long keeperId = catalog.GetFileByPath(keeper)!.Id;
+        catalog.SaveDuplicateDecision(new DuplicateGroupDecision(group.GroupId, keeperId, true, false));
+        var cleanup = new LibraryDuplicateCleanupService(catalog, catalog);
+        ExactCleanupCandidate chosen = cleanup.GetEligibleCandidates().Single(item => item.FileId == catalog.GetFileByPath(firstCopy)!.Id);
+        DuplicateCleanupPlanSummary plan = cleanup.CreatePlanForCandidates(new[] { chosen }, DuplicateCleanupAction.Quarantine, Path.Combine(_root, "selected-q"));
+        DuplicateCleanupPlanItemRecord item = Assert.Single(catalog.GetCleanupPlanItemsBatch(plan.PlanId, 0, 0, 10));
+        Assert.Equal(firstCopy, item.SourcePath);
+        Assert.NotEqual(secondCopy, item.SourcePath);
+        Assert.True(File.Exists(firstCopy));
+        Assert.True(File.Exists(secondCopy));
+    }
+
+    [Fact]
     public void PreferredLocationConfigurationClonesAndNormalizesDurably()
     {
         var preferences = new DuplicateKeeperPreferences { ExactPreferredLocations = new() { @"Y:\Media\", @"y:\media", " " } };
