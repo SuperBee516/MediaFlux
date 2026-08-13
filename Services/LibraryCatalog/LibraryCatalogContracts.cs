@@ -229,7 +229,8 @@ namespace MediaFlux.Services.LibraryCatalog
         long? TotalBitRate,
         double? DurationSeconds,
         LibraryProbeStatus ProbeStatus,
-        string ProbeError);
+        string ProbeError,
+        bool IsProtected);
 
     public sealed record LibraryFilePage(
         long TotalCount,

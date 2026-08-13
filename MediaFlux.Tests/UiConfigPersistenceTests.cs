@@ -43,6 +43,36 @@ public sealed class UiConfigPersistenceTests : IDisposable
     }
 
     [Fact]
+    public void LibraryAnalyzerGridAndSplitterLayoutsRoundTripWithLegacyDefaults()
+    {
+        string path = Path.Combine(_root, "library-layout.json");
+        var config = new Config();
+        config.LibraryAnalyzerUiState.GridLayouts["Files.FilesGrid"] = new LibraryAnalyzerGridLayout
+        {
+            Columns = new Dictionary<string, LibraryAnalyzerColumnLayout>
+            {
+                ["Path"] = new() { Width = 515, DisplayIndex = 1, Visible = false }
+            }
+        };
+        config.LibraryAnalyzerUiState.SplitterDistances["Exact duplicates.Split0"] = 312;
+
+        config.Save(path);
+        Config loaded = Config.Load(path);
+
+        LibraryAnalyzerColumnLayout column = loaded.LibraryAnalyzerUiState.GridLayouts["files.filesgrid"].Columns["path"];
+        Assert.Equal(515, column.Width);
+        Assert.Equal(1, column.DisplayIndex);
+        Assert.False(column.Visible);
+        Assert.Equal(312, loaded.LibraryAnalyzerUiState.SplitterDistances["exact duplicates.split0"]);
+
+        string legacyPath = Path.Combine(_root, "legacy-library-layout.json");
+        File.WriteAllText(legacyPath, "{}");
+        Config legacy = Config.Load(legacyPath);
+        Assert.Empty(legacy.LibraryAnalyzerUiState.GridLayouts);
+        Assert.Empty(legacy.LibraryAnalyzerUiState.SplitterDistances);
+    }
+
+    [Fact]
     public void LibraryAnalyzerCleanupDefaultsAreConservativeAndAdvancedChoiceRoundTrips()
     {
         string legacy = Path.Combine(_root, "legacy-cleanup.json");

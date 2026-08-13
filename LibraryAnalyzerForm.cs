@@ -12,10 +12,12 @@ namespace MediaFlux
         private readonly LibraryAnalyzerRuntime _runtime;
         private readonly LibraryAnalyzerCleanupOptions _cleanupOptions;
         private readonly LibraryAnalyzerReviewOptions _reviewOptions;
+        private readonly LibraryAnalyzerLayoutController _layoutController;
+        private readonly LibraryGeneralFileRemovalService _generalFileRemoval;
         private MediaFlux.Models.DuplicateKeeperPreferences _visualKeeperPreferences;
         private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
-        private readonly DataGridView _locationsGrid = CreateGrid();
-        private readonly DataGridView _filesGrid = CreateGrid();
+        private readonly DataGridView _locationsGrid = CreateGrid("LocationsGrid");
+        private readonly DataGridView _filesGrid = CreateGrid("FilesGrid");
         private readonly Label _overviewFiles = ValueLabel();
         private readonly Label _overviewSize = ValueLabel();
         private readonly Label _overviewActivity = ValueLabel();
@@ -48,6 +50,7 @@ namespace MediaFlux
         private volatile LibraryVisualAnalysisProgress? _latestVisualProgress;
         private string _scanTerminalStatus = "Ready";
         private DateTime _scanTerminalStatusUntilUtc;
+        private bool _lifecycleCleanupCompleted;
 
         public LibraryAnalyzerForm(
             LibraryAnalyzerRuntime runtime,
@@ -57,6 +60,11 @@ namespace MediaFlux
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
             _cleanupOptions = cleanupOptions ?? new LibraryAnalyzerCleanupOptions();
             _reviewOptions = reviewOptions ?? new LibraryAnalyzerReviewOptions();
+            _reviewOptions = _reviewOptions with { UiState = _reviewOptions.UiState ?? new LibraryAnalyzerUiState() };
+            _reviewOptions.UiState!.Normalize();
+            _layoutController = new LibraryAnalyzerLayoutController(_reviewOptions.UiState);
+            _generalFileRemoval = new LibraryGeneralFileRemovalService(ResolveGeneralFileSnapshot,
+                new JsonLibraryGeneralFileRemovalAudit(Path.Combine(AppPaths.DataDirectory, "library-file-removal-audit.jsonl")));
             _visualKeeperPreferences = (_reviewOptions.KeeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences()).Clone();
             _visualKeeperPreferences.Normalize();
             Text = "Library Analyzer";
@@ -79,6 +87,9 @@ namespace MediaFlux
             BuildStorageReclamationTab();
             BuildMediaIntegrityTab();
             BuildScheduledMaintenanceTab();
+            ConfigurePrimaryContextMenus();
+            ConfigurePhase3ContextMenus();
+            ConfigureSharedGridLayouts();
             _runtime.Enrichment.ProgressChanged += Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged += Duplicates_ProgressChanged;
             _runtime.VisualSimilarity.ProgressChanged += VisualSimilarity_ProgressChanged;
@@ -89,21 +100,37 @@ namespace MediaFlux
             _activityTimer.Tick += (_, _) => RefreshActivityDisplay();
             _refreshTimer.Start();
             _activityTimer.Start();
-            Shown += async (_, _) => await RefreshAllAsync();
-            FormClosed += (_, _) =>
+            Shown += async (_, _) =>
             {
-                Interlocked.Increment(ref _visualMemberLoadVersion);
-                Interlocked.Increment(ref _duplicateMemberLoadVersion);
-                _exactCleanupCancellation?.Cancel();
-                _reclamationBuildCancellation?.Cancel();
-                _refreshTimer.Stop();
-                _activityTimer.Stop();
-                _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
-                _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
-                _runtime.VisualSimilarity.ProgressChanged -= VisualSimilarity_ProgressChanged;
-                _runtime.Integrity.ProgressChanged -= Integrity_ProgressChanged;
-                _runtime.Maintenance.ProgressChanged -= Maintenance_ProgressChanged;
+                _layoutController.ApplySplitterLayouts();
+                await RefreshAllAsync();
             };
+            FormClosed += (_, _) => CleanupLifecycle();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) CleanupLifecycle();
+            base.Dispose(disposing);
+        }
+
+        private void CleanupLifecycle()
+        {
+            if (_lifecycleCleanupCompleted) return;
+            _lifecycleCleanupCompleted = true;
+            Interlocked.Increment(ref _visualMemberLoadVersion);
+            Interlocked.Increment(ref _duplicateMemberLoadVersion);
+            _exactCleanupCancellation?.Cancel();
+            _reclamationBuildCancellation?.Cancel();
+            _refreshTimer.Stop();
+            _activityTimer.Stop();
+            _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
+            _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
+            _runtime.VisualSimilarity.ProgressChanged -= VisualSimilarity_ProgressChanged;
+            _runtime.Integrity.ProgressChanged -= Integrity_ProgressChanged;
+            _runtime.Maintenance.ProgressChanged -= Maintenance_ProgressChanged;
+            _layoutController.CaptureAll();
+            _reviewOptions.UiStateChanged?.Invoke(_reviewOptions.UiState ?? new LibraryAnalyzerUiState());
         }
 
         public void UpdateVisualKeeperPreferences(MediaFlux.Models.DuplicateKeeperPreferences preferences)
@@ -501,8 +528,13 @@ namespace MediaFlux
                     if (existing.TryGetValue(location.Id, out DataGridViewRow? row))
                     {
                         for (int column = 0; column < values.Length; column++) row.Cells[column].Value = values[column];
+                        row.Tag = location;
                     }
-                    else _locationsGrid.Rows.Add(values);
+                    else
+                    {
+                        int index = _locationsGrid.Rows.Add(values);
+                        _locationsGrid.Rows[index].Tag = location;
+                    }
                 }
                 foreach (DataGridViewRow row in _locationsGrid.Rows.Cast<DataGridViewRow>().Where(row =>
                              row.Cells[0].Value != null && !currentIds.Contains(Convert.ToInt64(row.Cells[0].Value, CultureInfo.InvariantCulture))).ToArray())
@@ -728,12 +760,14 @@ namespace MediaFlux
             bar.Value = (int)Math.Clamp(completed * 1000L / total, 0, 1000);
         }
 
-        private static DataGridView CreateGrid() => new()
+        private static DataGridView CreateGrid(string name = "") => new()
         {
+            Name = name,
             Dock = DockStyle.Fill,
             ReadOnly = true,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
+            AllowUserToResizeColumns = true,
             AllowUserToResizeRows = false,
             RowHeadersVisible = false,
             BackgroundColor = SystemColors.Window,
@@ -821,7 +855,8 @@ namespace MediaFlux
             string QuarantineFolder = "",
             DuplicateCleanupAction PreferredAction = DuplicateCleanupAction.PermanentDelete,
             bool AllowUnreviewedVisualBulkCleanup = false,
-            double VisualBulkCleanupMinimumConfidence = 95);
+            double VisualBulkCleanupMinimumConfidence = 95,
+            bool AllowPermanentDelete = false);
 
         public sealed record LibraryAnalyzerReviewOptions(
             string FfmpegPath = "",
@@ -837,6 +872,9 @@ namespace MediaFlux
             LibraryPolicyCapabilitySnapshot? PolicyCapabilities = null,
             Func<IReadOnlyList<LibraryPolicyQueueItem>, Task>? AddPolicyCandidatesToEncodeQueue = null,
             StorageReclamationPlanStore? ReclamationPlanStore = null,
-            EncodingRuntimeEstimatorService? RuntimeEstimator = null);
+            EncodingRuntimeEstimatorService? RuntimeEstimator = null,
+            LibraryAnalyzerUiState? UiState = null,
+            Action<LibraryAnalyzerUiState>? UiStateChanged = null,
+            Func<string, IReadOnlyList<string>, Task>? ComparisonLauncher = null);
     }
 }

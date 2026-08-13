@@ -695,7 +695,8 @@ namespace MediaFlux.Services.LibraryCatalog
                        COALESCE(metadata.format_name, ''), COALESCE(metadata.video_codec, ''),
                        metadata.width, metadata.height, metadata.total_bitrate,
                        metadata.duration_seconds, COALESCE(metadata.probe_status, $pending),
-                       COALESCE(metadata.error_message, '')
+                       COALESCE(metadata.error_message, ''),
+                       EXISTS(SELECT 1 FROM duplicate_file_protections protection WHERE protection.path_key=file.path_key)
                 FROM indexed_files file
                 LEFT JOIN media_metadata metadata ON metadata.file_id = file.id
                 """ + filters + $" ORDER BY {orderColumn} {direction}, file.id {direction} LIMIT $limit OFFSET $offset;";
@@ -714,7 +715,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     reader.IsDBNull(10) ? null : reader.GetInt32(10),
                     reader.IsDBNull(11) ? null : reader.GetInt64(11),
                     reader.IsDBNull(12) ? null : reader.GetDouble(12),
-                    (LibraryProbeStatus)reader.GetInt32(13), reader.GetString(14)));
+                    (LibraryProbeStatus)reader.GetInt32(13), reader.GetString(14), reader.GetBoolean(15)));
             }
             return new LibraryFilePage(total, files);
         }

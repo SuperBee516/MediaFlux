@@ -13,6 +13,7 @@ namespace MediaFlux
             AddVisualMenuItem(_visualGroupsMenu, "Review / Compare", "Review", async () => await OpenVisualReviewAsync());
             AddVisualMenuItem(_visualGroupsMenu, "Review cleanup plan…", "Cleanup", async () => { if (SelectedVisualGroup() is { } g) await PreviewVisualCleanupAsync(new[] { g.GroupId }); });
             AddVisualMenuItem(_visualGroupsMenu, "Delete both files…", "DeleteBoth", async () => { if (SelectedVisualGroup() is { } g) await PreviewDeleteBothAsync(g.GroupId); });
+            AddVisualMenuItem(_visualGroupsMenu, "Re-analyze Match", "Reanalyze", () => { QueueSelectedVisualGroup_Click(null, EventArgs.Empty); return Task.CompletedTask; });
             _visualGroupsMenu.Items.Add(new ToolStripSeparator());
             AddVisualMenuItem(_visualGroupsMenu, "Mark reviewed", "Reviewed", async () => await MarkSelectedVisualReviewedAsync());
             AddVisualMenuItem(_visualGroupsMenu, "Ignore match", "Ignore", async () => await ToggleSelectedVisualIgnoredAsync());
@@ -41,26 +42,10 @@ namespace MediaFlux
         }
 
         private static void AddVisualMenuItem(ContextMenuStrip menu, string text, string name, Func<Task> action)
-        {
-            var item = new ToolStripMenuItem(text) { Name = name };
-            item.Click += async (_, _) => await action();
-            menu.Items.Add(item);
-        }
+            => LibraryAnalyzerGridInteraction.AddMenuItem(menu, text, name, action);
 
         private static void AttachVisualContextMenu(DataGridView grid, ContextMenuStrip menu)
-        {
-            grid.ContextMenuStrip = menu;
-            grid.CellMouseDown += (_, e) =>
-            {
-                if (e.Button != MouseButtons.Right || e.RowIndex < 0)
-                    return;
-                if (!grid.Rows[e.RowIndex].Selected)
-                    grid.ClearSelection();
-                grid.Rows[e.RowIndex].Selected = true;
-                if (e.ColumnIndex >= 0)
-                    grid.CurrentCell = grid.Rows[e.RowIndex].Cells[e.ColumnIndex];
-            };
-        }
+            => LibraryAnalyzerGridInteraction.AttachContextMenu(grid, menu);
 
         private void VisualGroupsMenu_Opening(object? sender, CancelEventArgs e)
         {
@@ -68,6 +53,7 @@ namespace MediaFlux
             SetMenuState(_visualGroupsMenu, "Review", group != null);
             SetMenuState(_visualGroupsMenu, "Cleanup", group != null && !group.Ignored);
             SetMenuState(_visualGroupsMenu, "DeleteBoth", group != null && !group.Ignored && !group.NotMatch);
+            SetMenuState(_visualGroupsMenu, "Reanalyze", group != null);
             SetMenuState(_visualGroupsMenu, "Reviewed", group != null && !group.Reviewed);
             SetMenuState(_visualGroupsMenu, "Ignore", group != null, group?.Ignored == true ? "Restore match" : "Ignore match");
             SetMenuState(_visualGroupsMenu, "NotMatch", group != null, group?.NotMatch == true ? "Restore failed match" : "Not a match");
@@ -98,13 +84,7 @@ namespace MediaFlux
         }
 
         private static void SetMenuState(ContextMenuStrip menu, string name, bool enabled, string? text = null)
-        {
-            if (menu.Items.Find(name, false).FirstOrDefault() is not ToolStripItem item)
-                return;
-            item.Enabled = enabled;
-            if (!string.IsNullOrWhiteSpace(text))
-                item.Text = text;
-        }
+            => LibraryAnalyzerGridInteraction.SetMenuState(menu, name, enabled, text);
 
         private async Task SetSelectedVisualKeeperAsync()
         {
@@ -331,7 +311,6 @@ namespace MediaFlux
                     foreach (VisualSimilarityMemberRecord member in members)
                     {
                         var card = CreateVisualReviewCard(
-                            group,
                             member,
                             eligibility.IsActive,
                             currentSelectedKeeperFileId,
@@ -463,7 +442,6 @@ namespace MediaFlux
         }
 
         private (Panel Panel, PictureBox Picture, Label Status) CreateVisualReviewCard(
-            VisualSimilarityGroupRecord group,
             VisualSimilarityMemberRecord member,
             bool decisionsAllowed,
             long? selectedKeeperFileId,
@@ -714,7 +692,7 @@ namespace MediaFlux
         private void OpenSelectedVisualMemberFolder()
         {
             if (SelectedVisualMember() is { } member)
-                OpenVisualMemberFolder(member);
+                OpenContainingFolders(new[] { member.FullPath });
         }
 
         private void OpenVisualMemberFolder(VisualSimilarityMemberRecord member)
@@ -726,14 +704,7 @@ namespace MediaFlux
         {
             if (SelectedVisualMember() is not { FullPath.Length: > 0 } member)
                 return;
-            try
-            {
-                Clipboard.SetText(member.FullPath);
-            }
-            catch (Exception ex)
-            {
-                ErrorLogService.Append(Application.StartupPath, "Copy Library Analyzer visual member path failed", member.FullPath, ex);
-            }
+            CopyPaths(new[] { member.FullPath });
         }
 
         private static void DisposeVisualReviewImages(Control parent)

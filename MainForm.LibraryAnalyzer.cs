@@ -50,7 +50,8 @@ namespace MediaFlux
                                 _ => DuplicateCleanupAction.PermanentDelete
                             },
                             _config.AllowUnreviewedVisualBulkCleanup,
-                            _config.VisualBulkCleanupMinimumConfidence),
+                            _config.VisualBulkCleanupMinimumConfidence,
+                            _config.AllowDuplicatePermanentDelete),
                         new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
                             _config.FfmpegPath,
                             _config.ExternalPlayerPath,
@@ -77,7 +78,13 @@ namespace MediaFlux
                             PolicyStore: policyStore,
                             PolicyCapabilities: policyCapabilities,
                             AddPolicyCandidatesToEncodeQueue: AddLibraryPolicyCandidatesToQueueAsync,
-                            RuntimeEstimator: new EncodingRuntimeEstimatorService(_encodingStatisticsService)));
+                            RuntimeEstimator: new EncodingRuntimeEstimatorService(_encodingStatisticsService),
+                            UiState: _config.LibraryAnalyzerUiState,
+                            UiStateChanged: state =>
+                            {
+                                _config.LibraryAnalyzerUiState = state;
+                                _config.Save(_configPath);
+                            }));
                     _libraryAnalyzerForm.FormClosed += (_, _) => _libraryAnalyzerForm = null;
                     _libraryAnalyzerForm.Show(this);
                 }

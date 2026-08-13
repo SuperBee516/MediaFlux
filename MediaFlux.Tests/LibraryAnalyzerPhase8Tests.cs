@@ -263,6 +263,12 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
                 PumpUntil(() => families.Rows.Count == 1);
                 families.Rows[0].Selected = true;
                 families.CurrentCell = families.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                ContextMenuStrip familyMenu = GetPrivateField<ContextMenuStrip>(form, "_familyMenu");
+                ContextMenuStrip memberMenu = GetPrivateField<ContextMenuStrip>(form, "_familyMembersMenu");
+                foreach (string name in new[] { "Review", "Reviewed", "Ignore", "Reanalyze", "Rebuild", "Cleanup" })
+                    Assert.NotEmpty(familyMenu.Items.Find(name, false));
+                foreach (string name in new[] { "Play", "Folder", "CopyPath", "CompareKeeper", "ComparePair", "Keeper", "Protect", "Reanalyze", "SelectOthers", "SelectAll", "SelectNone", "Invert", "SelectAvailable", "SelectUnprotected" })
+                    Assert.NotEmpty(memberMenu.Items.Find(name, false));
                 bool sawMembers = false;
                 bool keeperClicked = false;
                 using var timer = new System.Windows.Forms.Timer { Interval = 40 };

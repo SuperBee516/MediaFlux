@@ -9,7 +9,7 @@ namespace MediaFlux
         private readonly Label _statisticsHealth = ValueLabel();
         private readonly Label _statisticsDuplicates = ValueLabel();
         private readonly TabControl _statisticsBreakdowns = new() { Dock = DockStyle.Fill };
-        private readonly DataGridView _largestFilesGrid = CreateGrid();
+        private readonly DataGridView _largestFilesGrid = CreateGrid("LargestFilesGrid");
         private bool _loadingStatistics;
 
         private void BuildStatisticsTab()
@@ -61,7 +61,10 @@ namespace MediaFlux
                 FillBreakdown((DataGridView)_statisticsBreakdowns.TabPages[4].Controls[0], statistics.ByDynamicRange);
                 _largestFilesGrid.Rows.Clear();
                 foreach (LibraryLargestFile file in statistics.LargestFiles)
-                    _largestFilesGrid.Rows.Add(file.FileName, file.FullPath, FormatBytes(file.SizeBytes), file.VideoCodec, file.ResolutionTier);
+                {
+                    int row = _largestFilesGrid.Rows.Add(file.FileName, file.FullPath, FormatBytes(file.SizeBytes), file.VideoCodec, file.ResolutionTier);
+                    _largestFilesGrid.Rows[row].Tag = file;
+                }
             }
             catch (Exception ex)
             {
@@ -80,15 +83,17 @@ namespace MediaFlux
             return panel;
         }
 
-        private static TabPage CreateBreakdownTab(string title)
+        private TabPage CreateBreakdownTab(string title)
         {
-            var grid = CreateGrid();
+            var grid = CreateGrid("Statistics" + new string(title.Where(char.IsLetterOrDigit).ToArray()) + "Grid");
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Label", HeaderText = title, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Files", HeaderText = "Files", Width = 100 });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Storage", HeaderText = "Storage", Width = 110 });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Share", HeaderText = "Relative storage", Width = 230 });
             var page = new TabPage(title) { Padding = new Padding(4) };
             page.Controls.Add(grid);
+            if (title == "Storage by location")
+                ConfigureLocationBreakdownContextMenu(grid);
             return page;
         }
 
@@ -99,7 +104,8 @@ namespace MediaFlux
             foreach (LibraryStatisticBucket bucket in buckets)
             {
                 int bars = maximum == 0 ? 0 : (int)Math.Round(bucket.SizeBytes * 20d / maximum);
-                grid.Rows.Add(bucket.Label, bucket.FileCount.ToString("N0"), FormatBytes(bucket.SizeBytes), new string('█', bars));
+                int row = grid.Rows.Add(bucket.Label, bucket.FileCount.ToString("N0"), FormatBytes(bucket.SizeBytes), new string('█', bars));
+                grid.Rows[row].Tag = bucket;
             }
         }
 

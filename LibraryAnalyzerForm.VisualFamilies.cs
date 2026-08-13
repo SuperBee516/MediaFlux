@@ -1,11 +1,14 @@
 using MediaFlux.Services.LibraryCatalog;
+using MediaFlux.Services;
 
 namespace MediaFlux;
 
 public sealed partial class LibraryAnalyzerForm
 {
-    private readonly DataGridView _familyGrid = CreateGrid();
-    private readonly DataGridView _familyMembersGrid = CreateGrid();
+    private readonly DataGridView _familyGrid = CreateGrid("FamilyGrid");
+    private readonly DataGridView _familyMembersGrid = CreateGrid("FamilyMembersGrid");
+    private readonly ContextMenuStrip _familyMenu = new();
+    private readonly ContextMenuStrip _familyMembersMenu = new();
     private readonly Label _familyStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 6, 0, 0) };
     private readonly CheckBox _familyShowIgnored = new() { Text = "Show ignored", AutoSize = true, Margin = new Padding(10, 10, 3, 3) };
     private long _familyTotal;
@@ -43,7 +46,7 @@ public sealed partial class LibraryAnalyzerForm
         })
             _familyMembersGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width });
         _familyMembersGrid.Columns["Path"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _familyMembersGrid.MultiSelect = false;
+        _familyMembersGrid.MultiSelect = true;
         _familyMembersGrid.CellDoubleClick += (_, e) =>
         {
             if (e.RowIndex >= 0 && _familyMembersGrid.Rows[e.RowIndex].Tag is VisualFamilyMemberRecord member)
@@ -63,6 +66,77 @@ public sealed partial class LibraryAnalyzerForm
         tab.Controls.Add(notice);
         tab.Controls.Add(actions);
         _tabs.TabPages.Add(tab);
+        ConfigureFamilyContextMenus();
+    }
+
+    private void ConfigureFamilyContextMenus()
+    {
+        AddVisualMenuItem(_familyMenu, "Review Family", "Review", OpenVisualFamilyReviewAsync);
+        AddVisualMenuItem(_familyMenu, "Mark Reviewed", "Reviewed", () => SaveSelectedFamilyStateAsync(reviewed: true));
+        AddVisualMenuItem(_familyMenu, "Ignore", "Ignore", ToggleSelectedFamilyIgnoredAsync);
+        _familyMenu.Items.Add(new ToolStripSeparator());
+        AddVisualMenuItem(_familyMenu, "Re-analyze Family Evidence", "Reanalyze", ReanalyzeSelectedFamilyAsync);
+        AddVisualMenuItem(_familyMenu, "Rebuild Families From Current Evidence", "Rebuild", RebuildVisualFamiliesAsync);
+        _familyMenu.Items.Add(new ToolStripSeparator());
+        AddVisualMenuItem(_familyMenu, "Review Family Cleanup…", "Cleanup", PreviewFamilyCleanupAsync);
+        _familyMenu.Opening += (_, e) =>
+        {
+            VisualFamilyRecord? family = SelectedVisualFamily();
+            SetMenuState(_familyMenu, "Review", family != null);
+            SetMenuState(_familyMenu, "Reviewed", family != null && !family.Reviewed);
+            SetMenuState(_familyMenu, "Ignore", family != null, family?.Ignored == true ? "Restore" : "Ignore");
+            SetMenuState(_familyMenu, "Reanalyze", family != null);
+            SetMenuState(_familyMenu, "Cleanup", family != null && family.Reviewed && !family.Ignored && family.ManualKeeperFileId.HasValue);
+            e.Cancel = family == null;
+        };
+        AttachVisualContextMenu(_familyGrid, _familyMenu);
+
+        AddVisualMenuItem(_familyMembersMenu, "Play Video", "Play", () => { if (SelectedFamilyMembers().SingleOrDefault() is { } member) PlayFamilyMember(member); return Task.CompletedTask; });
+        AddVisualMenuItem(_familyMembersMenu, "Open Containing Folder", "Folder", () => { OpenContainingFolders(SelectedFamilyMembers().Select(member => member.FullPath)); return Task.CompletedTask; });
+        AddVisualMenuItem(_familyMembersMenu, "Copy File Path", "CopyPath", () => { CopyPaths(SelectedFamilyMembers().Select(member => member.FullPath)); return Task.CompletedTask; });
+        AddVisualMenuItem(_familyMembersMenu, "Compare With Keeper", "CompareKeeper", CompareFamilyMemberWithKeeperAsync);
+        AddVisualMenuItem(_familyMembersMenu, "Compare Selected Pair", "ComparePair", CompareSelectedFamilyPairAsync);
+        _familyMembersMenu.Items.Add(new ToolStripSeparator());
+        AddVisualMenuItem(_familyMembersMenu, "Set as Keeper", "Keeper", SetSelectedFamilyKeeperAsync);
+        AddVisualMenuItem(_familyMembersMenu, "Protect", "Protect", ToggleSelectedFamilyProtectionAsync);
+        AddVisualMenuItem(_familyMembersMenu, "Re-analyze Selected Member(s)", "Reanalyze", ReanalyzeSelectedFamilyMembersAsync);
+        _familyMembersMenu.Items.Add(new ToolStripSeparator());
+        AddVisualMenuItem(_familyMembersMenu, "Select All Except Keeper", "SelectOthers", () =>
+        {
+            long? keeperId = SelectedVisualFamily() is { } family ? family.ManualKeeperFileId ?? family.SuggestedKeeperFileId : null;
+            SelectFamilyMembers(member => member.FileId != keeperId);
+            return Task.CompletedTask;
+        });
+        AddVisualMenuItem(_familyMembersMenu, "Select All", "SelectAll", () => { SelectFamilyMembers(_ => true); return Task.CompletedTask; });
+        AddVisualMenuItem(_familyMembersMenu, "Select None", "SelectNone", () => { LibraryAnalyzerGridInteraction.ClearSelection(_familyMembersGrid); return Task.CompletedTask; });
+        AddVisualMenuItem(_familyMembersMenu, "Invert Selection", "Invert", () => { LibraryAnalyzerGridInteraction.SelectRows<VisualFamilyMemberRecord>(_familyMembersGrid, _ => true, invert: true); return Task.CompletedTask; });
+        AddVisualMenuItem(_familyMembersMenu, "Select Available", "SelectAvailable", () => { SelectFamilyMembers(IsAvailableFamilyMember); return Task.CompletedTask; });
+        AddVisualMenuItem(_familyMembersMenu, "Select Unprotected", "SelectUnprotected", () => { SelectFamilyMembers(member => !member.IsProtected); return Task.CompletedTask; });
+        _familyMembersMenu.Opening += (_, e) => UpdateFamilyMembersMenuState(e);
+        AttachVisualContextMenu(_familyMembersGrid, _familyMembersMenu);
+    }
+
+    private void UpdateFamilyMembersMenuState(System.ComponentModel.CancelEventArgs e)
+    {
+        VisualFamilyMemberRecord[] members = SelectedFamilyMembers();
+        VisualFamilyRecord? family = SelectedVisualFamily();
+        bool valid = family != null && members.Length > 0 && members.All(member => member.FamilyId == family.FamilyId);
+        bool single = valid && members.Length == 1;
+        VisualFamilyMemberRecord? member = single ? members[0] : null;
+        long? keeperId = family?.ManualKeeperFileId ?? family?.SuggestedKeeperFileId;
+        VisualFamilyMemberRecord? keeper = keeperId.HasValue
+            ? _familyMembersGrid.Rows.Cast<DataGridViewRow>().Select(row => row.Tag).OfType<VisualFamilyMemberRecord>().FirstOrDefault(value => value.FileId == keeperId)
+            : null;
+        SetMenuState(_familyMembersMenu, "Play", single && File.Exists(member!.FullPath));
+        SetMenuState(_familyMembersMenu, "Folder", valid && members.All(value => Directory.Exists(Path.GetDirectoryName(value.FullPath))));
+        SetMenuState(_familyMembersMenu, "CopyPath", valid, members.Length > 1 ? "Copy File Paths" : "Copy File Path");
+        SetMenuState(_familyMembersMenu, "Keeper", single && IsAvailableFamilyMember(member!) && member!.FileId != family!.ManualKeeperFileId);
+        SetMenuState(_familyMembersMenu, "Protect", valid, members.All(value => value.IsProtected) ? "Unprotect" : "Protect");
+        SetMenuState(_familyMembersMenu, "CompareKeeper", single && keeper != null && keeper.FileId != member!.FileId && IsAvailableFamilyMember(keeper) && IsAvailableFamilyMember(member));
+        SetMenuState(_familyMembersMenu, "ComparePair", members.Length == 2 && members.All(IsAvailableFamilyMember));
+        SetMenuState(_familyMembersMenu, "Reanalyze", valid);
+        SetMenuState(_familyMembersMenu, "SelectOthers", family != null && keeperId.HasValue && _familyMembersGrid.Rows.Count > 1);
+        e.Cancel = !valid;
     }
 
     private async Task RebuildVisualFamiliesAsync()
@@ -239,6 +313,73 @@ public sealed partial class LibraryAnalyzerForm
             family.FamilyId, family.ManualKeeperFileId, true, !family.Ignored)));
         await RefreshVisualFamiliesAsync();
         await RefreshVisualGroupsAsync();
+    }
+
+    private VisualFamilyMemberRecord[] SelectedFamilyMembers() =>
+        LibraryAnalyzerGridInteraction.SelectedItems<VisualFamilyMemberRecord>(_familyMembersGrid);
+
+    private static bool IsAvailableFamilyMember(VisualFamilyMemberRecord member) =>
+        member.Availability == IndexedFileAvailability.Present && File.Exists(member.FullPath);
+
+    private void SelectFamilyMembers(Func<VisualFamilyMemberRecord, bool> predicate) =>
+        LibraryAnalyzerGridInteraction.SelectRows(_familyMembersGrid, predicate);
+
+    private async Task SetSelectedFamilyKeeperAsync()
+    {
+        if (SelectedVisualFamily() is not { } family || SelectedFamilyMembers().SingleOrDefault() is not { } member ||
+            !IsAvailableFamilyMember(member)) return;
+        await Task.Run(() => _runtime.FamilyCatalog.SaveVisualFamilyDecision(new VisualFamilyDecision(
+            family.FamilyId, member.FileId, true, family.Ignored)));
+        await RefreshVisualFamiliesAsync();
+    }
+
+    private async Task ToggleSelectedFamilyProtectionAsync()
+    {
+        VisualFamilyMemberRecord[] members = SelectedFamilyMembers();
+        if (members.Length == 0) return;
+        bool protect = members.Any(member => !member.IsProtected);
+        await Task.Run(() =>
+        {
+            foreach (VisualFamilyMemberRecord member in members)
+                _runtime.AnalysisCatalog.SetFileProtection(member.FileId, protect,
+                    protect ? "Protected in Library Analyzer visual family" : "");
+        });
+        await RefreshVisualFamiliesAsync();
+    }
+
+    private Task ReanalyzeSelectedFamilyMembersAsync()
+    {
+        long[] ids = SelectedFamilyMembers().Select(member => member.FileId).Distinct().ToArray();
+        if (ids.Length > 0) _runtime.Reanalysis.QueueFiles(ids, LibraryReanalysisWork.VisualFingerprint);
+        return Task.CompletedTask;
+    }
+
+    private async Task ReanalyzeSelectedFamilyAsync()
+    {
+        if (SelectedVisualFamily() is not { } family) return;
+        long[] ids = await Task.Run(() => _runtime.FamilyCatalog.GetVisualFamilyMembers(family.FamilyId)
+            .Select(member => member.FileId).Distinct().ToArray());
+        if (ids.Length > 0) _runtime.Reanalysis.QueueFiles(ids, LibraryReanalysisWork.VisualFingerprint);
+    }
+
+    private async Task CompareFamilyMemberWithKeeperAsync()
+    {
+        if (SelectedVisualFamily() is not { } family || SelectedFamilyMembers().SingleOrDefault() is not { } member) return;
+        long? keeperId = family.ManualKeeperFileId ?? family.SuggestedKeeperFileId;
+        if (!keeperId.HasValue || keeperId == member.FileId) return;
+        VisualFamilyMemberRecord? keeper = _familyMembersGrid.Rows.Cast<DataGridViewRow>()
+            .Select(row => row.Tag).OfType<VisualFamilyMemberRecord>().FirstOrDefault(value => value.FileId == keeperId.Value);
+        if (keeper == null) return;
+        await OpenMemberComparisonAsync("Compare Family Member With Keeper",
+            new[] { ToVisualMember(keeper), ToVisualMember(member) }, keeper.FileId);
+    }
+
+    private async Task CompareSelectedFamilyPairAsync()
+    {
+        VisualFamilyMemberRecord[] members = SelectedFamilyMembers();
+        if (members.Length != 2 || members.Any(member => !IsAvailableFamilyMember(member))) return;
+        long? keeperId = SelectedVisualFamily() is { } family ? family.ManualKeeperFileId ?? family.SuggestedKeeperFileId : null;
+        await OpenMemberComparisonAsync("Compare Selected Family Members", members.Select(ToVisualMember).ToArray(), keeperId);
     }
 
     private async Task PreviewFamilyCleanupAsync()

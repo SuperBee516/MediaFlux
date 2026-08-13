@@ -294,8 +294,11 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             using (var coordinator = new LibraryDuplicateAnalysisCoordinator(catalog, new LibraryDuplicateAnalysisOptions(1, 8, 1024)))
                 coordinator.AnalyzeAsync().GetAwaiter().GetResult();
             var played = new ConcurrentQueue<string>();
+            var comparisons = new ConcurrentQueue<IReadOnlyList<string>>();
             using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyMetadataProbe(), new EmptyVisualExtractor());
-            using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(VideoLauncher: played.Enqueue));
+            using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
+                VideoLauncher: played.Enqueue,
+                ComparisonLauncher: (_, paths) => { comparisons.Enqueue(paths); return Task.CompletedTask; }));
             form.Show();
             TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
             TabPage exactTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Exact");
@@ -330,7 +333,7 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             });
             ContextMenuStrip memberMenu = GetPrivateField<ContextMenuStrip>(form, "_duplicateMembersMenu");
             InvokePrivate(form, "DuplicateMembersMenu_Opening", memberMenu, new CancelEventArgs());
-            foreach (string name in new[] { "Keeper", "Protect", "Play", "Folder", "SelectOthers" })
+            foreach (string name in new[] { "Keeper", "Protect", "Play", "Folder", "CopyPath", "Compare", "Reanalyze", "DeleteCandidate", "SelectOthers", "SelectAll", "SelectNone", "Invert", "SelectAvailable", "SelectUnprotected" })
                 Assert.NotEmpty(memberMenu.Items.Find(name, false));
             memberMenu.Items.Find("Play", false).Single().PerformClick();
             Application.DoEvents();
@@ -341,6 +344,24 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             ExactDuplicateMemberRecord selected = (ExactDuplicateMemberRecord)members.SelectedRows[0].Tag!;
             ExactDuplicateMemberRecord keeper = members.Rows.Cast<DataGridViewRow>().Select(row => (ExactDuplicateMemberRecord)row.Tag!).Single(member => member.IsSuggestedKeeper);
             Assert.NotEqual(keeper.FileId, selected.FileId);
+            InvokePrivate(form, "DuplicateMembersMenu_Opening", memberMenu, new CancelEventArgs());
+            Assert.True(memberMenu.Items.Find("Compare", false).Single().Enabled);
+            Assert.True(memberMenu.Items.Find("DeleteCandidate", false).Single().Enabled);
+            PumpTask(InvokePrivateTask(form, "CompareSelectedExactWithKeeperAsync"));
+            Assert.Single(comparisons);
+            Assert.Equal(2, comparisons.Single().Count);
+
+            members.ClearSelection();
+            DataGridViewRow keeperRow = members.Rows.Cast<DataGridViewRow>().Single(row => ((ExactDuplicateMemberRecord)row.Tag!).FileId == keeper.FileId);
+            keeperRow.Selected = true;
+            members.CurrentCell = keeperRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            InvokePrivate(form, "DuplicateMembersMenu_Opening", memberMenu, new CancelEventArgs());
+            Assert.False(memberMenu.Items.Find("DeleteCandidate", false).Single().Enabled);
+
+            members.ClearSelection();
+            DataGridViewRow selectedRow = members.Rows.Cast<DataGridViewRow>().Single(row => ((ExactDuplicateMemberRecord)row.Tag!).FileId == selected.FileId);
+            selectedRow.Selected = true;
+            members.CurrentCell = selectedRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
             InvokePrivate(form, "SetManualKeeper_Click", null, EventArgs.Empty);
             long groupId = ((ExactDuplicateGroupRecord)groups.Rows[0].Tag!).GroupId;
             PumpUntil(() => catalog.GetDuplicateGroup(groupId)?.ManualKeeperFileId == selected.FileId);

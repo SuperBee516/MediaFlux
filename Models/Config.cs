@@ -86,6 +86,7 @@ namespace MediaFlux.Models
         public int VisualMassReviewMaximumMatches { get; set; } = 100;
         public double VisualMassReviewMinimumAutomationMargin { get; set; } = 15;
         public double VisualMassReviewMinimumConfidence { get; set; } = 95;
+        public LibraryAnalyzerUiState LibraryAnalyzerUiState { get; set; } = new();
         public bool ShowDuplicateReferenceFolderOnMain { get; set; } = true;
         public bool EnablePersistentMediaInfoCache { get; set; } = true;
         public bool ExplorerFileContextMenuEnabled { get; set; } = false;
@@ -174,6 +175,8 @@ namespace MediaFlux.Models
                 Math.Clamp(config.MinimumExpectedSavingsPercent, 0, 90);
             config.StorageSavings ??= new StorageSavingsOptions();
             config.StorageSavings.Normalize();
+            config.LibraryAnalyzerUiState ??= new LibraryAnalyzerUiState();
+            config.LibraryAnalyzerUiState.Normalize();
             if (config.WatchFolderIntervalMinutes < 1)
                 config.WatchFolderIntervalMinutes = 5;
             if (config.WatchFolderStabilizationSeconds < 0)

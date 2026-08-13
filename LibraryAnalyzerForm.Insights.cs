@@ -53,8 +53,9 @@ namespace MediaFlux
             _recommendationsGrid.Rows.Clear();
             foreach (LibraryCleanupRecommendationCategory category in dashboard.Categories)
             {
-                _recommendationsGrid.Rows.Add(category.Name, category.SafetyLabel, category.MatchCount.ToString("N0"),
+                int row = _recommendationsGrid.Rows.Add(category.Name, category.SafetyLabel, category.MatchCount.ToString("N0"),
                     FormatBytes(category.ReclaimableBytes), category.Description);
+                _recommendationsGrid.Rows[row].Tag = category;
             }
             _recommendationsStatus.Text = $"Calculated {dashboard.CalculatedUtc.ToLocalTime():g}. Values are non-overlapping cleanup candidates, not actions.";
         }
