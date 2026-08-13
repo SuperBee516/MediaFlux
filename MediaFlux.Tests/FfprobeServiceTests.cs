@@ -90,7 +90,8 @@ public sealed class FfprobeServiceTests : IDisposable
                         "format_name": "mpeg",
                         "duration": "120.5",
                         "size": "1048576",
-                        "bit_rate": "7000000"
+                        "bit_rate": "7000000",
+                        "tags": { "title": "MediaFlux Probe Test" }
                       }
                     }
                     """
@@ -105,6 +106,7 @@ public sealed class FfprobeServiceTests : IDisposable
         Assert.Equal(120.5, result.DurationSeconds);
         Assert.Equal(1_048_576, result.SizeBytes);
         Assert.Equal(7_000_000, result.BitRate);
+        Assert.Equal("MediaFlux Probe Test", result.FormatTags["title"]);
         Assert.Equal(3, result.Streams.Count);
         Assert.Equal("0x1e0", result.Streams[0].Id);
         Assert.Equal(720, result.Streams[0].Width);

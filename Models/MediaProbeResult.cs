@@ -8,6 +8,8 @@ namespace MediaFlux.Models
         public long? SizeBytes { get; init; }
         public double? DurationSeconds { get; init; }
         public long? BitRate { get; init; }
+        public IReadOnlyDictionary<string, string> FormatTags { get; init; } =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public IReadOnlyList<MediaProbeStreamInfo> Streams { get; init; } =
             Array.Empty<MediaProbeStreamInfo>();
         public IReadOnlyList<MediaProbeChapterInfo> Chapters { get; init; } =

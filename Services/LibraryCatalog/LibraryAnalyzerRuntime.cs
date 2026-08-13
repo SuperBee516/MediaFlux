@@ -83,6 +83,7 @@ namespace MediaFlux.Services.LibraryCatalog
             KeeperExplanations = new LibraryKeeperExplanationService();
             MassReview = new LibraryMassReviewService(_catalog, MatchEligibility, keeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences());
             Recommendations = new LibraryRecommendationService(_catalog, DuplicateCleanup, VisualDuplicateCleanup, _catalog);
+            PolicyEvaluation = new LibraryPolicyEvaluationService(_catalog);
             VisualFamilies = new LibraryVisualFamilyService(_catalog, VisualDuplicateCleanup, keeperPreferences);
             Recommendations.AttachFamilies(_catalog, VisualFamilies);
             Scanner = new LibraryScanCoordinator(
@@ -120,6 +121,7 @@ namespace MediaFlux.Services.LibraryCatalog
         public LibraryKeeperExplanationService KeeperExplanations { get; }
         public LibraryMassReviewService MassReview { get; }
         public LibraryRecommendationService Recommendations { get; }
+        public LibraryPolicyEvaluationService PolicyEvaluation { get; }
         public ILibraryVisualFamilyCatalog FamilyCatalog => _catalog;
         public LibraryVisualFamilyService VisualFamilies { get; }
 

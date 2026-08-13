@@ -102,13 +102,16 @@ namespace MediaFlux.Services
                 request.Input,
                 request.MapMode,
                 request.CopySubtitles,
-                request.CopyDataStreams);
+                request.CopyDataStreams,
+                request.CopyAttachments);
             builder.Append("-map_metadata 0 -map_chapters 0 ");
 
             if (request.CopySubtitles)
                 builder.Append("-c:s copy ");
             else
                 builder.Append("-sn ");
+            if (request.CopyAttachments)
+                builder.Append("-c:t copy ");
 
             provider.AppendVideoFilters(builder, context);
 
@@ -126,7 +129,9 @@ namespace MediaFlux.Services
             }
 
             AppendAudioArguments(builder, request);
-            builder.Append("-movflags +faststart ");
+            if (request.ContainerDecision.Resolved == OutputContainer.Mp4)
+                builder.Append("-movflags +faststart ");
+            builder.Append($"-f {request.ContainerDecision.MuxerName} ");
             builder.Append($"\"{request.OutputPath}\"");
             return builder.ToString();
         }
@@ -135,7 +140,8 @@ namespace MediaFlux.Services
             EncodingInputSource input,
             EncodingService.StreamMapMode mapMode,
             bool copySubtitles,
-            bool copyDataStreams)
+            bool copyDataStreams,
+            bool copyAttachments = false)
         {
             var builder = new StringBuilder();
             AppendInput(builder, input);
@@ -144,7 +150,8 @@ namespace MediaFlux.Services
                 input,
                 mapMode,
                 copySubtitles,
-                copyDataStreams);
+                copyDataStreams,
+                copyAttachments);
             return builder.ToString().Trim();
         }
 
@@ -254,7 +261,8 @@ namespace MediaFlux.Services
             EncodingInputSource input,
             EncodingService.StreamMapMode mapMode,
             bool copySubtitles,
-            bool copyDataStreams)
+            bool copyDataStreams,
+            bool copyAttachments)
         {
             if (input.HasExplicitStreamSelection)
             {
@@ -270,6 +278,8 @@ namespace MediaFlux.Services
 
                 if (!copyDataStreams)
                     builder.Append("-dn ");
+                if (copyAttachments)
+                    builder.Append("-map 0:t? ");
                 return;
             }
 
@@ -283,6 +293,8 @@ namespace MediaFlux.Services
                     builder.Append("-map 0:d? ");
                 else
                     builder.Append("-dn ");
+                if (copyAttachments)
+                    builder.Append("-map 0:t? ");
             }
             else
             {
@@ -293,6 +305,8 @@ namespace MediaFlux.Services
                     builder.Append("-map 0:d? ");
                 else
                     builder.Append("-dn ");
+                if (copyAttachments)
+                    builder.Append("-map 0:t? ");
             }
         }
 

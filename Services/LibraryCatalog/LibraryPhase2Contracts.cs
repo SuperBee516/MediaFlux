@@ -74,4 +74,53 @@ public sealed record LibraryStorageOptimizationCandidate(
 public interface ILibraryPhase2Catalog
 {
     IReadOnlyList<LibraryStorageOptimizationCandidate> QueryStorageOptimizationCandidates(int limit = 500);
+    IReadOnlyList<LibraryPolicyFileFacts> QueryPolicyFileFacts(int offset, int limit);
+    string GetPolicyFactsRevision();
 }
+
+public sealed record LibraryPolicyFileFacts(
+    long FileId,
+    string FullPath,
+    string FileName,
+    string FormatName,
+    string VideoCodec,
+    string VideoProfile,
+    int? Width,
+    int? Height,
+    double? FrameRate,
+    long SizeBytes,
+    long? TotalBitRate,
+    double? DurationSeconds,
+    int? BitDepth,
+    string FieldOrder,
+    string ColorTransfer,
+    string ColorPrimaries,
+    IReadOnlyList<LibraryAudioStreamMetadata> AudioStreams,
+    IReadOnlyList<LibrarySubtitleStreamMetadata> SubtitleStreams,
+    int ChapterCount,
+    int AttachmentCount,
+    LibraryProbeStatus ProbeStatus,
+    string ProbeError,
+    bool IsProtected,
+    bool IsExactDuplicate,
+    bool IsReviewedVisualCleanupCandidate,
+    bool IsReviewedFamilyCleanupCandidate,
+    bool HasUnreviewedVisualMatch);
+
+public sealed record LibraryPolicyResultQuery(
+    MediaFlux.Models.LibraryPolicyComplianceState? State = null,
+    int Offset = 0,
+    int Limit = 200);
+
+public sealed record LibraryPolicyEvaluationPage(
+    long TotalCount,
+    IReadOnlyList<MediaFlux.Models.LibraryPolicyEvaluationResult> Results);
+
+public sealed record LibraryPolicyEvaluationSummary(
+    long FilesEvaluated,
+    long Compliant,
+    long OptimizationCandidates,
+    long ReviewRequired,
+    long NotApplicable,
+    long UnableToEvaluate,
+    long ProjectedReclaimableBytes);

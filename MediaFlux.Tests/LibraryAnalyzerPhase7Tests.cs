@@ -402,7 +402,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
 
                 Label visualNotice = Descendants<Label>(form).Single(label => label.Name == "VisualSafetyNotice");
                 Label recommendationsIntro = Descendants<Label>(form).Single(label => label.Name == "CleanupRecommendationsIntro");
-                Label optimizationIntro = Descendants<Label>(form).Single(label => label.Name == "StorageOptimizationIntro");
+                Label optimizationIntro = Descendants<Label>(form).Single(label => label.Name == "LibraryPoliciesIntro");
                 Label exactStatus = GetPrivateField<Label>(form, "_duplicateStatus");
                 Color accent = visualNotice.ForeColor;
                 Assert.Equal(accent, recommendationsIntro.ForeColor);

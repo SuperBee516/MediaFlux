@@ -1,3 +1,5 @@
+using MediaFlux.Models;
+using MediaFlux.Services;
 using MediaFlux.Services.LibraryCatalog;
 
 namespace MediaFlux
@@ -8,6 +10,12 @@ namespace MediaFlux
         private readonly Label _recommendationsStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 7, 0, 0) };
         private readonly DataGridView _optimizationGrid = CreateGrid();
         private readonly Label _optimizationStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 7, 0, 0) };
+        private readonly ComboBox _policySelection = DropDown();
+        private readonly ComboBox _policyStateFilter = DropDown();
+        private readonly Label _policySummary = new() { Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(8, 4, 0, 0) };
+        private readonly Label _policyPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
+        private int _policyPage;
+        private long _policyFilteredCount;
 
         private void BuildRecommendationsTab()
         {
@@ -53,76 +61,217 @@ namespace MediaFlux
 
         private void BuildStorageOptimizationTab()
         {
-            var tab = new TabPage("Storage Optimization") { Padding = new Padding(10) };
+            var tab = new TabPage("Library Policies") { Padding = new Padding(10) };
             var intro = new Label
             {
-                Name = "StorageOptimizationIntro",
+                Name = "LibraryPoliciesIntro",
                 Dock = DockStyle.Top,
-                Height = 42,
+                Height = 46,
                 Padding = new Padding(4),
                 ForeColor = LibraryAnalyzerAccentColor,
-                Text = "Potential re-encode opportunities are ranked from catalog metadata. Adding files only places them in the normal Encode queue; it does not start encoding."
+                Text = "Evaluate the catalog against an explicit library policy. Results are advisory: nothing is encoded, remuxed, deleted, or queued until you select eligible rows. Projections use existing catalog metadata only."
             };
-            var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, WrapContents = false };
-            AddButton(actions, "Refresh", async (_, _) => await RefreshStorageOptimizationAsync());
-            AddButton(actions, "Add selected to Encode queue", AddOptimizationSelectionToQueue_Click);
+            var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 72, WrapContents = true };
+            actions.Controls.Add(new Label { Text = "Policy:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
+            _policySelection.Name = "LibraryPolicySelection";
+            _policySelection.Width = 230;
+            _policySelection.SelectedIndexChanged += async (_, _) => { _policyPage = 0; await RefreshStorageOptimizationAsync(); };
+            actions.Controls.Add(_policySelection);
+            actions.Controls.Add(new Label { Text = "Show:", AutoSize = true, Padding = new Padding(8, 7, 0, 0) });
+            _policyStateFilter.Name = "LibraryPolicyStateFilter";
+            _policyStateFilter.Width = 170;
+            _policyStateFilter.Items.Add(new PolicyStateChoice("All results", null));
+            foreach (LibraryPolicyComplianceState state in Enum.GetValues<LibraryPolicyComplianceState>())
+                _policyStateFilter.Items.Add(new PolicyStateChoice(PolicyStateLabel(state), state));
+            _policyStateFilter.SelectedIndex = 0;
+            _policyStateFilter.SelectedIndexChanged += async (_, _) => { _policyPage = 0; await RefreshStorageOptimizationAsync(); };
+            actions.Controls.Add(_policyStateFilter);
+            AddButton(actions, "Refresh", async (_, _) => { _runtime.PolicyEvaluation.Invalidate(); await RefreshStorageOptimizationAsync(); });
+            AddButton(actions, "New…", (_, _) => EditPolicy(null));
+            AddButton(actions, "Clone…", (_, _) => CloneSelectedPolicy());
+            AddButton(actions, "Edit…", (_, _) => EditSelectedPolicy());
+            AddButton(actions, "Delete", (_, _) => DeleteSelectedPolicy());
+            AddButton(actions, "Previous", async (_, _) => { if (_policyPage > 0) { _policyPage--; await RefreshStorageOptimizationAsync(); } });
+            AddButton(actions, "Next", async (_, _) => { if ((_policyPage + 1L) * PageSize < _policyFilteredCount) { _policyPage++; await RefreshStorageOptimizationAsync(); } });
+            actions.Controls.Add(_policyPageLabel);
+            AddButton(actions, "Add selected candidates to Encode queue", AddOptimizationSelectionToQueue_Click);
             _optimizationGrid.MultiSelect = true;
             _optimizationGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             _optimizationGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Id", Visible = false });
+            _optimizationGrid.Columns.Add("State", "Compliance");
+            _optimizationGrid.Columns.Add("Action", "Suggested action");
             _optimizationGrid.Columns.Add("Score", "Opportunity");
-            _optimizationGrid.Columns.Add("Size", "Size");
-            _optimizationGrid.Columns.Add("Codec", "Codec");
-            _optimizationGrid.Columns.Add("Resolution", "Resolution");
-            _optimizationGrid.Columns.Add("Bitrate", "Bitrate");
-            _optimizationGrid.Columns.Add("HDR", "HDR");
-            _optimizationGrid.Columns.Add("Rationale", "Why it is listed");
+            _optimizationGrid.Columns.Add("Size", "Original size");
+            _optimizationGrid.Columns.Add("Projected", "Projected output");
+            _optimizationGrid.Columns.Add("Savings", "Projected savings");
+            _optimizationGrid.Columns.Add("Confidence", "Confidence");
+            _optimizationGrid.Columns.Add("Current", "Current characteristics");
+            _optimizationGrid.Columns.Add("Proposed", "Proposed characteristics");
+            _optimizationGrid.Columns.Add("Rationale", "Reasons / review gates");
             _optimizationGrid.Columns.Add("Path", "Path");
-            _optimizationGrid.Columns[7].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-            _optimizationGrid.Columns[8].Width = 360;
+            _optimizationGrid.Columns[10].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+            _optimizationGrid.Columns[11].Width = 320;
             tab.Controls.Add(_optimizationGrid);
             tab.Controls.Add(_optimizationStatus);
+            tab.Controls.Add(_policySummary);
             tab.Controls.Add(intro);
             tab.Controls.Add(actions);
             _tabs.TabPages.Add(tab);
+            ReloadPolicyChoices();
         }
 
         private async Task RefreshStorageOptimizationAsync()
         {
-            IReadOnlyList<LibraryStorageOptimizationCandidate> candidates = await Task.Run(() =>
-                _runtime.Recommendations.GetStorageOptimizationCandidates());
+            if (_policySelection.SelectedItem is not PolicyChoice selected)
+            {
+                _optimizationGrid.Rows.Clear();
+                _policySummary.Text = "No policy is active. Select a built-in or custom policy to evaluate the catalog.";
+                _optimizationStatus.Text = "Existing users are not assigned a policy automatically.";
+                _policyPageLabel.Text = "";
+                return;
+            }
+            LibraryPolicyCapabilitySnapshot capabilities = _reviewOptions.PolicyCapabilities ?? new LibraryPolicyCapabilitySnapshot();
+            LibraryPolicyComplianceState? state = (_policyStateFilter.SelectedItem as PolicyStateChoice)?.State;
+            var query = new LibraryPolicyResultQuery(State: state, Offset: _policyPage * PageSize, Limit: PageSize);
+            (LibraryPolicyEvaluationPage Page, LibraryPolicyEvaluationSummary Summary) result = await Task.Run(() =>
+                _runtime.PolicyEvaluation.Evaluate(selected.Policy, query, capabilities));
             if (IsDisposed) return;
             _optimizationGrid.Rows.Clear();
-            foreach (LibraryStorageOptimizationCandidate candidate in candidates)
+            foreach (LibraryPolicyEvaluationResult candidate in result.Page.Results)
             {
-                int rowIndex = _optimizationGrid.Rows.Add(candidate.FileId, $"{candidate.OpportunityScore:0.0}", FormatBytes(candidate.SizeBytes),
-                    candidate.VideoCodec.ToUpperInvariant(), candidate.Width.HasValue && candidate.Height.HasValue ? $"{candidate.Width}×{candidate.Height}" : "Unknown",
-                    candidate.TotalBitRate.HasValue ? $"{candidate.TotalBitRate.Value / 1_000_000d:0.##} Mbps" : "Unknown", candidate.IsHdr ? "Yes" : "No",
-                    candidate.Rationale, candidate.FullPath);
+                string reasons = string.Join(" ", candidate.Reasons.Concat(candidate.ReviewReasons));
+                string savings = candidate.ProjectedReclaimableBytes.HasValue
+                    ? $"{FormatBytes(candidate.ProjectedReclaimableBytes.Value)} ({candidate.ProjectedSavingsPercent:0.#}%)" : "Unknown";
+                int rowIndex = _optimizationGrid.Rows.Add(candidate.FileId, PolicyStateLabel(candidate.State), candidate.SuggestedAction,
+                    $"{candidate.OpportunityScore:0.0}", FormatBytes(candidate.OriginalSizeBytes),
+                    candidate.ProjectedOutputBytes.HasValue ? FormatBytes(candidate.ProjectedOutputBytes.Value) : "Unknown",
+                    savings, candidate.Confidence, candidate.CurrentCharacteristics, candidate.ProposedCharacteristics, reasons, candidate.FullPath);
                 _optimizationGrid.Rows[rowIndex].Tag = candidate;
             }
-            _optimizationStatus.Text = $"{candidates.Count:N0} non-duplicate candidates. Rankings are recommendations, not estimated output sizes.";
+            _policyFilteredCount = result.Page.TotalCount;
+            long first = result.Page.TotalCount == 0 ? 0 : (long)_policyPage * PageSize + 1;
+            long last = Math.Min(result.Page.TotalCount, (long)(_policyPage + 1) * PageSize);
+            _policyPageLabel.Text = result.Page.TotalCount == 0 ? "No rows" : $"{first:N0}–{last:N0} of {result.Page.TotalCount:N0}";
+            _policySummary.Text = $"Evaluated {result.Summary.FilesEvaluated:N0}: {result.Summary.Compliant:N0} compliant, {result.Summary.OptimizationCandidates:N0} candidates, " +
+                $"{result.Summary.ReviewRequired:N0} review, {result.Summary.NotApplicable:N0} not applicable, {result.Summary.UnableToEvaluate:N0} unavailable. " +
+                $"Candidate reclaimable projection: {FormatBytes(result.Summary.ProjectedReclaimableBytes)}.";
+            _optimizationStatus.Text = "Metadata-only advisory evaluation. Rounded projections are estimates, not promises; no deep probes or media samples were run.";
         }
 
         private void AddOptimizationSelectionToQueue_Click(object? sender, EventArgs e)
         {
-            string[] paths = _optimizationGrid.SelectedRows.Cast<DataGridViewRow>()
-                .Select(row => row.Tag as LibraryStorageOptimizationCandidate)
-                .Where(candidate => candidate != null && File.Exists(candidate.FullPath))
-                .Select(candidate => candidate!.FullPath)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+            LibraryPolicyEvaluationResult[] candidates = _optimizationGrid.SelectedRows.Cast<DataGridViewRow>()
+                .Select(row => row.Tag as LibraryPolicyEvaluationResult)
+                .Where(candidate => candidate?.State == LibraryPolicyComplianceState.OptimizationCandidate &&
+                                    candidate.SuggestedAction == LibraryPolicySuggestedAction.Reencode && File.Exists(candidate.FullPath))
+                .Select(candidate => candidate!)
+                .GroupBy(candidate => candidate.FullPath, StringComparer.OrdinalIgnoreCase).Select(group => group.First())
                 .ToArray();
-            if (paths.Length == 0)
+            LibraryPolicyQueueItem[] items = candidates.Select(candidate => new LibraryPolicyQueueItem(
+                    candidate.FullPath, candidate.PolicyId, candidate.PolicyName, candidate.ProposedCodec,
+                    candidate.EncoderId, candidate.EncoderPreset, candidate.EncodingPresetName, candidate.QualityValue,
+                    candidate.PreferredBitDepth, candidate.PreserveSourceResolution,
+                    candidate.MaximumOutputHeight, candidate.PreserveHdr, candidate.TargetContainer,
+                    candidate.ProjectedOutputBytes, candidate.Confidence))
+                .ToArray();
+            if (items.Length == 0)
             {
-                MessageBox.Show(this, "Select one or more currently available candidates first.", "Storage Optimization", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, "Select one or more available re-encode candidates first. Review, remux-only, compliant, and unavailable rows remain advisory.", "Library Policies", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            if (_reviewOptions.AddToEncodeQueue == null)
+            if (_reviewOptions.AddPolicyCandidatesToEncodeQueue == null)
             {
-                MessageBox.Show(this, "The Encode queue is not available in this Library Analyzer session.", "Storage Optimization", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, "The Encode queue is not available in this Library Analyzer session.", "Library Policies", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            _reviewOptions.AddToEncodeQueue(paths);
-            _optimizationStatus.Text = $"Sent {paths.Length:N0} selected file(s) to the normal Encode queue.";
+            _ = QueuePolicyItemsAsync(items);
+        }
+
+        private async Task QueuePolicyItemsAsync(IReadOnlyList<LibraryPolicyQueueItem> items)
+        {
+            try
+            {
+                await _reviewOptions.AddPolicyCandidatesToEncodeQueue!(items);
+                if (!IsDisposed) _optimizationStatus.Text = $"Added {items.Count:N0} selected candidate(s) to the normal Encode queue with isolated policy settings. Encoding was not started.";
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) ShowError("Library policy queue handoff failed. No encode was started.", ex);
+            }
+        }
+
+        private void ReloadPolicyChoices(string? selectId = null)
+        {
+            LibraryPolicyStore store = _reviewOptions.PolicyStore ?? new LibraryPolicyStore(AppPaths.LibraryPolicyFile);
+            string? previous = selectId ?? (_policySelection.SelectedItem as PolicyChoice)?.Policy.Id;
+            _policySelection.BeginUpdate();
+            _policySelection.Items.Clear();
+            foreach (LibraryPolicyDefinition policy in store.LoadAll()) _policySelection.Items.Add(new PolicyChoice(policy));
+            _policySelection.EndUpdate();
+            if (!string.IsNullOrWhiteSpace(previous))
+                _policySelection.SelectedItem = _policySelection.Items.Cast<PolicyChoice>().FirstOrDefault(item => item.Policy.Id.Equals(previous, StringComparison.OrdinalIgnoreCase));
+            else
+                _policySelection.SelectedIndex = -1;
+        }
+
+        private void EditPolicy(LibraryPolicyDefinition? source)
+        {
+            LibraryPolicyDefinition policy = source ?? new LibraryPolicyDefinition();
+            using var dialog = new LibraryPolicyEditorDialog(policy);
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            (_reviewOptions.PolicyStore ?? new LibraryPolicyStore(AppPaths.LibraryPolicyFile)).Save(dialog.Policy);
+            _runtime.PolicyEvaluation.Invalidate();
+            ReloadPolicyChoices(dialog.Policy.Id);
+        }
+
+        private void CloneSelectedPolicy()
+        {
+            if (_policySelection.SelectedItem is not PolicyChoice selected) return;
+            EditPolicy(selected.Policy.CloneAsCustom($"{selected.Policy.Name} copy"));
+        }
+
+        private void EditSelectedPolicy()
+        {
+            if (_policySelection.SelectedItem is not PolicyChoice selected) return;
+            if (selected.Policy.IsBuiltIn)
+            {
+                MessageBox.Show(this, "Built-in policies are read-only. Clone this policy to customize it.", "Library Policies", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            EditPolicy(selected.Policy);
+        }
+
+        private void DeleteSelectedPolicy()
+        {
+            if (_policySelection.SelectedItem is not PolicyChoice selected) return;
+            if (selected.Policy.IsBuiltIn)
+            {
+                MessageBox.Show(this, "Built-in policies cannot be deleted.", "Library Policies", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (MessageBox.Show(this, $"Delete custom policy '{selected.Policy.Name}'?", "Library Policies", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            (_reviewOptions.PolicyStore ?? new LibraryPolicyStore(AppPaths.LibraryPolicyFile)).Delete(selected.Policy.Id);
+            _runtime.PolicyEvaluation.Invalidate();
+            ReloadPolicyChoices();
+            _ = RefreshStorageOptimizationAsync();
+        }
+
+        private static string PolicyStateLabel(LibraryPolicyComplianceState state) => state switch
+        {
+            LibraryPolicyComplianceState.OptimizationCandidate => "Candidate",
+            LibraryPolicyComplianceState.ReviewRequired => "Review required",
+            LibraryPolicyComplianceState.NotApplicable => "Not applicable",
+            LibraryPolicyComplianceState.UnableToEvaluate => "Unable to evaluate",
+            _ => "Compliant"
+        };
+
+        private sealed record PolicyChoice(LibraryPolicyDefinition Policy)
+        {
+            public override string ToString() => Policy.IsBuiltIn ? $"{Policy.Name} (built-in)" : Policy.Name;
+        }
+        private sealed record PolicyStateChoice(string Name, LibraryPolicyComplianceState? State)
+        {
+            public override string ToString() => Name;
         }
     }
 }

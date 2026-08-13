@@ -1,0 +1,438 @@
+using MediaFlux.Models;
+using MediaFlux.Services;
+using Xunit;
+
+namespace MediaFlux.Tests;
+
+public sealed class EncodeOutputValidationServiceTests : IDisposable
+{
+    private readonly string _root;
+    private readonly string _sourcePath;
+    private readonly string _outputPath;
+
+    public EncodeOutputValidationServiceTests()
+    {
+        _root = Path.Combine(
+            Path.GetTempPath(),
+            "MediaFlux-EncodeValidationTests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_root);
+        _sourcePath = Path.Combine(_root, "source unusual ' name [1].mkv");
+        _outputPath = Path.Combine(_root, ".output unusual.mediaflux-test.mp4.partial");
+        File.WriteAllBytes(_sourcePath, new byte[96 * 1024]);
+        File.WriteAllBytes(_outputPath, new byte[96 * 1024]);
+    }
+
+    [Fact]
+    public async Task ValidNormalEncodePassesProbeAndDecodeValidation()
+    {
+        var decode = new FakeDecodeService();
+        var service = CreateService(SourceProbe(), OutputProbe(), decode);
+
+        EncodeOutputValidationResult result =
+            await service.ValidateStagedAsync(Request());
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.NotNull(result.Evidence);
+        Assert.Equal(2, ((FakeProbeService)serviceProbe!).Calls);
+        Assert.Equal(1, decode.Calls);
+        Assert.Contains("decode-integrity", result.Summary);
+    }
+
+    [Fact]
+    public async Task CorruptOrUnprobeableOutputFailsClosed()
+    {
+        var service = CreateService(
+            SourceProbe(),
+            MediaProbeResult.Failed("invalid data"),
+            new FakeDecodeService());
+
+        EncodeOutputValidationResult result =
+            await service.ValidateStagedAsync(Request());
+
+        Assert.False(result.Success);
+        Assert.Contains("could not read", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("missing-video")]
+    [InlineData("wrong-codec")]
+    [InlineData("wrong-resolution")]
+    [InlineData("duration-mismatch")]
+    [InlineData("missing-audio")]
+    public async Task StructuralMismatchFailsWithSpecificReason(string scenario)
+    {
+        MediaProbeResult output = scenario switch
+        {
+            "missing-video" => OutputProbe(includeVideo: false),
+            "wrong-codec" => OutputProbe(videoCodec: "h264"),
+            "wrong-resolution" => OutputProbe(width: 1280, height: 720),
+            "duration-mismatch" => OutputProbe(duration: 70),
+            "missing-audio" => OutputProbe(audioCount: 0),
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario))
+        };
+        var service = CreateService(
+            SourceProbe(),
+            output,
+            new FakeDecodeService());
+
+        EncodeOutputValidationResult result =
+            await service.ValidateStagedAsync(Request());
+
+        Assert.False(result.Success);
+        Assert.True(
+            result.ErrorMessage.Contains(
+                scenario switch
+                {
+                    "missing-video" => "video stream",
+                    "wrong-codec" => "codec",
+                    "wrong-resolution" => "resolution",
+                    "duration-mismatch" => "duration",
+                    "missing-audio" => "audio stream",
+                    _ => ""
+                },
+                StringComparison.OrdinalIgnoreCase),
+            result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ZeroOrTriviallySmallOutputFailsBeforeProbe()
+    {
+        File.WriteAllBytes(_outputPath, new byte[32]);
+        var service = CreateService(
+            SourceProbe(),
+            OutputProbe(),
+            new FakeDecodeService());
+
+        EncodeOutputValidationResult result =
+            await service.ValidateStagedAsync(Request());
+
+        Assert.False(result.Success);
+        Assert.Contains("suspiciously small", result.ErrorMessage);
+        Assert.Equal(1, ((FakeProbeService)serviceProbe!).Calls);
+    }
+
+    [Fact]
+    public async Task SubtitlePreservationIsRequiredOnlyWhenMappingPromisesIt()
+    {
+        MediaProbeResult source = SourceProbe(subtitleCount: 1);
+        MediaProbeResult withoutSubtitle = OutputProbe(subtitleCount: 0);
+
+        var required = CreateService(source, withoutSubtitle, new FakeDecodeService());
+        EncodeOutputValidationResult requiredResult =
+            await required.ValidateStagedAsync(Request(copySubtitles: true));
+        Assert.False(requiredResult.Success);
+        Assert.Contains("subtitle", requiredResult.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+
+        var intentionallyDisabled =
+            CreateService(source, withoutSubtitle, new FakeDecodeService());
+        EncodeOutputValidationResult disabledResult =
+            await intentionallyDisabled.ValidateStagedAsync(
+                Request(copySubtitles: false));
+        Assert.True(disabledResult.Success, disabledResult.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task DecodeSpotCheckFailureRejectsOtherwiseValidMedia()
+    {
+        var service = CreateService(
+            SourceProbe(),
+            OutputProbe(),
+            new FakeDecodeService(success: false));
+
+        EncodeOutputValidationResult result =
+            await service.ValidateStagedAsync(Request());
+
+        Assert.False(result.Success);
+        Assert.Contains(
+            "decode-integrity",
+            result.ErrorMessage,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidationRejectsWrongBitDepthContainerChaptersAndMetadata()
+    {
+        EncodeOutputValidationRequest tenBitRequest = Request(tenBit: true);
+        Assert.Contains(
+            "10-bit",
+            EncodeOutputValidationService.ValidateProbe(
+                tenBitRequest,
+                SourceProbe(),
+                OutputProbe()));
+
+        MediaProbeResult wrongContainer = CloneProbe(
+            OutputProbe(),
+            formatName: "matroska,webm");
+        Assert.Contains(
+            "container",
+            EncodeOutputValidationService.ValidateProbe(
+                Request(),
+                SourceProbe(),
+                wrongContainer),
+            StringComparison.OrdinalIgnoreCase);
+
+        MediaProbeResult missingChapters = CloneProbe(
+            OutputProbe(),
+            chapters: Array.Empty<MediaProbeChapterInfo>());
+        Assert.Contains(
+            "chapter",
+            EncodeOutputValidationService.ValidateProbe(
+                Request(),
+                SourceProbe(),
+                missingChapters),
+            StringComparison.OrdinalIgnoreCase);
+
+        MediaProbeResult missingTitle = CloneProbe(
+            OutputProbe(),
+            formatTags: new Dictionary<string, string>());
+        Assert.Contains(
+            "title metadata",
+            EncodeOutputValidationService.ValidateProbe(
+                Request(),
+                SourceProbe(),
+                missingTitle),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DvdValidationUsesCombinedLogicalDurationNotFirstSegmentDuration()
+    {
+        EncodeOutputValidationRequest request = new()
+        {
+            Input = new EncodingInputSource
+            {
+                Kind = EncodingInputKind.DvdPhysicalConcat,
+                InputPath = "concat:segment-one|segment-two",
+                SourcePath = _root,
+                SourceFiles = new[] { _sourcePath },
+                KnownDurationSeconds = 100,
+                KnownAudioStreamCount = 1,
+                AllowSourceDeletion = false
+            },
+            OutputPath = _outputPath,
+            FinalOutputPath = Path.Combine(_root, "dvd final.mp4"),
+            Encoder = new VideoEncoderSelection(
+                VideoEncoderIds.Libx265,
+                VideoCodecFamily.Hevc,
+                "libx265")
+        };
+
+        MediaProbeResult representativeSegment = CloneProbe(
+            SourceProbe(),
+            durationSeconds: 20);
+        string error = EncodeOutputValidationService.ValidateProbe(
+            request,
+            representativeSegment,
+            OutputProbe(duration: 100));
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
+    public void DecodePositionsCoverBeginningMiddleAndEndWithoutDuplicates()
+    {
+        Assert.Equal(
+            new[] { 0d, 50d, 99d },
+            FfmpegDecodeIntegritySpotCheckService.BuildPositions(100));
+        Assert.Equal(
+            2,
+            FfmpegDecodeIntegritySpotCheckService.BuildPositions(1).Count);
+        Assert.Single(
+            FfmpegDecodeIntegritySpotCheckService.BuildPositions(null));
+    }
+
+    private IMediaProbeService? serviceProbe;
+
+    private EncodeOutputValidationService CreateService(
+        MediaProbeResult source,
+        MediaProbeResult output,
+        IDecodeIntegritySpotCheckService decode)
+    {
+        var probe = new FakeProbeService(path =>
+            path.Equals(_sourcePath, StringComparison.OrdinalIgnoreCase)
+                ? source
+                : output);
+        serviceProbe = probe;
+        return new EncodeOutputValidationService(probe, decode);
+    }
+
+    private EncodeOutputValidationRequest Request(
+        bool copySubtitles = false,
+        bool tenBit = false) => new()
+    {
+        Input = EncodingInputSource.FromFile(_sourcePath),
+        OutputPath = _outputPath,
+        FinalOutputPath = Path.Combine(_root, "final output.mp4"),
+        Encoder = new VideoEncoderSelection(
+            VideoEncoderIds.Libx265,
+            VideoCodecFamily.Hevc,
+            "libx265"),
+        ScaleMode = EncodingService.ScaleMode.None,
+        TenBit = tenBit,
+        MapMode = EncodingService.StreamMapMode.KeepAll,
+        CopySubtitles = copySubtitles
+    };
+
+    private static MediaProbeResult CloneProbe(
+        MediaProbeResult source,
+        string? formatName = null,
+        double? durationSeconds = null,
+        IReadOnlyList<MediaProbeChapterInfo>? chapters = null,
+        IReadOnlyDictionary<string, string>? formatTags = null) => new()
+    {
+        Success = source.Success,
+        ErrorMessage = source.ErrorMessage,
+        FormatName = formatName ?? source.FormatName,
+        SizeBytes = source.SizeBytes,
+        DurationSeconds = durationSeconds ?? source.DurationSeconds,
+        BitRate = source.BitRate,
+        Streams = source.Streams,
+        Chapters = chapters ?? source.Chapters,
+        FormatTags = formatTags ?? source.FormatTags
+    };
+
+    private static MediaProbeResult SourceProbe(
+        int subtitleCount = 0) =>
+        Probe(
+            format: "matroska,webm",
+            videoCodec: "h264",
+            width: 1920,
+            height: 1080,
+            duration: 100,
+            audioCount: 1,
+            subtitleCount: subtitleCount,
+            chapterCount: 2,
+            title: "Validation Test");
+
+    private static MediaProbeResult OutputProbe(
+        bool includeVideo = true,
+        string videoCodec = "hevc",
+        int width = 1920,
+        int height = 1080,
+        double duration = 100,
+        int audioCount = 1,
+        int subtitleCount = 0) =>
+        Probe(
+            format: "mov,mp4,m4a,3gp,3g2,mj2",
+            videoCodec: videoCodec,
+            width: width,
+            height: height,
+            duration: duration,
+            audioCount: audioCount,
+            subtitleCount: subtitleCount,
+            chapterCount: 2,
+            title: "Validation Test",
+            includeVideo: includeVideo);
+
+    private static MediaProbeResult Probe(
+        string format,
+        string videoCodec,
+        int width,
+        int height,
+        double duration,
+        int audioCount,
+        int subtitleCount,
+        int chapterCount,
+        string title,
+        bool includeVideo = true)
+    {
+        var streams = new List<MediaProbeStreamInfo>();
+        if (includeVideo)
+        {
+            streams.Add(new MediaProbeStreamInfo
+            {
+                Index = 0,
+                CodecType = "video",
+                CodecName = videoCodec,
+                PixelFormat = "yuv420p",
+                Width = width,
+                Height = height,
+                DurationSeconds = duration
+            });
+        }
+        streams.AddRange(Enumerable.Range(0, audioCount).Select(index =>
+            new MediaProbeStreamInfo
+            {
+                Index = 10 + index,
+                CodecType = "audio",
+                CodecName = "aac",
+                Channels = 2
+            }));
+        streams.AddRange(Enumerable.Range(0, subtitleCount).Select(index =>
+            new MediaProbeStreamInfo
+            {
+                Index = 20 + index,
+                CodecType = "subtitle",
+                CodecName = "mov_text"
+            }));
+
+        return new MediaProbeResult
+        {
+            Success = true,
+            FormatName = format,
+            DurationSeconds = duration,
+            Streams = streams,
+            Chapters = Enumerable.Range(0, chapterCount)
+                .Select(index => new MediaProbeChapterInfo { Id = index })
+                .ToArray(),
+            FormatTags = new Dictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase)
+            {
+                ["title"] = title
+            }
+        };
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_root))
+            Directory.Delete(_root, recursive: true);
+    }
+
+    private sealed class FakeProbeService : IMediaProbeService
+    {
+        private readonly Func<string, MediaProbeResult> _handler;
+
+        public FakeProbeService(Func<string, MediaProbeResult> handler)
+        {
+            _handler = handler;
+        }
+
+        public int Calls { get; private set; }
+
+        public Task<MediaProbeResult> ProbeAsync(
+            string path,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(_handler(path));
+        }
+    }
+
+    private sealed class FakeDecodeService : IDecodeIntegritySpotCheckService
+    {
+        private readonly bool _success;
+
+        public FakeDecodeService(bool success = true)
+        {
+            _success = success;
+        }
+
+        public int Calls { get; private set; }
+
+        public Task<DecodeIntegritySpotCheckResult> CheckAsync(
+            string outputPath,
+            double? durationSeconds,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new DecodeIntegritySpotCheckResult
+            {
+                Success = _success,
+                ErrorMessage = _success ? "" : "simulated corrupt frame",
+                PositionsSeconds = new[] { 0d, 50d, 99d }
+            });
+        }
+    }
+}

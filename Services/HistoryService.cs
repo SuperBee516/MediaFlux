@@ -36,6 +36,12 @@ namespace MediaFlux.Services
         public long? OutputSizeBytes { get; set; }
         public bool? WasRecommendedDvdTitle { get; set; }
         public string? ErrorSummary { get; set; }
+        public string? FinalizationOutcome { get; set; }
+        public string? StagingPath { get; set; }
+        public string? SourceDeletionResult { get; set; }
+        public string? RequestedOutputContainer { get; set; }
+        public string? ResolvedOutputContainer { get; set; }
+        public string? ContainerDecisionReason { get; set; }
     }
 
     public sealed class HistoryService

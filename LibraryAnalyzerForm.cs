@@ -1,4 +1,6 @@
 using System.Globalization;
+using MediaFlux.Models;
+using MediaFlux.Services;
 using MediaFlux.Services.LibraryCatalog;
 
 namespace MediaFlux
@@ -816,6 +818,9 @@ namespace MediaFlux
             Action<MediaFlux.Models.DuplicateKeeperPreferences>? KeeperPreferencesChanged = null,
             LibraryVisualReviewAutomationOptions? AutomationOptions = null,
             Func<LibraryVisualReviewAutomationOptions>? AutomationOptionsProvider = null,
-            Action<IReadOnlyList<string>>? AddToEncodeQueue = null);
+            Action<IReadOnlyList<string>>? AddToEncodeQueue = null,
+            LibraryPolicyStore? PolicyStore = null,
+            LibraryPolicyCapabilitySnapshot? PolicyCapabilities = null,
+            Func<IReadOnlyList<LibraryPolicyQueueItem>, Task>? AddPolicyCandidatesToEncodeQueue = null);
     }
 }

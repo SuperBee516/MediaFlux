@@ -1,4 +1,7 @@
 using MediaFlux.Services.LibraryCatalog;
+using MediaFlux.Models;
+using MediaFlux.Services;
+using MediaFlux.Services.Encoders;
 
 namespace MediaFlux
 {
@@ -31,6 +34,9 @@ namespace MediaFlux
                     _config.DuplicateKeeperPreferences);
                 if (_libraryAnalyzerForm == null || _libraryAnalyzerForm.IsDisposed)
                 {
+                    LibraryPolicyStore policyStore = new(AppPaths.LibraryPolicyFile);
+                    string ffmpegPath = FfmpegToolResolver.Resolve(Application.StartupPath, _config.FfmpegPath).FfmpegPath;
+                    LibraryPolicyCapabilitySnapshot policyCapabilities = LibraryPolicyCapabilityFactory.Create(ffmpegPath, _presetService.LoadAll());
                     _libraryAnalyzerForm = new LibraryAnalyzerForm(
                         _libraryAnalyzerRuntime,
                         new LibraryAnalyzerForm.LibraryAnalyzerCleanupOptions(
@@ -67,7 +73,10 @@ namespace MediaFlux
                                 _config.VisualMassReviewMinimumConfidence),
                             AddToEncodeQueue: paths => _ = ImportEncodePathsAsync(
                                 paths, includeSubfolders: false, applyCodecFilters: true,
-                                replaceExisting: false, rememberRoots: false)));
+                                replaceExisting: false, rememberRoots: false),
+                            PolicyStore: policyStore,
+                            PolicyCapabilities: policyCapabilities,
+                            AddPolicyCandidatesToEncodeQueue: AddLibraryPolicyCandidatesToQueueAsync));
                     _libraryAnalyzerForm.FormClosed += (_, _) => _libraryAnalyzerForm = null;
                     _libraryAnalyzerForm.Show(this);
                 }
@@ -86,6 +95,84 @@ namespace MediaFlux
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
+        }
+
+        private async Task AddLibraryPolicyCandidatesToQueueAsync(IReadOnlyList<LibraryPolicyQueueItem> items)
+        {
+            LibraryPolicyQueueItem[] available = items
+                .Where(item => !string.IsNullOrWhiteSpace(item.FullPath) && File.Exists(item.FullPath))
+                .GroupBy(item => item.FullPath, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToArray();
+            if (available.Length == 0) return;
+
+            await ImportEncodePathsAsync(available.Select(item => item.FullPath), includeSubfolders: false,
+                applyCodecFilters: false, replaceExisting: false, rememberRoots: false);
+
+            foreach (LibraryPolicyQueueItem item in available)
+            {
+                if (!_rowsByPath.TryGetValue(item.FullPath, out DataGridViewRow? row) || row.DataGridView != dgvEncodeQueue)
+                    continue;
+                RowMeta meta = EnsureRowMeta(row);
+                meta.LibraryPolicyIntent = item;
+                meta.CustomCompressionProfile = "Medium Quality (Default)";
+                UpdateRowCustomFlag(row);
+            }
+            SafeRefreshEstimates();
+        }
+
+        private static EncodingService.ScaleMode PolicyScaleMode(LibraryPolicyQueueItem item)
+        {
+            if (item.PreserveSourceResolution || !item.MaximumOutputHeight.HasValue) return EncodingService.ScaleMode.None;
+            return item.MaximumOutputHeight.Value switch
+            {
+                <= 720 => EncodingService.ScaleMode.To720p,
+                <= 1080 => EncodingService.ScaleMode.To1080p,
+                <= 1440 => EncodingService.ScaleMode.To1440p,
+                _ => EncodingService.ScaleMode.To4K
+            };
+        }
+
+        private OutputContainerSelection PolicyOutputContainer(LibraryPolicyQueueItem? item)
+        {
+            if (item == null) return _activeOutputContainer;
+            if (!string.IsNullOrWhiteSpace(item.EncodingPresetName))
+            {
+                EncodingPreset? preset = _presetService.LoadAll().FirstOrDefault(value => value.Name.Equals(item.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
+                if (preset != null && Enum.TryParse(preset.OutputContainer, true, out OutputContainerSelection container)) return container;
+            }
+            return item.TargetContainer;
+        }
+
+        private bool EnsureRequestedVideoEncodersAvailable(IReadOnlyList<DataGridViewRow> rows)
+        {
+            if (rows.Any(row => row.Tag is not RowMeta { LibraryPolicyIntent: not null }) && !EnsureSelectedVideoEncoderAvailable())
+                return false;
+            FfmpegEncoderCapabilities capabilities = GetFfmpegEncoderCapabilities();
+            if (!capabilities.InspectionSucceeded) return true;
+            foreach (LibraryPolicyQueueItem intent in rows.Select(row => (row.Tag as RowMeta)?.LibraryPolicyIntent).Where(value => value != null).Cast<LibraryPolicyQueueItem>())
+            {
+                try
+                {
+                    EncodingPreset? preset = string.IsNullOrWhiteSpace(intent.EncodingPresetName)
+                        ? null
+                        : _presetService.LoadAll().FirstOrDefault(value => value.Name.Equals(intent.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
+                    if (!string.IsNullOrWhiteSpace(intent.EncodingPresetName) && preset == null)
+                        throw new InvalidOperationException($"Referenced encoding preset '{intent.EncodingPresetName}' is no longer available.");
+                    VideoCodecFamily codec = preset == null ? intent.ProposedCodec : VideoEncoderCompatibility.ParseCodecFamily(string.IsNullOrWhiteSpace(preset.VideoCodec) ? preset.VideoFormat : preset.VideoCodec);
+                    string encoderId = preset == null ? intent.EncoderId : VideoEncoderCompatibility.ResolveEncoderId(string.IsNullOrWhiteSpace(preset.EncoderId) ? preset.EncoderMode : preset.EncoderId, codec);
+                    ResolvedVideoEncoder resolved = EncoderRegistry.Default.Resolve(encoderId, codec);
+                    if (!capabilities.Contains(resolved.Selection.FfmpegCodec))
+                        throw new InvalidOperationException($"The configured FFmpeg build does not provide '{resolved.Selection.FfmpegCodec}'.");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"Library policy '{intent.PolicyName}' requires attention before encoding.\r\n\r\n{ex.Message}",
+                        "Policy encoder unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
+                }
+            }
+            return true;
         }
 
         private void DisposeLibraryAnalyzer()

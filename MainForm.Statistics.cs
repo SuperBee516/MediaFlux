@@ -316,8 +316,9 @@ namespace MediaFlux
                 new DataGridViewTextBoxColumn
                 {
                     Name = "colStatsResults",
-                    HeaderText = "Success / Failed / Skipped / Cancelled",
-                    Width = 225
+                    HeaderText =
+                        "Success / Encode failed / Finalization failed / Skipped / Cancelled",
+                    Width = 310
                 });
             _statisticsGroupGrid.Columns.Add(
                 new DataGridViewTextBoxColumn
@@ -394,7 +395,8 @@ namespace MediaFlux
                     item.Codec,
                     item.Encoder,
                     item.FilesProcessed.ToString("N0"),
-                    $"{item.Successful:N0} / {item.Failed:N0} / {item.Skipped:N0} / {item.Cancelled:N0}",
+                    $"{item.Successful:N0} / {item.Failed:N0} / {item.FinalizationFailed:N0} finalization / " +
+                    $"{item.Skipped:N0} / {item.Cancelled:N0}",
                     FormatStatisticsSavings(item.SpaceSavedBytes),
                     item.OriginalBytes > 0
                         ? $"{item.ReductionPercent:0.#}%"
@@ -412,6 +414,7 @@ namespace MediaFlux
             labels["files"].Text = snapshot.FilesProcessed.ToString("N0");
             labels["outcomes"].Text =
                 $"{snapshot.Successful:N0} successful · {snapshot.Failed:N0} failed · " +
+                $"{snapshot.FinalizationFailed:N0} finalization failed · " +
                 $"{snapshot.Skipped:N0} skipped · {snapshot.Cancelled:N0} cancelled";
             labels["sizes"].Text = snapshot.FilesWithSizeData > 0
                 ? $"{EncodingStatisticsCalculator.FormatBytes(snapshot.OriginalBytes)} → " +

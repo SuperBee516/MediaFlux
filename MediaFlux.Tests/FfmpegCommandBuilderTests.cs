@@ -26,7 +26,7 @@ public sealed class FfmpegCommandBuilderTests
             "-tune hq -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 " +
             "-aq-strength 12 -surfaces 48 -multipass fullres " +
             "-bf 4 -b_ref_mode middle -refs 4 -c:a copy " +
-            "-movflags +faststart \"C:\\Output\\source.mp4\"",
+            "-movflags +faststart -f mp4 \"C:\\Output\\source.mp4\"",
             arguments);
     }
 
@@ -479,6 +479,36 @@ public sealed class FfmpegCommandBuilderTests
     private static FfmpegCommandBuilder CreateBuilder() =>
         new(EncoderRegistry.Default, _ => 160);
 
+    [Fact]
+    public void MatroskaCommand_UsesExplicitMuxerAndPreservationMappings()
+    {
+        var builder = new FfmpegCommandBuilder(EncoderRegistry.Default, _ => 192);
+        string arguments = builder.Build(CreateRequest(
+            EncoderRegistry.Default.ResolveLegacyCodec("libx265").Selection,
+            useGpu: false,
+            outputContainer: OutputContainer.Matroska));
+
+        Assert.Contains("-map 0:s?", arguments);
+        Assert.Contains("-map 0:d?", arguments);
+        Assert.Contains("-map 0:t?", arguments);
+        Assert.Contains("-c:t copy", arguments);
+        Assert.Contains("-f matroska", arguments);
+        Assert.DoesNotContain("-movflags +faststart", arguments);
+    }
+
+    [Fact]
+    public void Mp4Command_UsesExplicitMuxerAndFastStart()
+    {
+        var builder = new FfmpegCommandBuilder(EncoderRegistry.Default, _ => 192);
+        string arguments = builder.Build(CreateRequest(
+            EncoderRegistry.Default.ResolveLegacyCodec("libx265").Selection,
+            useGpu: false));
+
+        Assert.Contains("-f mp4", arguments);
+        Assert.Contains("-movflags +faststart", arguments);
+        Assert.DoesNotContain("-map 0:t?", arguments);
+    }
+
     private static FfmpegCommandRequest CreateRequest(
         string ffmpegCodec,
         bool useGpu,
@@ -496,7 +526,8 @@ public sealed class FfmpegCommandBuilderTests
         double knownMappedAncillaryBitrateKbps = 0,
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None,
-        bool nvencHighBitDepthOutputSupported = false)
+        bool nvencHighBitDepthOutputSupported = false,
+        OutputContainer outputContainer = OutputContainer.Mp4)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -515,9 +546,10 @@ public sealed class FfmpegCommandBuilderTests
             copySubtitles,
             copyDataStreams,
             knownAudioStreamCount,
-            knownMappedAncillaryBitrateKbps,
-            scaleMode,
-            nvencHighBitDepthOutputSupported);
+             knownMappedAncillaryBitrateKbps,
+             scaleMode,
+             nvencHighBitDepthOutputSupported,
+             outputContainer);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -537,7 +569,8 @@ public sealed class FfmpegCommandBuilderTests
         double knownMappedAncillaryBitrateKbps = 0,
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None,
-        bool nvencHighBitDepthOutputSupported = false)
+        bool nvencHighBitDepthOutputSupported = false,
+        OutputContainer outputContainer = OutputContainer.Mp4)
     {
 
         return new FfmpegCommandRequest
@@ -566,6 +599,18 @@ public sealed class FfmpegCommandBuilderTests
             MapMode = EncodingService.StreamMapMode.KeepAll,
             CopySubtitles = copySubtitles,
             CopyDataStreams = copyDataStreams,
+            CopyAttachments = outputContainer == OutputContainer.Matroska,
+            ContainerDecision = new OutputContainerDecision
+            {
+                Requested = outputContainer == OutputContainer.Matroska
+                    ? OutputContainerSelection.Matroska
+                    : OutputContainerSelection.Mp4,
+                Resolved = outputContainer,
+                Reason = "Test container.",
+                CopySubtitles = copySubtitles,
+                CopyDataStreams = copyDataStreams,
+                CopyAttachments = outputContainer == OutputContainer.Matroska
+            },
             ForceMp4CompatibleAudio = false,
             KnownDuration = knownDuration ?? TimeSpan.FromMinutes(10),
             NvencHighBitDepthOutputSupported =

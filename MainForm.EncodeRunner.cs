@@ -46,8 +46,11 @@ namespace MediaFlux
 
             if (!EnsureFfmpegToolsAvailable())
                 return;
-            if (!EnsureSelectedVideoEncoderAvailable())
+            if (!EnsureRequestedVideoEncodersAvailable(requestedRows))
                 return;
+            if (!await ConfirmExplicitMp4CompatibilityAsync(requestedRows))
+                return;
+            _activeOutputContainer = GetSelectedOutputContainer();
 
             if (requestedRows.Any(row => row.Tag is not RowMeta { IsDvdEncode: true }) &&
                 !ValidateOutputFolderAgainstWatchFolder(cmbEncodeOutput.Text, showMessage: true))
@@ -134,7 +137,9 @@ namespace MediaFlux
             // context-menu choice must not be changed by the persisted checkbox setting.
             var requestedRowSet = requestedRows.ToHashSet();
 
-            int maxParallel = GetMaxConcurrentEncodes(); // Automatic NVENC parallelism, otherwise 1.
+            int maxParallel = requestedRows.Any(row => row.Tag is RowMeta { LibraryPolicyIntent: not null })
+                ? 1
+                : GetMaxConcurrentEncodes(); // Policy rows use conservative isolated scheduling.
 
             ReapplyCurrentEncodeQueueSort();
 
@@ -218,6 +223,8 @@ namespace MediaFlux
             }
             finally
             {
+                _mp4CompatibilityConfirmedForRun = false;
+                _activeOutputContainer = OutputContainerSelection.Mp4;
                 _encodingActive = false;
                 _activeEncodeQueue = null;
                 ApplyDuplicateCandidateViewFilter();
@@ -230,6 +237,75 @@ namespace MediaFlux
                 ClearEncodeInputFolderIfQueueEmptyAfterProcessing();
             }
         }
+
+        private async Task<bool> ConfirmExplicitMp4CompatibilityAsync(
+            IReadOnlyList<DataGridViewRow> rows)
+        {
+            if (!rows.Any(row => RequestedOutputContainerForRow(row) == OutputContainerSelection.Mp4))
+                return true;
+
+            var warnings = new List<string>();
+            var probeService = new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath);
+            foreach (DataGridViewRow row in rows)
+            {
+                if (RequestedOutputContainerForRow(row) != OutputContainerSelection.Mp4)
+                    continue;
+                string? displayPath = GetFullPathFromRow(row);
+                EncodingInputSource input;
+                string probePath;
+                if (row.Tag is RowMeta { IsDvdEncode: true, DvdEncodeOptions: not null } dvdMeta)
+                {
+                    input = new DvdEncodingInputFactory().Create(dvdMeta.DvdEncodeOptions);
+                    probePath = input.SourceFiles.FirstOrDefault() ?? input.SourcePath;
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(displayPath))
+                        continue;
+                    input = EncodingInputSource.FromFile(displayPath);
+                    probePath = displayPath;
+                }
+                if (!File.Exists(probePath))
+                    continue;
+                MediaProbeResult probe = await probeService.ProbeAsync(probePath);
+                if (!probe.Success)
+                    continue;
+                OutputContainerDecision decision = OutputContainerPolicy.Decide(
+                    OutputContainerSelection.Mp4,
+                    probe,
+                    input,
+                    StreamMapMode.KeepAll);
+                if (decision.CompatibilityWarnings.Count > 0)
+                {
+                    warnings.Add(
+                        $"{Path.GetFileName(displayPath ?? probePath)}: {string.Join("; ", decision.CompatibilityWarnings)}");
+                }
+            }
+
+            if (warnings.Count == 0)
+                return true;
+
+            string details = string.Join(Environment.NewLine, warnings.Take(12));
+            if (warnings.Count > 12)
+                details += $"{Environment.NewLine}…and {warnings.Count - 12} more file(s).";
+            DialogResult answer = MessageBox.Show(
+                this,
+                "MP4 cannot conservatively preserve every requested stream in this queue. " +
+                "Incompatible subtitle, attachment, and data streams will be omitted; " +
+                "other incompatible copied streams may fail. MediaFlux will not silently change containers." +
+                Environment.NewLine + Environment.NewLine + details +
+                Environment.NewLine + Environment.NewLine + "Continue with MP4?",
+                "Review MP4 Stream Compatibility",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            _mp4CompatibilityConfirmedForRun = answer == DialogResult.Yes;
+            return _mp4CompatibilityConfirmedForRun;
+        }
+
+        private OutputContainerSelection RequestedOutputContainerForRow(DataGridViewRow row) =>
+            row.Tag is RowMeta { LibraryPolicyIntent: not null } meta
+                ? PolicyOutputContainer(meta.LibraryPolicyIntent)
+                : GetSelectedOutputContainer();
 
         
 
@@ -443,6 +519,36 @@ namespace MediaFlux
                     FormatText: "H.265 / HEVC (x265)",
                     Validated: fallbackSettings,
                     AudioChannels: (int?)null));
+            LibraryPolicyQueueItem? policyIntent = meta?.LibraryPolicyIntent;
+            EncodingPreset? policyEncodingPreset = null;
+            if (policyIntent != null)
+            {
+                policyEncodingPreset = string.IsNullOrWhiteSpace(policyIntent.EncodingPresetName)
+                    ? null
+                    : _presetService.LoadAll().FirstOrDefault(preset => preset.Name.Equals(policyIntent.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
+                VideoCodecFamily policyCodec = policyEncodingPreset == null
+                    ? policyIntent.ProposedCodec
+                    : VideoEncoderCompatibility.ParseCodecFamily(string.IsNullOrWhiteSpace(policyEncodingPreset.VideoCodec) ? policyEncodingPreset.VideoFormat : policyEncodingPreset.VideoCodec);
+                string policyEncoderId = policyEncodingPreset == null
+                    ? policyIntent.EncoderId
+                    : VideoEncoderCompatibility.ResolveEncoderId(string.IsNullOrWhiteSpace(policyEncodingPreset.EncoderId) ? policyEncodingPreset.EncoderMode : policyEncodingPreset.EncoderId, policyCodec);
+                ResolvedVideoEncoder resolvedPolicyEncoder = EncoderRegistry.Default.Resolve(policyEncoderId, policyCodec);
+                ValidatedEncoderSettings validatedPolicySettings = EncodingRequestValidator.ValidateAndNormalize(
+                    EncoderRegistry.Default,
+                    resolvedPolicyEncoder.Selection,
+                    useGpu: resolvedPolicyEncoder.Provider.Capabilities.IsHardware,
+                    targetMb: null,
+                    preset: policyEncodingPreset?.EncoderPreset ?? policyIntent.EncoderPreset,
+                    qualityValue: policyEncodingPreset?.QualityValue ?? policyIntent.QualityValue,
+                    tenBit: policyEncodingPreset?.TenBit ?? policyIntent.PreferredBitDepth >= 10,
+                    audioChannels: encoderSnapshot.AudioChannels,
+                    concurrentEncoderSessions: false);
+                encoderSnapshot = (
+                    DisplayText: resolvedPolicyEncoder.Provider.Capabilities.DisplayName,
+                    FormatText: CreateCodecDisplayOption(policyCodec).DisplayName,
+                    Validated: validatedPolicySettings,
+                    AudioChannels: encoderSnapshot.AudioChannels);
+            }
             string encoderText = encoderSnapshot.DisplayText;
             string videoCodec =
                 encoderSnapshot.Validated.Resolved.Selection.FfmpegCodec;
@@ -466,7 +572,9 @@ namespace MediaFlux
                 encoderSnapshot.Validated.Resolved.Selection;
             int estimateQuality =
                 encoderSnapshot.Validated.QualityValue;
-            int? estimateTargetHeight = UiGet(GetEstimateTargetHeight, null);
+            int? estimateTargetHeight = policyIntent == null
+                ? UiGet(GetEstimateTargetHeight, null)
+                : policyIntent.PreserveSourceResolution ? null : policyIntent.MaximumOutputHeight;
             string targetText = hasCustomProfile
                 ? string.Empty
                 : UiGet(() => txtTargetSize.Text, string.Empty);
@@ -489,7 +597,15 @@ namespace MediaFlux
             if (useStorageQualityTarget)
                 estimateQuality = storageSavings.QualityValue;
 
-            if (hasCustomTarget)
+            if (policyIntent != null)
+            {
+                targetMb = policyEncodingPreset is { AutoTargetSize: false, ManualTargetMb: > 0 }
+                    ? policyEncodingPreset.ManualTargetMb
+                    : policyIntent.ProjectedOutputBytes is > 0
+                        ? policyIntent.ProjectedOutputBytes.Value / (1024d * 1024d)
+                        : null;
+            }
+            else if (hasCustomTarget)
             {
                 targetMb = meta!.CustomTargetMb;
             }
@@ -559,11 +675,15 @@ namespace MediaFlux
                 ? dvdOptions!.OutputPath
                 : file;
             string attemptedOutputPath = string.Empty;
+            string stagedOutputPath = string.Empty;
+            OutputContainerDecision? appliedContainerDecision = null;
             try
             {
                 // ==== CALL THE SERVICE ====
                 string formatChoice = encoderSnapshot.FormatText;
-                var scaleMode = UiGet(() => GetSelectedScaleMode(), ScaleMode.None);
+                var scaleMode = policyIntent == null
+                    ? UiGet(() => GetSelectedScaleMode(), ScaleMode.None)
+                    : PolicyScaleMode(policyIntent);
 
                 string encoderPreset =
                     encoderSnapshot.Validated.Preset;
@@ -642,7 +762,28 @@ namespace MediaFlux
                         concurrentEncoderSessions,
                     CancellationToken = cancellationToken,
                     OutputPathCallback =
-                        path => attemptedOutputPath = path
+                        path => attemptedOutputPath = path,
+                    StagingPathCallback =
+                        path => stagedOutputPath = path,
+                    FinalizationStatusCallback = status =>
+                    {
+                        jobLog.AppendLine($"[MediaFlux] {status}.");
+                        UiInvoke(() =>
+                        {
+                            if (row.DataGridView == dgvEncodeQueue)
+                            {
+                                SetEncodeRowState(
+                                    row,
+                                    status,
+                                    "99%",
+                                    "00:00:00",
+                                    $"{status}. The original source is retained until final verification completes.");
+                            }
+                        });
+                    },
+                    OutputContainer = PolicyOutputContainer(policyIntent),
+                    ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
+                    ContainerDecisionCallback = decision => appliedContainerDecision = decision
                 };
 
                 if (!string.IsNullOrWhiteSpace(meta?.EstimateDiagnostic))
@@ -661,14 +802,28 @@ namespace MediaFlux
                 var result = await _encodingService.EncodeWithResultAsync(
                     encodeRequest);
 
-                if (!result.Success)
-                    throw new InvalidOperationException("Encoding returned failure.");
+                if (!result.Success || !result.FinalizationSucceeded)
+                {
+                    throw new InvalidOperationException(
+                        "Encoding did not complete validated output finalization.");
+                }
 
                 if (!isDvdEncode)
                 {
                     jobLog.AppendLine(
                         $"[MediaFlux] FFmpeg arguments: {result.DiagnosticArguments}");
                 }
+                jobLog.AppendLine(
+                    $"[MediaFlux] Validated and finalized: {result.ValidationSummary}");
+
+                bool deleteSource = UiGet(() => chkDeleteSource.Checked, false);
+                SourceDeletionResult sourceDeletion =
+                    SourceDeletionService.DeleteAfterFinalization(
+                        file,
+                        inputSource,
+                        deleteSource,
+                        result);
+                jobLog.AppendLine($"[MediaFlux] {sourceDeletion.Message}");
 
                 // On success, mark 100% and clear ETA
                 System.Threading.Interlocked.Increment(ref _encodeSucceededCount);
@@ -677,13 +832,20 @@ namespace MediaFlux
                     if (row.DataGridView != dgvEncodeQueue)
                         return;
 
-                    SetEncodeRowState(row, "Done", "100%", "00:00:00", "Encoding completed successfully.");
+                    SetEncodeRowState(
+                        row,
+                        "Done",
+                        "100%",
+                        "00:00:00",
+                        $"Output validated and finalized. {sourceDeletion.Message}");
                 });
 
                 DateTime jobEndUtc = DateTime.UtcNow;
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (jobEndUtc - jobStartUtc).TotalSeconds);
-                long? outputSizeBytes = TryGetFileSizeBytes(result.OutputPath);
+                long? outputSizeBytes =
+                    result.FinalOutputSizeBytes ??
+                    TryGetFileSizeBytes(result.OutputPath);
 
                 // append success to history – never let this kill the job
                 try
@@ -708,8 +870,9 @@ namespace MediaFlux
                             Notes = isDvdEncode
                                 ? $"Codec={videoCodec}; TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
                                   $"Segments={dvdOptions.Candidate.Segments.Count}; " +
-                                  $"Recommended={dvdOptions.Candidate.IsLikelyMainFeature}; Source deletion disabled"
-                                : $"Codec={videoCodec}",
+                                  $"Recommended={dvdOptions.Candidate.IsLikelyMainFeature}; " +
+                                  $"Validated and finalized; {sourceDeletion.Message}"
+                                : $"Codec={videoCodec}; Validated and finalized; {sourceDeletion.Message}",
                             DvdTitleSet = isDvdEncode
                                 ? dvdOptions!.Candidate.TitleSetId
                                 : null,
@@ -723,7 +886,13 @@ namespace MediaFlux
                             OutputSizeBytes = outputSizeBytes,
                             WasRecommendedDvdTitle = isDvdEncode
                                 ? dvdOptions!.Candidate.IsLikelyMainFeature
-                                : null
+                                : null,
+                            FinalizationOutcome = "ValidatedAndFinalized",
+                            StagingPath = result.StagingPath,
+                            SourceDeletionResult = sourceDeletion.Message,
+                            RequestedOutputContainer = result.RequestedOutputContainer.ToString(),
+                            ResolvedOutputContainer = result.ResolvedOutputContainer.ToString(),
+                            ContainerDecisionReason = result.ContainerDecisionReason
                         });
                     }
                 }
@@ -745,19 +914,8 @@ namespace MediaFlux
                     sourceSizeBytes,
                     outputSizeBytes,
                     durationSec > 0 ? durationSec : null,
-                    meta.StatisticsProcessingSeconds);
-
-                try
-                {
-                    bool deleteSource = UiGet(() => chkDeleteSource.Checked, false);
-                    if (inputSource.ShouldDeleteSource(deleteSource))
-                        TryDelete(file);
-                }
-                catch (Exception delEx)
-                {
-                    Debug.WriteLine($"Source delete failed for {file}: {delEx}");
-                    // Worst case: user has to delete manually.
-                }
+                    meta.StatisticsProcessingSeconds,
+                    $"Validated and finalized. {sourceDeletion.Message}");
 
                 try
                 {
@@ -796,6 +954,11 @@ namespace MediaFlux
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (attemptEndUtc - jobStartUtc).TotalSeconds);
                 bool isCanceled = _cancelEncode || ex is OperationCanceledException;
+                EncodeFinalizationException? finalizationFailure =
+                    ex as EncodeFinalizationException;
+                EncodeFinalizationResult? finalizationResult =
+                    finalizationFailure?.Result ??
+                    (ex as EncodeFinalizationCanceledException)?.Result;
                 var notes = isCanceled
                     ? "Cancelled by user."
                     : ex.Message;
@@ -803,12 +966,22 @@ namespace MediaFlux
                 bool cleanupEnabled = isCanceled
                     ? _config.DeleteCanceledEncodeOutputs
                     : _config.DeleteFailedEncodeOutputs;
-                string cleanupResult = await CleanupIncompleteEncodeOutputAsync(
+                string recoverableOutputPath =
+                    finalizationResult?.RecoverableOutputPath ?? "";
+                string incompleteOutputPath =
+                    !string.IsNullOrWhiteSpace(recoverableOutputPath)
+                        ? recoverableOutputPath
+                        : stagedOutputPath;
+                string cleanupResult =
+                    await IncompleteEncodeOutputCleanupService.CleanupAsync(
                     logicalSourcePath,
-                    attemptedOutputPath,
+                    incompleteOutputPath,
                     cleanupEnabled,
                     isCanceled ? "canceled" : "failed");
-                string historyNotes = $"{notes} Incomplete output cleanup: {cleanupResult}";
+                string sourceRetention =
+                    "Original source retained because validated finalization did not complete.";
+                string historyNotes =
+                    $"{notes} {sourceRetention} Incomplete output cleanup: {cleanupResult}";
                 if (isDvdEncode)
                 {
                     historyNotes +=
@@ -846,13 +1019,19 @@ namespace MediaFlux
                                 ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
                                 : null,
                             SourceSizeBytes = sourceSizeBytes,
-                            OutputSizeBytes = isDvdEncode
-                                ? TryGetFileSizeBytes(attemptedOutputPath)
-                                : null,
+                            OutputSizeBytes = TryGetFileSizeBytes(incompleteOutputPath),
                             WasRecommendedDvdTitle = isDvdEncode
                                 ? dvdOptions!.Candidate.IsLikelyMainFeature
                                 : null,
-                            ErrorSummary = isDvdEncode ? notes : null
+                            ErrorSummary = notes,
+                            FinalizationOutcome =
+                                finalizationResult?.FailureKind.ToString() ??
+                                (isCanceled ? "Canceled" : "FfmpegFailed"),
+                            StagingPath = stagedOutputPath,
+                            SourceDeletionResult = sourceRetention,
+                            RequestedOutputContainer = PolicyOutputContainer(policyIntent).ToString(),
+                            ResolvedOutputContainer = appliedContainerDecision?.Resolved.ToString(),
+                            ContainerDecisionReason = appliedContainerDecision?.Reason
                         });
                     }
                 }
@@ -870,7 +1049,10 @@ namespace MediaFlux
                     $"Encoder Mode: {encoderText}{Environment.NewLine}" +
                     $"Target MB   : {(targetMb.HasValue ? targetMb.Value.ToString("0.##") : "auto")}{Environment.NewLine}" +
                     $"Duration Sec: {durationSec:0.##}{Environment.NewLine}" +
-                    $"Output      : {attemptedOutputPath}{Environment.NewLine}" +
+                    $"Final Output: {attemptedOutputPath}{Environment.NewLine}" +
+                    $"Staged File : {stagedOutputPath}{Environment.NewLine}" +
+                    $"Recoverable : {recoverableOutputPath}{Environment.NewLine}" +
+                    $"Finalization: {finalizationResult?.FailureKind.ToString() ?? "Not reached"}{Environment.NewLine}" +
                     $"Cleanup     : {cleanupResult}{Environment.NewLine}{Environment.NewLine}" +
                     "Captured Job Log:" + Environment.NewLine +
                     jobLog);
@@ -885,13 +1067,24 @@ namespace MediaFlux
 
                 if (isCanceled || !retryQueued)
                 {
+                    EncodingStatisticsOutcome statisticsOutcome =
+                        finalizationFailure?.Result.FailureKind switch
+                        {
+                            EncodeFinalizationFailureKind.Validation =>
+                                EncodingStatisticsOutcome.ValidationFailed,
+                            EncodeFinalizationFailureKind.Promotion =>
+                                EncodingStatisticsOutcome.PromotionFailed,
+                            EncodeFinalizationFailureKind.FinalVerification =>
+                                EncodingStatisticsOutcome.FinalVerificationFailed,
+                            _ => isCanceled
+                                ? EncodingStatisticsOutcome.Cancelled
+                                : EncodingStatisticsOutcome.Failed
+                        };
                     RecordEncodingStatistics(
                         meta.StatisticsOperationId,
                         meta.StatisticsStartUtc,
                         DateTime.UtcNow,
-                        isCanceled
-                            ? EncodingStatisticsOutcome.Cancelled
-                            : EncodingStatisticsOutcome.Failed,
+                        statisticsOutcome,
                         logicalSourcePath,
                         attemptedOutputPath,
                         videoCodec,
@@ -909,14 +1102,24 @@ namespace MediaFlux
                     {
                         SetEncodeRowState(
                             row,
-                            isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : "Failed",
+                            isCanceled
+                                ? "Canceled"
+                                : retryQueued
+                                    ? "Retry Queued"
+                                    : finalizationFailure?.Result.FailureKind ==
+                                      EncodeFinalizationFailureKind.Validation
+                                        ? "Validation Failed"
+                                        : finalizationFailure != null
+                                            ? "Finalization Failed"
+                                            : "Failed",
                             isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : "Failed",
                             "",
                             (isCanceled
                                 ? "Canceled by user."
                                 : retryQueued
                                     ? "Failed once; queued for automatic retry after the current queue finishes."
-                                    : ex.Message) + $" Incomplete output cleanup: {cleanupResult}");
+                                    : ex.Message) +
+                                $" {sourceRetention} Incomplete output cleanup: {cleanupResult}");
                         row.Cells["colProgress"].ToolTipText = $"{ex.Message}{Environment.NewLine}Incomplete output cleanup: {cleanupResult}";
                     }
 
@@ -924,7 +1127,12 @@ namespace MediaFlux
                         ? $"Canceled: {displayName}"
                         : retryQueued
                             ? $"Retry queued: {displayName}. Continuing queue."
-                        : $"Failed: {displayName}. Continuing queue.";
+                        : finalizationFailure?.Result.FailureKind ==
+                          EncodeFinalizationFailureKind.Validation
+                            ? $"Output validation failed — original retained: {displayName}"
+                            : finalizationFailure != null
+                                ? $"Output finalization failed — original retained: {displayName}"
+                                : $"Failed: {displayName}. Continuing queue.";
                     toolStripStatusLabel1.Text = $"Encode error logged: {centralLogPath}";
                 });
                 // leave the row so user can retry
@@ -979,60 +1187,6 @@ namespace MediaFlux
             {
                 return null;
             }
-        }
-
-        private static async Task<string> CleanupIncompleteEncodeOutputAsync(
-            string sourcePath,
-            string outputPath,
-            bool cleanupEnabled,
-            string outcome)
-        {
-            if (!cleanupEnabled)
-                return "disabled in Settings.";
-
-            if (string.IsNullOrWhiteSpace(outputPath))
-                return "no output path was allocated.";
-
-            string fullSourcePath;
-            string fullOutputPath;
-            try
-            {
-                fullSourcePath = Path.GetFullPath(sourcePath);
-                fullOutputPath = Path.GetFullPath(outputPath);
-            }
-            catch (Exception ex)
-            {
-                return $"not deleted because the attempt path was invalid ({ex.Message}).";
-            }
-
-            if (string.Equals(fullSourcePath, fullOutputPath, StringComparison.OrdinalIgnoreCase))
-                return "not deleted because the output path matched the source path.";
-
-            const int attempts = 3;
-            Exception? lastError = null;
-            for (int attempt = 1; attempt <= attempts; attempt++)
-            {
-                try
-                {
-                    if (!File.Exists(fullOutputPath))
-                        return "no incomplete output file was present.";
-
-                    File.Delete(fullOutputPath);
-                    if (!File.Exists(fullOutputPath))
-                        return $"deleted the {outcome} attempt output.";
-
-                    lastError = new IOException("The file still exists after the delete request.");
-                }
-                catch (Exception ex)
-                {
-                    lastError = ex;
-                }
-
-                if (attempt < attempts)
-                    await Task.Delay(250 * attempt);
-            }
-
-            return $"could not delete the {outcome} attempt output after {attempts} attempts ({lastError?.Message ?? "unknown error"}).";
         }
 
         private async Task SendDiscordQueueCompleteNotificationAsync(DateTime queueStartedUtc)

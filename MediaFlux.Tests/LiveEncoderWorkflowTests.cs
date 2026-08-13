@@ -121,7 +121,17 @@ public sealed class LiveEncoderWorkflowTests
             Assert.True(
                 qualityResult.Success,
                 BuildFailureMessage(qualityResult, log));
+            Assert.True(qualityResult.FinalizationSucceeded);
             Assert.True(File.Exists(qualityResult.OutputPath));
+            Assert.False(File.Exists(qualityResult.StagingPath));
+            Assert.EndsWith(
+                ".mp4.partial",
+                qualityResult.StagingPath,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                "decode-integrity",
+                qualityResult.ValidationSummary,
+                StringComparison.OrdinalIgnoreCase);
             Assert.Contains("-c:v libx265 ", qualityResult.DiagnosticArguments);
             Assert.Contains("-crf 30 -preset ultrafast ",
                 qualityResult.DiagnosticArguments);
@@ -144,6 +154,44 @@ public sealed class LiveEncoderWorkflowTests
             AssertNoSubtitleStreams(qualityProbe);
             AssertTitleMetadata(qualityProbe);
 
+            EncodingService.EncodeResult autoContainerResult =
+                await service.EncodeWithResultAsync(new EncodingRequest
+                {
+                    Input = EncodingInputSource.FromFile(source),
+                    OutputFolder = root,
+                    Suffix = "_x265_auto_container",
+                    Encoder = encoder,
+                    UseGpu = false,
+                    EncoderPreset = "ultrafast",
+                    QualityValue = 30,
+                    CopySubtitles = true,
+                    OutputContainer = OutputContainerSelection.Auto
+                });
+            Assert.Equal(OutputContainer.Matroska, autoContainerResult.ResolvedOutputContainer);
+            Assert.EndsWith(".mkv", autoContainerResult.OutputPath, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("-f matroska", autoContainerResult.DiagnosticArguments);
+            using JsonDocument autoProbe = await ProbeAsync(tools, autoContainerResult.OutputPath);
+            Assert.Single(
+                GetStreams(autoProbe),
+                item => GetString(item, "codec_type") == "subtitle");
+
+            EncodingService.EncodeResult forcedMkvResult =
+                await service.EncodeWithResultAsync(new EncodingRequest
+                {
+                    Input = EncodingInputSource.FromFile(source),
+                    OutputFolder = root,
+                    Suffix = "_x265_forced_mkv",
+                    Encoder = encoder,
+                    UseGpu = false,
+                    EncoderPreset = "ultrafast",
+                    QualityValue = 30,
+                    CopySubtitles = true,
+                    OutputContainer = OutputContainerSelection.Matroska
+                });
+            Assert.Equal(OutputContainer.Matroska, forcedMkvResult.ResolvedOutputContainer);
+            Assert.EndsWith(".mkv", forcedMkvResult.OutputPath, StringComparison.OrdinalIgnoreCase);
+            Assert.True(forcedMkvResult.FinalizationSucceeded);
+
             log.Clear();
             EncodingService.EncodeResult targetResult =
                 await service.EncodeWithResultAsync(new EncodingRequest
@@ -165,7 +213,9 @@ public sealed class LiveEncoderWorkflowTests
             Assert.True(
                 targetResult.Success,
                 BuildFailureMessage(targetResult, log));
+            Assert.True(targetResult.FinalizationSucceeded);
             Assert.True(File.Exists(targetResult.OutputPath));
+            Assert.False(File.Exists(targetResult.StagingPath));
             Assert.Contains("-c:v libx265 ", targetResult.DiagnosticArguments);
             Assert.Contains("-profile:v main10 -pix_fmt yuv420p10le ",
                 targetResult.DiagnosticArguments);

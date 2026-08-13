@@ -17,7 +17,7 @@ namespace MediaFlux
         // =====================
         private sealed class QueueSnapshot
         {
-            public string Version { get; set; } = "1.3";
+            public string Version { get; set; } = "1.5";
             public DateTime SavedUtc { get; set; } = DateTime.UtcNow;
             public QueueSettings Settings { get; set; } = new QueueSettings();
             public List<QueueItem> Items { get; set; } = new List<QueueItem>();
@@ -37,12 +37,14 @@ namespace MediaFlux
             public bool? TenBit { get; set; }
             public string AudioChannels { get; set; } = "";
             public string OutputFolder { get; set; } = "";       // cmbEncodeOutput.Text
+            public string OutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
         }
 
         private sealed class QueueItem
         {
             public string Path { get; set; } = "";
             public string? ContentHint { get; set; }
+            public LibraryPolicyQueueItem? LibraryPolicyIntent { get; set; }
             public DvdQueueItem? Dvd { get; set; }
         }
 
@@ -84,7 +86,8 @@ namespace MediaFlux
                     : (int)nudAutoQuality.Value,
                 TenBit = chkTenBit?.Checked,
                 AudioChannels = comboAudioChannels?.Text ?? "",
-                OutputFolder = cmbEncodeOutput.Text ?? ""
+                OutputFolder = cmbEncodeOutput.Text ?? "",
+                OutputContainer = GetSelectedOutputContainer().ToString()
             };
         }
 
@@ -122,6 +125,7 @@ namespace MediaFlux
                             hint != SmartEncodeContentHint.Auto
                                 ? hint.ToString()
                                 : null,
+                        LibraryPolicyIntent = (row.Tag as RowMeta)?.LibraryPolicyIntent,
                         Dvd = dvdOptions == null
                             ? null
                             : new DvdQueueItem
@@ -282,7 +286,18 @@ namespace MediaFlux
                         {
                             RowMeta meta = EnsureRowMeta(importedRow);
                             meta.ContentHint = savedHint;
+                            meta.LibraryPolicyIntent = qi.LibraryPolicyIntent;
+                            if (qi.LibraryPolicyIntent != null)
+                                meta.CustomCompressionProfile = "Medium Quality (Default)";
                             UpdateRowCustomFlag(importedRow);
+                        }
+                        else if (qi.LibraryPolicyIntent != null &&
+                                 _rowsByPath.TryGetValue(qi.Path, out DataGridViewRow? policyRow))
+                        {
+                            RowMeta meta = EnsureRowMeta(policyRow);
+                            meta.LibraryPolicyIntent = qi.LibraryPolicyIntent;
+                            meta.CustomCompressionProfile = "Medium Quality (Default)";
+                            UpdateRowCustomFlag(policyRow);
                         }
                     }
                     else
@@ -337,7 +352,7 @@ namespace MediaFlux
                 {
                     Candidate = candidate,
                     OutputMode = DvdOutputMode.EncodeUsingCurrentSettings,
-                    OutputPath = OutputPathService.EnsureMp4Extension(saved.OutputPath),
+                    OutputPath = saved.OutputPath,
                     SelectedAudioStreamIndexes =
                         saved.SelectedAudioStreamIndexes?.ToArray() ??
                         Array.Empty<int>(),

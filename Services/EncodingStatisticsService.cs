@@ -5,10 +5,13 @@ namespace MediaFlux.Services
 {
     public enum EncodingStatisticsOutcome
     {
-        Success,
-        Failed,
-        Skipped,
-        Cancelled
+        Success = 0,
+        Failed = 1,
+        Skipped = 2,
+        Cancelled = 3,
+        ValidationFailed = 4,
+        PromotionFailed = 5,
+        FinalVerificationFailed = 6
     }
 
     public enum EncodingStatisticsPeriod
@@ -51,6 +54,7 @@ namespace MediaFlux.Services
         public int Failed { get; init; }
         public int Skipped { get; init; }
         public int Cancelled { get; init; }
+        public int FinalizationFailed { get; init; }
         public int FilesWithSizeData { get; init; }
         public long OriginalBytes { get; init; }
         public long OutputBytes { get; init; }
@@ -72,6 +76,7 @@ namespace MediaFlux.Services
         public int Failed { get; init; }
         public int Skipped { get; init; }
         public int Cancelled { get; init; }
+        public int FinalizationFailed { get; init; }
         public long OriginalBytes { get; init; }
         public long OutputBytes { get; init; }
         public long SpaceSavedBytes { get; init; }
@@ -247,6 +252,7 @@ namespace MediaFlux.Services
                         Failed = snapshot.Failed,
                         Skipped = snapshot.Skipped,
                         Cancelled = snapshot.Cancelled,
+                        FinalizationFailed = snapshot.FinalizationFailed,
                         OriginalBytes = snapshot.OriginalBytes,
                         OutputBytes = snapshot.OutputBytes,
                         SpaceSavedBytes = snapshot.SpaceSavedBytes,
@@ -266,6 +272,7 @@ namespace MediaFlux.Services
                 Failed = totals.Failed,
                 Skipped = totals.Skipped,
                 Cancelled = totals.Cancelled,
+                FinalizationFailed = totals.FinalizationFailed,
                 FilesWithSizeData = totals.FilesWithSizeData,
                 OriginalBytes = totals.OriginalBytes,
                 OutputBytes = totals.OutputBytes,
@@ -399,6 +406,11 @@ namespace MediaFlux.Services
                 Failed = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Failed),
                 Skipped = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Skipped),
                 Cancelled = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Cancelled),
+                FinalizationFailed = all.Count(record =>
+                    record.Outcome is
+                        EncodingStatisticsOutcome.ValidationFailed or
+                        EncodingStatisticsOutcome.PromotionFailed or
+                        EncodingStatisticsOutcome.FinalVerificationFailed),
                 FilesWithSizeData = withSizes.Length,
                 OriginalBytes = originalBytes,
                 OutputBytes = outputBytes,

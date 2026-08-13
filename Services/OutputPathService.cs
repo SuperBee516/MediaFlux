@@ -135,9 +135,26 @@ namespace MediaFlux.Services
             string folder = Path.GetDirectoryName(fullPath) ??
                             throw new InvalidOperationException("The output folder could not be determined.");
             string baseName = SanitizeFileName(Path.GetFileNameWithoutExtension(fullPath));
+            string extension = Path.GetExtension(fullPath);
+            if (string.IsNullOrWhiteSpace(extension))
+                extension = ".partial";
             return Path.Combine(
                 folder,
-                $".{baseName}.mediaflux-{Guid.NewGuid():N}.partial.mkv");
+                $".{baseName}.mediaflux-{Guid.NewGuid():N}.partial{extension}");
+        }
+
+        public static string CreateEncodeStagingPath(string finalOutputPath)
+        {
+            string fullPath = Path.GetFullPath(finalOutputPath);
+            string folder = Path.GetDirectoryName(fullPath) ??
+                            throw new InvalidOperationException(
+                                "The output folder could not be determined.");
+            string baseName = SanitizeFileName(
+                Path.GetFileNameWithoutExtension(fullPath));
+            string extension = Path.GetExtension(fullPath);
+            return Path.Combine(
+                folder,
+                $".{baseName}.mediaflux-{Guid.NewGuid():N}{extension}.partial");
         }
 
         public static bool IsPathWithinDirectory(string path, string directory)

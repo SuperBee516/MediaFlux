@@ -23,6 +23,7 @@ namespace MediaFlux.Services
         private readonly string _ffprobePath;
         private readonly Action<string> _progressCallback;
         private readonly Action<string>? _log;
+        private readonly IEncodeOutputFinalizationService _finalizationService;
 
 
         private readonly SynchronizationContext? _syncContext;
@@ -57,15 +58,36 @@ namespace MediaFlux.Services
             public bool Success { get; }
             public string OutputPath { get; }
             public string DiagnosticArguments { get; }
+            public bool FinalizationSucceeded { get; }
+            public string StagingPath { get; }
+            public string ValidationSummary { get; }
+            public long? FinalOutputSizeBytes { get; }
+            public OutputContainerSelection RequestedOutputContainer { get; }
+            public OutputContainer ResolvedOutputContainer { get; }
+            public string ContainerDecisionReason { get; }
 
             public EncodeResult(
                 bool success,
                 string outputPath,
-                string diagnosticArguments = "")
+                string diagnosticArguments = "",
+                bool finalizationSucceeded = false,
+                string stagingPath = "",
+                string validationSummary = "",
+                long? finalOutputSizeBytes = null,
+                OutputContainerSelection requestedOutputContainer = OutputContainerSelection.Mp4,
+                OutputContainer resolvedOutputContainer = OutputContainer.Mp4,
+                string containerDecisionReason = "")
             {
                 Success = success;
                 OutputPath = outputPath;
                 DiagnosticArguments = diagnosticArguments;
+                FinalizationSucceeded = finalizationSucceeded;
+                StagingPath = stagingPath;
+                ValidationSummary = validationSummary;
+                FinalOutputSizeBytes = finalOutputSizeBytes;
+                RequestedOutputContainer = requestedOutputContainer;
+                ResolvedOutputContainer = resolvedOutputContainer;
+                ContainerDecisionReason = containerDecisionReason;
             }
         }
 
@@ -114,7 +136,8 @@ namespace MediaFlux.Services
             Action<string> progressCallback,
             Action<string>? logCallback,
             string? ffmpegPath = null,
-            string? ffprobePath = null)
+            string? ffprobePath = null,
+            IEncodeOutputFinalizationService? finalizationService = null)
         {
             if (string.IsNullOrWhiteSpace(applicationDirectory))
                 throw new ArgumentException("Application directory must be provided.", nameof(applicationDirectory));
@@ -125,6 +148,14 @@ namespace MediaFlux.Services
             _ffprobePath = tools.FfprobePath;
             _progressCallback = progressCallback ?? (_ => { });
             _log = logCallback;
+            _finalizationService = finalizationService ??
+                new EncodeOutputFinalizationService(
+                    new EncodeOutputValidationService(
+                        new FfprobeService(
+                            _ffprobePath,
+                            new MediaToolProcessRunner()),
+                        new FfmpegDecodeIntegritySpotCheckService(
+                            _ffmpegPath)));
 
             // Capture the current SynchronizationContext (WinForms UI thread) to marshal progress callbacks safely.
             _syncContext = SynchronizationContext.Current;
@@ -283,7 +314,14 @@ namespace MediaFlux.Services
                 request.CancellationToken,
                 request.OutputPathCallback,
                 validated.QualityValue,
-                validated.Resolved.Selection);
+                validated.Resolved.Selection,
+                request.StagingPathCallback,
+                request.FinalizationStatusCallback,
+                request.OutputContainer,
+                request.CopyDataStreams,
+                request.CopyAttachments,
+                request.ContainerCompatibilityConfirmed,
+                request.ContainerDecisionCallback);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -431,7 +469,14 @@ namespace MediaFlux.Services
             CancellationToken cancellationToken = default,
             Action<string>? outputPathCallback = null,
             int? qualityValue = null,
-            VideoEncoderSelection? encoderSelection = null)
+            VideoEncoderSelection? encoderSelection = null,
+            Action<string>? stagingPathCallback = null,
+            Action<string>? finalizationStatusCallback = null,
+            OutputContainerSelection outputContainer = OutputContainerSelection.Mp4,
+            bool copyDataStreams = true,
+            bool copyAttachments = true,
+            bool containerCompatibilityConfirmed = false,
+            Action<OutputContainerDecision>? containerDecisionCallback = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -451,7 +496,14 @@ namespace MediaFlux.Services
                 cancellationToken,
                 outputPathCallback,
                 qualityValue,
-                encoderSelection);
+                encoderSelection,
+                stagingPathCallback,
+                finalizationStatusCallback,
+                outputContainer,
+                copyDataStreams,
+                copyAttachments,
+                containerCompatibilityConfirmed,
+                containerDecisionCallback);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -472,7 +524,14 @@ namespace MediaFlux.Services
             CancellationToken cancellationToken = default,
             Action<string>? outputPathCallback = null,
             int? qualityValue = null,
-            VideoEncoderSelection? encoderSelection = null)
+            VideoEncoderSelection? encoderSelection = null,
+            Action<string>? stagingPathCallback = null,
+            Action<string>? finalizationStatusCallback = null,
+            OutputContainerSelection outputContainer = OutputContainerSelection.Mp4,
+            bool copyDataStreams = true,
+            bool copyAttachments = true,
+            bool containerCompatibilityConfirmed = false,
+            Action<OutputContainerDecision>? containerDecisionCallback = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -498,32 +557,61 @@ namespace MediaFlux.Services
                 : inputSource.OutputBaseName;
             string actualSuffix = string.IsNullOrWhiteSpace(suffix) ? string.Empty : suffix;
 
-            // Collision-safe output naming so we don't overwrite existing files
-            string output = GetUniqueOutputPath(outFolder, name, actualSuffix, ".mp4");
-            outputPathCallback?.Invoke(output);
+            string sourceProbePath = inputSource.Kind == EncodingInputKind.File
+                ? inputSource.SourcePath
+                : inputSource.SourceFiles.FirstOrDefault() ?? inputSource.SourcePath;
+            MediaProbeResult sourceProbe = await new FfprobeService(
+                    _ffprobePath,
+                    new MediaToolProcessRunner())
+                .ProbeAsync(sourceProbePath, cancellationToken)
+                .ConfigureAwait(false);
+            if (!sourceProbe.Success)
+                throw new InvalidOperationException(
+                    $"FFprobe could not inspect the source before container selection: {sourceProbe.ErrorMessage}");
+
+            OutputContainerDecision containerDecision = OutputContainerPolicy.Decide(
+                outputContainer,
+                sourceProbe,
+                inputSource,
+                mapMode,
+                copySubtitles,
+                copyDataStreams,
+                copyAttachments,
+                audioWillBeTranscoded: audioChannels is > 0);
+            _log?.Invoke($"[EncodingService] {containerDecision.Reason}");
+            containerDecisionCallback?.Invoke(containerDecision);
+            if (containerDecision.Requested == OutputContainerSelection.Mp4)
+            {
+                foreach (string warning in containerDecision.CompatibilityWarnings)
+                    _log?.Invoke($"[EncodingService] Container compatibility: {warning}.");
+            }
+            if (containerDecision.RequiresConfirmation && !containerCompatibilityConfirmed)
+            {
+                _log?.Invoke(
+                    "[EncodingService] Explicit MP4 compatibility was not preconfirmed by the caller; " +
+                    "continuing for legacy API compatibility.");
+            }
+
+            // Keep the intended final name collision-safe, but write FFmpeg output
+            // only to a hidden same-directory staging file until validation passes.
+            string finalOutput = OutputPathService.GetCollisionSafePath(
+                Path.Combine(outFolder, $"{name}{actualSuffix}{containerDecision.Extension}"));
+            string output = OutputPathService.CreateEncodeStagingPath(finalOutput);
+            outputPathCallback?.Invoke(finalOutput);
+            stagingPathCallback?.Invoke(output);
+            VideoEncoderSelection requestedEncoder =
+                encoderSelection ??
+                EncoderRegistry.Default.ResolveLegacyCodec(videoCodec).Selection;
             bool isAsfFamilyInput =
                 inputSource.Kind == EncodingInputKind.File &&
                 IsAsfFamilyInput(inputSource.SourcePath);
 
-            bool allowSubtitleCopy = copySubtitles;
-            if (copySubtitles && string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase))
-            {
-                allowSubtitleCopy = false;
-                _log?.Invoke("[EncodingService] MP4 output does not support PGS subtitles; disabling subtitle copy.");
-            }
-
-            // MP4 cannot mux arbitrary "data" streams (e.g., GPAC hint tracks / RTP) and will fail with:
-            //   "Could not find tag for codec none ... codec not currently supported in container"
-            // Therefore, disable copying/mapping data streams when targeting MP4.
-            bool allowDataCopy = true;
-            if (string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase))
-            {
-                allowDataCopy = false;
-                _log?.Invoke("[EncodingService] MP4 output does not support generic data streams; disabling data stream copy.");
-            }
+            bool allowSubtitleCopy = containerDecision.CopySubtitles;
+            bool allowDataCopy = containerDecision.CopyDataStreams;
+            bool allowAttachmentCopy = containerDecision.CopyAttachments;
 
             bool forceMp4CompatibleAudio = isAsfFamilyInput &&
-                string.Equals(Path.GetExtension(output), ".mp4", StringComparison.OrdinalIgnoreCase);
+                string.Equals(Path.GetExtension(finalOutput), ".mp4", StringComparison.OrdinalIgnoreCase);
             if (forceMp4CompatibleAudio)
             {
                 _log?.Invoke("[EncodingService] WMV/ASF input detected for MP4 output; transcoding audio to AAC.");
@@ -550,6 +638,8 @@ namespace MediaFlux.Services
                 mapMode,
                 allowSubtitleCopy,
                 allowDataCopy,
+                allowAttachmentCopy,
+                containerDecision,
                 forceMp4CompatibleAudio,
                 totalDuration,
                 qualityValue,
@@ -567,7 +657,7 @@ namespace MediaFlux.Services
 
             _log?.Invoke(
                 $"[EncodingService] Starting ffmpeg for '{inputSource.SourcePath}' " +
-                $"using '{input}' -> '{output}'");
+                $"using '{input}' -> staged '{output}' (final '{finalOutput}')");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
 
             var stderrBuilder = new StringBuilder();
@@ -675,8 +765,48 @@ namespace MediaFlux.Services
                 throw new InvalidOperationException($"ffmpeg exited with code {proc.ExitCode}. See central log: {logPath}");
             }
 
-            _log?.Invoke("[EncodingService] ffmpeg completed successfully.");
-            return new EncodeResult(true, output, ffArgs);
+            _log?.Invoke(
+                "[EncodingService] ffmpeg completed successfully; validating staged output.");
+            EncodeFinalizationResult finalization =
+                await _finalizationService.FinalizeAsync(
+                    new EncodeOutputValidationRequest
+                    {
+                        Input = inputSource,
+                        OutputPath = output,
+                        FinalOutputPath = finalOutput,
+                        Encoder = requestedEncoder,
+                        ScaleMode = scaleMode,
+                        TenBit = tenBit,
+                        AudioChannels = audioChannels,
+                        MapMode = mapMode,
+                        CopySubtitles = allowSubtitleCopy,
+                        CopyDataStreams = allowDataCopy,
+                        CopyAttachments = allowAttachmentCopy,
+                        ContainerDecision = containerDecision,
+                        SourceProbe = sourceProbe
+                    },
+                    finalizationStatusCallback,
+                    cancellationToken).ConfigureAwait(false);
+            if (!finalization.Success)
+            {
+                _log?.Invoke(
+                    $"[EncodingService] Finalization failed: {finalization.ErrorMessage}");
+                throw new EncodeFinalizationException(finalization);
+            }
+
+            _log?.Invoke(
+                $"[EncodingService] Validated and finalized '{finalization.FinalOutputPath}'.");
+            return new EncodeResult(
+                true,
+                finalization.FinalOutputPath,
+                ffArgs,
+                finalizationSucceeded: true,
+                stagingPath: output,
+                validationSummary: finalization.ValidationSummary,
+                finalOutputSizeBytes: finalization.FinalOutputSizeBytes,
+                requestedOutputContainer: containerDecision.Requested,
+                resolvedOutputContainer: containerDecision.Resolved,
+                containerDecisionReason: containerDecision.Reason);
         }
 
         private static void AppendBounded(StringBuilder builder, string line, int maxCharacters)
@@ -875,6 +1005,8 @@ namespace MediaFlux.Services
             StreamMapMode mapMode = StreamMapMode.KeepAll,
             bool copySubtitles = true,
             bool copyDataStreams = true,
+            bool copyAttachments = true,
+            OutputContainerDecision? containerDecision = null,
             bool forceMp4CompatibleAudio = false,
             TimeSpan knownDuration = default,
             int? qualityValue = null,
@@ -915,6 +1047,16 @@ namespace MediaFlux.Services
                 MapMode = mapMode,
                 CopySubtitles = copySubtitles,
                 CopyDataStreams = copyDataStreams,
+                CopyAttachments = copyAttachments,
+                ContainerDecision = containerDecision ?? new OutputContainerDecision
+                {
+                    Requested = OutputContainerSelection.Mp4,
+                    Resolved = OutputContainer.Mp4,
+                    Reason = "Legacy MP4 output.",
+                    CopySubtitles = copySubtitles,
+                    CopyDataStreams = copyDataStreams,
+                    CopyAttachments = copyAttachments
+                },
                 ForceMp4CompatibleAudio = forceMp4CompatibleAudio,
                 KnownDuration = knownDuration,
                 NvencHighBitDepthOutputSupported =

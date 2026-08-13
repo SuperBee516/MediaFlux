@@ -126,6 +126,7 @@ namespace MediaFlux.Services
             double? formatDuration = null;
             long? formatSize = null;
             long? formatBitRate = null;
+            var formatTags = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (root.TryGetProperty("format", out JsonElement format) &&
                 format.ValueKind == JsonValueKind.Object)
             {
@@ -133,6 +134,23 @@ namespace MediaFlux.Services
                 formatDuration = GetPositiveDouble(format, "duration");
                 formatSize = GetPositiveLong(format, "size");
                 formatBitRate = GetPositiveLong(format, "bit_rate");
+                if (format.TryGetProperty("tags", out JsonElement tags) &&
+                    tags.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (JsonProperty property in tags.EnumerateObject())
+                    {
+                        string value = property.Value.ValueKind switch
+                        {
+                            JsonValueKind.String => property.Value.GetString() ?? "",
+                            JsonValueKind.Number => property.Value.GetRawText(),
+                            JsonValueKind.True => "true",
+                            JsonValueKind.False => "false",
+                            _ => ""
+                        };
+                        if (!string.IsNullOrWhiteSpace(value))
+                            formatTags[property.Name] = value;
+                    }
+                }
             }
 
             double? duration = formatDuration;
@@ -170,6 +188,7 @@ namespace MediaFlux.Services
                 SizeBytes = size,
                 DurationSeconds = duration,
                 BitRate = formatBitRate,
+                FormatTags = formatTags,
                 Streams = streams,
                 Chapters = chapters
             };

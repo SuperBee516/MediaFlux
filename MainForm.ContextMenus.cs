@@ -312,7 +312,8 @@ namespace MediaFlux
                     : Path.GetFileNameWithoutExtension(path);
             string outputPreview = Path.Combine(
                 outputFolder,
-                outputBaseName + BuildOutputSuffix(format) + ".mp4");
+                outputBaseName + BuildOutputSuffix(format) +
+                (GetSelectedOutputContainer() == OutputContainerSelection.Matroska ? ".mkv" : ".mp4"));
 
             Clipboard.SetText(outputPreview);
             ShowStatusInfo("Copied output preview path.");
@@ -396,6 +397,7 @@ namespace MediaFlux
                 meta.CustomCompressionProfile = null;
                 meta.CustomTargetMb = null;
                 meta.ContentHint = SmartEncodeContentHint.Auto;
+                meta.LibraryPolicyIntent = null;
                 var path = GetPathFromRow(row);
                 if (!string.IsNullOrWhiteSpace(path))
                     _estimatedSizeMap.Remove(path);

@@ -25,7 +25,16 @@ namespace MediaFlux.Services
         public EncodingService.StreamMapMode MapMode { get; init; } =
             EncodingService.StreamMapMode.KeepAll;
         public bool CopySubtitles { get; init; } = true;
+        public bool CopyDataStreams { get; init; } = true;
+        public bool CopyAttachments { get; init; } = true;
+        // MP4 preserves the historical default for callers and old persisted settings.
+        public OutputContainerSelection OutputContainer { get; init; } =
+            OutputContainerSelection.Mp4;
+        public bool ContainerCompatibilityConfirmed { get; init; }
+        public Action<OutputContainerDecision>? ContainerDecisionCallback { get; init; }
         public CancellationToken CancellationToken { get; init; }
         public Action<string>? OutputPathCallback { get; init; }
+        public Action<string>? StagingPathCallback { get; init; }
+        public Action<string>? FinalizationStatusCallback { get; init; }
     }
 }

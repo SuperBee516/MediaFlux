@@ -92,6 +92,9 @@ namespace MediaFlux
         private CompactModeForm? _compactModeForm;
         private Button? _btnCompactMode;
         private bool _applyingEncodeInfoSplitterState;
+        private bool _mp4CompatibilityConfirmedForRun;
+        private OutputContainerSelection _activeOutputContainer = OutputContainerSelection.Mp4;
+        private int _outputContainerPreviewGeneration;
 
         private const int DefaultEncodeInfoHeight = 274;
         private const int MinimumEncodeInfoHeight = 150;
@@ -123,6 +126,8 @@ namespace MediaFlux
         private Label? lblEncoderInfo;
         private CheckBox? chkTenBit;
         private ComboBox? comboAudioChannels;
+        private ComboBox? comboOutputContainer;
+        private Label? lblOutputContainerReason;
         private CheckBox? chkWatchFolder;
         private Label? lblWatchFolderStatus;
 
@@ -1241,6 +1246,7 @@ namespace MediaFlux
             {
                 SelectComboText(comboCompressionProfile, _config.LastCompressionProfile);
                 SelectEncoderById(_config.LastEncoderId);
+                SelectOutputContainer(_config.LastOutputContainer);
                 RefreshVideoFormatItems(
                     VideoEncoderCompatibility.ParseCodecFamily(
                         _config.LastVideoCodec));
@@ -1282,6 +1288,7 @@ namespace MediaFlux
             if (comboCompressionProfile != null)
                 _config.LastCompressionProfile = comboCompressionProfile.Text;
             PersistEncoderSelection(saveImmediately: false);
+            _config.LastOutputContainer = GetSelectedOutputContainer().ToString();
         }
 
         private void PersistEncoderSelection(bool saveImmediately = true)
@@ -1391,9 +1398,20 @@ namespace MediaFlux
                 if (string.IsNullOrWhiteSpace(outputFolder))
                     outputFolder = Path.GetDirectoryName(path) ?? "";
 
+                OutputContainerSelection container = GetSelectedOutputContainer();
+                string extension = container == OutputContainerSelection.Matroska ? ".mkv" : ".mp4";
                 outputPreview = Path.Combine(
                     outputFolder,
-                    Path.GetFileNameWithoutExtension(path) + BuildOutputSuffix(formatText) + ".mp4");
+                    Path.GetFileNameWithoutExtension(path) + BuildOutputSuffix(formatText) + extension);
+                if (lblOutputContainerReason != null)
+                {
+                    lblOutputContainerReason.Text = container switch
+                    {
+                        OutputContainerSelection.Auto => "Auto resolves per file after FFprobe stream analysis.",
+                        OutputContainerSelection.Matroska => "MKV preserves compatible subtitle, attachment, and data streams.",
+                        _ => "MP4 favors compatibility; unsupported preserved streams require confirmation."
+                    };
+                }
             }
 
             SetPreviewValue("Source", !string.IsNullOrWhiteSpace(path) ? path : "--");
@@ -1411,6 +1429,11 @@ namespace MediaFlux
             SetPreviewValue("Bit rate", audioBitrate > 0 ? $"{audioBitrate:0}kbps" : "Keep source");
             SetPreviewValue("Channels", GetPreviewAudioChannelsText());
             SetPreviewValue("Audio sample rate", "Keep source");
+            if (GetSelectedOutputContainer() == OutputContainerSelection.Auto &&
+                !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            {
+                _ = UpdateAutoContainerPredictionAsync(path, formatText);
+            }
 
             SmartEncodeRecommendation? recommendation =
                 (row?.Tag as RowMeta)?.EncodeRecommendation;
@@ -1428,6 +1451,55 @@ namespace MediaFlux
             SetPreviewValue(
                 "Confidence",
                 recommendation?.Confidence.ToString() ?? "--");
+        }
+
+        private OutputContainerSelection GetSelectedOutputContainer() =>
+            comboOutputContainer?.SelectedIndex switch
+            {
+                0 => OutputContainerSelection.Auto,
+                1 => OutputContainerSelection.Matroska,
+                _ => OutputContainerSelection.Mp4
+            };
+
+        private void SelectOutputContainer(string? value)
+        {
+            if (comboOutputContainer == null)
+                return;
+            comboOutputContainer.SelectedIndex = OutputContainerPolicy.ParseSelection(value) switch
+            {
+                OutputContainerSelection.Auto => 0,
+                OutputContainerSelection.Matroska => 1,
+                _ => 2
+            };
+        }
+
+        private async Task UpdateAutoContainerPredictionAsync(string path, string formatText)
+        {
+            int generation = Interlocked.Increment(ref _outputContainerPreviewGeneration);
+            try
+            {
+                var probeService = new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath);
+                MediaProbeResult probe = await probeService.ProbeAsync(path);
+                if (!probe.Success || generation != _outputContainerPreviewGeneration || IsDisposed)
+                    return;
+                OutputContainerDecision decision = OutputContainerPolicy.Decide(
+                    OutputContainerSelection.Auto,
+                    probe,
+                    EncodingInputSource.FromFile(path),
+                    EncodingService.StreamMapMode.KeepAll);
+                string outputFolder = cmbEncodeOutput?.Text ?? "";
+                if (string.IsNullOrWhiteSpace(outputFolder))
+                    outputFolder = Path.GetDirectoryName(path) ?? "";
+                SetPreviewValue("Output", Path.Combine(
+                    outputFolder,
+                    Path.GetFileNameWithoutExtension(path) + BuildOutputSuffix(formatText) + decision.Extension));
+                if (lblOutputContainerReason != null)
+                    lblOutputContainerReason.Text = decision.Reason;
+            }
+            catch
+            {
+                // Preview prediction is advisory; encode-time policy remains authoritative.
+            }
         }
 
         private (int width, int height) GetPreviewOutputDimensions(int sourceWidth, int sourceHeight)
@@ -1653,13 +1725,15 @@ namespace MediaFlux
             public string StatusBeforeDuplicateExclusion = "Queued";
             public DvdImportOptions? DvdEncodeOptions = null;
             public string StatisticsOperationId = "";
+            public LibraryPolicyQueueItem? LibraryPolicyIntent = null;
             public DateTime StatisticsStartUtc;
             public double StatisticsProcessingSeconds;
 
             public bool HasCustomSettings =>
                 CustomTargetMb.HasValue ||
                 !string.IsNullOrWhiteSpace(CustomCompressionProfile) ||
-                ContentHint != SmartEncodeContentHint.Auto;
+                ContentHint != SmartEncodeContentHint.Auto ||
+                LibraryPolicyIntent != null;
 
             public bool IsDvdEncode =>
                 DvdEncodeOptions?.OutputMode == DvdOutputMode.EncodeUsingCurrentSettings;
@@ -1708,6 +1782,9 @@ namespace MediaFlux
             if (meta.ContentHint != SmartEncodeContentHint.Auto)
                 parts.Add($"Content: {GetContentHintDisplayName(meta.ContentHint)}");
 
+            if (meta.LibraryPolicyIntent != null)
+                parts.Add($"Library Policy: {meta.LibraryPolicyIntent.PolicyName} ({meta.LibraryPolicyIntent.ProposedCodec}, {meta.LibraryPolicyIntent.TargetContainer})");
+
             return string.Join(" | ", parts);
         }
 
@@ -1717,7 +1794,13 @@ namespace MediaFlux
             if (string.IsNullOrWhiteSpace(path))
                 return;
 
-            if (meta.CustomTargetMb.HasValue && meta.CustomTargetMb.Value > 0)
+            if (meta.LibraryPolicyIntent?.ProjectedOutputBytes is > 0)
+            {
+                double projectedMb = meta.LibraryPolicyIntent.ProjectedOutputBytes.Value / (1024d * 1024d);
+                _estimatedSizeMap[path] = projectedMb;
+                row.Cells["colEstimatedSize"].Value = $"{FormatSize(projectedMb)} (policy projection)";
+            }
+            else if (meta.CustomTargetMb.HasValue && meta.CustomTargetMb.Value > 0)
             {
                 double customMb = meta.CustomTargetMb.Value;
                 _estimatedSizeMap[path] = customMb;
@@ -2187,6 +2270,23 @@ namespace MediaFlux
             });
             comboAudioChannels.SelectedIndex = 0;
 
+            comboOutputContainer = new ComboBox
+            {
+                Name = "comboOutputContainer",
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, 0, 3)
+            };
+            comboOutputContainer.Items.AddRange(new object[] { "Auto", "Matroska (MKV)", "MP4" });
+            lblOutputContainerReason = new Label
+            {
+                Name = "lblOutputContainerReason",
+                AutoSize = true,
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(0, 0, 0, 5),
+                MaximumSize = new Size(280, 0)
+            };
+
             chkWatchFolder = new CheckBox
             {
                 Name = "chkWatchFolder",
@@ -2207,7 +2307,7 @@ namespace MediaFlux
             };
 
             int startRow = tlOptions.RowCount;
-            tlOptions.RowCount = startRow + 7;
+            tlOptions.RowCount = startRow + 9;
             for (int row = startRow; row < tlOptions.RowCount; row++)
             {
                 tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -2232,12 +2332,14 @@ namespace MediaFlux
             };
 
             tlOptions.Controls.Add(lblOutputHeader, 0, startRow);
-            tlOptions.Controls.Add(chkTenBit, 0, startRow + 1);
-            tlOptions.Controls.Add(lblAudioLayout, 0, startRow + 2);
-            tlOptions.Controls.Add(comboAudioChannels, 0, startRow + 3);
-            tlOptions.Controls.Add(lblAutomationHeader, 0, startRow + 4);
-            tlOptions.Controls.Add(chkWatchFolder, 0, startRow + 5);
-            tlOptions.Controls.Add(lblWatchFolderStatus, 0, startRow + 6);
+            tlOptions.Controls.Add(comboOutputContainer, 0, startRow + 1);
+            tlOptions.Controls.Add(lblOutputContainerReason, 0, startRow + 2);
+            tlOptions.Controls.Add(chkTenBit, 0, startRow + 3);
+            tlOptions.Controls.Add(lblAudioLayout, 0, startRow + 4);
+            tlOptions.Controls.Add(comboAudioChannels, 0, startRow + 5);
+            tlOptions.Controls.Add(lblAutomationHeader, 0, startRow + 6);
+            tlOptions.Controls.Add(chkWatchFolder, 0, startRow + 7);
+            tlOptions.Controls.Add(lblWatchFolderStatus, 0, startRow + 8);
 
             void UpdateWatchStatusWrapWidth()
             {
@@ -2247,6 +2349,17 @@ namespace MediaFlux
 
             tlOptions.SizeChanged += (_, __) => UpdateWatchStatusWrapWidth();
             UpdateWatchStatusWrapWidth();
+            SelectOutputContainer(_config.LastOutputContainer);
+            comboOutputContainer.SelectedIndexChanged += (_, __) =>
+            {
+                Interlocked.Increment(ref _outputContainerPreviewGeneration);
+                if (!_applyingEncodeDropdownSettings)
+                {
+                    _config.LastOutputContainer = GetSelectedOutputContainer().ToString();
+                    _config.Save(_configPath);
+                }
+                UpdateEncodePreview();
+            };
 
             comboEncoderMode.SelectedIndexChanged +=
                 (_, __) => HandleEncoderSelectionChanged();
@@ -4548,6 +4661,7 @@ namespace MediaFlux
                 }
                 if (chkTenBit != null && s.TenBit.HasValue)
                     chkTenBit.Checked = s.TenBit.Value;
+                SelectOutputContainer(s.OutputContainer);
 
                 if (!string.IsNullOrWhiteSpace(s.OutputFolder))
                     cmbEncodeOutput.Text = s.OutputFolder;

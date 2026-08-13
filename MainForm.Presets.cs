@@ -143,7 +143,8 @@ namespace MediaFlux
                 LimitGpuEncodingQueueToOneJob = _config.LimitGpuEncodingQueueToOneJob,
                 EnableOutputSuffix = _config.EnableOutputSuffix,
                 EnableCodecSuffix = _config.EnableCodecSuffix,
-                OutputSuffix = _config.OutputSuffix
+                OutputSuffix = _config.OutputSuffix,
+                OutputContainer = GetSelectedOutputContainer().ToString()
             };
         }
 
@@ -195,6 +196,8 @@ namespace MediaFlux
                 _config.EnableOutputSuffix = preset.EnableOutputSuffix;
                 _config.EnableCodecSuffix = preset.EnableCodecSuffix;
                 _config.OutputSuffix = preset.OutputSuffix ?? "";
+                SelectOutputContainer(preset.OutputContainer);
+                _config.LastOutputContainer = GetSelectedOutputContainer().ToString();
                 _config.LastCompressionProfile = comboCompressionProfile.Text;
                 _config.LastEncoderId = GetSelectedEncoderId();
                 _config.LastVideoCodec =

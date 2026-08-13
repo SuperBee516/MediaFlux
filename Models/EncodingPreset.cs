@@ -27,5 +27,6 @@ namespace MediaFlux.Models
         public bool EnableOutputSuffix { get; set; }
         public bool EnableCodecSuffix { get; set; }
         public string OutputSuffix { get; set; } = "";
+        public string OutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
     }
 }

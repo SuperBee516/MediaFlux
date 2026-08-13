@@ -129,6 +129,7 @@ namespace MediaFlux.Models
         public string LastEncoderId { get; set; } = VideoEncoderIds.Nvenc;
         public string LastVideoCodec { get; set; } = nameof(VideoCodecFamily.Hevc);
         public string LastEncoderPreset { get; set; } = "p5";
+        public string LastOutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
         public int LastQualityValue { get; set; } = 22;
 
         // Persist the main window's last usable size and position.
@@ -211,6 +212,12 @@ namespace MediaFlux.Models
             VideoCodecFamily codecFamily =
                 VideoEncoderCompatibility.ParseCodecFamily(config.LastVideoCodec);
             config.LastVideoCodec = codecFamily.ToString();
+            config.LastOutputContainer = Enum.TryParse(
+                    config.LastOutputContainer,
+                    true,
+                    out OutputContainerSelection outputContainer)
+                ? outputContainer.ToString()
+                : OutputContainerSelection.Mp4.ToString();
 
             string[] knownEncoderIds =
             [
