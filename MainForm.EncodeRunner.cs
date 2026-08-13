@@ -520,7 +520,7 @@ namespace MediaFlux
                     FormatText: "H.265 / HEVC (x265)",
                     Validated: fallbackSettings,
                     AudioChannels: (int?)null));
-            LibraryPolicyQueueItem? policyIntent = meta?.LibraryPolicyIntent;
+            LibraryPolicyQueueItem? policyIntent = meta.LibraryPolicyIntent;
             EncodingPreset? policyEncodingPreset = null;
             if (policyIntent != null)
             {
@@ -557,8 +557,8 @@ namespace MediaFlux
 
             // ==== TARGET SIZE (MB) ====
             double? targetMb = null;
-            bool hasCustomTarget = meta?.CustomTargetMb.HasValue == true;
-            bool hasCustomProfile = !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile);
+            bool hasCustomTarget = meta.CustomTargetMb.HasValue;
+            bool hasCustomProfile = !string.IsNullOrWhiteSpace(meta.CustomCompressionProfile);
             StorageSavingsOptions storageSavings =
                 _config.StorageSavings.CloneNormalized();
 
@@ -678,6 +678,9 @@ namespace MediaFlux
             string attemptedOutputPath = string.Empty;
             string stagedOutputPath = string.Empty;
             OutputContainerDecision? appliedContainerDecision = null;
+            EncodingDiagnosticSummary? diagnosticSummary = null;
+            DateTime? finalizationStartedUtc = null;
+            bool diagnosticStarted = false;
             try
             {
                 // ==== CALL THE SERVICE ====
@@ -726,7 +729,7 @@ namespace MediaFlux
                         file,
                         mediaInfo.AudioBitrateKbps is > 0
                             ? mediaInfo.AudioBitrateKbps.Value
-                            : meta?.EstimatedPlannedAudioBitrateKbps is > 0
+                            : meta.EstimatedPlannedAudioBitrateKbps is > 0
                                 ? meta.EstimatedPlannedAudioBitrateKbps
                                 : null,
                         mediaInfo.AudioStreamCount,
@@ -736,10 +739,22 @@ namespace MediaFlux
                             : mediaInfo.SubtitleStreamCount * 8d));
                 }
 
+                string sourceResolution = !string.IsNullOrWhiteSpace(meta.Resolution)
+                    ? meta.Resolution
+                    : statisticsSourceHeight is > 0 ? $"{statisticsSourceHeight}p" : "Unknown";
+                int? diagnosticOutputHeight = RuntimeOutputHeight(statisticsSourceHeight, scaleMode);
+                _encodingDiagnosticsService.Start(new EncodingDiagnosticJob(
+                    meta.StatisticsOperationId, displayName, encoderText,
+                    encoderSnapshot.Validated.Resolved.Selection.EncoderId, videoCodec, encoderPreset,
+                    sourceResolution, diagnosticOutputHeight is > 0 ? $"{diagnosticOutputHeight}p" : sourceResolution,
+                    tenBit ? 10 : 8, durationSec > 0 ? durationSec : null, logicalSourcePath), jobStartUtc);
+                diagnosticStarted = true;
+
                 // Per-job ffmpeg output callback
                 Action<string> jobCallback = line =>
                 {
                     jobLog.AppendLine(line);
+                    _encodingDiagnosticsService.UpdateProgress(meta.StatisticsOperationId, line, durationSec > 0 ? durationSec : null);
                     HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
                 };
 
@@ -769,6 +784,7 @@ namespace MediaFlux
                         path => stagedOutputPath = path,
                     FinalizationStatusCallback = status =>
                     {
+                        finalizationStartedUtc ??= DateTime.UtcNow;
                         jobLog.AppendLine($"[MediaFlux] {status}.");
                         UiInvoke(() =>
                         {
@@ -788,7 +804,7 @@ namespace MediaFlux
                     ContainerDecisionCallback = decision => appliedContainerDecision = decision
                 };
 
-                if (!string.IsNullOrWhiteSpace(meta?.EstimateDiagnostic))
+                if (!string.IsNullOrWhiteSpace(meta.EstimateDiagnostic))
                     jobLog.AppendLine(meta.EstimateDiagnostic);
                 if (storageSavingsApplies)
                 {
@@ -843,6 +859,9 @@ namespace MediaFlux
                 });
 
                 DateTime jobEndUtc = DateTime.UtcNow;
+                diagnosticSummary = _encodingDiagnosticsService.Complete(
+                    meta.StatisticsOperationId,
+                    finalizationStartedUtc.HasValue ? Math.Max(0, (jobEndUtc - finalizationStartedUtc.Value).TotalSeconds) : 0);
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (jobEndUtc - jobStartUtc).TotalSeconds);
                 long? outputSizeBytes =
@@ -894,7 +913,8 @@ namespace MediaFlux
                             SourceDeletionResult = sourceDeletion.Message,
                             RequestedOutputContainer = result.RequestedOutputContainer.ToString(),
                             ResolvedOutputContainer = result.ResolvedOutputContainer.ToString(),
-                            ContainerDecisionReason = result.ContainerDecisionReason
+                            ContainerDecisionReason = result.ContainerDecisionReason,
+                            DiagnosticSummary = diagnosticSummary
                         });
                     }
                 }
@@ -925,7 +945,8 @@ namespace MediaFlux
                     outputBitDepth: encoderSnapshot.Validated.TenBit ? 10 : 8,
                     scalingApplied: RuntimeOutputHeight(statisticsSourceHeight, scaleMode) is int outputHeight &&
                         statisticsSourceHeight is int sourceHeight && outputHeight != sourceHeight,
-                    concurrentEncoderSessions: encoderSnapshot.Validated.ConcurrentEncoderSessions);
+                    concurrentEncoderSessions: encoderSnapshot.Validated.ConcurrentEncoderSessions,
+                    diagnosticSummary: diagnosticSummary);
 
                 try
                 {
@@ -961,6 +982,9 @@ namespace MediaFlux
             catch (Exception ex)
             {
                 DateTime attemptEndUtc = DateTime.UtcNow;
+                diagnosticSummary = _encodingDiagnosticsService.Complete(
+                    meta.StatisticsOperationId,
+                    finalizationStartedUtc.HasValue ? Math.Max(0, (attemptEndUtc - finalizationStartedUtc.Value).TotalSeconds) : 0);
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (attemptEndUtc - jobStartUtc).TotalSeconds);
                 bool isCanceled = _cancelEncode || ex is OperationCanceledException;
@@ -1041,7 +1065,8 @@ namespace MediaFlux
                             SourceDeletionResult = sourceRetention,
                             RequestedOutputContainer = PolicyOutputContainer(policyIntent).ToString(),
                             ResolvedOutputContainer = appliedContainerDecision?.Resolved.ToString(),
-                            ContainerDecisionReason = appliedContainerDecision?.Reason
+                            ContainerDecisionReason = appliedContainerDecision?.Reason,
+                            DiagnosticSummary = diagnosticSummary
                         });
                     }
                 }
@@ -1103,7 +1128,8 @@ namespace MediaFlux
                         outputSizeBytes: null,
                         mediaDurationSeconds: durationSec > 0 ? durationSec : null,
                         processingSeconds: meta.StatisticsProcessingSeconds,
-                        notes: historyNotes);
+                        notes: historyNotes,
+                        diagnosticSummary: diagnosticSummary);
                 }
 
                 Ui(() =>
@@ -1149,6 +1175,8 @@ namespace MediaFlux
             }
             finally
             {
+                if (diagnosticStarted && diagnosticSummary == null)
+                    _encodingDiagnosticsService.Cancel(meta.StatisticsOperationId);
                 _runningEncodeJobs.TryRemove(row, out _);
                 if (ReferenceEquals(_activeJobLogSb, jobLog))
                     _activeJobLogSb = null; // stop log capture for this job

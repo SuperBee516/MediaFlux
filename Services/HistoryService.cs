@@ -42,6 +42,7 @@ namespace MediaFlux.Services
         public string? RequestedOutputContainer { get; set; }
         public string? ResolvedOutputContainer { get; set; }
         public string? ContainerDecisionReason { get; set; }
+        public EncodingDiagnosticSummary? DiagnosticSummary { get; set; }
     }
 
     public sealed class HistoryService

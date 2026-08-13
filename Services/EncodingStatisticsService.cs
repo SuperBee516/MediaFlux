@@ -26,7 +26,7 @@ namespace MediaFlux.Services
 
     public sealed record EncodingStatisticsRecord
     {
-        public int SchemaVersion { get; set; } = 2;
+        public int SchemaVersion { get; set; } = 3;
         public string Id { get; set; } = Guid.NewGuid().ToString("N");
         public DateTime StartUtc { get; set; }
         public DateTime EndUtc { get; set; }
@@ -47,6 +47,7 @@ namespace MediaFlux.Services
         public bool? ScalingApplied { get; set; }
         public bool? ConcurrentEncoderSessions { get; set; }
         public bool IsSampleJob { get; set; }
+        public EncodingDiagnosticSummary? DiagnosticSummary { get; set; }
         public string Notes { get; set; } = "";
     }
 
@@ -193,6 +194,19 @@ namespace MediaFlux.Services
             record.OutputResolutionTier = record.OutputResolutionTier?.Trim() ?? "";
             if (record.OutputBitDepth is not (8 or 10 or 12 or 16)) record.OutputBitDepth = null;
             record.Notes ??= "";
+            if (record.DiagnosticSummary is { } diagnostic)
+            {
+                record.DiagnosticSummary = diagnostic with
+                {
+                    PeakConcurrentJobs = Math.Clamp(diagnostic.PeakConcurrentJobs, 0, 64),
+                    MaintenanceOverlapSeconds = Math.Max(0, diagnostic.MaintenanceOverlapSeconds),
+                    SameDeviceMaintenanceSeconds = Math.Max(0, diagnostic.SameDeviceMaintenanceSeconds),
+                    StorageWaitSeconds = diagnostic.StorageWaitSeconds is >= 0 ? diagnostic.StorageWaitSeconds : null,
+                    FinalizationSeconds = Math.Max(0, diagnostic.FinalizationSeconds),
+                    Samples = Math.Clamp(diagnostic.Samples, 0, EncodingDiagnosticsService.MaximumSamplesPerSession),
+                    Observation = string.IsNullOrWhiteSpace(diagnostic.Observation) ? "No diagnostic observation recorded." : diagnostic.Observation.Trim()
+                };
+            }
             record.ProcessingSeconds =
                 double.IsFinite(record.ProcessingSeconds)
                     ? Math.Max(0, record.ProcessingSeconds)

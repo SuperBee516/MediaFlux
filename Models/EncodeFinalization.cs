@@ -38,6 +38,7 @@ namespace MediaFlux.Models
         public required MediaProbeResult SourceProbe { get; init; }
         public required MediaProbeResult OutputProbe { get; init; }
         public long OutputSizeBytes { get; init; }
+        public long OutputLastWriteUtcTicks { get; init; }
         public IReadOnlyList<double> DecodePositionsSeconds { get; init; } =
             Array.Empty<double>();
     }
@@ -68,5 +69,6 @@ namespace MediaFlux.Models
         public string RecoverableOutputPath { get; init; } = "";
         public string ValidationSummary { get; init; } = "";
         public long? FinalOutputSizeBytes { get; init; }
+        public long? FinalOutputLastWriteUtcTicks { get; init; }
     }
 }

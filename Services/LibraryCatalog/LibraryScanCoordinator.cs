@@ -59,7 +59,9 @@ namespace MediaFlux.Services.LibraryCatalog
             long locationId,
             int metadataVersion,
             IProgress<LibraryScanProgress>? progress = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            bool queueEnrichment = true,
+            Action<IReadOnlyList<LibraryInventoryMutation>>? mutationObserver = null)
         {
             await _scanGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -236,12 +238,13 @@ namespace MediaFlux.Services.LibraryCatalog
                     newFiles += result.NewFiles;
                     changedFiles += result.ChangedFiles;
                     unchangedFiles += result.UnchangedFiles;
+                    mutationObserver?.Invoke(result.Mutations);
                     pending.Clear();
                     Report("Indexing files", result.Mutations.LastOrDefault()?.FullPath ?? currentPath, force: true);
                     if (Interlocked.Exchange(ref loggedIndexing, 1) == 0)
                         Log("inventory indexing started", $"Location: {location.Path}\r\nFirst committed batch: {result.Written:N0} files");
 
-                    if (_enrichmentSink == null)
+                    if (_enrichmentSink == null || !queueEnrichment)
                         return;
                     foreach (LibraryInventoryMutation mutation in result.Mutations.Where(item => item.RequiresEnrichment))
                     {

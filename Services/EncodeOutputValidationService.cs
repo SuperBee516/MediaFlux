@@ -189,6 +189,7 @@ namespace MediaFlux.Services
                     SourceProbe = evidence.SourceProbe,
                     OutputProbe = evidence.OutputProbe,
                     OutputSizeBytes = evidence.OutputSizeBytes,
+                    OutputLastWriteUtcTicks = evidence.OutputLastWriteUtcTicks,
                     DecodePositionsSeconds = decode.PositionsSeconds
                 }
             };
@@ -213,6 +214,13 @@ namespace MediaFlux.Services
                 return Failed(
                     "The promoted output size changed after staged validation.");
             }
+            if (stagedEvidence.OutputLastWriteUtcTicks != 0 &&
+                result.Evidence.OutputLastWriteUtcTicks !=
+                stagedEvidence.OutputLastWriteUtcTicks)
+            {
+                return Failed(
+                    "The promoted output modification identity changed after staged validation.");
+            }
 
             return new EncodeOutputValidationResult
             {
@@ -232,9 +240,12 @@ namespace MediaFlux.Services
                 return Failed("The encoded output file does not exist.");
 
             long length;
+            long lastWriteUtcTicks;
             try
             {
-                length = new FileInfo(outputPath).Length;
+                var initialFile = new FileInfo(outputPath);
+                length = initialFile.Length;
+                lastWriteUtcTicks = initialFile.LastWriteTimeUtc.Ticks;
             }
             catch (Exception ex)
             {
@@ -262,6 +273,23 @@ namespace MediaFlux.Services
             if (!string.IsNullOrWhiteSpace(validationError))
                 return Failed(validationError);
 
+            try
+            {
+                var currentFile = new FileInfo(outputPath);
+                if (!currentFile.Exists ||
+                    currentFile.Length != length ||
+                    currentFile.LastWriteTimeUtc.Ticks != lastWriteUtcTicks)
+                {
+                    return Failed(
+                        "The encoded output changed while MediaFlux was validating it.");
+                }
+            }
+            catch (Exception ex)
+            {
+                return Failed(
+                    $"The encoded output could not be rechecked after validation: {ex.Message}");
+            }
+
             return new EncodeOutputValidationResult
             {
                 Success = true,
@@ -271,7 +299,8 @@ namespace MediaFlux.Services
                 {
                     SourceProbe = sourceProbe,
                     OutputProbe = outputProbe,
-                    OutputSizeBytes = length
+                    OutputSizeBytes = length,
+                    OutputLastWriteUtcTicks = lastWriteUtcTicks
                 }
             };
         }

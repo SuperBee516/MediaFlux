@@ -36,12 +36,40 @@ namespace MediaFlux.Services
                     "Source retained because the verified final output no longer exists.");
             }
 
+            string fullSourcePath;
+            string fullOutputPath;
             try
             {
-                long finalLength = new FileInfo(result.OutputPath).Length;
+                fullSourcePath = Path.GetFullPath(sourcePath);
+                fullOutputPath = Path.GetFullPath(result.OutputPath);
+            }
+            catch (Exception ex)
+            {
+                return Retained(
+                    $"Source retained because final source/output identity could not be checked: {ex.Message}");
+            }
+            if (string.Equals(
+                    fullSourcePath,
+                    fullOutputPath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return Retained(
+                    "Source retained because the finalized output resolves to the source path.");
+            }
+
+            try
+            {
+                var finalFile = new FileInfo(result.OutputPath);
+                long finalLength = finalFile.Length;
                 if (finalLength <= 0 ||
                     result.FinalOutputSizeBytes is > 0 &&
                     finalLength != result.FinalOutputSizeBytes.Value)
+                {
+                    return Retained(
+                        "Source retained because the final output changed after verification.");
+                }
+                if (result.FinalOutputLastWriteUtcTicks is long verifiedTicks &&
+                    finalFile.LastWriteTimeUtc.Ticks != verifiedTicks)
                 {
                     return Retained(
                         "Source retained because the final output changed after verification.");

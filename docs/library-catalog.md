@@ -6,8 +6,8 @@ separate from the existing Duplicate Finder caches and results.
 
 ## Catalog scope
 
-Schema version 5 keeps observed facts, derived duplicate analysis, and user
-decisions separate:
+Schema version 12 keeps observed facts, derived analysis, user decisions, integrity,
+and maintenance state separate:
 
 - `library_locations` contains configured roots and their current scan generation.
 - `indexed_files` contains path identity and inexpensive file-system facts.
@@ -33,6 +33,14 @@ decisions separate:
   derived result ids.
 - `location_scan_accelerators` stores the minimum trusted NTFS journal checkpoint
   required for the conservative no-change shortcut.
+- `library_presence_observations`, `library_reanalysis_queue`, and
+  `library_decision_events` preserve recovery evidence and reversible decision history.
+- `visual_families`, members, edges, and decisions provide stable multi-file review
+  without turning weak pair edges into automatic cleanup authority.
+- `media_integrity_results` and `media_integrity_queue` store source-fact-bound Quick
+  or Full Scrub outcomes and bounded retry work.
+- `library_maintenance_profiles`, runs, and candidates store disabled-by-default
+  per-location schedules, bounded history, and changed-file targeting.
 
 ## Runtime configuration
 
@@ -99,8 +107,38 @@ to the Library Analyzer.
 Cleanup always starts with a durable preview. Execution revalidates the keeper and
 each candidate against current group membership, availability, protection, path,
 size, modified time, stable identity, and SHA-256. Hard-link aliases and ignored or
-protected groups/files are excluded. Only Recycle Bin and quarantine actions are
-offered, and a validated keeper is never included in a plan.
+protected groups/files are excluded. Recycle Bin and quarantine remain recoverable
+choices; permanent deletion is separately warning-gated and uses the same evidence
+revalidation. A validated keeper is never included in a plan.
+
+## Policies and reclamation
+
+Library Policy Profiles are stored as versioned JSON outside the reconstructable
+catalog. Evaluation reads catalog facts in 500-row batches, normalizes unknown or
+unsupported encoder combinations to non-actionable results, and caches at most twelve
+UI pages. Policy results are recommendations; they do not change files or start work.
+
+Storage Reclamation combines bounded candidate streams from exact duplicates,
+reviewed visual pairs/families, and optional policy re-encode opportunities. It
+deduplicates physical identities, caps each source, and stores a versioned advisory
+JSON plan. **Projected reclaim** includes review-dependent estimates, **Ready reclaim**
+counts currently selected executable opportunities, and **Actually reclaimed** is
+never inferred from a projection. Cleanup and encode handoffs revalidate current state
+through their owning services.
+
+## Integrity and scheduled maintenance
+
+Quick Scrub decodes beginning/middle/end regions; Full Scrub is an explicit manual
+whole-stream decode. Neither operation modifies media. Results become stale when the
+indexed size, timestamp, or stable identity changes, and unavailable locations do not
+become confirmed missing files.
+
+Scheduled maintenance is disabled by default. Per-location profiles can invoke the
+existing incremental scan, metadata, exact/visual analysis, and targeted Quick Scrub
+queues inside a time window. Encoding has priority. Scheduled maintenance cannot
+approve or execute cleanup, cannot enqueue or start media encodes, and never schedules
+Full Scrub. Interrupted runs are recovered as interrupted history rather than silently
+continued as successful work.
 
 ## Visual similarity
 
@@ -119,8 +157,10 @@ two-member review pairs rather than transitive clusters, avoiding false-match
 amplification through weak graph edges.
 
 Visual matches expose confidence, aligned-frame evidence, duration delta, codec and
-resolution differences, and durable review/ignore/keeper state. They are always
-review-only: the visual UI exposes no Recycle Bin, quarantine, or bulk-delete action.
+resolution differences, and durable review/ignore/Not Match/keeper state. Similarity
+evidence is advisory: cleanup requires an explicit reviewed plan, a valid keeper (or
+an explicit delete-both decision), current evidence, and the same protected-file and
+action confirmation gates used by catalog cleanup.
 
 ## Migrations and recovery
 
@@ -136,7 +176,7 @@ never enumerate, move, rename, or delete indexed media files.
 
 Raw inventory and derived analysis are reconstructable. Manual keeper choices,
 protected files, ignored/reviewed groups, cleanup plans, and cleanup audit history are
-not. `CreateUserDataBackup` exports those tables into a compact standalone SQLite file,
+not. `CreateUserDataBackup` exports decision and audit tables into a compact standalone SQLite file,
 and an export is attempted automatically before catalog rebuild. Rebuild still proceeds
 if export is impossible for a damaged database; the complete database/WAL set remains
 preserved in the recovery archive for forensic recovery. `RestoreUserDataBackup`
@@ -145,3 +185,6 @@ and visual decisions. Cleanup plans and audit rows remain available in the backu
 audit purposes but are never imported or re-executed. Protected paths and manual keeper
 references are path-based: they reattach after a rebuild when paths remain stable, while
 renamed or moved roots can require those choices to be reviewed and assigned again.
+The normal application backup archives the entire user-data directory and is the
+complete backup/restore path for maintenance profiles, integrity history, custom
+policies, reclamation plans, encoding history/statistics, and configuration.

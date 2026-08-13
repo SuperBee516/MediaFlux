@@ -155,6 +155,28 @@ public sealed class StorageReclamationPlannerTests : IDisposable
     }
 
     [Fact]
+    public void ActuallyReclaimedChangesOnlyFromConfirmedExecutionAccounting()
+    {
+        StorageReclamationPlan projected = Plan(
+            100 * GiB,
+            Opportunity(1, StorageReclamationActionCategory.ExactDuplicateCleanup, 120 * GiB));
+        Assert.Equal(0, projected.ActuallyReclaimedBytes);
+
+        StorageReclamationPlan first =
+            StorageReclamationPlannerService.RecordActuallyReclaimed(projected, 25 * GiB);
+        StorageReclamationPlan unchanged =
+            StorageReclamationPlannerService.RecordActuallyReclaimed(first, -1);
+        StorageReclamationPlan saturated =
+            StorageReclamationPlannerService.RecordActuallyReclaimed(
+                first with { ActuallyReclaimedBytes = long.MaxValue - 5 },
+                10);
+
+        Assert.Equal(25 * GiB, first.ActuallyReclaimedBytes);
+        Assert.Same(first, unchanged);
+        Assert.Equal(long.MaxValue, saturated.ActuallyReclaimedBytes);
+    }
+
+    [Fact]
     public void ThousandsOfOpportunitiesRemainDeterministicAndLinear()
     {
         StorageReclamationOpportunity[] opportunities = Enumerable.Range(1, 10_000)

@@ -151,6 +151,54 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SameSizeOutputChangeDuringProbeFailsClosed()
+    {
+        DateTime changedTime = DateTime.UtcNow.AddMinutes(2);
+        var probe = new FakeProbeService(path =>
+        {
+            if (path.Equals(_sourcePath, StringComparison.OrdinalIgnoreCase))
+                return SourceProbe();
+
+            File.SetLastWriteTimeUtc(_outputPath, changedTime);
+            return OutputProbe();
+        });
+        var service = new EncodeOutputValidationService(
+            probe,
+            new FakeDecodeService());
+
+        EncodeOutputValidationResult result =
+            await service.ValidateStagedAsync(Request());
+
+        Assert.False(result.Success);
+        Assert.Contains("changed", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SameSizeModificationChangeBetweenStagedAndPromotedValidationFailsClosed()
+    {
+        string finalPath = Request().FinalOutputPath;
+        File.Move(_outputPath, finalPath);
+        long currentTicks = new FileInfo(finalPath).LastWriteTimeUtc.Ticks;
+        var service = CreateService(
+            SourceProbe(),
+            OutputProbe(),
+            new FakeDecodeService());
+        var staged = new EncodeOutputValidationEvidence
+        {
+            SourceProbe = SourceProbe(),
+            OutputProbe = OutputProbe(),
+            OutputSizeBytes = new FileInfo(finalPath).Length,
+            OutputLastWriteUtcTicks = currentTicks - TimeSpan.TicksPerSecond
+        };
+
+        EncodeOutputValidationResult result =
+            await service.ValidatePromotedAsync(Request(), staged);
+
+        Assert.False(result.Success);
+        Assert.Contains("modification identity", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ValidationRejectsWrongBitDepthContainerChaptersAndMetadata()
     {
         EncodeOutputValidationRequest tenBitRequest = Request(tenBit: true);

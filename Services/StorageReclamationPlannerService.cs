@@ -141,6 +141,19 @@ public sealed class StorageReclamationPlannerService
         };
     }
 
+    public static StorageReclamationPlan RecordActuallyReclaimed(
+        StorageReclamationPlan plan,
+        long reclaimedBytes)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (reclaimedBytes <= 0) return plan;
+        long current = Math.Max(0, plan.ActuallyReclaimedBytes);
+        long total = reclaimedBytes > long.MaxValue - current
+            ? long.MaxValue
+            : current + reclaimedBytes;
+        return plan with { ActuallyReclaimedBytes = total };
+    }
+
     private static StorageReclamationPlanItem ToPlanItem(StorageReclamationOpportunity item, bool included) => new()
     {
         FileId = item.FileId, SourcePath = item.SourcePath, LocationPath = item.LocationPath,

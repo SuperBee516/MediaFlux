@@ -298,6 +298,55 @@ public sealed class EncodeFinalizationSafetyTests : IDisposable
     }
 
     [Fact]
+    public void SourceIsRetainedWhenFinalOutputResolvesToSourcePath()
+    {
+        string source = CreateFile("same source and output.mkv", 4096);
+        var result = new EncodingService.EncodeResult(
+            true,
+            source,
+            finalizationSucceeded: true,
+            finalOutputSizeBytes: 4096,
+            finalOutputLastWriteUtcTicks: new FileInfo(source).LastWriteTimeUtc.Ticks);
+
+        SourceDeletionResult deletion =
+            SourceDeletionService.DeleteAfterFinalization(
+                source,
+                EncodingInputSource.FromFile(source),
+                deleteRequested: true,
+                result);
+
+        Assert.False(deletion.Deleted);
+        Assert.True(File.Exists(source));
+        Assert.Contains("source path", deletion.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SourceIsRetainedWhenVerifiedOutputTimestampChanges()
+    {
+        string source = CreateFile("timestamp source.mkv", 4096);
+        string final = CreateFile("timestamp output.mkv", 8192);
+        long verifiedTicks = new FileInfo(final).LastWriteTimeUtc.Ticks;
+        File.SetLastWriteTimeUtc(final, new DateTime(verifiedTicks, DateTimeKind.Utc).AddSeconds(2));
+        var result = new EncodingService.EncodeResult(
+            true,
+            final,
+            finalizationSucceeded: true,
+            finalOutputSizeBytes: 8192,
+            finalOutputLastWriteUtcTicks: verifiedTicks);
+
+        SourceDeletionResult deletion =
+            SourceDeletionService.DeleteAfterFinalization(
+                source,
+                EncodingInputSource.FromFile(source),
+                deleteRequested: true,
+                result);
+
+        Assert.False(deletion.Deleted);
+        Assert.True(File.Exists(source));
+        Assert.Contains("changed", deletion.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void DvdSourceDeletionSafetyRemainsDisabled()
     {
         string source = CreateFile("VTS_01_1.VOB", 4096);
@@ -477,7 +526,10 @@ public sealed class EncodeFinalizationSafetyTests : IDisposable
                     {
                         SourceProbe = probe,
                         OutputProbe = probe,
-                        OutputSizeBytes = size
+                        OutputSizeBytes = size,
+                        OutputLastWriteUtcTicks = File.Exists(path)
+                            ? new FileInfo(path).LastWriteTimeUtc.Ticks
+                            : 0
                     }
                     : null
             };

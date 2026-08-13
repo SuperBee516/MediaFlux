@@ -117,7 +117,7 @@ namespace MediaFlux
             {
                 if (grid.SelectedRows.Count == 0) { txtLog.Clear(); return; }
                 if (grid.SelectedRows[0].Tag is JobHistoryRecord r)
-                    txtLog.Text = r.Log ?? "";
+                    txtLog.Text = (r.Log ?? "") + (r.DiagnosticSummary == null ? "" : Environment.NewLine + Environment.NewLine + EncodingDiagnosticsService.FormatCompletedSummary(r.DiagnosticSummary));
                 else
                     txtLog.Clear();
             }
@@ -248,7 +248,7 @@ namespace MediaFlux
         {
             if (dgvHistory.SelectedRows.Count == 0) { txtHistoryLog.Text = ""; return; }
             var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord;
-            txtHistoryLog.Text = rec?.Log ?? "";
+            txtHistoryLog.Text = (rec?.Log ?? "") + (rec?.DiagnosticSummary == null ? "" : Environment.NewLine + Environment.NewLine + EncodingDiagnosticsService.FormatCompletedSummary(rec.DiagnosticSummary));
         }
 
         // Toolbar buttons

@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 11;
+        public const int CurrentVersion = 12;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -703,6 +703,44 @@ namespace MediaFlux.Services.LibraryCatalog
                         ON media_integrity_queue(file_id) WHERE status IN (0,1);
                     CREATE INDEX ix_integrity_queue_claim
                         ON media_integrity_queue(status,scrub_type,id);
+                    """),
+                new LibraryCatalogMigration(
+                    12,
+                    "Scheduled library maintenance",
+                    """
+                    CREATE TABLE library_maintenance_profiles (
+                        location_id INTEGER PRIMARY KEY REFERENCES library_locations(id) ON DELETE CASCADE,
+                        profile_version INTEGER NOT NULL CHECK(profile_version > 0),
+                        enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN(0,1)),
+                        cadence INTEGER NOT NULL DEFAULT 0 CHECK(cadence BETWEEN 0 AND 3),
+                        days INTEGER NOT NULL DEFAULT 127 CHECK(days BETWEEN 0 AND 127),
+                        start_minute INTEGER NOT NULL DEFAULT 60 CHECK(start_minute BETWEEN 0 AND 1439),
+                        end_minute INTEGER NOT NULL DEFAULT 360 CHECK(end_minute BETWEEN 0 AND 1439),
+                        missed_run INTEGER NOT NULL DEFAULT 2 CHECK(missed_run BETWEEN 0 AND 2),
+                        actions INTEGER NOT NULL DEFAULT 83 CHECK(actions BETWEEN 0 AND 255),
+                        periodic_quick_scrub_days INTEGER NOT NULL DEFAULT 0 CHECK(periodic_quick_scrub_days BETWEEN 0 AND 3650),
+                        last_scheduled_utc_ticks INTEGER NULL,
+                        created_utc_ticks INTEGER NOT NULL,
+                        updated_utc_ticks INTEGER NOT NULL
+                    ) STRICT;
+                    CREATE TABLE library_maintenance_runs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        location_id INTEGER NOT NULL REFERENCES library_locations(id) ON DELETE CASCADE,
+                        trigger_kind INTEGER NOT NULL CHECK(trigger_kind BETWEEN 0 AND 3),
+                        outcome INTEGER NOT NULL CHECK(outcome BETWEEN 0 AND 6),
+                        stage TEXT NOT NULL DEFAULT '', started_utc_ticks INTEGER NOT NULL, completed_utc_ticks INTEGER NULL,
+                        new_files INTEGER NOT NULL DEFAULT 0, changed_files INTEGER NOT NULL DEFAULT 0, missing_files INTEGER NOT NULL DEFAULT 0,
+                        metadata_queued INTEGER NOT NULL DEFAULT 0, exact_processed INTEGER NOT NULL DEFAULT 0, visual_processed INTEGER NOT NULL DEFAULT 0,
+                        integrity_queued INTEGER NOT NULL DEFAULT 0, warning_count INTEGER NOT NULL DEFAULT 0, details TEXT NOT NULL DEFAULT ''
+                    ) STRICT;
+                    CREATE INDEX ix_maintenance_runs_location_started ON library_maintenance_runs(location_id,started_utc_ticks DESC);
+                    CREATE TABLE library_maintenance_candidates (
+                        run_id INTEGER NOT NULL REFERENCES library_maintenance_runs(id) ON DELETE CASCADE,
+                        file_id INTEGER NOT NULL REFERENCES indexed_files(id) ON DELETE CASCADE,
+                        change_kind INTEGER NOT NULL CHECK(change_kind BETWEEN 1 AND 2),
+                        PRIMARY KEY(run_id,file_id)
+                    ) STRICT;
+                    CREATE INDEX ix_maintenance_candidates_run_kind ON library_maintenance_candidates(run_id,change_kind,file_id);
                     """)
             };
 

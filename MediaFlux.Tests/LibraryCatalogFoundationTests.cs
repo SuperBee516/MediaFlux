@@ -103,6 +103,49 @@ public sealed class LibraryCatalogFoundationTests : IDisposable
     }
 
     [Fact]
+    public void EverySupportedSchemaMigratesSequentiallyAndReopensAtCurrentVersion()
+    {
+        for (int sourceVersion = 1;
+             sourceVersion < LibraryCatalogMigrations.CurrentVersion;
+             sourceVersion++)
+        {
+            string databasePath = Path.Combine(_root, $"schema-{sourceVersion}.db");
+            string backupDirectory = Path.Combine(_root, $"backups-{sourceVersion}");
+            string recoveryDirectory = Path.Combine(_root, $"recovery-{sourceVersion}");
+            var oldDatabase = new LibraryCatalogDatabase(
+                databasePath,
+                backupDirectory,
+                recoveryDirectory);
+            Assert.Equal(
+                sourceVersion,
+                oldDatabase.InitializeForTesting(sourceVersion).SchemaVersion);
+            SqliteConnection.ClearAllPools();
+
+            using (SqliteLibraryCatalog upgraded = CreateCatalog(
+                       databasePath,
+                       backupDirectory,
+                       recoveryDirectory))
+            {
+                LibraryCatalogInitializationResult result = upgraded.TryInitialize();
+                Assert.True(result.Success, $"Schema {sourceVersion}: {result.ErrorMessage}");
+                Assert.Equal(
+                    LibraryCatalogMigrations.CurrentVersion,
+                    result.Diagnostics?.SchemaVersion);
+                Assert.True(File.Exists(result.MigrationBackupPath));
+            }
+
+            SqliteConnection.ClearAllPools();
+            using SqliteLibraryCatalog reopened = CreateCatalog(
+                databasePath,
+                backupDirectory,
+                recoveryDirectory);
+            Assert.Equal(
+                LibraryCatalogMigrations.CurrentVersion,
+                reopened.Initialize().SchemaVersion);
+        }
+    }
+
+    [Fact]
     public void InventoryBatchCommitsAtomicallyAndRollsBackOnConstraintFailure()
     {
         using SqliteLibraryCatalog catalog = CreateInitializedCatalog();

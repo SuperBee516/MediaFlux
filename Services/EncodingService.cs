@@ -62,6 +62,7 @@ namespace MediaFlux.Services
             public string StagingPath { get; }
             public string ValidationSummary { get; }
             public long? FinalOutputSizeBytes { get; }
+            public long? FinalOutputLastWriteUtcTicks { get; }
             public OutputContainerSelection RequestedOutputContainer { get; }
             public OutputContainer ResolvedOutputContainer { get; }
             public string ContainerDecisionReason { get; }
@@ -76,7 +77,8 @@ namespace MediaFlux.Services
                 long? finalOutputSizeBytes = null,
                 OutputContainerSelection requestedOutputContainer = OutputContainerSelection.Mp4,
                 OutputContainer resolvedOutputContainer = OutputContainer.Mp4,
-                string containerDecisionReason = "")
+                string containerDecisionReason = "",
+                long? finalOutputLastWriteUtcTicks = null)
             {
                 Success = success;
                 OutputPath = outputPath;
@@ -85,6 +87,7 @@ namespace MediaFlux.Services
                 StagingPath = stagingPath;
                 ValidationSummary = validationSummary;
                 FinalOutputSizeBytes = finalOutputSizeBytes;
+                FinalOutputLastWriteUtcTicks = finalOutputLastWriteUtcTicks;
                 RequestedOutputContainer = requestedOutputContainer;
                 ResolvedOutputContainer = resolvedOutputContainer;
                 ContainerDecisionReason = containerDecisionReason;
@@ -806,7 +809,9 @@ namespace MediaFlux.Services
                 finalOutputSizeBytes: finalization.FinalOutputSizeBytes,
                 requestedOutputContainer: containerDecision.Requested,
                 resolvedOutputContainer: containerDecision.Resolved,
-                containerDecisionReason: containerDecision.Reason);
+                containerDecisionReason: containerDecision.Reason,
+                finalOutputLastWriteUtcTicks:
+                    finalization.FinalOutputLastWriteUtcTicks);
         }
 
         private static void AppendBounded(StringBuilder builder, string line, int maxCharacters)

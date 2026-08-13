@@ -78,10 +78,12 @@ namespace MediaFlux
             BuildStorageOptimizationTab();
             BuildStorageReclamationTab();
             BuildMediaIntegrityTab();
+            BuildScheduledMaintenanceTab();
             _runtime.Enrichment.ProgressChanged += Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged += Duplicates_ProgressChanged;
             _runtime.VisualSimilarity.ProgressChanged += VisualSimilarity_ProgressChanged;
             _runtime.Integrity.ProgressChanged += Integrity_ProgressChanged;
+            _runtime.Maintenance.ProgressChanged += Maintenance_ProgressChanged;
             _tabs.SelectedIndexChanged += async (_, _) => await RefreshSelectedTabAsync();
             _refreshTimer.Tick += async (_, _) => await RefreshCurrentStateAsync();
             _activityTimer.Tick += (_, _) => RefreshActivityDisplay();
@@ -100,6 +102,7 @@ namespace MediaFlux
                 _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
                 _runtime.VisualSimilarity.ProgressChanged -= VisualSimilarity_ProgressChanged;
                 _runtime.Integrity.ProgressChanged -= Integrity_ProgressChanged;
+                _runtime.Maintenance.ProgressChanged -= Maintenance_ProgressChanged;
             };
         }
 
@@ -429,6 +432,8 @@ namespace MediaFlux
                 RefreshStorageReclamationStaleness();
             else if (_tabs.SelectedIndex == 11)
                 await RefreshIntegrityAsync();
+            else if (_tabs.SelectedIndex == 12)
+                await RefreshMaintenanceAsync();
         }
 
         private async Task RefreshOverviewAsync()

@@ -12,7 +12,7 @@ public sealed partial class LibraryAnalyzerForm
     private readonly ComboBox _reclamationStrategy = DropDown();
     private readonly ComboBox _reclamationPolicy = DropDown();
     private readonly DataGridView _reclamationGrid = CreateGrid();
-    private readonly Label _reclamationSummary = new() { Dock = DockStyle.Bottom, Height = 52, Padding = new Padding(8, 4, 0, 0) };
+    private readonly Label _reclamationSummary = new() { Dock = DockStyle.Bottom, Height = 72, AutoEllipsis = true, Padding = new Padding(8, 4, 0, 0) };
     private readonly Label _reclamationStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 7, 0, 0) };
     private readonly Label _reclamationPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
     private readonly StorageReclamationPlannerService _reclamationPlanner = new();
@@ -160,10 +160,7 @@ public sealed partial class LibraryAnalyzerForm
         long first = _reclamationPlan.Items.Count == 0 ? 0 : (long)_reclamationPage * PageSize + 1;
         long last = Math.Min(_reclamationPlan.Items.Count, (long)(_reclamationPage + 1) * PageSize);
         _reclamationPageLabel.Text = _reclamationPlan.Items.Count == 0 ? "No items" : $"{first:N0}–{last:N0} of {_reclamationPlan.Items.Count:N0}";
-        _reclamationSummary.Text = $"Requested {FormatBytes(_reclamationPlan.RequestedReclaimBytes)} · Ready selected {FormatBytes(_reclamationPlan.ReadyReclaimBytes)} · " +
-            $"Review-dependent {FormatBytes(_reclamationPlan.ReviewDependentBytes)} · Shortfall {FormatBytes(_reclamationPlan.ShortfallBytes)} · " +
-            $"Encode time {FormatRuntimeHours(_reclamationPlan.ProjectedReencodeHours)} · Efficiency {FormatEfficiency(_reclamationPlan.SavingsPerComputeHourGb)} · " +
-            $"{_reclamationPlan.UnknownRuntimeCandidateCount:N0} unknown runtime";
+        UpdateReclamationSummary();
         RefreshStorageReclamationStaleness();
     }
 
@@ -191,10 +188,21 @@ public sealed partial class LibraryAnalyzerForm
             Items = _reclamationPlan.Items.Select(item => item with { Included = changes[item.ItemId] }).ToArray()
         });
         _reclamationStore?.Save(_reclamationPlan);
-        _reclamationSummary.Text = $"Requested {FormatBytes(_reclamationPlan.RequestedReclaimBytes)} · Ready selected {FormatBytes(_reclamationPlan.ReadyReclaimBytes)} · " +
-            $"Review-dependent {FormatBytes(_reclamationPlan.ReviewDependentBytes)} · Shortfall {FormatBytes(_reclamationPlan.ShortfallBytes)} · " +
-            $"Encode time {FormatRuntimeHours(_reclamationPlan.ProjectedReencodeHours)} · Efficiency {FormatEfficiency(_reclamationPlan.SavingsPerComputeHourGb)} · " +
-            $"{_reclamationPlan.UnknownRuntimeCandidateCount:N0} unknown runtime";
+        UpdateReclamationSummary();
+    }
+
+    private void UpdateReclamationSummary()
+    {
+        if (_reclamationPlan == null) return;
+        _reclamationSummary.Text =
+            $"Requested {FormatBytes(_reclamationPlan.RequestedReclaimBytes)} · " +
+            $"Projected reclaim {FormatBytes(_reclamationPlan.ProjectedReclaimBytes)} · " +
+            $"Ready reclaim {FormatBytes(_reclamationPlan.ReadyReclaimBytes)} · " +
+            $"Actually reclaimed {FormatBytes(_reclamationPlan.ActuallyReclaimedBytes)} · " +
+            $"Shortfall {FormatBytes(_reclamationPlan.ShortfallBytes)} · " +
+            $"Encode time {FormatRuntimeHours(_reclamationPlan.ProjectedReencodeHours)} · " +
+            $"Runtime confidence: {_reclamationPlan.UnknownRuntimeCandidateCount:N0} unknown · " +
+            $"Efficiency {FormatEfficiency(_reclamationPlan.SavingsPerComputeHourGb)}";
     }
 
     private async Task PreviewSelectedReclamationCleanupAsync()
@@ -244,7 +252,7 @@ public sealed partial class LibraryAnalyzerForm
             {
                 VisualCleanupPlanRecord plan = await Task.Run(() => _runtime.VisualDuplicateCleanup.CreatePlan(family, _cleanupOptions.PreferredAction, quarantine, allowUnreviewed: true, minimumConfidence: 0));
                 DuplicateCleanupExecutionResult result = await _runtime.VisualDuplicateCleanup.ExecutePlanAsync(plan.PlanId);
-                succeeded += result.Succeeded; excluded += result.Excluded; failed += result.Failed;
+                succeeded += result.Succeeded; excluded += result.Excluded; failed += result.Failed; reclaimed += result.ReclaimedBytes;
             }
             VisualCleanupProposalItem[] pairs = RebuildVisualSelections(selected, family: false);
             excluded += selected.Count(item => item.ActionCategory == StorageReclamationActionCategory.ReviewedVisualDuplicateCleanup) - pairs.Length;
@@ -252,9 +260,15 @@ public sealed partial class LibraryAnalyzerForm
             {
                 VisualCleanupPlanRecord plan = await Task.Run(() => _runtime.VisualDuplicateCleanup.CreatePlan(pairs, _cleanupOptions.PreferredAction, quarantine));
                 DuplicateCleanupExecutionResult result = await _runtime.VisualDuplicateCleanup.ExecutePlanAsync(plan.PlanId);
-                succeeded += result.Succeeded; excluded += result.Excluded; failed += result.Failed;
+                succeeded += result.Succeeded; excluded += result.Excluded; failed += result.Failed; reclaimed += result.ReclaimedBytes;
             }
-            MessageBox.Show(this, $"Cleanup handoff finished.\r\n\r\nSucceeded: {succeeded:N0}\r\nExcluded by revalidation: {excluded:N0}\r\nFailed: {failed:N0}\r\nConfirmed exact bytes reclaimed: {FormatBytes(reclaimed)}\r\n\r\nRescan affected locations before rebuilding the plan.",
+            if (_reclamationPlan is { } planToUpdate)
+            {
+                _reclamationPlan = StorageReclamationPlannerService.RecordActuallyReclaimed(planToUpdate, reclaimed);
+                _reclamationStore?.Save(_reclamationPlan);
+                UpdateReclamationSummary();
+            }
+            MessageBox.Show(this, $"Cleanup handoff finished.\r\n\r\nSucceeded: {succeeded:N0}\r\nExcluded by revalidation: {excluded:N0}\r\nFailed: {failed:N0}\r\nActually reclaimed: {FormatBytes(reclaimed)}\r\n\r\nRescan affected locations before rebuilding the plan.",
                 "Storage Reclamation", MessageBoxButtons.OK, failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
             _runtime.PolicyEvaluation.Invalidate();
             RefreshStorageReclamationStaleness();

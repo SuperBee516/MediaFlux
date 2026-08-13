@@ -20,10 +20,16 @@ The application is intended for power users who want a graphical orchestration l
   encodes, sampled interlace detection, and conservative visual-content hints
 - Verified lossless remux-to-MKV execution for legacy containers when video
   encoding would provide little benefit
+- Transactional MP4, MKV, or per-file Auto output with staged validation,
+  collision-safe promotion, final verification, and fail-closed source deletion
 - Large-queue loading with progressive analysis, bounded background work, cancellation, and persistent metadata caching
 - Standalone Library Analyzer with a persistent SQLite catalog, incremental
   folder/drive scanning, offline-drive safety, and bounded FFprobe enrichment
-- Duplicate detection, review, keeper recommendations, reference-folder comparison, and guarded cleanup actions
+- Catalog-backed exact and visual duplicate families, protected-file and keeper
+  decisions, Library Policies, storage-reclamation planning, and guarded cleanup
+- Non-destructive Quick/Full integrity scrubbing and opt-in scheduled library maintenance
+- Live encoding diagnostics with bounded CPU, throughput, concurrency, and
+  maintenance-overlap telemetry that never changes encoder settings
 - Audio extraction/conversion with loudness normalization and optional RNNoise denoising
 - Persistent job history, requeue actions, diagnostics, and centralized error logging
 - Watch-folder automation, Windows Explorer context-menu integration, Discord completion notifications, and compact mode
@@ -90,6 +96,14 @@ The encoding interface exposes the decisions that materially affect output:
 - Audio copy or conversion behavior, channel selection, and stream controls
 - Subtitle preservation or exclusion
 - Explicit FFmpeg stream mapping and collision-safe output naming
+- MP4, Matroska (MKV), or Auto container selection; Auto resolves after source
+  stream inspection and favors MKV when MP4 cannot safely preserve selected streams
+
+Normal queue encodes are written to a hidden staged file. MediaFlux verifies media
+structure, codec, stream mapping, duration, container, and representative decode
+regions before promotion, then verifies the promoted file again. A requested source
+deletion occurs only after all of those steps succeed and the verified output still
+matches its recorded size and modification identity.
 
 Actual codec and hardware availability depends on the installed FFmpeg build, GPU, and drivers. Failures are reported rather than silently changing to an unrelated encoding path.
 
@@ -146,8 +160,21 @@ treated as empty.
 The Overview tab reports current catalog and worker state. Locations manages roots and
 scan controls. Files provides database-backed search, filters, sorting, and 200-row
 paging for filename, path, size, availability, container, codec, resolution, bitrate,
-duration, and probe status. Duplicate analysis and management remain in the existing
-Duplicate Finder and are not yet driven by this catalog.
+duration, and probe status.
+
+Catalog-backed workflows include:
+
+- Scalable SHA-256 exact-duplicate analysis and indexed visual similarity families
+- Persistent keeper, Not Match, review, ignore, and protected-file decisions
+- Revalidated cleanup previews and execution through the established Recycle Bin,
+  quarantine, or confirmation-gated permanent-delete paths
+- Built-in and custom Library Policy Profiles with explainable compliance results
+- Advisory Storage Reclamation plans that distinguish **Projected reclaim**,
+  **Ready reclaim**, and **Actually reclaimed**, and hand re-encodes to the normal queue
+- Non-destructive Media Integrity Quick Scrub and explicit Full Scrub
+- Per-location Scheduled Maintenance, disabled by default; scheduled work can scan,
+  refresh derived analysis, and queue targeted Quick Scrubs, but cannot approve
+  cleanup or start encodes, and never schedules Full Scrub
 
 ## Audio tools
 
@@ -183,6 +210,12 @@ MediaFlux can send a queue-completion message through a Discord webhook. The mes
 
 - Completed video and audio jobs are stored in persistent history.
 - History rows can be inspected and requeued.
+- Successful, failed, and canceled encode attempts retain bounded diagnostic
+  summaries alongside persistent encoding statistics.
+- The live Diagnostics tab reports FFmpeg speed/FPS/bitrate, elapsed time and ETA,
+  encoder/preset, concurrency, CPU/memory signals, and scheduled-maintenance overlap.
+  Unsupported GPU and storage-wait counters are shown as unavailable rather than
+  inferred, and diagnostics never tune or alter encoding behavior.
 - FFmpeg failures and unexpected application errors are written to the central error log.
 - The error log is accessible from the application menu.
 - Optional user-data backups can run before updates.
@@ -236,8 +269,12 @@ On first launch after upgrading from a legacy portable build, existing `config.j
 - `MainForm*.cs` — WinForms UI, queue orchestration, progress, history, duplicate review, and integrations
 - `Models/` — configuration and persistent data models
 - `Services/EncodingService.cs` — FFmpeg process execution, progress, and output handling
+- `Services/EncodeOutputValidationService.cs` / `EncodeOutputFinalizationService.cs` — staged validation, promotion, and final verification
 - `Services/FfmpegCommandBuilder.cs` — shared stream, metadata, audio, and output pipeline
 - `Services/Encoders/` — encoder registry, validation, capabilities, and backend providers
+- `Services/EncodingDiagnosticsService.cs` / `EncodingStatisticsService.cs` — bounded live telemetry and durable finalized summaries
+- `Services/LibraryCatalog/` — SQLite catalog, migrations, scans, duplicate analysis,
+  policies, reclamation inputs, integrity, recovery, and maintenance coordination
 - `Services/AudioService.cs` — audio job execution
 - `Services/MediaInfoService.cs` — FFprobe-backed media inspection
 - `Services/EstimateBackgroundService.cs` — bounded background size estimation

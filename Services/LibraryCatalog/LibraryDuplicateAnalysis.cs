@@ -283,13 +283,13 @@ namespace MediaFlux.Services.LibraryCatalog
             return (completed, errors);
         }
 
-        private async Task ScoreKeepersAsync(DuplicateAnalysisHandle run, CancellationToken cancellationToken)
+        private Task ScoreKeepersAsync(DuplicateAnalysisHandle run, CancellationToken cancellationToken)
         {
             long after = 0;
             while (true)
             {
                 IReadOnlyList<long> ids = _catalog.GetDuplicateGroupIds(run.RunId, after, 500);
-                if (ids.Count == 0) return;
+                if (ids.Count == 0) return Task.CompletedTask;
                 foreach (long id in ids)
                 {
                     cancellationToken.ThrowIfCancellationRequested();

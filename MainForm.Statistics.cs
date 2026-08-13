@@ -484,7 +484,8 @@ namespace MediaFlux
             int? outputBitDepth = null,
             bool? scalingApplied = null,
             bool? concurrentEncoderSessions = null,
-            bool isSampleJob = false)
+            bool isSampleJob = false,
+            EncodingDiagnosticSummary? diagnosticSummary = null)
         {
             try
             {
@@ -511,6 +512,7 @@ namespace MediaFlux
                         ScalingApplied = scalingApplied,
                         ConcurrentEncoderSessions = concurrentEncoderSessions,
                         IsSampleJob = isSampleJob,
+                        DiagnosticSummary = diagnosticSummary,
                         Notes = notes
                     });
 

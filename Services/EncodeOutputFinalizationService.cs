@@ -144,7 +144,9 @@ namespace MediaFlux.Services
                 StagingPath = request.OutputPath,
                 ValidationSummary =
                     $"{staged.Summary} {promoted.Summary}".Trim(),
-                FinalOutputSizeBytes = promoted.Evidence.OutputSizeBytes
+                FinalOutputSizeBytes = promoted.Evidence.OutputSizeBytes,
+                FinalOutputLastWriteUtcTicks =
+                    promoted.Evidence.OutputLastWriteUtcTicks
             };
         }
 

@@ -108,6 +108,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     $"Library Analyzer scan: {eventName}",
                     exception: exception,
                     details: details));
+            Maintenance = new LibraryMaintenanceCoordinator(_catalog, _catalog, Scanner, _enrichment, _duplicates, _visual, Integrity, isEncodingActive);
             _ = QueuePendingSafelyAsync();
             _ = RunMaintenanceSafelyAsync();
         }
@@ -132,6 +133,8 @@ namespace MediaFlux.Services.LibraryCatalog
         public StorageReclamationOpportunitySource ReclamationOpportunities { get; }
         public ILibraryIntegrityCatalog IntegrityCatalog => _catalog;
         public LibraryIntegrityCoordinator Integrity { get; }
+        public ILibraryMaintenanceCatalog MaintenanceCatalog => _catalog;
+        public LibraryMaintenanceCoordinator Maintenance { get; }
         public string ReclamationRevision => _catalog.GetPolicyFactsRevision();
         public ILibraryVisualFamilyCatalog FamilyCatalog => _catalog;
         public LibraryVisualFamilyService VisualFamilies { get; }
@@ -157,6 +160,7 @@ namespace MediaFlux.Services.LibraryCatalog
             if (_disposed)
                 return;
             _disposed = true;
+            Maintenance.Dispose();
             Scanner.CancelAndWait(TimeSpan.FromSeconds(10));
             Integrity.Dispose();
             _reanalysis.Dispose();

@@ -45,6 +45,7 @@ namespace MediaFlux
         private CancellationTokenSource? _duplicateScanCts;
         private DuplicateScanResult? _lastDuplicateScanResult;
         private readonly EncodeQueueRunner _encodeQueueRunner;
+        private readonly EncodingDiagnosticsService _encodingDiagnosticsService;
 
         private DateTime? _encodeScheduledUtc = null;
         private CancellationTokenSource? _encodeScheduleCts = null;
@@ -215,6 +216,7 @@ namespace MediaFlux
             _supportedVideoExtsPath = Path.Combine(AppPaths.DataDirectory, "supported_video_extensions.json");
             _encodingStatisticsService = new EncodingStatisticsService(
                 Path.Combine(AppPaths.DataDirectory, "encoding-statistics.jsonl"));
+            _encodingDiagnosticsService = new EncodingDiagnosticsService();
             RepairConfiguredExplorerIntegration();
 
             InitializeLargeQueueControls();
@@ -634,10 +636,13 @@ namespace MediaFlux
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Queue Summary", CreateQueueSummaryGroup()));
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Output Preview", CreateEncodePreviewGroup()));
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Statistics", CreateEncodingStatisticsGroup()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Diagnostics", CreateEncodingDiagnosticsGroup()));
             _encodeInfoTabs.SelectedIndexChanged += (_, __) =>
             {
                 if (_encodeInfoTabs.SelectedTab?.Text == "Statistics")
                     RefreshEncodingStatistics();
+                else if (_encodeInfoTabs.SelectedTab?.Text == "Diagnostics")
+                    RefreshEncodingDiagnostics();
             };
             return _encodeInfoTabs;
         }
@@ -3269,6 +3274,7 @@ namespace MediaFlux
                 _deepAnalysisCts?.Cancel();
                 _mediaRemuxCts?.Cancel();
                 DisposeLibraryAnalyzer();
+                _encodingDiagnosticsService.Dispose();
 
                 lock (_monLock)
                 {

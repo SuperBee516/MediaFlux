@@ -49,7 +49,7 @@ public sealed partial class LibraryAnalyzerForm
         AddButton(actions, "Next", async (_, _) => { if ((_integrityPage + 1L) * PageSize < _integrityTotal) { _integrityPage++; await RefreshIntegrityAsync(); } });
         actions.Controls.Add(_integrityPageLabel);
 
-        AddIntegrityColumn("Status", "Status", 105); AddIntegrityColumn("File", "File", 220);
+        AddIntegrityColumn("Status", "Integrity status", 115); AddIntegrityColumn("File", "File", 220);
         AddIntegrityColumn("Location", "Location", 220); AddIntegrityColumn("Size", "Size", 90);
         AddIntegrityColumn("Codec", "Codec", 85); AddIntegrityColumn("Checked", "Last checked", 135);
         AddIntegrityColumn("Type", "Scrub type", 80); AddIntegrityColumn("Performance", "Verified / performance", 180);

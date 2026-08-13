@@ -22,9 +22,30 @@ encoding-activity seam throttles probes during active encoding. One FFprobe JSON
 supplies format, video, audio, subtitle, chapter, attachment, color, and HDR facts.
 
 The analyzer form pages file queries directly from SQLite and loads only the current
-200-row page. Overview and location summaries are aggregate queries. Duplicate
-analysis, cleanup decisions, statistics, fingerprints, and similarity remain separate
-future derived-data layers.
+200-row page. Overview, policy summaries, and location statistics use aggregate or
+bounded batch queries. Exact duplicate groups, visual pairs/families, integrity
+results, and maintenance history are durable catalog-backed layers.
+
+Exact analysis uses size grouping, quick fingerprints, and full SHA-256 confirmation.
+Visual analysis uses versioned representative-frame hashes and indexed band matching,
+then publishes review pairs and families without quadratic all-pairs comparison.
+Manual keepers, Not Match, review/ignore state, and path protections are stored apart
+from rebuildable evidence. Cleanup planners remain advisory until explicit execution;
+execution revalidates current paths, file facts, evidence, keepers, and protection.
+
+Library Policy evaluation reads catalog facts in bounded batches and caches only a
+small number of result pages. Storage Reclamation combines non-overlapping exact,
+reviewed-visual, and policy opportunities into a versioned advisory JSON plan.
+Projected and ready bytes are forecasts; only validated cleanup execution can
+contribute actually reclaimed bytes, while policy re-encodes are handed to the normal
+encode queue without starting it.
+
+Integrity Quick Scrub samples representative decode regions. Full Scrub explicitly
+decodes complete selected streams and is manual-only. Results and retry queues are
+source-fact-bound. Scheduled maintenance is disabled by default and coordinates the
+existing scanner, metadata, duplicate, visual, and Quick Scrub services. It yields to
+active encoding, cannot approve cleanup or start encoding, and cannot schedule Full
+Scrub.
 
 ## Encoding flow
 
@@ -32,8 +53,8 @@ The main encode queue, DVD "encode using current settings" workflow, and sample
 comparison workflow all execute video jobs through `EncodingService`.
 
 `EncodingService` owns process execution, cancellation, FFmpeg progress parsing,
-diagnostic capture, duration probing, and collision-safe output creation. It no
-longer constructs encoder arguments directly.
+duration probing, container resolution, and collision-safe staged output creation. It
+no longer constructs encoder arguments directly.
 
 The preferred service API accepts an `EncodingRequest` with a stable encoder
 selection. Existing positional overloads remain as compatibility wrappers. Before
@@ -70,7 +91,44 @@ Providers own:
 - Subtitle copy or exclusion
 - Audio copy or AAC conversion
 - Target-size bitrate budgeting
-- Output and MP4 fast-start arguments
+- MP4/MKV stream compatibility and container-specific output arguments
+
+For normal encodes, `EncodeOutputValidationService` probes the source and staged
+output, validates codec, resolution, bit depth, selected streams, chapters, metadata,
+duration, and container, and performs representative decode-integrity checks.
+`EncodeOutputFinalizationService` promotes without overwrite and revalidates the final
+file. Cancellation or failure preserves a recoverable staged file where possible.
+`SourceDeletionService` is the only post-encode deletion gate and requires encode
+success, completed finalization, an existing distinct final path, and unchanged
+verified final size and modification identity.
+
+## Observability and finalized records
+
+`EncodingDiagnosticsService` maintains one bounded session per active encode and
+retains at most 300 one-second samples. It parses existing FFmpeg progress output and
+adds practical Windows CPU/process-memory telemetry, concurrent-job counts, and
+structured maintenance overlap. Unsupported GPU-engine, VRAM, and exact storage-wait
+counters remain explicitly unavailable. Deterministic observations are descriptive
+only and never alter encoder selection, presets, quality, concurrency, or scheduling.
+
+Completed summaries are attached to append-only encoding statistics schema 3 and to
+job-history records. Raw samples and full source paths are not exported by the
+Diagnostics clipboard action.
+
+## Persistence boundaries
+
+- `config.json`, encoding presets, queue snapshots, custom policies, and the latest
+  reclamation plan use backward-compatible JSON with conservative defaults.
+- Job history uses recoverable JSON Lines plus bounded external logs. Encoding
+  statistics uses append-only JSON Lines and stable logical operation IDs.
+- The Library Analyzer SQLite catalog owns inventory, metadata, derived evidence,
+  decisions, cleanup audits, integrity state, and maintenance profiles/history.
+  `PRAGMA user_version` is currently 12; migrations are transactional, sequential,
+  backup-before-upgrade, and integrity-checked.
+- Whole-application backups include the complete user-data directory, including the
+  catalog, policies, plans, history, statistics, and configuration. The narrower
+  catalog decision export is intended for rebuild recovery and deliberately restores
+  user decisions without replaying cleanup plans or audit actions.
 
 ## Compatibility boundary
 
