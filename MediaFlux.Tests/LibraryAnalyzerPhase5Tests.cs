@@ -546,6 +546,58 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
     }
 
     [Fact]
+    public async Task VisualCleanupExecutionCrossesBoundedPlanBatchBoundary()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        long planId = catalog.BeginVisualCleanupPlan(DuplicateCleanupAction.PermanentDelete, "", false, 95);
+        VisualCleanupPlanItemRecord[] items = Enumerable.Range(1, 501)
+            .Select(index => VisualPlanItem(planId, index, index, 10_000 + index))
+            .ToArray();
+        catalog.AppendVisualCleanupPlanItems(planId, items.Take(500).ToArray());
+        catalog.AppendVisualCleanupPlanItems(planId, items.Skip(500).ToArray());
+        catalog.MarkVisualCleanupPlanReady(planId);
+        var cleanup = new LibraryVisualDuplicateCleanupService(
+            catalog, catalog, catalog, new FakeCleanupActions(), new EmptyIdentityProvider());
+
+        DuplicateCleanupExecutionResult result = await cleanup.ExecutePlanAsync(planId);
+
+        Assert.Equal(0, result.Succeeded);
+        Assert.Equal(501, result.Excluded);
+        Assert.Equal(DuplicateCleanupStatus.Completed, catalog.GetVisualCleanupPlanSummary(planId)!.Status);
+        Assert.Empty(catalog.GetVisualCleanupPlanItemsBatch(planId, 0, 0, 500, DuplicateCleanupItemStatus.Planned));
+    }
+
+    [Fact]
+    public async Task VisualCleanupRecoveryResumesWithoutRepeatingCompletedActions()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        long planId = catalog.BeginVisualCleanupPlan(DuplicateCleanupAction.PermanentDelete, "", false, 95);
+        VisualCleanupPlanItemRecord completed = VisualPlanItem(planId, 1, 1, 101);
+        VisualCleanupPlanItemRecord pending = VisualPlanItem(planId, 2, 2, 102);
+        catalog.AppendVisualCleanupPlanItems(planId, new[] { completed, pending });
+        catalog.MarkVisualCleanupPlanReady(planId);
+        catalog.MarkVisualCleanupPlanRunning(planId);
+        catalog.UpdateVisualCleanupPlanItem(planId, completed.FileId, DuplicateCleanupItemStatus.Succeeded, "", "completed before restart");
+        catalog.AppendVisualCleanupAudit(planId, completed.FileId, completed.SourcePath, "",
+            DuplicateCleanupAction.PermanentDelete, DuplicateCleanupItemStatus.Succeeded, "completed before restart");
+
+        Assert.Equal(1, catalog.RecoverInterruptedVisualCleanupPlans());
+        Assert.Equal(DuplicateCleanupStatus.Ready, catalog.GetVisualCleanupPlanSummary(planId)!.Status);
+        var cleanup = new LibraryVisualDuplicateCleanupService(
+            catalog, catalog, catalog, new FakeCleanupActions(), new EmptyIdentityProvider());
+        DuplicateCleanupExecutionResult result = await cleanup.ExecutePlanAsync(planId);
+
+        Assert.Equal(1, result.Succeeded);
+        Assert.Equal(1, result.Excluded);
+        using var connection = new SqliteConnection($"Data Source={catalog.DatabasePath}"); connection.Open();
+        using SqliteCommand audit = connection.CreateCommand();
+        audit.CommandText = "SELECT COUNT(*) FROM visual_cleanup_audit WHERE plan_id=$plan AND file_id=$file;";
+        audit.Parameters.AddWithValue("$plan", planId);
+        audit.Parameters.AddWithValue("$file", completed.FileId);
+        Assert.Equal(1, Convert.ToInt32(audit.ExecuteScalar()));
+    }
+
+    [Fact]
     public void CatalogMillionRecordStressWhenEnabled()
     {
         if (!int.TryParse(Environment.GetEnvironmentVariable("MEDIAFLUX_LIBRARY_STRESS_RECORDS"), out int count) || count < 100_000)
@@ -1127,6 +1179,12 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             string destination = Path.Combine(quarantineRoot, Path.GetFileName(path)); Directory.CreateDirectory(quarantineRoot); File.Move(path, destination); return destination;
         }
     }
+
+    private static VisualCleanupPlanItemRecord VisualPlanItem(long planId, long groupId, long fileId, long keeperFileId) =>
+        new(planId, $"group-{groupId}", groupId, fileId, keeperFileId,
+            $@"P:\missing\candidate-{fileId}.mkv", 1_000, DateTime.UnixEpoch, "", "",
+            $@"P:\missing\keeper-{keeperFileId}.mkv", 1_000, DateTime.UnixEpoch, "", "",
+            99, null, VisualCleanupIntent.DeleteCandidate, DuplicateCleanupItemStatus.Planned, "", "");
 
     private sealed class ConstantStorageResolver : ILibraryStorageKeyResolver
     {

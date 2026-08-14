@@ -14,6 +14,7 @@ namespace MediaFlux
         private readonly LibraryAnalyzerReviewOptions _reviewOptions;
         private readonly LibraryAnalyzerLayoutController _layoutController;
         private readonly LibraryGeneralFileRemovalService _generalFileRemoval;
+        private readonly LibraryFileBrowser _statisticsFileBrowser;
         private MediaFlux.Models.DuplicateKeeperPreferences _visualKeeperPreferences;
         private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
         private readonly DataGridView _locationsGrid = CreateGrid("LocationsGrid");
@@ -63,6 +64,7 @@ namespace MediaFlux
             _reviewOptions = _reviewOptions with { UiState = _reviewOptions.UiState ?? new LibraryAnalyzerUiState() };
             _reviewOptions.UiState!.Normalize();
             _layoutController = new LibraryAnalyzerLayoutController(_reviewOptions.UiState);
+            _statisticsFileBrowser = new LibraryFileBrowser(query => _runtime.Catalog.QueryFiles(query));
             _generalFileRemoval = new LibraryGeneralFileRemovalService(ResolveGeneralFileSnapshot,
                 new JsonLibraryGeneralFileRemovalAudit(Path.Combine(AppPaths.DataDirectory, "library-file-removal-audit.jsonl")));
             _visualKeeperPreferences = (_reviewOptions.KeeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences()).Clone();
@@ -121,6 +123,7 @@ namespace MediaFlux
             Interlocked.Increment(ref _visualMemberLoadVersion);
             Interlocked.Increment(ref _duplicateMemberLoadVersion);
             _exactCleanupCancellation?.Cancel();
+            _familyCleanupCancellation?.Cancel();
             _reclamationBuildCancellation?.Cancel();
             _refreshTimer.Stop();
             _activityTimer.Stop();

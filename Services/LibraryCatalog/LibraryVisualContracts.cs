@@ -167,7 +167,8 @@ namespace MediaFlux.Services.LibraryCatalog
         VisualCleanupIntent Intent,
         DuplicateCleanupItemStatus Status,
         string DestinationPath,
-        string ValidationError);
+        string ValidationError,
+        long? FamilyId = null);
 
     public sealed record VisualCleanupPlanRecord(
         long PlanId,
@@ -180,6 +181,32 @@ namespace MediaFlux.Services.LibraryCatalog
         DateTime? CompletedUtc,
         string ErrorText,
         IReadOnlyList<VisualCleanupPlanItemRecord> Items);
+
+    public sealed record VisualCleanupLocationSummary(
+        string LocationPath,
+        long FileCount,
+        long ReclaimableBytes);
+
+    public sealed record VisualCleanupPlanSummary(
+        long PlanId,
+        DuplicateCleanupAction Action,
+        DuplicateCleanupStatus Status,
+        string QuarantineRoot,
+        bool AllowUnreviewed,
+        double MinimumConfidence,
+        DateTime CreatedUtc,
+        DateTime? CompletedUtc,
+        string ErrorText,
+        long TotalItems,
+        long TotalFamilies,
+        long KeeperCount,
+        long PlannedItems,
+        long SucceededItems,
+        long ExcludedItems,
+        long FailedItems,
+        long PlannedBytes,
+        long ReclaimedBytes,
+        IReadOnlyList<VisualCleanupLocationSummary> Locations);
 
     public interface ILibraryVisualCatalog
     {
@@ -203,6 +230,16 @@ namespace MediaFlux.Services.LibraryCatalog
         void SaveVisualDecision(VisualGroupDecision decision);
         long CreateVisualCleanupPlan(DuplicateCleanupAction action, string quarantineRoot, bool allowUnreviewed,
             double minimumConfidence, IReadOnlyCollection<VisualCleanupPlanItemRecord> items);
+        long BeginVisualCleanupPlan(DuplicateCleanupAction action, string quarantineRoot, bool allowUnreviewed,
+            double minimumConfidence);
+        void AppendVisualCleanupPlanItems(long planId, IReadOnlyCollection<VisualCleanupPlanItemRecord> items);
+        void MarkVisualCleanupPlanReady(long planId);
+        void MarkVisualCleanupPlanRunning(long planId);
+        int RecoverInterruptedVisualCleanupPlans();
+        VisualCleanupPlanSummary? GetVisualCleanupPlanSummary(long planId, bool includeLocations = true);
+        IReadOnlyList<VisualCleanupPlanItemRecord> GetVisualCleanupPlanItemsBatch(
+            long planId, long afterGroupId, long afterFileId, int limit,
+            DuplicateCleanupItemStatus? status = null);
         VisualCleanupPlanRecord? GetVisualCleanupPlan(long planId);
         void UpdateVisualCleanupPlanItem(long planId, long fileId, DuplicateCleanupItemStatus status, string destinationPath, string validationError);
         void CompleteVisualCleanupPlan(long planId, DuplicateCleanupStatus status, string errorText = "");

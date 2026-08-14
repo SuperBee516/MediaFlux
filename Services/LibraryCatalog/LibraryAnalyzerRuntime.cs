@@ -52,6 +52,7 @@ namespace MediaFlux.Services.LibraryCatalog
             _catalog.RecoverInterruptedDuplicateWork();
             _catalog.RecoverInterruptedVisualWork();
             _catalog.RecoverInterruptedCleanupPlans();
+            _catalog.RecoverInterruptedVisualCleanupPlans();
             LibraryStorageScheduler scheduler = storageScheduler ?? new LibraryStorageScheduler();
             _enrichment = new LibraryEnrichmentCoordinator(
                 _catalog,

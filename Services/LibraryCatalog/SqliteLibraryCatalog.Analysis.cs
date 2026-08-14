@@ -663,7 +663,11 @@ namespace MediaFlux.Services.LibraryCatalog
                 "name" => "file.file_name",
                 "size" => "file.size_bytes",
                 "modified" => "file.last_write_utc_ticks",
+                "created" => "file.creation_utc_ticks",
                 "codec" => "metadata.video_codec",
+                "container" => "metadata.format_name",
+                "resolution" => ResolutionTierSql("metadata"),
+                "dynamicrange" => DynamicRangeSql("metadata"),
                 "duration" => "metadata.duration_seconds",
                 "bitrate" => "metadata.total_bitrate",
                 _ => "file.path_key"
@@ -672,21 +676,24 @@ namespace MediaFlux.Services.LibraryCatalog
             string search = (query.Search ?? "").Trim();
 
             using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+            IReadOnlyList<string> excludedStatisticLabels =
+                ResolveExcludedStatisticLabels(connection, query.Statistic);
             string filters =
                 " WHERE ($search = '' OR file.file_name LIKE $search_pattern OR file.full_path LIKE $search_pattern)" +
                 " AND ($location_id IS NULL OR EXISTS (SELECT 1 FROM file_location_memberships selected_membership WHERE selected_membership.file_id = file.id AND selected_membership.location_id = $location_id))" +
                 " AND ($availability IS NULL OR file.availability_state = $availability)" +
-                " AND ($probe_status IS NULL OR COALESCE(metadata.probe_status, $pending) = $probe_status)";
+                " AND ($probe_status IS NULL OR COALESCE(metadata.probe_status, $pending) = $probe_status)" +
+                BuildStatisticFilter(query.Statistic, excludedStatisticLabels);
 
             using SqliteCommand countCommand = connection.CreateCommand();
             countCommand.CommandText =
                 "SELECT COUNT(*) FROM indexed_files file LEFT JOIN media_metadata metadata ON metadata.file_id = file.id" + filters + ";";
-            AddFileQueryParameters(countCommand, query, search);
+            AddFileQueryParameters(countCommand, query, search, excludedStatisticLabels);
             long total = Convert.ToInt64(countCommand.ExecuteScalar());
 
             using SqliteCommand pageCommand = connection.CreateCommand();
             pageCommand.CommandText =
-                """
+                $"""
                 SELECT file.id, file.file_name, file.full_path,
                        COALESCE((SELECT MIN(location.path) FROM file_location_memberships membership
                                  JOIN library_locations location ON location.id = membership.location_id
@@ -696,11 +703,16 @@ namespace MediaFlux.Services.LibraryCatalog
                        metadata.width, metadata.height, metadata.total_bitrate,
                        metadata.duration_seconds, COALESCE(metadata.probe_status, $pending),
                        COALESCE(metadata.error_message, ''),
-                       EXISTS(SELECT 1 FROM duplicate_file_protections protection WHERE protection.path_key=file.path_key)
+                       EXISTS(SELECT 1 FROM duplicate_file_protections protection WHERE protection.path_key=file.path_key),
+                       file.creation_utc_ticks,
+                       {DynamicRangeSql("metadata")}
                 FROM indexed_files file
                 LEFT JOIN media_metadata metadata ON metadata.file_id = file.id
-                """ + filters + $" ORDER BY {orderColumn} {direction}, file.id {direction} LIMIT $limit OFFSET $offset;";
-            AddFileQueryParameters(pageCommand, query, search);
+                {filters}
+                ORDER BY {orderColumn} {direction}, file.id {direction}
+                LIMIT $limit OFFSET $offset;
+                """;
+            AddFileQueryParameters(pageCommand, query, search, excludedStatisticLabels);
             pageCommand.Parameters.AddWithValue("$limit", limit);
             pageCommand.Parameters.AddWithValue("$offset", offset);
             using SqliteDataReader reader = pageCommand.ExecuteReader();
@@ -715,7 +727,8 @@ namespace MediaFlux.Services.LibraryCatalog
                     reader.IsDBNull(10) ? null : reader.GetInt32(10),
                     reader.IsDBNull(11) ? null : reader.GetInt64(11),
                     reader.IsDBNull(12) ? null : reader.GetDouble(12),
-                    (LibraryProbeStatus)reader.GetInt32(13), reader.GetString(14), reader.GetBoolean(15)));
+                    (LibraryProbeStatus)reader.GetInt32(13), reader.GetString(14), reader.GetBoolean(15),
+                    reader.IsDBNull(16) ? null : FromUtcTicks(reader.GetInt64(16)), reader.GetString(17)));
             }
             return new LibraryFilePage(total, files);
         }
@@ -825,7 +838,11 @@ namespace MediaFlux.Services.LibraryCatalog
                 reader.GetInt32(28), reader.GetInt32(29), reader.GetString(30));
         }
 
-        private static void AddFileQueryParameters(SqliteCommand command, LibraryFileQuery query, string search)
+        private static void AddFileQueryParameters(
+            SqliteCommand command,
+            LibraryFileQuery query,
+            string search,
+            IReadOnlyList<string> excludedStatisticLabels)
         {
             command.Parameters.AddWithValue("$search", search);
             command.Parameters.AddWithValue("$search_pattern", $"%{search}%");
@@ -833,6 +850,12 @@ namespace MediaFlux.Services.LibraryCatalog
             command.Parameters.AddWithValue("$availability", query.Availability.HasValue ? (int)query.Availability.Value : DBNull.Value);
             command.Parameters.AddWithValue("$probe_status", query.ProbeStatus.HasValue ? (int)query.ProbeStatus.Value : DBNull.Value);
             command.Parameters.AddWithValue("$pending", (int)LibraryProbeStatus.Pending);
+            if (query.Statistic != null)
+            {
+                command.Parameters.AddWithValue("$stat_label", query.Statistic.Label);
+                for (int index = 0; index < excludedStatisticLabels.Count; index++)
+                    command.Parameters.AddWithValue($"$stat_excluded_{index}", excludedStatisticLabels[index]);
+            }
         }
     }
 }

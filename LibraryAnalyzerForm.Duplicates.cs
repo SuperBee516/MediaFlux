@@ -199,6 +199,7 @@ namespace MediaFlux
                 ExactDuplicateGroupPage page = await Task.Run(() => _runtime.AnalysisCatalog.QueryDuplicateGroups(BuildDuplicateQuery()));
                 if (IsDisposed) return;
                 long[] selectedGroupIds = SelectedGroups().Select(group => group.GroupId).ToArray();
+                bool hadSelection = selectedGroupIds.Length > 0;
                 _duplicateTotal = page.TotalCount;
                 _duplicateGroupsGrid.Rows.Clear();
                 foreach (ExactDuplicateGroupRecord group in page.Groups)
@@ -211,7 +212,7 @@ namespace MediaFlux
                 }
                 foreach (DataGridViewRow row in _duplicateGroupsGrid.Rows)
                     row.Selected = row.Tag is ExactDuplicateGroupRecord group && selectedGroupIds.Contains(group.GroupId);
-                if (_duplicateGroupsGrid.SelectedRows.Count == 0 && _duplicateGroupsGrid.Rows.Count > 0)
+                if (!hadSelection && _duplicateGroupsGrid.SelectedRows.Count == 0 && _duplicateGroupsGrid.Rows.Count > 0)
                     _duplicateGroupsGrid.Rows[0].Selected = true;
                 long first = _duplicateTotal == 0 ? 0 : (long)_duplicatePage * DuplicatePageSize + 1;
                 long last = Math.Min(_duplicateTotal, ((long)_duplicatePage + 1) * DuplicatePageSize);
@@ -346,7 +347,10 @@ namespace MediaFlux
             AddVisualMenuItem(_duplicateGroupsMenu, "Ignore Group", "Ignore", async () => await ToggleSelectedExactGroupsIgnoredAsync());
             AddVisualMenuItem(_duplicateGroupsMenu, "Re-analyze Group", "Reanalyze", () => { QueueSelectedExactGroup_Click(null, EventArgs.Empty); return Task.CompletedTask; });
             _duplicateGroupsMenu.Items.Add(new ToolStripSeparator());
-            AddVisualMenuItem(_duplicateGroupsMenu, "Delete Duplicates in Group…", "Delete", async () => await PreviewCleanupAsync(SelectedGroupIds(), DuplicateCleanupAction.PermanentDelete));
+            AddVisualMenuItem(_duplicateGroupsMenu, "Delete Duplicates in Selected Group", "Delete",
+                async () => await PreviewCleanupAsync(SelectedGroupIds(), DuplicateCleanupAction.PermanentDelete));
+            AddVisualMenuItem(_duplicateGroupsMenu, "Delete Duplicates in All Eligible Groups", "DeleteAll",
+                async () => await PreviewCleanupAsync((IReadOnlyCollection<long>?)null, DuplicateCleanupAction.PermanentDelete));
             AddVisualMenuItem(_duplicateGroupsMenu, "Protect Keeper", "ProtectKeeper", async () => await ProtectSelectedExactKeeperAsync());
             AddVisualMenuItem(_duplicateGroupsMenu, "Open Keeper Location", "OpenKeeper", () => { OpenSelectedExactKeeperLocation(); return Task.CompletedTask; });
             _duplicateGroupsMenu.Opening += DuplicateGroupsMenu_Opening;
@@ -427,11 +431,17 @@ namespace MediaFlux
             SetMenuState(_duplicateGroupsMenu, "Reviewed", groups.Any(group => !group.Reviewed));
             SetMenuState(_duplicateGroupsMenu, "Ignore", groups.Length > 0, first?.Ignored == true ? "Restore Group" : "Ignore Group");
             SetMenuState(_duplicateGroupsMenu, "Reanalyze", groups.Length > 0);
-            SetMenuState(_duplicateGroupsMenu, "Delete", groups.Length > 0 && groups.Any(group => !group.Ignored), groups.Length > 1 ? "Delete Selected Groups…" : "Delete Duplicates in Group…");
+            SetMenuState(_duplicateGroupsMenu, "Delete", groups.Length > 0 && groups.Any(group => !group.Ignored),
+                ExactCleanupMenuText(groups.Length));
+            SetMenuState(_duplicateGroupsMenu, "DeleteAll", true);
             SetMenuState(_duplicateGroupsMenu, "ProtectKeeper", groups.Length == 1);
             SetMenuState(_duplicateGroupsMenu, "OpenKeeper", groups.Length == 1);
-            e.Cancel = groups.Length == 0;
+            e.Cancel = false;
         }
+
+        internal static string ExactCleanupMenuText(int selectedGroupCount) => selectedGroupCount > 1
+            ? "Delete Duplicates in Selected Groups"
+            : "Delete Duplicates in Selected Group";
 
         private async Task MarkSelectedExactGroupsReviewedAsync()
         {
@@ -550,7 +560,13 @@ namespace MediaFlux
                 if (action == DuplicateCleanupAction.PermanentDelete)
                     message = "WARNING: This action permanently deletes files and cannot be undone.\r\n\r\n" + message;
                 if (MessageBox.Show(this, message, "Confirm exact duplicate cleanup", MessageBoxButtons.YesNo,
-                        MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+                        MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                {
+                    _runtime.AnalysisCatalog.CompleteCleanupPlan(
+                        plan.PlanId, DuplicateCleanupStatus.Failed,
+                        "Canceled during consolidated preview; no files were changed.");
+                    return;
+                }
                 var progress = new Progress<DuplicateCleanupProgress>(value =>
                     _duplicateStatus.Text = $"Cleanup {value.ProcessedItems:N0}/{value.TotalItems:N0} · {FormatBytes(value.ReclaimedBytes)} reclaimed");
                 DuplicateCleanupExecutionResult result = await Task.Run(

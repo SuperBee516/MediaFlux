@@ -71,13 +71,23 @@ public sealed record VisualFamilyCleanupProposal(
     VisualFamilyMemberRecord Keeper,
     IReadOnlyList<VisualCleanupProposalItem> Items,
     int ExcludedMembers,
-    long ReclaimableBytes);
+    long ReclaimableBytes,
+    string ExclusionReason = "");
+
+public sealed record VisualFamilyBatchCleanupPlanResult(
+    long PlanId,
+    VisualCleanupPlanSummary Summary,
+    long RequestedFamilies,
+    long EligibleFamilies,
+    long ExcludedFamilies,
+    IReadOnlyDictionary<string, long> ExclusionReasons);
 
 public interface ILibraryVisualFamilyCatalog
 {
     VisualFamilyConstructionResult RebuildVisualFamilies(double minimumConfidence = 76, int maximumComponentSize = 128, int maximumCliques = 10_000);
     VisualFamilyPage QueryVisualFamilies(VisualFamilyQuery query);
     VisualFamilyRecord? GetVisualFamily(long familyId);
+    IReadOnlyList<long> GetReviewedVisualFamilyIds(long afterFamilyId, int limit);
     IReadOnlyList<VisualFamilyMemberRecord> GetVisualFamilyMembers(long familyId);
     IReadOnlyList<VisualFamilyEdgeRecord> GetVisualFamilyEdges(long familyId);
     void SetVisualFamilySuggestedKeeper(long familyId, long? fileId);

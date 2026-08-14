@@ -149,7 +149,11 @@ namespace MediaFlux.Services.LibraryCatalog
         bool Reviewed,
         bool Ignored);
 
-    public sealed record LibraryStatisticBucket(string Label, long FileCount, long SizeBytes);
+    public sealed record LibraryStatisticBucket(
+        string Label,
+        long FileCount,
+        long SizeBytes,
+        bool IsRemainder = false);
 
     public sealed record LibraryLargestFile(
         long FileId,

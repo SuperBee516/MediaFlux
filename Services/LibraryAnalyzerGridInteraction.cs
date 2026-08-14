@@ -41,6 +41,47 @@ public sealed record LibraryFileActionState(
     }
 }
 
+public sealed record LibraryFileQueueResult(
+    IReadOnlyList<string> AvailablePaths,
+    int UnavailableCount,
+    bool Dispatched);
+
+public static class LibraryFileQueueSelection
+{
+    public static LibraryFileQueueResult Dispatch(
+        IEnumerable<string> paths,
+        Action<IReadOnlyList<string>>? addToEncodeQueue,
+        Func<string, bool>? fileExists = null)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        fileExists ??= File.Exists;
+        string[] selected = paths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        string[] available = selected.Where(fileExists).ToArray();
+        bool dispatched = available.Length > 0 && addToEncodeQueue != null;
+        if (dispatched) addToEncodeQueue!(available);
+        return new LibraryFileQueueResult(available, selected.Length - available.Length, dispatched);
+    }
+}
+
+public sealed record LibraryFileMenuPresentation(
+    string ExplorerText,
+    string CopyText,
+    string EncodeText,
+    bool CanEncode)
+{
+    public static LibraryFileMenuPresentation ForSelection(
+        int selectionCount,
+        int availableCount,
+        bool queueAvailable) => new(
+        selectionCount > 1 ? "Show Selected in Explorer" : "Show in Explorer",
+        selectionCount > 1 ? "Copy Paths" : "Copy Path",
+        selectionCount > 1 ? "Add Selected Files to Encode Queue" : "Add to Encode Queue",
+        availableCount > 0 && queueAvailable);
+}
+
 public static class LibraryAnalyzerGridInteraction
 {
     public static void SelectRows<T>(DataGridView grid, Func<T, bool> predicate, bool invert = false)

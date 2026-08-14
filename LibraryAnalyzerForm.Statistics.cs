@@ -1,9 +1,11 @@
+using MediaFlux.Services;
 using MediaFlux.Services.LibraryCatalog;
 
 namespace MediaFlux
 {
     public sealed partial class LibraryAnalyzerForm
     {
+        private const int StatisticsTopCount = 10;
         private readonly Label _statisticsFiles = ValueLabel();
         private readonly Label _statisticsStorage = ValueLabel();
         private readonly Label _statisticsHealth = ValueLabel();
@@ -22,8 +24,11 @@ namespace MediaFlux
             cards.Controls.Add(StatisticCard("Metadata health", _statisticsHealth), 2, 0);
             cards.Controls.Add(StatisticCard("Exact duplicates", _statisticsDuplicates), 3, 0);
 
-            foreach (string name in new[] { "Storage by location", "Codec", "Resolution", "Container", "HDR / SDR" })
-                _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab(name));
+            _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab("Storage by location"));
+            _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab("Codec", LibraryStatisticCategory.Codec));
+            _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab("Resolution", LibraryStatisticCategory.Resolution));
+            _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab("Container", LibraryStatisticCategory.Container));
+            _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab("HDR / SDR", LibraryStatisticCategory.DynamicRange));
 
             AddLargestColumn("Name", "Largest files", 210);
             AddLargestColumn("Path", "Path", 430);
@@ -33,6 +38,9 @@ namespace MediaFlux
             var largestPage = new TabPage("Largest files") { Padding = new Padding(4) };
             largestPage.Controls.Add(_largestFilesGrid);
             _statisticsBreakdowns.TabPages.Add(largestPage);
+            var filesPage = new TabPage("Files") { Name = "StatisticsFilesPage", Padding = new Padding(4) };
+            filesPage.Controls.Add(_statisticsFileBrowser);
+            _statisticsBreakdowns.TabPages.Add(filesPage);
 
             var refresh = new Button { Text = "Refresh statistics", AutoSize = true, Dock = DockStyle.Bottom };
             refresh.Click += async (_, _) => await RefreshStatisticsAsync();
@@ -48,7 +56,7 @@ namespace MediaFlux
             _loadingStatistics = true;
             try
             {
-                LibraryStatistics statistics = await Task.Run(() => _runtime.AnalysisCatalog.GetLibraryStatistics(10));
+                LibraryStatistics statistics = await Task.Run(() => _runtime.AnalysisCatalog.GetLibraryStatistics(StatisticsTopCount));
                 if (IsDisposed) return;
                 _statisticsFiles.Text = $"{statistics.TotalFiles:N0} ({statistics.PresentFiles:N0} available)";
                 _statisticsStorage.Text = FormatBytes(statistics.TotalBytes);
@@ -59,12 +67,22 @@ namespace MediaFlux
                 FillBreakdown((DataGridView)_statisticsBreakdowns.TabPages[2].Controls[0], statistics.ByResolution);
                 FillBreakdown((DataGridView)_statisticsBreakdowns.TabPages[3].Controls[0], statistics.ByContainer);
                 FillBreakdown((DataGridView)_statisticsBreakdowns.TabPages[4].Controls[0], statistics.ByDynamicRange);
+                long[] selectedLargest = SelectedLargestFiles().Select(file => file.FileId).ToArray();
                 _largestFilesGrid.Rows.Clear();
                 foreach (LibraryLargestFile file in statistics.LargestFiles)
                 {
                     int row = _largestFilesGrid.Rows.Add(file.FileName, file.FullPath, FormatBytes(file.SizeBytes), file.VideoCodec, file.ResolutionTier);
                     _largestFilesGrid.Rows[row].Tag = file;
                 }
+                _largestFilesGrid.ClearSelection();
+                if (selectedLargest.Length > 0)
+                {
+                    var selected = selectedLargest.ToHashSet();
+                    foreach (DataGridViewRow row in _largestFilesGrid.Rows)
+                        row.Selected = row.Tag is LibraryLargestFile file && selected.Contains(file.FileId);
+                }
+                if (_statisticsFileBrowser.DrillDown != null)
+                    await _statisticsFileBrowser.RefreshAsync();
             }
             catch (Exception ex)
             {
@@ -83,7 +101,7 @@ namespace MediaFlux
             return panel;
         }
 
-        private TabPage CreateBreakdownTab(string title)
+        private TabPage CreateBreakdownTab(string title, LibraryStatisticCategory? category = null)
         {
             var grid = CreateGrid("Statistics" + new string(title.Where(char.IsLetterOrDigit).ToArray()) + "Grid");
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Label", HeaderText = title, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
@@ -94,6 +112,8 @@ namespace MediaFlux
             page.Controls.Add(grid);
             if (title == "Storage by location")
                 ConfigureLocationBreakdownContextMenu(grid);
+            else if (category.HasValue)
+                ConfigureStatisticsDrillDown(grid, category.Value, title);
             return page;
         }
 
@@ -107,6 +127,56 @@ namespace MediaFlux
                 int row = grid.Rows.Add(bucket.Label, bucket.FileCount.ToString("N0"), FormatBytes(bucket.SizeBytes), new string('█', bars));
                 grid.Rows[row].Tag = bucket;
             }
+            grid.ClearSelection();
+        }
+
+        private void ConfigureStatisticsDrillDown(
+            DataGridView grid,
+            LibraryStatisticCategory category,
+            string categoryName)
+        {
+            var menu = new ContextMenuStrip();
+            LibraryAnalyzerGridInteraction.AddMenuItem(menu, "View Files", "ViewFiles",
+                () => OpenStatisticsFilesAsync(grid, category, categoryName));
+            menu.Opening += (_, _) => LibraryAnalyzerGridInteraction.SetMenuState(
+                menu,
+                "ViewFiles",
+                LibraryAnalyzerGridInteraction.SelectedItems<LibraryStatisticBucket>(grid).Length == 1);
+            LibraryAnalyzerGridInteraction.AttachContextMenu(grid, menu);
+            grid.CellDoubleClick += async (_, e) =>
+            {
+                if (e.RowIndex < 0) return;
+                grid.ClearSelection();
+                grid.Rows[e.RowIndex].Selected = true;
+                await OpenStatisticsFilesAsync(grid, category, categoryName);
+            };
+        }
+
+        private async Task OpenStatisticsFilesAsync(
+            DataGridView grid,
+            LibraryStatisticCategory category,
+            string categoryName)
+        {
+            LibraryStatisticBucket? bucket =
+                LibraryAnalyzerGridInteraction.SelectedItems<LibraryStatisticBucket>(grid).SingleOrDefault();
+            if (bucket == null) return;
+            var drillDown = new LibraryStatisticDrillDown(
+                category,
+                bucket.Label,
+                bucket.IsRemainder,
+                TopCount: StatisticsTopCount,
+                ExcludedLabels: bucket.IsRemainder
+                    ? grid.Rows.Cast<DataGridViewRow>()
+                        .Select(row => row.Tag)
+                        .OfType<LibraryStatisticBucket>()
+                        .Where(item => !item.IsRemainder)
+                        .Select(item => item.Label)
+                        .ToArray()
+                    : null);
+            _statisticsBreakdowns.SelectedTab = _statisticsBreakdowns.TabPages["StatisticsFilesPage"];
+            await _statisticsFileBrowser.OpenAsync(
+                drillDown,
+                $"{categoryName}: {bucket.Label} — {bucket.FileCount:N0} files");
         }
 
         private void AddLargestColumn(string name, string header, int width) =>

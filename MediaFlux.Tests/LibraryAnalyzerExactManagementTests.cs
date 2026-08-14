@@ -317,7 +317,8 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             ContextMenuStrip groupMenu = GetPrivateField<ContextMenuStrip>(form, "_duplicateGroupsMenu");
             InvokePrivate(form, "DuplicateGroupsMenu_Opening", groupMenu, new CancelEventArgs());
             Assert.True(groupMenu.Items.Find("Delete", false).Single().Enabled);
-            Assert.Equal("Delete Selected Groups…", groupMenu.Items.Find("Delete", false).Single().Text);
+            Assert.Equal("Delete Duplicates in Selected Groups", groupMenu.Items.Find("Delete", false).Single().Text);
+            Assert.NotEmpty(groupMenu.Items.Find("DeleteAll", false));
 
             groups.ClearSelection();
             groups.Rows[0].Selected = true;

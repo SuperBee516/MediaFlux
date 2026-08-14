@@ -175,6 +175,71 @@ public sealed class LibraryAnalyzerPhase4Tests : IDisposable
     }
 
     [Fact]
+    public async Task ExactCleanupConsolidatesMultipleGroupsAndHonorsManualKeepers()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "cleanup-multiple"); Directory.CreateDirectory(library);
+        string a = Write(library, "a.mkv", Repeated(21, 110_000));
+        string b = Write(library, "b.mkv", Repeated(21, 110_000));
+        string c = Write(library, "c.mkv", Repeated(22, 120_000));
+        string d = Write(library, "d.mkv", Repeated(22, 120_000));
+        AddInventory(catalog, library, new[] { a, b, c, d });
+        using var coordinator = new LibraryDuplicateAnalysisCoordinator(catalog, new LibraryDuplicateAnalysisOptions(1, 8, 32 * 1024));
+        await coordinator.AnalyzeAsync();
+        ExactDuplicateGroupRecord[] groups = catalog.QueryDuplicateGroups(new DuplicateGroupQuery(Limit: 10)).Groups.OrderBy(x => x.GroupId).ToArray();
+        Assert.Equal(2, groups.Length);
+        long firstManualKeeper = catalog.GetDuplicateGroupMembers(groups[0].GroupId).Max(x => x.FileId);
+        long secondManualKeeper = catalog.GetDuplicateGroupMembers(groups[1].GroupId).Min(x => x.FileId);
+        catalog.SaveDuplicateDecision(new DuplicateGroupDecision(groups[0].GroupId, firstManualKeeper, true, false));
+        catalog.SaveDuplicateDecision(new DuplicateGroupDecision(groups[1].GroupId, secondManualKeeper, true, false));
+        var cleanup = new LibraryDuplicateCleanupService(catalog, catalog);
+
+        DuplicateCleanupPlanSummary selected = cleanup.CreatePlan(groups.Select(x => x.GroupId).ToArray(), DuplicateCleanupAction.PermanentDelete);
+        DuplicateCleanupPlanItemRecord[] items = catalog.GetCleanupPlanItemsBatch(selected.PlanId, 0, 0, 10).ToArray();
+
+        Assert.Equal(2, selected.TotalGroups);
+        Assert.Equal(2, selected.TotalItems);
+        Assert.Contains(items, x => x.GroupId == groups[0].GroupId && x.KeeperFileId == firstManualKeeper);
+        Assert.Contains(items, x => x.GroupId == groups[1].GroupId && x.KeeperFileId == secondManualKeeper);
+        string[] keeperPaths = groups.SelectMany(x => catalog.GetDuplicateGroupMembers(x.GroupId))
+            .Where(x => x.FileId == firstManualKeeper || x.FileId == secondManualKeeper)
+            .Select(x => x.FullPath).ToArray();
+        DuplicateCleanupExecutionResult result = await cleanup.ExecutePlanAsync(selected.PlanId);
+        Assert.Equal(2, result.Succeeded);
+        Assert.All(keeperPaths, path => Assert.True(File.Exists(path)));
+    }
+
+    [Fact]
+    public async Task ExactCleanupAllEligibleUsesCatalogWideKeysetPlanning()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "cleanup-all"); Directory.CreateDirectory(library);
+        var paths = new List<string>();
+        for (int group = 0; group < 3; group++)
+        {
+            byte value = checked((byte)(30 + group));
+            paths.Add(Write(library, $"{group}-a.mkv", Repeated(value, 100_000 + group)));
+            paths.Add(Write(library, $"{group}-b.mkv", Repeated(value, 100_000 + group)));
+        }
+        AddInventory(catalog, library, paths);
+        using var coordinator = new LibraryDuplicateAnalysisCoordinator(catalog, new LibraryDuplicateAnalysisOptions(1, 8, 32 * 1024));
+        await coordinator.AnalyzeAsync();
+        ExactDuplicateGroupRecord[] groups = catalog.QueryDuplicateGroups(new DuplicateGroupQuery(Limit: 10)).Groups.ToArray();
+        Assert.Equal(3, groups.Length);
+        foreach (ExactDuplicateGroupRecord group in groups)
+        {
+            long keeper = catalog.GetDuplicateGroupMembers(group.GroupId).Min(x => x.FileId);
+            catalog.SaveDuplicateDecision(new DuplicateGroupDecision(group.GroupId, keeper, true, false));
+        }
+        var cleanup = new LibraryDuplicateCleanupService(catalog, catalog);
+
+        DuplicateCleanupPlanSummary plan = cleanup.CreatePlanForAllEligible(DuplicateCleanupAction.PermanentDelete);
+
+        Assert.Equal(3, plan.TotalGroups);
+        Assert.Equal(3, plan.TotalItems);
+    }
+
+    [Fact]
     public void InterruptedDuplicateRunIsRecoveredAndSchemaContainsDecisionTables()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();

@@ -188,6 +188,84 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
     }
 
     [Fact]
+    public void FamilyBatchCleanupSupportsSingleMultipleAndCatalogWideReviewedScope()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string[] files = CreateFiles(catalog, "family-batch-cleanup", 6);
+        SeedPairs(catalog, files,
+            (0, 1, 98), (0, 2, 97), (1, 2, 96),
+            (3, 4, 98), (3, 5, 97), (4, 5, 96));
+        catalog.RebuildVisualFamilies();
+        VisualFamilyRecord[] families = catalog.QueryVisualFamilies(
+            new VisualFamilyQuery(Limit: 10)).Families.OrderBy(family => family.FamilyId).ToArray();
+        Assert.Equal(2, families.Length);
+        for (int index = 0; index < families.Length; index++)
+        {
+            long keeper = catalog.GetFileByPath(files[index * 3])!.Id;
+            catalog.SaveVisualFamilyDecision(new VisualFamilyDecision(
+                families[index].FamilyId, keeper, true, false));
+        }
+
+        var cleanup = new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog);
+        var service = new LibraryVisualFamilyService(catalog, cleanup);
+        string quarantine = Path.Combine(_root, "family-batch-quarantine");
+
+        VisualFamilyBatchCleanupPlanResult single = service.CreateBatchCleanupPlan(
+            new[] { families[0].FamilyId }, false, DuplicateCleanupAction.Quarantine, quarantine);
+        Assert.Equal(1, single.RequestedFamilies);
+        Assert.Equal(1, single.EligibleFamilies);
+        Assert.Equal(1, single.Summary.TotalFamilies);
+        Assert.Equal(2, single.Summary.PlannedItems);
+        cleanup.FailPlan(single.PlanId, "test preview canceled");
+
+        VisualFamilyBatchCleanupPlanResult multiple = service.CreateBatchCleanupPlan(
+            families.Select(family => family.FamilyId).ToArray(), false,
+            DuplicateCleanupAction.Quarantine, quarantine);
+        Assert.Equal(2, multiple.EligibleFamilies);
+        Assert.Equal(2, multiple.Summary.TotalFamilies);
+        Assert.Equal(4, multiple.Summary.PlannedItems);
+        cleanup.FailPlan(multiple.PlanId, "test preview canceled");
+
+        catalog.SaveVisualFamilyDecision(new VisualFamilyDecision(
+            families[1].FamilyId, null, true, false));
+        Assert.Single(catalog.QueryVisualFamilies(new VisualFamilyQuery(Limit: 1)).Families);
+        VisualFamilyBatchCleanupPlanResult allReviewed = service.CreateBatchCleanupPlan(
+            null, true, DuplicateCleanupAction.Quarantine, quarantine);
+        Assert.Equal(2, allReviewed.RequestedFamilies);
+        Assert.Equal(1, allReviewed.EligibleFamilies);
+        Assert.Equal(1, allReviewed.ExcludedFamilies);
+        Assert.Contains(allReviewed.ExclusionReasons.Keys,
+            reason => reason.Contains("manual keeper", StringComparison.OrdinalIgnoreCase));
+        cleanup.FailPlan(allReviewed.PlanId, "test completed");
+    }
+
+    [Fact]
+    public void FamilyBatchPlanningCancellationLeavesOnlyFailedDraftAndNoFileChanges()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string[] files = CreateFiles(catalog, "family-batch-cancel", 3);
+        SeedPairs(catalog, files, (0, 1, 98), (0, 2, 97), (1, 2, 96));
+        catalog.RebuildVisualFamilies();
+        VisualFamilyRecord family = Assert.Single(
+            catalog.QueryVisualFamilies(new VisualFamilyQuery()).Families);
+        catalog.SaveVisualFamilyDecision(new VisualFamilyDecision(
+            family.FamilyId, catalog.GetFileByPath(files[0])!.Id, true, false));
+        var cleanup = new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog);
+        var service = new LibraryVisualFamilyService(catalog, cleanup);
+
+        Assert.Throws<OperationCanceledException>(() => service.CreateBatchCleanupPlan(
+            new[] { family.FamilyId }, false, DuplicateCleanupAction.RecycleBin,
+            cancellationToken: new CancellationToken(canceled: true)));
+
+        using var connection = new SqliteConnection($"Data Source={catalog.DatabasePath}");
+        connection.Open();
+        using SqliteCommand status = connection.CreateCommand();
+        status.CommandText = "SELECT status FROM visual_cleanup_plans ORDER BY id DESC LIMIT 1;";
+        Assert.Equal((int)DuplicateCleanupStatus.Failed, Convert.ToInt32(status.ExecuteScalar()));
+        Assert.All(files, path => Assert.True(File.Exists(path)));
+    }
+
+    [Fact]
     public async Task DashboardDoesNotDoubleCountExactCandidatesInsideFamily()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();
@@ -265,7 +343,8 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
                 families.CurrentCell = families.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 ContextMenuStrip familyMenu = GetPrivateField<ContextMenuStrip>(form, "_familyMenu");
                 ContextMenuStrip memberMenu = GetPrivateField<ContextMenuStrip>(form, "_familyMembersMenu");
-                foreach (string name in new[] { "Review", "Reviewed", "Ignore", "Reanalyze", "Rebuild", "Cleanup" })
+                Assert.True(families.MultiSelect);
+                foreach (string name in new[] { "Review", "Reviewed", "MarkUnreviewed", "Ignore", "Reanalyze", "Rebuild", "Cleanup", "CleanupAllReviewed" })
                     Assert.NotEmpty(familyMenu.Items.Find(name, false));
                 foreach (string name in new[] { "Play", "Folder", "CopyPath", "CompareKeeper", "ComparePair", "Keeper", "Protect", "Reanalyze", "SelectOthers", "SelectAll", "SelectNone", "Invert", "SelectAvailable", "SelectUnprotected" })
                     Assert.NotEmpty(memberMenu.Items.Find(name, false));
@@ -274,20 +353,24 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
                 using var timer = new System.Windows.Forms.Timer { Interval = 40 };
                 timer.Tick += (_, _) =>
                 {
-                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Family", StringComparison.Ordinal));
-                    if (review == null) return;
-                    DataGridView? grid = Descendants<DataGridView>(review).FirstOrDefault();
-                    if (grid?.Rows.Count != 3) return;
-                    sawMembers = true;
-                    if (!keeperClicked)
+                    try
                     {
-                        keeperClicked = true;
-                        grid.ClearSelection(); grid.Rows[2].Selected = true;
-                        grid.CurrentCell = grid.Rows[2].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-                        Descendants<Button>(review).Single(button => button.Text == "Set selected keeper").PerformClick();
+                        Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Family", StringComparison.Ordinal));
+                        if (review == null) { stage = "waiting for review dialog"; return; }
+                        DataGridView? grid = Descendants<DataGridView>(review).FirstOrDefault();
+                        if (grid?.Rows.Count != 3) { stage = $"waiting for family members ({grid?.Rows.Count ?? -1})"; return; }
+                        sawMembers = true;
+                        if (!keeperClicked)
+                        {
+                            keeperClicked = true;
+                            grid.ClearSelection(); grid.Rows[2].Selected = true;
+                            grid.CurrentCell = grid.Rows[2].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                            Descendants<Button>(review).Single(button => button.Text == "Set selected keeper").PerformClick();
+                        }
+                        if (catalog.GetVisualFamily(family.FamilyId)?.ManualKeeperFileId != null)
+                            review.Close();
                     }
-                    if (catalog.GetVisualFamily(family.FamilyId)?.ManualKeeperFileId != null)
-                        review.Close();
+                    catch (Exception ex) { failure = ex; stage = $"timer failed: {ex.GetType().Name}"; }
                 };
                 timer.Start();
                 stage = "reviewing family";

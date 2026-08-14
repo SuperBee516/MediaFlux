@@ -328,13 +328,13 @@ namespace MediaFlux.Services.LibraryCatalog
             IReadOnlyList<LibraryStatisticBucket> byLocation = ReadBuckets(connection,
                 "SELECT l.path,COUNT(DISTINCT fm.file_id),COALESCE(SUM(f.size_bytes),0) FROM library_locations l LEFT JOIN file_location_memberships fm ON fm.location_id=l.id AND fm.availability_state=0 LEFT JOIN indexed_files f ON f.id=fm.file_id GROUP BY l.id,l.path ORDER BY 3 DESC", topCount);
             IReadOnlyList<LibraryStatisticBucket> byCodec = ReadBuckets(connection,
-                "SELECT CASE WHEN m.video_codec='' OR m.video_codec IS NULL THEN 'Unknown' ELSE m.video_codec END,COUNT(*),COALESCE(SUM(f.size_bytes),0) FROM indexed_files f LEFT JOIN media_metadata m ON m.file_id=f.id GROUP BY 1 ORDER BY 3 DESC", topCount);
+                "SELECT " + StatisticValueSql(LibraryStatisticCategory.Codec, "m") + ",COUNT(*),COALESCE(SUM(f.size_bytes),0) FROM indexed_files f LEFT JOIN media_metadata m ON m.file_id=f.id GROUP BY 1 ORDER BY 3 DESC,1 COLLATE NOCASE ASC", topCount);
             IReadOnlyList<LibraryStatisticBucket> byResolution = ReadBuckets(connection,
-                "SELECT " + ResolutionTierSql("m") + ",COUNT(*),COALESCE(SUM(f.size_bytes),0) FROM indexed_files f LEFT JOIN media_metadata m ON m.file_id=f.id GROUP BY 1 ORDER BY 3 DESC", topCount);
+                "SELECT " + StatisticValueSql(LibraryStatisticCategory.Resolution, "m") + ",COUNT(*),COALESCE(SUM(f.size_bytes),0) FROM indexed_files f LEFT JOIN media_metadata m ON m.file_id=f.id GROUP BY 1 ORDER BY 3 DESC,1 COLLATE NOCASE ASC", topCount);
             IReadOnlyList<LibraryStatisticBucket> byContainer = ReadBuckets(connection,
-                "SELECT CASE WHEN m.format_name='' OR m.format_name IS NULL THEN 'Unknown' ELSE m.format_name END,COUNT(*),COALESCE(SUM(f.size_bytes),0) FROM indexed_files f LEFT JOIN media_metadata m ON m.file_id=f.id GROUP BY 1 ORDER BY 3 DESC", topCount);
+                "SELECT " + StatisticValueSql(LibraryStatisticCategory.Container, "m") + ",COUNT(*),COALESCE(SUM(f.size_bytes),0) FROM indexed_files f LEFT JOIN media_metadata m ON m.file_id=f.id GROUP BY 1 ORDER BY 3 DESC,1 COLLATE NOCASE ASC", topCount);
             IReadOnlyList<LibraryStatisticBucket> byDynamicRange = ReadBuckets(connection,
-                "SELECT CASE WHEN m.file_id IS NULL OR (m.color_transfer='' AND m.color_primaries='') THEN 'Unknown' WHEN lower(m.color_transfer) IN ('smpte2084','arib-std-b67') OR lower(m.color_primaries)='bt2020' THEN 'HDR' ELSE 'SDR' END,COUNT(*),COALESCE(SUM(f.size_bytes),0) FROM indexed_files f LEFT JOIN media_metadata m ON m.file_id=f.id GROUP BY 1 ORDER BY 3 DESC", topCount);
+                "SELECT " + StatisticValueSql(LibraryStatisticCategory.DynamicRange, "m") + ",COUNT(*),COALESCE(SUM(f.size_bytes),0) FROM indexed_files f LEFT JOIN media_metadata m ON m.file_id=f.id GROUP BY 1 ORDER BY 3 DESC,1 COLLATE NOCASE ASC", topCount);
 
             using SqliteCommand largestCommand = connection.CreateCommand();
             largestCommand.CommandText = "SELECT f.id,f.file_name,f.full_path,f.size_bytes,COALESCE(m.video_codec,'')," + ResolutionTierSql("m") + " FROM indexed_files f LEFT JOIN media_metadata m ON m.file_id=f.id ORDER BY f.size_bytes DESC,f.id LIMIT $limit;";
@@ -356,9 +356,71 @@ namespace MediaFlux.Services.LibraryCatalog
             while (reader.Read()) all.Add(new LibraryStatisticBucket(reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2)));
             if (all.Count <= topCount) return all;
             var result = all.Take(topCount).ToList();
-            result.Add(new LibraryStatisticBucket("Other", all.Skip(topCount).Sum(x => x.FileCount), all.Skip(topCount).Sum(x => x.SizeBytes)));
+            result.Add(new LibraryStatisticBucket("Other", all.Skip(topCount).Sum(x => x.FileCount), all.Skip(topCount).Sum(x => x.SizeBytes), IsRemainder: true));
             return result;
         }
+
+        private static string BuildStatisticFilter(
+            LibraryStatisticDrillDown? statistic,
+            IReadOnlyList<string> excludedLabels)
+        {
+            if (statistic == null) return "";
+            string value = StatisticValueSql(statistic.Category, "metadata");
+            if (!statistic.IsRemainder)
+            {
+                return statistic.Category switch
+                {
+                    LibraryStatisticCategory.Codec when statistic.Label == "Unknown" =>
+                        " AND (metadata.video_codec IS NULL OR metadata.video_codec='' OR metadata.video_codec=$stat_label)",
+                    LibraryStatisticCategory.Codec =>
+                        " AND metadata.video_codec=$stat_label",
+                    LibraryStatisticCategory.Container when statistic.Label == "Unknown" =>
+                        " AND (metadata.format_name IS NULL OR metadata.format_name='' OR metadata.format_name=$stat_label)",
+                    LibraryStatisticCategory.Container =>
+                        " AND metadata.format_name=$stat_label",
+                    _ => $" AND ({value})=$stat_label"
+                };
+            }
+            if (excludedLabels.Count == 0) return " AND 0=1";
+            return $" AND ({value}) NOT IN (" +
+                   string.Join(",", Enumerable.Range(0, excludedLabels.Count)
+                       .Select(index => $"$stat_excluded_{index}")) + ")";
+        }
+
+        private static IReadOnlyList<string> ResolveExcludedStatisticLabels(
+            SqliteConnection connection,
+            LibraryStatisticDrillDown? statistic)
+        {
+            if (statistic?.IsRemainder != true) return Array.Empty<string>();
+            if (statistic.ExcludedLabels is { Count: > 0 })
+                return statistic.ExcludedLabels
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+            string value = StatisticValueSql(statistic.Category, "metadata");
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                $"SELECT {value} AS bucket_label " +
+                "FROM indexed_files file LEFT JOIN media_metadata metadata ON metadata.file_id=file.id " +
+                "GROUP BY 1 ORDER BY COALESCE(SUM(file.size_bytes),0) DESC,bucket_label COLLATE NOCASE ASC " +
+                "LIMIT $limit;";
+            command.Parameters.AddWithValue("$limit", Math.Clamp(statistic.TopCount, 1, 50));
+            using SqliteDataReader reader = command.ExecuteReader();
+            var labels = new List<string>();
+            while (reader.Read()) labels.Add(reader.GetString(0));
+            return labels;
+        }
+
+        private static string StatisticValueSql(LibraryStatisticCategory category, string alias) => category switch
+        {
+            LibraryStatisticCategory.Codec => $"CASE WHEN {alias}.video_codec='' OR {alias}.video_codec IS NULL THEN 'Unknown' ELSE {alias}.video_codec END",
+            LibraryStatisticCategory.Resolution => ResolutionTierSql(alias),
+            LibraryStatisticCategory.Container => $"CASE WHEN {alias}.format_name='' OR {alias}.format_name IS NULL THEN 'Unknown' ELSE {alias}.format_name END",
+            LibraryStatisticCategory.DynamicRange => DynamicRangeSql(alias),
+            _ => throw new ArgumentOutOfRangeException(nameof(category))
+        };
+
+        private static string DynamicRangeSql(string alias) =>
+            $"CASE WHEN {alias}.file_id IS NULL OR ({alias}.color_transfer='' AND {alias}.color_primaries='') THEN 'Unknown' WHEN lower({alias}.color_transfer) IN ('smpte2084','arib-std-b67') OR lower({alias}.color_primaries)='bt2020' THEN 'HDR' ELSE 'SDR' END";
 
         private static string ResolutionTierSql(string alias) =>
             $"CASE WHEN {alias}.width IS NULL OR {alias}.height IS NULL THEN 'Unknown' WHEN {alias}.width>=7680 OR {alias}.height>=4320 THEN '8K+' WHEN {alias}.width>=3840 OR {alias}.height>=2160 THEN '4K' WHEN {alias}.width>=2560 OR {alias}.height>=1440 THEN '1440p' WHEN {alias}.width>=1920 OR {alias}.height>=1080 THEN '1080p' WHEN {alias}.width>=1280 OR {alias}.height>=720 THEN '720p' ELSE 'SD' END";

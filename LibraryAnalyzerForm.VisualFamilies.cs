@@ -12,6 +12,9 @@ public sealed partial class LibraryAnalyzerForm
     private readonly Label _familyStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 6, 0, 0) };
     private readonly CheckBox _familyShowIgnored = new() { Text = "Show ignored", AutoSize = true, Margin = new Padding(10, 10, 3, 3) };
     private long _familyTotal;
+    private CancellationTokenSource? _familyCleanupCancellation;
+    private int _familyMemberLoadVersion;
+    private readonly SemaphoreSlim _familyMemberRefreshLock = new(1, 1);
 
     private void BuildVisualFamiliesTab()
     {
@@ -20,9 +23,11 @@ public sealed partial class LibraryAnalyzerForm
         AddButton(actions, "Refresh", async (_, _) => await RefreshVisualFamiliesAsync());
         AddButton(actions, "Rebuild from current pair evidence", async (_, _) => await RebuildVisualFamiliesAsync());
         AddButton(actions, "Review family…", async (_, _) => await OpenVisualFamilyReviewAsync());
-        AddButton(actions, "Mark reviewed", async (_, _) => await SaveSelectedFamilyStateAsync(reviewed: true));
+        AddButton(actions, "Mark selected reviewed", async (_, _) => await SaveSelectedFamiliesStateAsync(reviewed: true));
         AddButton(actions, "Ignore / restore", async (_, _) => await ToggleSelectedFamilyIgnoredAsync());
-        AddButton(actions, "Review family cleanup…", async (_, _) => await PreviewFamilyCleanupAsync());
+        AddButton(actions, "Clean selected…", async (_, _) => await PreviewFamilyCleanupAsync(allReviewedFamilies: false));
+        AddButton(actions, "Clean all reviewed…", async (_, _) => await PreviewFamilyCleanupAsync(allReviewedFamilies: true));
+        AddButton(actions, "Cancel cleanup", (_, _) => _familyCleanupCancellation?.Cancel());
         _familyShowIgnored.CheckedChanged += async (_, _) => await RefreshVisualFamiliesAsync();
         actions.Controls.Add(_familyShowIgnored);
 
@@ -34,9 +39,17 @@ public sealed partial class LibraryAnalyzerForm
         _familyGrid.Columns.Add("State", "Review state");
         _familyGrid.Columns.Add("Evidence", "Construction");
         _familyGrid.Columns[6].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _familyGrid.MultiSelect = false;
+        _familyGrid.MultiSelect = true;
         _familyGrid.SelectionChanged += async (_, _) => await RefreshVisualFamilyMembersAsync();
-        _familyGrid.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0) await OpenVisualFamilyReviewAsync(); };
+        _familyGrid.CellDoubleClick += async (_, e) =>
+        {
+            if (e.RowIndex < 0) return;
+            _familyGrid.ClearSelection();
+            _familyGrid.Rows[e.RowIndex].Selected = true;
+            _familyGrid.CurrentCell = _familyGrid.Rows[e.RowIndex].Cells.Cast<DataGridViewCell>()
+                .First(cell => cell.Visible);
+            await OpenVisualFamilyReviewAsync();
+        };
 
         foreach ((string name, string header, int width) in new[]
         {
@@ -72,22 +85,33 @@ public sealed partial class LibraryAnalyzerForm
     private void ConfigureFamilyContextMenus()
     {
         AddVisualMenuItem(_familyMenu, "Review Family", "Review", OpenVisualFamilyReviewAsync);
-        AddVisualMenuItem(_familyMenu, "Mark Reviewed", "Reviewed", () => SaveSelectedFamilyStateAsync(reviewed: true));
+        AddVisualMenuItem(_familyMenu, "Mark Selected Families Reviewed", "Reviewed",
+            () => SaveSelectedFamiliesStateAsync(reviewed: true));
+        AddVisualMenuItem(_familyMenu, "Mark Selected Families Unreviewed", "MarkUnreviewed",
+            () => SaveSelectedFamiliesStateAsync(reviewed: false));
         AddVisualMenuItem(_familyMenu, "Ignore", "Ignore", ToggleSelectedFamilyIgnoredAsync);
         _familyMenu.Items.Add(new ToolStripSeparator());
         AddVisualMenuItem(_familyMenu, "Re-analyze Family Evidence", "Reanalyze", ReanalyzeSelectedFamilyAsync);
         AddVisualMenuItem(_familyMenu, "Rebuild Families From Current Evidence", "Rebuild", RebuildVisualFamiliesAsync);
         _familyMenu.Items.Add(new ToolStripSeparator());
-        AddVisualMenuItem(_familyMenu, "Review Family Cleanup…", "Cleanup", PreviewFamilyCleanupAsync);
+        AddVisualMenuItem(_familyMenu, "Clean Selected Family", "Cleanup",
+            () => PreviewFamilyCleanupAsync(allReviewedFamilies: false));
+        AddVisualMenuItem(_familyMenu, "Clean All Reviewed Families", "CleanupAllReviewed",
+            () => PreviewFamilyCleanupAsync(allReviewedFamilies: true));
         _familyMenu.Opening += (_, e) =>
         {
-            VisualFamilyRecord? family = SelectedVisualFamily();
+            VisualFamilyRecord[] families = SelectedVisualFamilies();
+            VisualFamilyRecord? family = families.Length == 1 ? families[0] : null;
             SetMenuState(_familyMenu, "Review", family != null);
-            SetMenuState(_familyMenu, "Reviewed", family != null && !family.Reviewed);
-            SetMenuState(_familyMenu, "Ignore", family != null, family?.Ignored == true ? "Restore" : "Ignore");
-            SetMenuState(_familyMenu, "Reanalyze", family != null);
-            SetMenuState(_familyMenu, "Cleanup", family != null && family.Reviewed && !family.Ignored && family.ManualKeeperFileId.HasValue);
-            e.Cancel = family == null;
+            SetMenuState(_familyMenu, "Reviewed", families.Any(value => !value.Reviewed));
+            SetMenuState(_familyMenu, "MarkUnreviewed", families.Any(value => value.Reviewed));
+            SetMenuState(_familyMenu, "Ignore", family != null,
+                family?.Ignored == true ? "Restore" : "Ignore");
+            SetMenuState(_familyMenu, "Reanalyze", families.Length > 0);
+            SetMenuState(_familyMenu, "Cleanup", families.Length > 0,
+                families.Length > 1 ? "Clean Selected Families" : "Clean Selected Family");
+            SetMenuState(_familyMenu, "CleanupAllReviewed", true);
+            e.Cancel = false;
         };
         AttachVisualContextMenu(_familyGrid, _familyMenu);
 
@@ -159,7 +183,9 @@ public sealed partial class LibraryAnalyzerForm
             new VisualFamilyQuery(Ignored: _familyShowIgnored.Checked ? null : false, Limit: 500)));
         if (IsDisposed) return;
         _familyTotal = page.TotalCount;
-        long? selected = SelectedVisualFamily()?.FamilyId;
+        long[] selectedIds = SelectedVisualFamilies().Select(family => family.FamilyId).ToArray();
+        long? currentId = SelectedVisualFamily()?.FamilyId;
+        bool hadSelection = selectedIds.Length > 0;
         _familyGrid.Rows.Clear();
         foreach (VisualFamilyRecord family in page.Families)
         {
@@ -169,10 +195,19 @@ public sealed partial class LibraryAnalyzerForm
                 $"{family.MemberCount * (family.MemberCount - 1) / 2:N0} preserved pair edges");
             _familyGrid.Rows[row].Tag = family;
         }
-        if (_familyGrid.Rows.Count > 0)
+        _familyGrid.ClearSelection();
+        foreach (DataGridViewRow row in _familyGrid.Rows)
+            row.Selected = row.Tag is VisualFamilyRecord family &&
+                           selectedIds.Contains(family.FamilyId);
+        if (!hadSelection && _familyGrid.Rows.Count > 0)
+            _familyGrid.Rows[0].Selected = true;
+        if (_familyGrid.SelectedRows.Count > 0)
         {
-            DataGridViewRow row = _familyGrid.Rows.Cast<DataGridViewRow>().FirstOrDefault(x => (x.Tag as VisualFamilyRecord)?.FamilyId == selected) ?? _familyGrid.Rows[0];
-            row.Selected = true;
+            DataGridViewRow row = _familyGrid.Rows.Cast<DataGridViewRow>()
+                .FirstOrDefault(value =>
+                    value.Selected &&
+                    (value.Tag as VisualFamilyRecord)?.FamilyId == currentId)
+                ?? _familyGrid.SelectedRows.Cast<DataGridViewRow>().OrderBy(value => value.Index).First();
             _familyGrid.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
         }
         _familyStatus.Text = $"{page.TotalCount:N0} active non-ambiguous visual families. Internal pairs are preserved but suppressed from normal pair review.";
@@ -181,20 +216,32 @@ public sealed partial class LibraryAnalyzerForm
 
     private async Task RefreshVisualFamilyMembersAsync()
     {
-        VisualFamilyRecord? family = SelectedVisualFamily();
-        _familyMembersGrid.Rows.Clear();
-        if (family == null) return;
-        IReadOnlyList<VisualFamilyMemberRecord> members = await Task.Run(() => _runtime.FamilyCatalog.GetVisualFamilyMembers(family.FamilyId));
-        if (IsDisposed) return;
-        foreach (VisualFamilyMemberRecord member in members)
+        int version = Interlocked.Increment(ref _familyMemberLoadVersion);
+        await _familyMemberRefreshLock.WaitAsync();
+        try
         {
-            string keeper = member.IsManualKeeper ? "Manual" : member.IsSuggestedKeeper ? "Suggested" : "";
-            int row = _familyMembersGrid.Rows.Add(keeper, member.IsProtected ? "Yes" : "No", member.FullPath, FormatBytes(member.SizeBytes),
-                member.VideoCodec.ToUpperInvariant(), member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
-                member.TotalBitRate.HasValue ? $"{member.TotalBitRate.Value / 1_000_000d:0.##} Mbps" : "", member.IsHdr ? "Yes" : "No",
-                member.AudioSummary, member.Availability, $"{member.MinimumMemberConfidence:0.0}%");
-            _familyMembersGrid.Rows[row].Tag = member;
+            if (version != Volatile.Read(ref _familyMemberLoadVersion) || IsDisposed) return;
+            VisualFamilyRecord? family = SelectedVisualFamily();
+            if (family == null)
+            {
+                _familyMembersGrid.Rows.Clear();
+                return;
+            }
+            IReadOnlyList<VisualFamilyMemberRecord> members = await Task.Run(() =>
+                _runtime.FamilyCatalog.GetVisualFamilyMembers(family.FamilyId));
+            if (version != Volatile.Read(ref _familyMemberLoadVersion) || IsDisposed) return;
+            _familyMembersGrid.Rows.Clear();
+            foreach (VisualFamilyMemberRecord member in members)
+            {
+                string keeper = member.IsManualKeeper ? "Manual" : member.IsSuggestedKeeper ? "Suggested" : "";
+                int row = _familyMembersGrid.Rows.Add(keeper, member.IsProtected ? "Yes" : "No", member.FullPath, FormatBytes(member.SizeBytes),
+                    member.VideoCodec.ToUpperInvariant(), member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
+                    member.TotalBitRate.HasValue ? $"{member.TotalBitRate.Value / 1_000_000d:0.##} Mbps" : "", member.IsHdr ? "Yes" : "No",
+                    member.AudioSummary, member.Availability, $"{member.MinimumMemberConfidence:0.0}%");
+                _familyMembersGrid.Rows[row].Tag = member;
+            }
         }
+        finally { _familyMemberRefreshLock.Release(); }
     }
 
     private async Task OpenVisualFamilyReviewAsync()
@@ -298,11 +345,18 @@ public sealed partial class LibraryAnalyzerForm
         await RefreshVisualGroupsAsync();
     }
 
-    private async Task SaveSelectedFamilyStateAsync(bool reviewed)
+    private async Task SaveSelectedFamiliesStateAsync(bool reviewed)
     {
-        if (SelectedVisualFamily() is not { } family) return;
-        await Task.Run(() => _runtime.FamilyCatalog.SaveVisualFamilyDecision(new VisualFamilyDecision(
-            family.FamilyId, family.ManualKeeperFileId, reviewed, family.Ignored)));
+        VisualFamilyRecord[] families = SelectedVisualFamilies();
+        if (families.Length == 0) return;
+        string batchId = Guid.NewGuid().ToString("N");
+        await Task.Run(() =>
+        {
+            foreach (VisualFamilyRecord family in families)
+                _runtime.FamilyCatalog.SaveVisualFamilyDecision(new VisualFamilyDecision(
+                    family.FamilyId, family.ManualKeeperFileId, reviewed, family.Ignored,
+                    batchId, reviewed ? "batch-family-reviewed" : "batch-family-unreviewed"));
+        });
         await RefreshVisualFamiliesAsync();
     }
 
@@ -356,8 +410,10 @@ public sealed partial class LibraryAnalyzerForm
 
     private async Task ReanalyzeSelectedFamilyAsync()
     {
-        if (SelectedVisualFamily() is not { } family) return;
-        long[] ids = await Task.Run(() => _runtime.FamilyCatalog.GetVisualFamilyMembers(family.FamilyId)
+        long[] familyIds = SelectedVisualFamilies().Select(family => family.FamilyId).ToArray();
+        if (familyIds.Length == 0) return;
+        long[] ids = await Task.Run(() => familyIds
+            .SelectMany(familyId => _runtime.FamilyCatalog.GetVisualFamilyMembers(familyId))
             .Select(member => member.FileId).Distinct().ToArray());
         if (ids.Length > 0) _runtime.Reanalysis.QueueFiles(ids, LibraryReanalysisWork.VisualFingerprint);
     }
@@ -382,66 +438,154 @@ public sealed partial class LibraryAnalyzerForm
         await OpenMemberComparisonAsync("Compare Selected Family Members", members.Select(ToVisualMember).ToArray(), keeperId);
     }
 
-    private async Task PreviewFamilyCleanupAsync()
+    private async Task PreviewFamilyCleanupAsync(bool allReviewedFamilies)
     {
-        if (SelectedVisualFamily() is not { } family) return;
+        long[] selectedFamilyIds = SelectedVisualFamilies()
+            .Select(family => family.FamilyId)
+            .Distinct()
+            .ToArray();
+        if (!allReviewedFamilies && selectedFamilyIds.Length == 0) return;
+        string quarantine = _cleanupOptions.QuarantineFolder;
+        if (_cleanupOptions.PreferredAction == DuplicateCleanupAction.Quarantine &&
+            !Directory.Exists(quarantine))
+        {
+            MessageBox.Show(
+                this,
+                "The configured quarantine folder is unavailable.",
+                "Family cleanup",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        _familyCleanupCancellation?.Dispose();
+        _familyCleanupCancellation = new CancellationTokenSource();
+        UseWaitCursor = true;
         try
         {
-            VisualFamilyCleanupProposal proposal = await Task.Run(() => _runtime.VisualFamilies.BuildCleanupProposal(family.FamilyId));
-            if (proposal.Items.Count == 0)
+            CancellationToken token = _familyCleanupCancellation.Token;
+            VisualFamilyBatchCleanupPlanResult plan = await Task.Run(
+                () => _runtime.VisualFamilies.CreateBatchCleanupPlan(
+                    allReviewedFamilies ? null : selectedFamilyIds,
+                    allReviewedFamilies,
+                    _cleanupOptions.PreferredAction,
+                    quarantine,
+                    token),
+                token);
+            string preview = BuildFamilyCleanupPreview(plan);
+            if (plan.Summary.Status != DuplicateCleanupStatus.Ready)
             {
-                MessageBox.Show(this, "No safe family cleanup candidates remain. Select a keeper, mark the family reviewed, and ensure candidates are present, unchanged, and unprotected.",
-                    "Family cleanup", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(
+                    this,
+                    preview + "\r\n\r\nNo files were changed.",
+                    "Family cleanup preview",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
                 return;
             }
-            using var dialog = new MediaFluxForm { Text = "Review Visual Family Cleanup Plan", StartPosition = FormStartPosition.CenterParent, Size = new Size(1160, 620), MinimumSize = new Size(900, 480) };
-            var warning = new Label
+            if (_cleanupOptions.PreferredAction == DuplicateCleanupAction.PermanentDelete)
+                preview = "WARNING: This action permanently deletes files and cannot be undone.\r\n\r\n" + preview;
+            preview += "\r\n\r\nThe ready persisted plan shown above is the plan that will execute. " +
+                       "Every keeper and candidate will be revalidated immediately before action.\r\n\r\nExecute this plan?";
+            if (MessageBox.Show(
+                    this,
+                    preview,
+                    "Confirm visual family cleanup",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             {
-                Dock = DockStyle.Top, Height = 58, Padding = new Padding(10),
-                ForeColor = _cleanupOptions.PreferredAction == DuplicateCleanupAction.PermanentDelete ? Color.DarkRed : SystemColors.ControlText,
-                Text = (_cleanupOptions.PreferredAction == DuplicateCleanupAction.PermanentDelete ? "PERMANENT DELETE — selected files cannot be recovered.\r\n" : "") +
-                       "Each candidate has direct visual evidence to the selected keeper and will be independently revalidated before cleanup."
-            };
-            var grid = CreateGrid(); grid.Name = "VisualFamilyCleanupPreviewGrid"; grid.ReadOnly = false;
-            grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Include", HeaderText = "Delete", Width = 55 });
-            foreach ((string name, string header, int width) in new[] { ("Confidence","Confidence",85),("Keeper","Keep",330),("Candidate","Delete",430),("Size","Reclaim",90),("Evidence","Evidence",280) })
-                grid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width, ReadOnly = true });
-            foreach (VisualCleanupProposalItem item in proposal.Items)
-            {
-                int row = grid.Rows.Add(true, $"{item.Group.ConfidenceScore:0.0}%", item.Keeper.FullPath, item.Candidate.FullPath,
-                    FormatBytes(item.Candidate.SizeBytes), item.HasExactEvidence ? "Current SHA-256 evidence" : "Direct family pair evidence");
-                grid.Rows[row].Tag = item;
+                _runtime.VisualDuplicateCleanup.FailPlan(
+                    plan.PlanId,
+                    "Canceled during consolidated preview; no files were changed.");
+                return;
             }
-            var summary = new Label { Dock = DockStyle.Bottom, Height = 28, Padding = new Padding(8, 5, 0, 0) };
-            void UpdateSummary()
-            {
-                VisualCleanupProposalItem[] selected = grid.Rows.Cast<DataGridViewRow>().Where(row => Convert.ToBoolean(row.Cells["Include"].Value ?? false)).Select(row => (VisualCleanupProposalItem)row.Tag!).ToArray();
-                summary.Text = $"Selected: {selected.Length:N0} files · {FormatBytes(selected.Sum(x => x.Candidate.SizeBytes))} · {proposal.ExcludedMembers:N0} members excluded";
-            }
-            grid.CellValueChanged += (_, _) => UpdateSummary();
-            grid.CurrentCellDirtyStateChanged += (_, _) => { if (grid.IsCurrentCellDirty) grid.CommitEdit(DataGridViewDataErrorContexts.Commit); };
-            var footer = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(7) };
-            footer.Controls.Add(new Button { Text = "Approve selected plan…", Width = 165, DialogResult = DialogResult.OK });
-            footer.Controls.Add(new Button { Text = "Cancel", Width = 90, DialogResult = DialogResult.Cancel });
-            dialog.Controls.Add(grid); dialog.Controls.Add(summary); dialog.Controls.Add(footer); dialog.Controls.Add(warning); UpdateSummary();
-            if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            VisualCleanupProposalItem[] approved = grid.Rows.Cast<DataGridViewRow>().Where(row => Convert.ToBoolean(row.Cells["Include"].Value ?? false)).Select(row => (VisualCleanupProposalItem)row.Tag!).ToArray();
-            if (approved.Length == 0) return;
-            if (_cleanupOptions.PreferredAction == DuplicateCleanupAction.Quarantine && !Directory.Exists(_cleanupOptions.QuarantineFolder))
-                throw new DirectoryNotFoundException("The configured quarantine folder is unavailable.");
-            if (MessageBox.Show(this, $"Execute the approved family cleanup?\r\n\r\nFiles: {approved.Length:N0}\r\nEstimated space: {FormatBytes(approved.Sum(x => x.Candidate.SizeBytes))}\r\nAction: {CleanupActionLabel(_cleanupOptions.PreferredAction)}\r\n\r\nEvery file will be revalidated.",
-                "Confirm family cleanup", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-            VisualCleanupPlanRecord plan = await Task.Run(() => _runtime.VisualDuplicateCleanup.CreatePlan(approved, _cleanupOptions.PreferredAction,
-                _cleanupOptions.QuarantineFolder, allowUnreviewed: true, minimumConfidence: family.MinimumConfidence));
-            DuplicateCleanupExecutionResult result = await _runtime.VisualDuplicateCleanup.ExecutePlanAsync(plan.PlanId);
-            MessageBox.Show(this, $"Family cleanup completed.\r\n\r\nSucceeded: {result.Succeeded:N0}\r\nExcluded: {result.Excluded:N0}\r\nFailed: {result.Failed:N0}",
-                "Family cleanup", MessageBoxButtons.OK, result.Failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+
+            var progress = new Progress<DuplicateCleanupProgress>(value =>
+                _familyStatus.Text =
+                    $"Family cleanup {value.ProcessedItems:N0}/{value.TotalItems:N0} · " +
+                    $"{FormatBytes(value.ReclaimedBytes)} reclaimed");
+            DuplicateCleanupExecutionResult result = await Task.Run(
+                async () => await _runtime.VisualDuplicateCleanup.ExecutePlanAsync(
+                    plan.PlanId, token, progress).ConfigureAwait(false),
+                token);
+            MessageBox.Show(
+                this,
+                $"Family cleanup plan {result.PlanId} finished.\r\n\r\n" +
+                $"Succeeded: {result.Succeeded:N0}\r\n" +
+                $"Excluded by revalidation: {result.Excluded:N0}\r\n" +
+                $"Failed: {result.Failed:N0}\r\n" +
+                $"Actual reclaimed: {FormatBytes(result.ReclaimedBytes)}" +
+                (string.IsNullOrWhiteSpace(result.ErrorText)
+                    ? ""
+                    : $"\r\nStatus: {result.ErrorText}"),
+                "Family cleanup",
+                MessageBoxButtons.OK,
+                result.Failed == 0 && string.IsNullOrWhiteSpace(result.ErrorText)
+                    ? MessageBoxIcon.Information
+                    : MessageBoxIcon.Warning);
             await RefreshVisualFamiliesAsync();
+            await RefreshVisualGroupsAsync();
+            await RefreshOverviewAsync();
+            await RefreshLocationsAsync();
         }
-        catch (Exception ex) { ShowError("The family cleanup plan could not be completed. No unvalidated files were changed.", ex); }
+        catch (OperationCanceledException)
+        {
+            MessageBox.Show(
+                this,
+                "Family cleanup planning was canceled. No unvalidated file was changed.",
+                "Family cleanup",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            ShowError(
+                "The family cleanup plan could not be completed. No unvalidated files were changed.",
+                ex);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+            _familyCleanupCancellation?.Dispose();
+            _familyCleanupCancellation = null;
+        }
     }
 
-    private VisualFamilyRecord? SelectedVisualFamily() => _familyGrid.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault()?.Tag as VisualFamilyRecord;
+    internal static string BuildFamilyCleanupPreview(VisualFamilyBatchCleanupPlanResult result)
+    {
+        string reasons = result.ExclusionReasons.Count == 0
+            ? "None"
+            : string.Join("\r\n", result.ExclusionReasons
+                .OrderByDescending(pair => pair.Value)
+                .ThenBy(pair => pair.Key)
+                .Select(pair => $"  {pair.Value:N0} — {pair.Key}"));
+        string locations = result.Summary.Locations.Count == 0
+            ? "None"
+            : string.Join("\r\n", result.Summary.Locations.Select(location =>
+                $"  {location.LocationPath}: {location.FileCount:N0} files · " +
+                $"{FormatBytes(location.ReclaimableBytes)}"));
+        return
+            $"Consolidated family cleanup preview\r\n\r\n" +
+            $"Families selected/reviewed: {result.RequestedFamilies:N0}\r\n" +
+            $"Eligible families: {result.EligibleFamilies:N0}\r\n" +
+            $"Excluded families: {result.ExcludedFamilies:N0}\r\n" +
+            $"Keepers retained: {result.Summary.KeeperCount:N0}\r\n" +
+            $"Files scheduled for cleanup: {result.Summary.PlannedItems:N0}\r\n" +
+            $"Reclaimable storage: {FormatBytes(result.Summary.PlannedBytes)}\r\n\r\n" +
+            $"Exclusion reasons:\r\n{reasons}\r\n\r\n" +
+            $"Location/root totals:\r\n{locations}";
+    }
+
+    private VisualFamilyRecord[] SelectedVisualFamilies() =>
+        LibraryAnalyzerGridInteraction.SelectedItems<VisualFamilyRecord>(_familyGrid);
+
+    private VisualFamilyRecord? SelectedVisualFamily()
+    {
+        if (_familyGrid.CurrentRow is { Selected: true, Tag: VisualFamilyRecord current })
+            return current;
+        return SelectedVisualFamilies().FirstOrDefault();
+    }
 
     private void PlayFamilyMember(VisualFamilyMemberRecord member) => PlayVisualMember(new VisualSimilarityMemberRecord(
         member.FamilyId, member.FileId, member.FullPath, member.LocationPath, member.SizeBytes, member.LastWriteUtc,

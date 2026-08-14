@@ -212,7 +212,23 @@ namespace MediaFlux.Services.LibraryCatalog
         string SortColumn = "path",
         bool Descending = false,
         int Offset = 0,
-        int Limit = 200);
+        int Limit = 200,
+        LibraryStatisticDrillDown? Statistic = null);
+
+    public enum LibraryStatisticCategory
+    {
+        Codec,
+        Resolution,
+        Container,
+        DynamicRange
+    }
+
+    public sealed record LibraryStatisticDrillDown(
+        LibraryStatisticCategory Category,
+        string Label,
+        bool IsRemainder = false,
+        int TopCount = 10,
+        IReadOnlyList<string>? ExcludedLabels = null);
 
     public sealed record LibraryFileViewRecord(
         long FileId,
@@ -230,7 +246,9 @@ namespace MediaFlux.Services.LibraryCatalog
         double? DurationSeconds,
         LibraryProbeStatus ProbeStatus,
         string ProbeError,
-        bool IsProtected);
+        bool IsProtected,
+        DateTime? CreationUtc = null,
+        string DynamicRange = "");
 
     public sealed record LibraryFilePage(
         long TotalCount,

@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 12;
+        public const int CurrentVersion = 13;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -741,6 +741,17 @@ namespace MediaFlux.Services.LibraryCatalog
                         PRIMARY KEY(run_id,file_id)
                     ) STRICT;
                     CREATE INDEX ix_maintenance_candidates_run_kind ON library_maintenance_candidates(run_id,change_kind,file_id);
+                    """),
+                new LibraryCatalogMigration(
+                    13,
+                    "Batched visual family cleanup plans",
+                    """
+                    ALTER TABLE visual_cleanup_plan_items
+                        ADD COLUMN family_id INTEGER NULL;
+                    CREATE INDEX ix_visual_cleanup_items_plan_status_page
+                        ON visual_cleanup_plan_items(plan_id,status,group_id,file_id);
+                    CREATE INDEX ix_visual_cleanup_items_family
+                        ON visual_cleanup_plan_items(family_id,plan_id);
                     """)
             };
 

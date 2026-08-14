@@ -54,24 +54,24 @@ public sealed partial class LibraryAnalyzerForm
         _filesMenu.Opening += (_, _) => UpdateFilesMenuState();
         LibraryAnalyzerGridInteraction.AttachContextMenu(_filesGrid, _filesMenu);
 
-        LibraryAnalyzerGridInteraction.AddMenuItem(_largestFilesMenu, "Play Video", "Play", () =>
-        {
-            if (SelectedLargestFiles().FirstOrDefault() is { } file) PlayLibraryVideo(file.FullPath);
-            return Task.CompletedTask;
-        });
-        LibraryAnalyzerGridInteraction.AddMenuItem(_largestFilesMenu, "Open Containing Folder", "Folder", () =>
-        {
-            OpenContainingFolders(SelectedLargestFiles().Select(file => file.FullPath));
-            return Task.CompletedTask;
-        });
-        LibraryAnalyzerGridInteraction.AddMenuItem(_largestFilesMenu, "Copy File Path", "CopyPath", () =>
-        {
-            CopyPaths(SelectedLargestFiles().Select(file => file.FullPath));
-            return Task.CompletedTask;
-        });
+        ConfigureCommonLibraryFileMenu(_largestFilesMenu, () => SelectedLargestFiles()
+            .Select(file => (file.FileId, file.FullPath)).ToArray());
         LibraryAnalyzerGridInteraction.AddMenuItem(_largestFilesMenu, "Locate in Files", "Locate", LocateLargestFileInFilesAsync);
-        _largestFilesMenu.Opening += (_, _) => UpdateLargestFilesMenuState();
+        _largestFilesMenu.Opening += (_, _) =>
+        {
+            UpdateCommonLibraryFileMenu(_largestFilesMenu, SelectedLargestFiles()
+                .Select(file => (file.FileId, file.FullPath)).ToArray());
+            LibraryAnalyzerGridInteraction.SetMenuState(_largestFilesMenu, "Locate", SelectedLargestFiles().Length == 1);
+        };
         LibraryAnalyzerGridInteraction.AttachContextMenu(_largestFilesGrid, _largestFilesMenu);
+
+        ContextMenuStrip drillDownMenu = new();
+        ConfigureCommonLibraryFileMenu(drillDownMenu, () => _statisticsFileBrowser.SelectedFiles()
+            .Select(file => (file.FileId, file.FullPath)).ToArray());
+        drillDownMenu.Opening += (_, _) => UpdateCommonLibraryFileMenu(
+            drillDownMenu,
+            _statisticsFileBrowser.SelectedFiles().Select(file => (file.FileId, file.FullPath)).ToArray());
+        LibraryAnalyzerGridInteraction.AttachContextMenu(_statisticsFileBrowser.Grid, drillDownMenu);
     }
 
     private void AddReanalysisMenuItems(ContextMenuStrip menu, Func<IEnumerable<long>> selectedFileIds)
@@ -113,15 +113,89 @@ public sealed partial class LibraryAnalyzerForm
             LibraryAnalyzerGridInteraction.SetMenuState(_filesMenu, name, state.HasSelection);
     }
 
-    private void UpdateLargestFilesMenuState()
+    private void ConfigureCommonLibraryFileMenu(
+        ContextMenuStrip menu,
+        Func<(long FileId, string FullPath)[]> selection)
     {
-        LibraryLargestFile[] files = SelectedLargestFiles();
-        LibraryFileActionState state = LibraryFileActionState.Evaluate(files, file => file.FullPath, _ => false);
-        LibraryAnalyzerGridInteraction.SetMenuState(_largestFilesMenu, "Play", state.CanPlay);
-        LibraryAnalyzerGridInteraction.SetMenuState(_largestFilesMenu, "Folder", state.CanOpenFolders);
-        LibraryAnalyzerGridInteraction.SetMenuState(_largestFilesMenu, "CopyPath", state.CanCopyPaths,
-            files.Length > 1 ? "Copy File Paths" : "Copy File Path");
-        LibraryAnalyzerGridInteraction.SetMenuState(_largestFilesMenu, "Locate", files.Length == 1);
+        LibraryAnalyzerGridInteraction.AddMenuItem(menu, "Play", "Play", () =>
+        {
+            (long FileId, string FullPath)[] files = selection();
+            if (files.Length == 1) PlayLibraryVideo(files[0].FullPath);
+            return Task.CompletedTask;
+        });
+        LibraryAnalyzerGridInteraction.AddMenuItem(menu, "Show in Explorer", "Folder", () =>
+        {
+            OpenContainingFolders(selection().Select(file => file.FullPath));
+            return Task.CompletedTask;
+        });
+        LibraryAnalyzerGridInteraction.AddMenuItem(menu, "View Media Information", "MediaDetails", () =>
+        {
+            (long FileId, string FullPath)[] files = selection();
+            if (files.Length == 1) ShowMediaDetails(files[0].FileId, files[0].FullPath);
+            return Task.CompletedTask;
+        });
+        LibraryAnalyzerGridInteraction.AddMenuItem(menu, "Copy Path", "CopyPath", () =>
+        {
+            CopyPaths(selection().Select(file => file.FullPath));
+            return Task.CompletedTask;
+        });
+        menu.Items.Add(new ToolStripSeparator());
+        LibraryAnalyzerGridInteraction.AddMenuItem(menu, "Add to Encode Queue", "Encode", () =>
+        {
+            QueueLibraryFiles(selection());
+            return Task.CompletedTask;
+        });
+    }
+
+    private void UpdateCommonLibraryFileMenu(
+        ContextMenuStrip menu,
+        (long FileId, string FullPath)[] files)
+    {
+        LibraryFileActionState state = LibraryFileActionState.Evaluate(
+            files,
+            file => file.FullPath,
+            _ => false);
+        int available = files.Count(file => File.Exists(file.FullPath));
+        LibraryFileMenuPresentation presentation = LibraryFileMenuPresentation.ForSelection(
+            files.Length,
+            available,
+            _reviewOptions.AddToEncodeQueue != null);
+        LibraryAnalyzerGridInteraction.SetMenuState(menu, "Play", state.CanPlay);
+        LibraryAnalyzerGridInteraction.SetMenuState(menu, "Folder", state.CanOpenFolders,
+            presentation.ExplorerText);
+        LibraryAnalyzerGridInteraction.SetMenuState(menu, "MediaDetails", files.Length == 1);
+        LibraryAnalyzerGridInteraction.SetMenuState(menu, "CopyPath", state.CanCopyPaths,
+            presentation.CopyText);
+        LibraryAnalyzerGridInteraction.SetMenuState(menu, "Encode",
+            presentation.CanEncode,
+            presentation.EncodeText);
+    }
+
+    private void QueueLibraryFiles((long FileId, string FullPath)[] files)
+    {
+        LibraryFileQueueResult result = LibraryFileQueueSelection.Dispatch(
+            files.Select(file => file.FullPath),
+            _reviewOptions.AddToEncodeQueue);
+        if (result.AvailablePaths.Count == 0)
+        {
+            MessageBox.Show(
+                this,
+                "The selected file is missing or unavailable and was not added to the Encode queue.",
+                "Add to Encode Queue",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        if (result.UnavailableCount > 0)
+        {
+            MessageBox.Show(
+                this,
+                $"{result.AvailablePaths.Count:N0} available file(s) were sent to the Encode queue. " +
+                $"{result.UnavailableCount:N0} missing or unavailable file(s) were skipped.",
+                "Add to Encode Queue",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
     }
 
     private LibraryLocationRecord[] SelectedLocations() =>

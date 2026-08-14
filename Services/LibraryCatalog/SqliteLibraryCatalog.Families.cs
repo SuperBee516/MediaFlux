@@ -144,6 +144,31 @@ public sealed partial class SqliteLibraryCatalog : ILibraryVisualFamilyCatalog
 
     public VisualFamilyRecord? GetVisualFamily(long familyId) => GetVisualFamilyDirect(familyId);
 
+    public IReadOnlyList<long> GetReviewedVisualFamilyIds(long afterFamilyId, int limit)
+    {
+        ThrowIfDisposed();
+        limit = Math.Clamp(limit, 1, MaximumPageSize);
+        using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT f.id
+            FROM visual_families f
+            JOIN visual_family_decisions d ON d.family_key=f.family_key
+            WHERE f.analysis_run_id=(SELECT id FROM visual_analysis_runs WHERE status=1 ORDER BY id DESC LIMIT 1)
+              AND f.id>$after
+              AND d.reviewed=1
+            ORDER BY f.id
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$after", Math.Max(0, afterFamilyId));
+        command.Parameters.AddWithValue("$limit", limit);
+        using SqliteDataReader reader = command.ExecuteReader();
+        var result = new List<long>();
+        while (reader.Read()) result.Add(reader.GetInt64(0));
+        return result;
+    }
+
     private VisualFamilyRecord? GetVisualFamilyDirect(long familyId)
     {
         ThrowIfDisposed();

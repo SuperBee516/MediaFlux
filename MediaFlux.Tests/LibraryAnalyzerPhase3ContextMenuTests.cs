@@ -32,8 +32,28 @@ public sealed class LibraryAnalyzerPhase3ContextMenuTests : IDisposable
             AssertNames(form, "_integrityMenu", "Quick", "Full", "Retry", "RemoveRecycle", "RemoveQuarantine", "RemovePermanent");
             AssertNames(form, "_maintenanceMenu", "Run", "Toggle", "Edit", "Refresh");
             AssertNames(form, "_filesMenu", "CopyFilename", "CopyFullPath", "CopyFolderPath", "CopyDetails", "MediaDetails", "RemoveRecycle");
+            AssertNames(form, "_largestFilesMenu", "Play", "Folder", "MediaDetails", "CopyPath", "Encode", "Locate");
+            AssertNames(form, "_duplicateGroupsMenu", "Reviewed", "Ignore", "Reanalyze", "Delete", "DeleteAll", "ProtectKeeper", "OpenKeeper");
+            AssertNames(form, "_familyMenu", "Review", "Reviewed", "MarkUnreviewed", "Ignore", "Reanalyze", "Rebuild", "Cleanup", "CleanupAllReviewed");
+            Assert.True(GetGrid(form, "_duplicateGroupsGrid").MultiSelect);
+            Assert.True(GetGrid(form, "_familyGrid").MultiSelect);
+            Assert.Equal("Delete Duplicates in Selected Group", LibraryAnalyzerForm.ExactCleanupMenuText(1));
+            Assert.Equal("Delete Duplicates in Selected Groups", LibraryAnalyzerForm.ExactCleanupMenuText(2));
+
+            var browser = (MediaFlux.Services.LibraryFileBrowser)(form.GetType()
+                .GetField("_statisticsFileBrowser", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.GetValue(form) ?? throw new MissingFieldException("_statisticsFileBrowser"));
+            HashSet<string> drillDownNames = Items(browser.Grid.ContextMenuStrip!.Items)
+                .Select(item => item.Name ?? "")
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (string name in new[] { "Play", "Folder", "MediaDetails", "CopyPath", "Encode" })
+                Assert.Contains(name, drillDownNames);
         });
     }
+
+    private static DataGridView GetGrid(LibraryAnalyzerForm form, string fieldName) =>
+        (DataGridView)(form.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(form)
+            ?? throw new MissingFieldException(fieldName));
 
     private static void AssertNames(LibraryAnalyzerForm form, string fieldName, params string[] expected)
     {

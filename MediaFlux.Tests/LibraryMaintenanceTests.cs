@@ -29,7 +29,7 @@ public sealed class LibraryMaintenanceTests : IDisposable
     public void PhaseSixSchemaMigratesWithSchedulingDisabled()
     {
         string db=Path.Combine(_root,"v11.db");var old=new LibraryCatalogDatabase(db,Path.Combine(_root,"b11"),Path.Combine(_root,"r11"));old.InitializeForTesting(11);string path=Path.Combine(_root,"legacy");using(var connection=new SqliteConnection($"Data Source={db}")){connection.Open();using SqliteCommand command=connection.CreateCommand();command.CommandText="INSERT INTO library_locations(path,path_key,include_subfolders,is_enabled,availability_state,last_error,current_generation,created_utc_ticks,updated_utc_ticks) VALUES($path,$key,1,1,0,'',0,$now,$now);";command.Parameters.AddWithValue("$path",path);command.Parameters.AddWithValue("$key",path.ToUpperInvariant());command.Parameters.AddWithValue("$now",DateTime.UtcNow.Ticks);command.ExecuteNonQuery();}
-        SqliteConnection.ClearAllPools();using SqliteLibraryCatalog current=Create(db);Assert.Equal(12,current.GetDiagnostics().SchemaVersion);long id=Assert.Single(current.GetLocations()).Id;Assert.False(current.GetMaintenanceProfile(id).Enabled);Assert.Empty(current.GetMaintenanceHistory(id));
+        SqliteConnection.ClearAllPools();using SqliteLibraryCatalog current=Create(db);Assert.Equal(LibraryCatalogMigrations.CurrentVersion,current.GetDiagnostics().SchemaVersion);long id=Assert.Single(current.GetLocations()).Id;Assert.False(current.GetMaintenanceProfile(id).Enabled);Assert.Empty(current.GetMaintenanceHistory(id));
     }
 
     [Fact]
