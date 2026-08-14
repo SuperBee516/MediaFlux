@@ -44,6 +44,9 @@ public sealed record StorageReclamationPlanItem
     public StorageReclamationActionCategory ActionCategory { get; init; }
     public StorageReclamationSourceSubsystem SourceSubsystem { get; init; }
     public long ExpectedReclaimBytes { get; init; }
+    public long CurrentSizeBytes { get; init; }
+    public long? EstimatedPostOptimizationBytes { get; init; }
+    public bool SavingsAreEstimated { get; init; }
     public LibraryPolicyConfidence Confidence { get; init; }
     public StorageReclamationSafetyState SafetyState { get; init; }
     public string Reason { get; init; } = "";
@@ -74,7 +77,11 @@ public sealed record StorageReclamationCategoryTotal(
     StorageReclamationActionCategory Category,
     int ItemCount,
     long ReadyBytes,
-    long ReviewDependentBytes);
+    long ReviewDependentBytes,
+    long CurrentBytes = 0,
+    long PotentialSavingsBytes = 0,
+    long? EstimatedPostOptimizationBytes = null,
+    bool IncludesEstimatedSavings = false);
 
 public sealed record StorageReclamationLocationTotal(
     string LocationPath,
@@ -84,7 +91,7 @@ public sealed record StorageReclamationLocationTotal(
 
 public sealed record StorageReclamationPlan
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public string PlanId { get; init; } = Guid.NewGuid().ToString("N");
     public DateTime CreatedUtc { get; init; } = DateTime.UtcNow;
@@ -115,6 +122,9 @@ public sealed record StorageReclamationOpportunity
     public StorageReclamationActionCategory ActionCategory { get; init; }
     public StorageReclamationSourceSubsystem SourceSubsystem { get; init; }
     public long ExpectedReclaimBytes { get; init; }
+    public long CurrentSizeBytes { get; init; }
+    public long? EstimatedPostOptimizationBytes { get; init; }
+    public bool SavingsAreEstimated { get; init; }
     public LibraryPolicyConfidence Confidence { get; init; }
     public StorageReclamationSafetyState SafetyState { get; init; }
     public string Reason { get; init; } = "";

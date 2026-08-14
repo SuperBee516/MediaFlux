@@ -52,6 +52,7 @@ public sealed class StorageReclamationOpportunitySource
                     FileId = file.FileId, SourcePath = file.FullPath, LocationPath = file.LocationPath,
                     PhysicalIdentityKey = file.PhysicalIdentityKey, ActionCategory = StorageReclamationActionCategory.ExactDuplicateCleanup,
                     SourceSubsystem = StorageReclamationSourceSubsystem.ExactDuplicates, ExpectedReclaimBytes = file.SizeBytes,
+                    CurrentSizeBytes = file.SizeBytes, EstimatedPostOptimizationBytes = 0, SavingsAreEstimated = false,
                     Confidence = LibraryPolicyConfidence.High, SafetyState = StorageReclamationSafetyState.Ready,
                     Reason = "Current SHA-256 exact duplicate candidate; the validated keeper is retained.",
                     KeeperFileId = keeper.FileId, KeeperPath = keeper.FullPath, ExactGroupId = group.Key
@@ -59,18 +60,20 @@ public sealed class StorageReclamationOpportunitySource
             }
         }
 
-        for (int offset = 0; opportunities.Count < maximumPerSource * 2; offset += 500)
+        long afterFamilyId = 0;
+        while (opportunities.Count < maximumPerSource * 2)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            VisualFamilyPage page = _families.QueryVisualFamilies(new VisualFamilyQuery(Reviewed: true, Ignored: false, Offset: offset, Limit: 500));
-            foreach (VisualFamilyRecord family in page.Families)
+            IReadOnlyList<long> familyIds = _families.GetReviewedVisualFamilyIds(afterFamilyId, 500);
+            foreach (long familyId in familyIds)
             {
-                VisualFamilyCleanupProposal proposal = _familyService.BuildCleanupProposal(family.FamilyId);
+                VisualFamilyCleanupProposal proposal = _familyService.BuildCleanupProposal(familyId);
                 foreach (VisualCleanupProposalItem item in proposal.Items)
                     opportunities.Add(Visual(item, StorageReclamationActionCategory.ReviewedVisualFamilyCleanup,
-                        StorageReclamationSourceSubsystem.VisualFamilies, family.FamilyId));
+                        StorageReclamationSourceSubsystem.VisualFamilies, familyId));
             }
-            if (page.Families.Count < 500 || offset + page.Families.Count >= page.TotalCount) break;
+            if (familyIds.Count < 500) break;
+            afterFamilyId = familyIds[^1];
         }
 
         VisualCleanupProposal reviewed = _visualCleanup.BuildProposal(maximumItems: Math.Min(maximumPerSource, 10_000));
@@ -107,6 +110,8 @@ public sealed class StorageReclamationOpportunitySource
                         ? StorageReclamationActionCategory.PolicyReencode : StorageReclamationActionCategory.ReviewRequired,
                     SourceSubsystem = StorageReclamationSourceSubsystem.LibraryPolicy,
                     ExpectedReclaimBytes = result.ProjectedReclaimableBytes.Value, Confidence = result.Confidence,
+                    CurrentSizeBytes = result.OriginalSizeBytes, EstimatedPostOptimizationBytes = result.ProjectedOutputBytes,
+                    SavingsAreEstimated = true,
                     SafetyState = safety, Reason = string.Join(" ", result.Reasons.Concat(result.ReviewReasons)),
                     PolicyId = result.PolicyId, PolicyName = result.PolicyName,
                     PolicyQueueIntent = ready ? ToQueueIntent(result, policy, estimate, efficiency) : null,
@@ -136,7 +141,9 @@ public sealed class StorageReclamationOpportunitySource
         {
             FileId = item.Candidate.FileId, SourcePath = item.Candidate.FullPath, LocationPath = item.Candidate.LocationPath,
             PhysicalIdentityKey = physical, ActionCategory = category, SourceSubsystem = source,
-            ExpectedReclaimBytes = item.Candidate.SizeBytes, Confidence = item.HasExactEvidence
+            ExpectedReclaimBytes = item.Candidate.SizeBytes, CurrentSizeBytes = item.Candidate.SizeBytes,
+            EstimatedPostOptimizationBytes = 0, SavingsAreEstimated = false,
+            Confidence = item.HasExactEvidence
                 ? LibraryPolicyConfidence.High : item.Group.ConfidenceScore >= 95 ? LibraryPolicyConfidence.High : LibraryPolicyConfidence.Medium,
             SafetyState = safety, Reason = item.HasExactEvidence ? "Reviewed visual candidate with exact SHA-256 evidence." : item.KeeperReason,
             KeeperFileId = item.Keeper.FileId, KeeperPath = item.Keeper.FullPath, VisualGroupId = item.Group.GroupId,

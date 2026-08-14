@@ -96,6 +96,8 @@ namespace MediaFlux.Services
                     "decode before selected hardware encode.");
             }
 
+            if (request.SampleStart is { } sampleStart && sampleStart > TimeSpan.Zero)
+                builder.Append($"-ss {Seconds(sampleStart.TotalSeconds)} ");
             AppendInput(builder, request.Input);
             AppendStreamMapping(
                 builder,
@@ -105,6 +107,8 @@ namespace MediaFlux.Services
                 request.CopyDataStreams,
                 request.CopyAttachments);
             builder.Append("-map_metadata 0 -map_chapters 0 ");
+            if (request.SampleDuration is { } sampleDuration && sampleDuration > TimeSpan.Zero)
+                builder.Append($"-t {Seconds(sampleDuration.TotalSeconds)} ");
 
             if (request.CopySubtitles)
                 builder.Append("-c:s copy ");
@@ -255,6 +259,9 @@ namespace MediaFlux.Services
             builder.Append(input.InputPath);
             builder.Append("\" ");
         }
+
+        private static string Seconds(double value) =>
+            Math.Max(0, value).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 
         private static void AppendStreamMapping(
             StringBuilder builder,

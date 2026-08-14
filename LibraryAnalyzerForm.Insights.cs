@@ -60,7 +60,7 @@ namespace MediaFlux
             _recommendationsStatus.Text = $"Calculated {dashboard.CalculatedUtc.ToLocalTime():g}. Values are non-overlapping cleanup candidates, not actions.";
         }
 
-        private void BuildStorageOptimizationTab()
+        private void BuildLibraryPoliciesTab()
         {
             var tab = new TabPage("Library Policies") { Padding = new Padding(10) };
             var intro = new Label

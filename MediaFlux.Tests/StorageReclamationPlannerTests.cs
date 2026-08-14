@@ -230,6 +230,16 @@ public sealed class StorageReclamationPlannerTests : IDisposable
             .Select(item => item.PolicyQueueIntent!.FullPath));
     }
 
+    [Fact]
+    public void OpportunitySummariesSeparateExactAndEstimatedSavings()
+    {
+        StorageReclamationOpportunity exact=Opportunity(1,StorageReclamationActionCategory.ExactDuplicateCleanup,40*GiB) with{CurrentSizeBytes=40*GiB,EstimatedPostOptimizationBytes=0,SavingsAreEstimated=false};
+        StorageReclamationOpportunity encode=Opportunity(2,StorageReclamationActionCategory.PolicyReencode,30*GiB) with{CurrentSizeBytes=100*GiB,EstimatedPostOptimizationBytes=70*GiB,SavingsAreEstimated=true,PolicyQueueIntent=Intent("encode")};
+        StorageReclamationPlan plan=Plan(100*GiB,exact,encode);StorageReclamationCategoryTotal duplicate=plan.CategoryTotals.Single(item=>item.Category==StorageReclamationActionCategory.ExactDuplicateCleanup);StorageReclamationCategoryTotal reencode=plan.CategoryTotals.Single(item=>item.Category==StorageReclamationActionCategory.PolicyReencode);
+        Assert.Equal(40*GiB,duplicate.CurrentBytes);Assert.Equal(40*GiB,duplicate.PotentialSavingsBytes);Assert.Equal(0,duplicate.EstimatedPostOptimizationBytes);Assert.False(duplicate.IncludesEstimatedSavings);
+        Assert.Equal(100*GiB,reencode.CurrentBytes);Assert.Equal(30*GiB,reencode.PotentialSavingsBytes);Assert.Equal(70*GiB,reencode.EstimatedPostOptimizationBytes);Assert.True(reencode.IncludesEstimatedSavings);
+    }
+
     private static LibraryPolicyQueueItem Intent(string path) => new(path, "policy-v1", "Policy", VideoCodecFamily.Hevc,
         "nvenc", "p5", "", 24, 10, true, null, true, OutputContainerSelection.Auto, null, LibraryPolicyConfidence.High);
 
@@ -248,7 +258,8 @@ public sealed class StorageReclamationPlannerTests : IDisposable
             StorageReclamationActionCategory.ReviewedVisualDuplicateCleanup => StorageReclamationSourceSubsystem.VisualPairs,
             _ => StorageReclamationSourceSubsystem.LibraryPolicy
         },
-        ExpectedReclaimBytes = bytes, Confidence = confidence, SafetyState = StorageReclamationSafetyState.Ready,
+        ExpectedReclaimBytes = bytes, CurrentSizeBytes = bytes, EstimatedPostOptimizationBytes = 0,
+        Confidence = confidence, SafetyState = StorageReclamationSafetyState.Ready,
         Reason = "Synthetic planner evidence"
     };
 

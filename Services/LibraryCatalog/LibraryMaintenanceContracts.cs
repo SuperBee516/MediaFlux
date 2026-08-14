@@ -4,6 +4,8 @@ namespace MediaFlux.Services.LibraryCatalog;
 public enum LibraryMaintenanceDays { None = 0, Sunday = 1, Monday = 2, Tuesday = 4, Wednesday = 8, Thursday = 16, Friday = 32, Saturday = 64, All = 127 }
 public enum LibraryMaintenanceCadence { ManualOnly = 0, Daily = 1, Weekly = 2, OnStartup = 3 }
 public enum LibraryMaintenanceMissedRun { Skip = 0, RunOnNextStartup = 1, RunAtNextWindow = 2 }
+public enum LibraryMaintenanceAnalysisMode { Incremental = 0, FullReanalysis = 1 }
+public enum LibraryMaintenanceConflictBehavior { Wait = 0, Skip = 1 }
 [Flags]
 public enum LibraryMaintenanceActions
 {
@@ -19,7 +21,10 @@ public sealed record LibraryMaintenanceProfile(
     LibraryMaintenanceDays Days, TimeSpan StartTime, TimeSpan EndTime,
     LibraryMaintenanceMissedRun MissedRun, LibraryMaintenanceActions Actions,
     int PeriodicQuickScrubDays, DateTime CreatedUtc, DateTime UpdatedUtc,
-    DateTime? LastScheduledUtc = null);
+    DateTime? LastScheduledUtc = null,
+    LibraryMaintenanceAnalysisMode AnalysisMode = LibraryMaintenanceAnalysisMode.Incremental,
+    LibraryMaintenanceConflictBehavior ConflictBehavior = LibraryMaintenanceConflictBehavior.Wait,
+    bool AnalyzeFamilies = false);
 
 public sealed record LibraryMaintenanceProfileView(
     LibraryMaintenanceProfile Profile, string LocationPath, LibraryLocationAvailability Availability,
@@ -29,7 +34,11 @@ public sealed record LibraryMaintenanceRun(
     long Id, long LocationId, LibraryMaintenanceTrigger Trigger, LibraryMaintenanceOutcome Outcome,
     string Stage, DateTime StartedUtc, DateTime? CompletedUtc, long NewFiles, long ChangedFiles,
     long MissingFiles, long MetadataQueued, long ExactProcessed, long VisualProcessed,
-    long IntegrityQueued, long WarningCount, string Details);
+    long IntegrityQueued, long WarningCount, string Details,
+    LibraryMaintenanceActions Actions = LibraryMaintenanceActions.None,
+    LibraryMaintenanceAnalysisMode AnalysisMode = LibraryMaintenanceAnalysisMode.Incremental,
+    LibraryMaintenanceConflictBehavior ConflictBehavior = LibraryMaintenanceConflictBehavior.Wait,
+    bool AnalyzeFamilies = false);
 
 public sealed record LibraryMaintenanceProgress(long RunId, long LocationId, string Stage, string Details);
 
@@ -44,6 +53,7 @@ public interface ILibraryMaintenanceCatalog
     IReadOnlyList<long> GetMaintenanceCandidateFileIds(long runId, LibraryInventoryChangeKind? kind, int limit = 50_000);
     IReadOnlyList<long> GetMaintenanceCandidateFileIdsPage(long runId, LibraryInventoryChangeKind? kind, long afterFileId, int limit = 1_000);
     IReadOnlyList<LibraryEnrichmentCandidate> GetMaintenanceEnrichmentCandidates(long runId, long afterFileId, int limit = 1_000);
+    long PrepareMaintenanceAnalysisCandidates(long runId, LibraryMaintenanceProfile profile);
     IReadOnlyList<long> GetMaintenanceIntegrityFileIds(long runId, LibraryMaintenanceProfile profile, DateTime utcNow, int limit = 50_000);
     IReadOnlyList<long> GetMaintenanceIntegrityFileIdsPage(long runId, LibraryMaintenanceProfile profile, DateTime utcNow, long afterFileId, int limit = 1_000);
     void CompleteMaintenanceRun(LibraryMaintenanceRun run);

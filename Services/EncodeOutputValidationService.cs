@@ -252,7 +252,8 @@ namespace MediaFlux.Services
                 return Failed($"The encoded output file could not be inspected: {ex.Message}");
             }
 
-            long minimumSize = MinimumPlausibleSize(sourceProbe.DurationSeconds);
+            long minimumSize = MinimumPlausibleSize(
+                request.ExpectedDurationSeconds ?? sourceProbe.DurationSeconds);
             if (length < minimumSize)
             {
                 return Failed(
@@ -380,11 +381,12 @@ namespace MediaFlux.Services
 
             string durationError = ValidateDuration(
                 request.Input.Kind,
-                request.Input.Kind == EncodingInputKind.DvdPhysicalConcat
+                request.ExpectedDurationSeconds ??
+                (request.Input.Kind == EncodingInputKind.DvdPhysicalConcat
                     ? request.Input.KnownDurationSeconds ??
                       source.DurationSeconds
                     : source.DurationSeconds ??
-                      request.Input.KnownDurationSeconds,
+                      request.Input.KnownDurationSeconds),
                 output.DurationSeconds);
             if (!string.IsNullOrWhiteSpace(durationError))
                 return durationError;

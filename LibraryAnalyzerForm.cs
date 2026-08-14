@@ -85,13 +85,14 @@ namespace MediaFlux
             BuildVisualFamiliesTab();
             BuildHealthTab();
             BuildRecommendationsTab();
-            BuildStorageOptimizationTab();
+            BuildLibraryPoliciesTab();
             BuildStorageReclamationTab();
             BuildMediaIntegrityTab();
             BuildScheduledMaintenanceTab();
             ConfigurePrimaryContextMenus();
             ConfigurePhase3ContextMenus();
             ConfigureSharedGridLayouts();
+            InitializeHelpNavigation();
             _runtime.Enrichment.ProgressChanged += Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged += Duplicates_ProgressChanged;
             _runtime.VisualSimilarity.ProgressChanged += VisualSimilarity_ProgressChanged;

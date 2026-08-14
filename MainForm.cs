@@ -226,6 +226,7 @@ namespace MediaFlux
             CreateAdvancedVideoControls();
             CreateEncodeInfoPanels();
             InitializeLibraryAnalyzerMenu();
+            InitializeHelpMenu();
 
             // Tools → View History
             var viewHistoryToolStripMenuItem = new ToolStripMenuItem("View History");
@@ -241,6 +242,9 @@ namespace MediaFlux
             toolsToolStripMenuItem.DropDownItems.Insert(2, duplicateManagerToolStripMenuItem);
             toolsToolStripMenuItem.DropDownItems.Insert(3, exportDuplicateReportToolStripMenuItem);
             toolsToolStripMenuItem.DropDownItems.Insert(4, new ToolStripSeparator());
+            var encoderBenchmarkToolStripMenuItem = new ToolStripMenuItem("Encoder Benchmark");
+            encoderBenchmarkToolStripMenuItem.Click += BenchmarkEncodePerformance_Click;
+            toolsToolStripMenuItem.DropDownItems.Insert(5, encoderBenchmarkToolStripMenuItem);
 
             // File → View Error Log
             var viewErrorLogToolStripMenuItem = new ToolStripMenuItem("View Error Log");

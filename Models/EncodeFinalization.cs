@@ -31,6 +31,7 @@ namespace MediaFlux.Models
             Reason = "Legacy MP4 output."
         };
         public MediaProbeResult? SourceProbe { get; init; }
+        public double? ExpectedDurationSeconds { get; init; }
     }
 
     public sealed class EncodeOutputValidationEvidence

@@ -77,7 +77,10 @@ public sealed class StorageReclamationPlannerService
             CategoryTotals = items.GroupBy(item => item.ActionCategory)
                 .Select(group => new StorageReclamationCategoryTotal(group.Key, group.Count(),
                     group.Where(item => item.Included && item.SafetyState == StorageReclamationSafetyState.Ready).Sum(item => item.ExpectedReclaimBytes),
-                    group.Where(item => item.SafetyState == StorageReclamationSafetyState.ReviewRequired).Sum(item => item.ExpectedReclaimBytes)))
+                    group.Where(item => item.SafetyState == StorageReclamationSafetyState.ReviewRequired).Sum(item => item.ExpectedReclaimBytes),
+                    group.Sum(item => item.CurrentSizeBytes),
+                    group.Where(item => item.SafetyState != StorageReclamationSafetyState.Blocked).Sum(item => item.ExpectedReclaimBytes),
+                    SumKnownPostOptimization(group), group.Any(item => item.SavingsAreEstimated)))
                 .OrderBy(item => Priority(item.Category)).ToArray(),
             LocationTotals = items.GroupBy(item => string.IsNullOrWhiteSpace(item.LocationPath) ? "Unassigned location" : item.LocationPath,
                     StringComparer.OrdinalIgnoreCase)
@@ -97,6 +100,8 @@ public sealed class StorageReclamationPlannerService
             FileId = item.FileId, SourcePath = item.SourcePath, LocationPath = item.LocationPath,
             PhysicalIdentityKey = item.PhysicalIdentityKey, ActionCategory = item.ActionCategory,
             SourceSubsystem = item.SourceSubsystem, ExpectedReclaimBytes = item.ExpectedReclaimBytes,
+            CurrentSizeBytes = item.CurrentSizeBytes, EstimatedPostOptimizationBytes = item.EstimatedPostOptimizationBytes,
+            SavingsAreEstimated = item.SavingsAreEstimated,
             Confidence = item.Confidence, SafetyState = item.SafetyState, Reason = item.Reason,
             KeeperFileId = item.KeeperFileId, KeeperPath = item.KeeperPath, ExactGroupId = item.ExactGroupId,
             VisualGroupId = item.VisualGroupId, VisualFamilyId = item.VisualFamilyId, PolicyId = item.PolicyId,
@@ -133,7 +138,10 @@ public sealed class StorageReclamationPlannerService
             UnknownRuntimeCandidateCount = encodes.Count(item => item.EstimatedProcessingHours is not > 0),
             CategoryTotals = plan.Items.GroupBy(item => item.ActionCategory).Select(group => new StorageReclamationCategoryTotal(
                 group.Key, group.Count(), group.Where(item => item.Included && item.SafetyState == StorageReclamationSafetyState.Ready).Sum(item => item.ExpectedReclaimBytes),
-                group.Where(item => item.SafetyState == StorageReclamationSafetyState.ReviewRequired).Sum(item => item.ExpectedReclaimBytes))).ToArray(),
+                group.Where(item => item.SafetyState == StorageReclamationSafetyState.ReviewRequired).Sum(item => item.ExpectedReclaimBytes),
+                group.Sum(item => item.CurrentSizeBytes),
+                group.Where(item => item.SafetyState != StorageReclamationSafetyState.Blocked).Sum(item => item.ExpectedReclaimBytes),
+                SumKnownPostOptimization(group), group.Any(item => item.SavingsAreEstimated))).ToArray(),
             LocationTotals = plan.Items.GroupBy(item => string.IsNullOrWhiteSpace(item.LocationPath) ? "Unassigned location" : item.LocationPath,
                     StringComparer.OrdinalIgnoreCase).Select(group => new StorageReclamationLocationTotal(group.Key, group.Count(),
                     group.Where(item => item.Included && item.SafetyState == StorageReclamationSafetyState.Ready).Sum(item => item.ExpectedReclaimBytes),
@@ -159,6 +167,8 @@ public sealed class StorageReclamationPlannerService
         FileId = item.FileId, SourcePath = item.SourcePath, LocationPath = item.LocationPath,
         PhysicalIdentityKey = item.PhysicalIdentityKey, ActionCategory = item.ActionCategory,
         SourceSubsystem = item.SourceSubsystem, ExpectedReclaimBytes = item.ExpectedReclaimBytes,
+        CurrentSizeBytes = item.CurrentSizeBytes, EstimatedPostOptimizationBytes = item.EstimatedPostOptimizationBytes,
+        SavingsAreEstimated = item.SavingsAreEstimated,
         Confidence = item.Confidence, SafetyState = item.SafetyState, Reason = item.Reason,
         KeeperFileId = item.KeeperFileId, KeeperPath = item.KeeperPath, ExactGroupId = item.ExactGroupId,
         VisualGroupId = item.VisualGroupId, VisualFamilyId = item.VisualFamilyId, PolicyId = item.PolicyId,
@@ -193,6 +203,14 @@ public sealed class StorageReclamationPlannerService
         StorageReclamationActionCategory.Remux => 4,
         _ => 5
     };
+
+    private static long? SumKnownPostOptimization(IEnumerable<StorageReclamationPlanItem> items)
+    {
+        StorageReclamationPlanItem[] values = items.ToArray();
+        return values.All(item => item.EstimatedPostOptimizationBytes.HasValue)
+            ? values.Sum(item => item.EstimatedPostOptimizationBytes!.Value)
+            : null;
+    }
 
     private static string[] BuildWarnings(long requested, long ready, long review, string policyId, StorageReclamationStrategy strategy)
     {

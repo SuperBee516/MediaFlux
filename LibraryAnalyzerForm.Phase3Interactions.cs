@@ -93,9 +93,9 @@ public sealed partial class LibraryAnalyzerForm
             else if (tab == "Duplicates — Families") await RefreshVisualFamiliesAsync();
             else await RefreshVisualGroupsAsync();
         });
-        LibraryAnalyzerGridInteraction.AddMenuItem(_recommendationsMenu, "Open Storage Reclamation", "Reclamation", () =>
+        LibraryAnalyzerGridInteraction.AddMenuItem(_recommendationsMenu, "Open Storage Optimization", "Reclamation", () =>
         {
-            _tabs.SelectedTab = _tabs.TabPages.Cast<TabPage>().First(page => page.Text == "Storage Reclamation");
+            _tabs.SelectedTab = _tabs.TabPages.Cast<TabPage>().First(page => page.Text == "Storage Optimization");
             return Task.CompletedTask;
         });
         _recommendationsMenu.Opening += (_, _) =>
@@ -125,8 +125,12 @@ public sealed partial class LibraryAnalyzerForm
     {
         LibraryAnalyzerGridInteraction.AddMenuItem(_reclamationMenu, "Play Video", "Play", () => { if (SelectedReclamation().SingleOrDefault() is { } item) PlayLibraryVideo(item.SourcePath); return Task.CompletedTask; });
         LibraryAnalyzerGridInteraction.AddMenuItem(_reclamationMenu, "Open Containing Folder", "Folder", () => { OpenContainingFolders(SelectedReclamation().Select(item => item.SourcePath)); return Task.CompletedTask; });
+        LibraryAnalyzerGridInteraction.AddMenuItem(_reclamationMenu, "View Media Information", "MediaDetails", () => { if(SelectedReclamation().SingleOrDefault() is { } item)ShowMediaDetails(item.FileId,item.SourcePath);return Task.CompletedTask; });
         AddCopySubmenu(_reclamationMenu, () => SelectedReclamation().Select(item => (item.FileId, item.SourcePath)));
         LibraryAnalyzerGridInteraction.AddMenuItem(_reclamationMenu, "Protect", "Protect", ToggleSelectedReclamationProtectionAsync);
+        _reclamationMenu.Items.Add(new ToolStripSeparator());
+        LibraryAnalyzerGridInteraction.AddMenuItem(_reclamationMenu, "Add to Encode Queue", "Encode", () => { QueueLibraryFiles(SelectedReclamation().Select(item=>(item.FileId,item.SourcePath)).ToArray());return Task.CompletedTask; });
+        LibraryAnalyzerGridInteraction.AddMenuItem(_reclamationMenu, "Add to Encode Queue With Recommended Preset…", "PresetEncode", QueueSelectedReclamationEncodesAsync);
         _reclamationMenu.Items.Add(new ToolStripSeparator());
         LibraryAnalyzerGridInteraction.AddMenuItem(_reclamationMenu, "Locate in Files", "LocateFiles", async () => { if (SelectedReclamation().SingleOrDefault() is { } item) await LocateFileInFilesAsync(item.FileId, item.SourcePath); });
         LibraryAnalyzerGridInteraction.AddMenuItem(_reclamationMenu, "Locate in Exact Duplicates", "LocateExact", () => LocateReclamationDuplicateAsync("Duplicates — Exact"));
@@ -140,6 +144,9 @@ public sealed partial class LibraryAnalyzerForm
             LibraryCrossNavigationState? navigation = one ? LibraryCrossNavigationState.For(items[0]) : null;
             LibraryGeneralFileSnapshot? state = one ? ResolveGeneralFileSnapshot(items[0].FileId, items[0].SourcePath) : null;
             LibraryAnalyzerGridInteraction.SetMenuState(_reclamationMenu, "Protect", items.Length > 0, state?.IsProtected == true ? "Unprotect" : "Protect");
+            LibraryAnalyzerGridInteraction.SetMenuState(_reclamationMenu,"MediaDetails",items.Length==1);
+            LibraryAnalyzerGridInteraction.SetMenuState(_reclamationMenu,"Encode",items.Any(item=>File.Exists(item.SourcePath)),items.Length>1?"Add Selected to Encode Queue":"Add to Encode Queue");
+            LibraryAnalyzerGridInteraction.SetMenuState(_reclamationMenu,"PresetEncode",items.Any(item=>item.ActionCategory==StorageReclamationActionCategory.PolicyReencode&&item.PolicyQueueIntent!=null));
             LibraryAnalyzerGridInteraction.SetMenuState(_reclamationMenu, "LocateExact", navigation?.ExactDuplicates == true);
             LibraryAnalyzerGridInteraction.SetMenuState(_reclamationMenu, "LocateVisual", navigation?.VisualDuplicates == true);
             LibraryAnalyzerGridInteraction.SetMenuState(_reclamationMenu, "LocateFamily", navigation?.VisualFamily == true);
@@ -341,7 +348,7 @@ public sealed partial class LibraryAnalyzerForm
     {
         StorageReclamationPlanItem[] items = SelectedReclamation();
         bool protect = items.Any(item => ResolveGeneralFileSnapshot(item.FileId, item.SourcePath)?.IsProtected != true);
-        await Task.Run(() => { foreach (StorageReclamationPlanItem item in items) _runtime.AnalysisCatalog.SetFileProtection(item.FileId, protect, protect ? "Protected in Storage Reclamation" : ""); });
+        await Task.Run(() => { foreach (StorageReclamationPlanItem item in items) _runtime.AnalysisCatalog.SetFileProtection(item.FileId, protect, protect ? "Protected in Storage Optimization" : ""); });
         RenderStorageReclamationPage();
     }
 

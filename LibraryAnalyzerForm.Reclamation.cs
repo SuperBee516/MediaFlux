@@ -11,7 +11,9 @@ public sealed partial class LibraryAnalyzerForm
     private readonly ComboBox _reclamationUnit = DropDown();
     private readonly ComboBox _reclamationStrategy = DropDown();
     private readonly ComboBox _reclamationPolicy = DropDown();
+    private readonly ComboBox _reclamationSort = DropDown();
     private readonly DataGridView _reclamationGrid = CreateGrid();
+    private readonly DataGridView _reclamationOpportunitySummary = CreateGrid();
     private readonly Label _reclamationSummary = new() { Dock = DockStyle.Bottom, Height = 72, AutoEllipsis = true, Padding = new Padding(8, 4, 0, 0) };
     private readonly Label _reclamationStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 7, 0, 0) };
     private readonly Label _reclamationPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
@@ -20,19 +22,20 @@ public sealed partial class LibraryAnalyzerForm
     private StorageReclamationPlan? _reclamationPlan;
     private CancellationTokenSource? _reclamationBuildCancellation;
     private int _reclamationPage;
+    private StorageReclamationActionCategory? _reclamationCategoryFilter;
 
     private void BuildStorageReclamationTab()
     {
         _reclamationStore = _reviewOptions.ReclamationPlanStore ?? new StorageReclamationPlanStore(AppPaths.StorageReclamationPlanFile);
-        var tab = new TabPage("Storage Reclamation") { Padding = new Padding(10) };
+        var tab = new TabPage("Storage Optimization") { Padding = new Padding(10) };
         var intro = new Label
         {
             Name = "StorageReclamationIntro", Dock = DockStyle.Top, Height = 46, Padding = new Padding(4),
             ForeColor = LibraryAnalyzerAccentColor,
-            Text = "Build an explainable, non-overlapping plan to reach a storage goal. Planning and selection are advisory; cleanup and encoding require separate explicit handoffs through existing safety workflows."
+            Text = "Find defensible storage opportunities from current catalog evidence. Duplicate savings are exact; re-encode savings are estimates. This view never modifies source files or starts encoding."
         };
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 76, WrapContents = true };
-        actions.Controls.Add(new Label { Text = "Reclaim:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
+        actions.Controls.Add(new Label { Text = "Planning target:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
         actions.Controls.Add(_reclamationTarget);
         _reclamationUnit.Width = 70; _reclamationUnit.Items.AddRange(new object[] { "GB", "TB" }); _reclamationUnit.SelectedIndex = 0;
         actions.Controls.Add(_reclamationUnit);
@@ -44,24 +47,28 @@ public sealed partial class LibraryAnalyzerForm
         actions.Controls.Add(new Label { Text = "Policy:", AutoSize = true, Padding = new Padding(8, 7, 0, 0) });
         _reclamationPolicy.Width = 220;
         actions.Controls.Add(_reclamationPolicy);
-        AddButton(actions, "Build Plan", async (_, _) => await BuildStorageReclamationPlanAsync());
+        actions.Controls.Add(new Label { Text = "Prioritize:", AutoSize = true, Padding = new Padding(8, 7, 0, 0) });
+        _reclamationSort.Width=165;_reclamationSort.Items.AddRange(new object[]{"Largest savings","Largest current size","File / group count","Location"});_reclamationSort.SelectedIndex=0;_reclamationSort.SelectedIndexChanged+=(_,_)=>{_reclamationPage=0;RenderStorageReclamationPage();};actions.Controls.Add(_reclamationSort);
+        AddButton(actions, "Refresh Opportunities", async (_, _) => await BuildStorageReclamationPlanAsync());
         AddButton(actions, "Cancel", (_, _) => _reclamationBuildCancellation?.Cancel());
         AddButton(actions, "Previous", (_, _) => { if (_reclamationPage > 0) { _reclamationPage--; RenderStorageReclamationPage(); } });
-        AddButton(actions, "Next", (_, _) => { if (_reclamationPlan != null && (_reclamationPage + 1L) * PageSize < _reclamationPlan.Items.Count) { _reclamationPage++; RenderStorageReclamationPage(); } });
+        AddButton(actions, "Next", (_, _) => { if (_reclamationPlan != null && (_reclamationPage + 1L) * PageSize < VisibleReclamationItemCount()) { _reclamationPage++; RenderStorageReclamationPage(); } });
         actions.Controls.Add(_reclamationPageLabel);
-        AddButton(actions, "Preview selected cleanup…", async (_, _) => await PreviewSelectedReclamationCleanupAsync());
-        AddButton(actions, "Send selected encodes to queue", async (_, _) => await QueueSelectedReclamationEncodesAsync());
+        AddButton(actions, "Open selected duplicate workflow", async (_, _) => await OpenSelectedOptimizationWorkflowAsync());
+        AddButton(actions, "Add selected encodes to queue", async (_, _) => await QueueSelectedReclamationEncodesAsync());
+        AddButton(actions, "Clear category filter", (_, _) => { _reclamationCategoryFilter=null;_reclamationPage=0;RenderStorageReclamationPage(); });
         AddButton(actions, "View breakdown…", (_, _) => ShowReclamationBreakdown());
 
         _reclamationGrid.Name = "StorageReclamationGrid";
         _reclamationGrid.ReadOnly = false;
-        _reclamationGrid.MultiSelect = false;
+        _reclamationGrid.MultiSelect = true;
         _reclamationGrid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Include", HeaderText = "Include", Width = 58 });
         AddReadOnlyColumn("Action", "Action", 160);
         AddReadOnlyColumn("Safety", "Safety", 105);
         AddReadOnlyColumn("File", "File", 220);
         AddReadOnlyColumn("CurrentSize", "Current size", 95);
-        AddReadOnlyColumn("Reclaim", "Projected reclaim", 110);
+        AddReadOnlyColumn("PostSize", "Estimated post-size", 115);
+        AddReadOnlyColumn("Reclaim", "Potential savings", 125);
         AddReadOnlyColumn("Confidence", "Confidence", 85);
         AddReadOnlyColumn("Runtime", "Encode time", 100);
         AddReadOnlyColumn("Efficiency", "Savings / hour", 110);
@@ -73,13 +80,23 @@ public sealed partial class LibraryAnalyzerForm
         _reclamationGrid.CurrentCellDirtyStateChanged += (_, _) => { if (_reclamationGrid.IsCurrentCellDirty) _reclamationGrid.CommitEdit(DataGridViewDataErrorContexts.Commit); };
         _reclamationGrid.CellValueChanged += ReclamationGrid_CellValueChanged;
 
-        tab.Controls.Add(_reclamationGrid);
+        _reclamationOpportunitySummary.Name = "StorageOptimizationSummary";
+        AddSummaryColumn("Opportunity", 220);AddSummaryColumn("Count", 75);AddSummaryColumn("Current", 105);
+        AddSummaryColumn("Post", 115);AddSummaryColumn("Savings", 125);AddSummaryColumn("Locations", 280, true);
+        _reclamationOpportunitySummary.CellDoubleClick += (_,e)=>{if(e.RowIndex>=0&&_reclamationOpportunitySummary.Rows[e.RowIndex].Tag is StorageReclamationCategoryTotal total){_reclamationCategoryFilter=total.Category;_reclamationPage=0;RenderStorageReclamationPage();}};
+
+        var split=new SplitContainer{Dock=DockStyle.Fill,Orientation=Orientation.Horizontal,SplitterDistance=50};
+        split.Resize+=(_,_)=>{if(split.Height>220&&split.SplitterDistance<100)split.SplitterDistance=Math.Min(145,split.Height-75);};
+        split.Panel1.Controls.Add(_reclamationOpportunitySummary);split.Panel2.Controls.Add(_reclamationGrid);
+
+        tab.Controls.Add(split);
         tab.Controls.Add(_reclamationStatus);
         tab.Controls.Add(_reclamationSummary);
         tab.Controls.Add(intro);
         tab.Controls.Add(actions);
         _tabs.TabPages.Add(tab);
         ReloadReclamationPolicies();
+        _reclamationPolicy.SelectedItem=_reclamationPolicy.Items.Cast<ReclamationPolicyChoice>().FirstOrDefault(item=>item.Policy?.Id==LibraryPolicyBuiltIns.GeneralArchiveId)??_reclamationPolicy.Items[0];
         _reclamationPlan = _reclamationStore.Load();
         RenderStorageReclamationPage();
 
@@ -89,6 +106,7 @@ public sealed partial class LibraryAnalyzerForm
             if (fill) column.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             _reclamationGrid.Columns.Add(column);
         }
+        void AddSummaryColumn(string name,int width,bool fill=false){var column=new DataGridViewTextBoxColumn{Name=name,HeaderText=name,Width=width,ReadOnly=true};if(fill)column.AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill;_reclamationOpportunitySummary.Columns.Add(column);}
     }
 
     private void ReloadReclamationPolicies()
@@ -112,7 +130,7 @@ public sealed partial class LibraryAnalyzerForm
             StorageReclamationStrategy strategy = (_reclamationStrategy.SelectedItem as ReclamationStrategyChoice)?.Value ?? StorageReclamationStrategy.SafestFirst;
             LibraryPolicyDefinition? policy = (_reclamationPolicy.SelectedItem as ReclamationPolicyChoice)?.Policy;
             LibraryPolicyCapabilitySnapshot capabilities = _reviewOptions.PolicyCapabilities ?? new LibraryPolicyCapabilitySnapshot();
-            _reclamationStatus.Text = "Building a bounded, non-overlapping plan from current catalog evidence…";
+            _reclamationStatus.Text = "Building a bounded, non-overlapping opportunity snapshot from current catalog evidence…";
             IReadOnlyList<StorageReclamationOpportunity> opportunities = await Task.Run(() =>
                 _runtime.ReclamationOpportunities.Collect(strategy, policy, capabilities, token,
                     runtimeEstimator: _reviewOptions.RuntimeEstimator), token);
@@ -123,7 +141,7 @@ public sealed partial class LibraryAnalyzerForm
             _reclamationPage = 0;
             _reclamationStore?.Save(plan);
             RenderStorageReclamationPage();
-            _reclamationStatus.Text = $"Plan {plan.PlanId[..8]} built from current catalog evidence. No file action was performed.";
+            _reclamationStatus.Text = $"Opportunity snapshot {plan.PlanId[..8]} refreshed from current catalog evidence. No file action was performed.";
         }
         catch (OperationCanceledException)
         {
@@ -138,30 +156,48 @@ public sealed partial class LibraryAnalyzerForm
         _reclamationGrid.Rows.Clear();
         if (_reclamationPlan == null)
         {
-            _reclamationSummary.Text = "No saved plan. Enter a target and build a plan.";
+            _reclamationSummary.Text = "No saved opportunity snapshot. Choose a target and refresh opportunities.";
             _reclamationPageLabel.Text = "";
             return;
         }
-        StorageReclamationPlanItem[] page = _reclamationPlan.Items.Skip(_reclamationPage * PageSize).Take(PageSize).ToArray();
+        IEnumerable<StorageReclamationPlanItem> visible=_reclamationPlan.Items;
+        if(_reclamationCategoryFilter.HasValue)visible=visible.Where(item=>item.ActionCategory==_reclamationCategoryFilter.Value);
+        IOrderedEnumerable<StorageReclamationPlanItem> ordered=_reclamationSort.SelectedIndex switch{1=>visible.OrderByDescending(item=>item.CurrentSizeBytes),2=>visible.OrderBy(item=>item.ActionCategory).ThenByDescending(item=>item.ExpectedReclaimBytes),3=>visible.OrderBy(item=>item.LocationPath,StringComparer.OrdinalIgnoreCase).ThenByDescending(item=>item.ExpectedReclaimBytes),_=>visible.OrderByDescending(item=>item.ExpectedReclaimBytes)};
+        StorageReclamationPlanItem[] allVisible=ordered.ThenBy(item=>item.SourcePath,StringComparer.OrdinalIgnoreCase).ToArray();
+        StorageReclamationPlanItem[] page = allVisible.Skip(_reclamationPage * PageSize).Take(PageSize).ToArray();
         foreach (StorageReclamationPlanItem item in page)
         {
             string keeper = item.ActionCategory == StorageReclamationActionCategory.PolicyReencode
                 ? item.PolicyQueueIntent == null ? item.PolicyName : $"{item.PolicyQueueIntent.ProposedCodec} / {item.PolicyQueueIntent.TargetContainer}"
                 : item.KeeperPath;
             int index = _reclamationGrid.Rows.Add(item.Included, ReclamationActionLabel(item.ActionCategory), ReclamationSafetyLabel(item.SafetyState),
-                Path.GetFileName(item.SourcePath), File.Exists(item.SourcePath) ? FormatBytes(new FileInfo(item.SourcePath).Length) : "Unavailable",
-                FormatBytes(item.ExpectedReclaimBytes), item.Confidence, FormatRuntimeHours(item.EstimatedProcessingHours),
+                Path.GetFileName(item.SourcePath), FormatBytes(item.CurrentSizeBytes),
+                item.EstimatedPostOptimizationBytes.HasValue?FormatBytes(item.EstimatedPostOptimizationBytes.Value):"Unknown",
+                $"{(item.SavingsAreEstimated?"Estimated":"Exact")} · {FormatBytes(item.ExpectedReclaimBytes)}", item.Confidence, FormatRuntimeHours(item.EstimatedProcessingHours),
                 FormatEfficiency(item.SavingsPerComputeHourGb), item.RuntimeConfidence == RuntimeEstimateConfidence.Unknown ? "Unknown" : item.RuntimeConfidence,
                 keeper, item.Reason, item.SourceSubsystem, item.SourcePath);
             _reclamationGrid.Rows[index].Tag = item;
             _reclamationGrid.Rows[index].Cells["Include"].ReadOnly = item.SafetyState != StorageReclamationSafetyState.Ready;
             if (item.SafetyState != StorageReclamationSafetyState.Ready) _reclamationGrid.Rows[index].DefaultCellStyle.ForeColor = Color.DarkOrange;
         }
-        long first = _reclamationPlan.Items.Count == 0 ? 0 : (long)_reclamationPage * PageSize + 1;
-        long last = Math.Min(_reclamationPlan.Items.Count, (long)(_reclamationPage + 1) * PageSize);
-        _reclamationPageLabel.Text = _reclamationPlan.Items.Count == 0 ? "No items" : $"{first:N0}–{last:N0} of {_reclamationPlan.Items.Count:N0}";
+        long first = allVisible.Length == 0 ? 0 : (long)_reclamationPage * PageSize + 1;
+        long last = Math.Min(allVisible.Length, (long)(_reclamationPage + 1) * PageSize);
+        _reclamationPageLabel.Text = allVisible.Length == 0 ? "No items" : $"{first:N0}–{last:N0} of {allVisible.Length:N0}";
+        RenderStorageOptimizationSummary();
         UpdateReclamationSummary();
         RefreshStorageReclamationStaleness();
+    }
+
+    private void RenderStorageOptimizationSummary()
+    {
+        _reclamationOpportunitySummary.Rows.Clear();if(_reclamationPlan==null)return;
+        IEnumerable<StorageReclamationCategoryTotal> totals=_reclamationSort.SelectedIndex switch{1=>_reclamationPlan.CategoryTotals.OrderByDescending(item=>item.CurrentBytes),2=>_reclamationPlan.CategoryTotals.OrderByDescending(item=>item.ItemCount),3=>_reclamationPlan.CategoryTotals.OrderBy(item=>ReclamationActionLabel(item.Category),StringComparer.OrdinalIgnoreCase),_=>_reclamationPlan.CategoryTotals.OrderByDescending(item=>item.PotentialSavingsBytes)};
+        foreach(StorageReclamationCategoryTotal total in totals)
+        {
+            StorageReclamationPlanItem[] categoryItems=_reclamationPlan.Items.Where(item=>item.ActionCategory==total.Category).ToArray();string[] allLocations=categoryItems.Select(item=>item.LocationPath).Where(path=>!string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();string locations=string.Join(", ",allLocations.Take(4))+(allLocations.Length>4?$" +{allLocations.Length-4:N0} more":"");
+            int groups=total.Category switch{StorageReclamationActionCategory.ExactDuplicateCleanup=>categoryItems.Where(item=>item.ExactGroupId.HasValue).Select(item=>item.ExactGroupId).Distinct().Count(),StorageReclamationActionCategory.ReviewedVisualFamilyCleanup=>categoryItems.Where(item=>item.VisualFamilyId.HasValue).Select(item=>item.VisualFamilyId).Distinct().Count(),StorageReclamationActionCategory.ReviewedVisualDuplicateCleanup=>categoryItems.Where(item=>item.VisualGroupId.HasValue).Select(item=>item.VisualGroupId).Distinct().Count(),_=>0};string count=groups>0?$"{total.ItemCount:N0} files / {groups:N0} groups":$"{total.ItemCount:N0} files";
+            int row=_reclamationOpportunitySummary.Rows.Add(ReclamationActionLabel(total.Category),count,FormatBytes(total.CurrentBytes),total.EstimatedPostOptimizationBytes.HasValue?FormatBytes(total.EstimatedPostOptimizationBytes.Value):"Unknown",$"{(total.IncludesEstimatedSavings?"Estimated":"Exact")} · {FormatBytes(total.PotentialSavingsBytes)}",locations);_reclamationOpportunitySummary.Rows[row].Tag=total;
+        }
     }
 
     private void ShowReclamationBreakdown()
@@ -205,113 +241,26 @@ public sealed partial class LibraryAnalyzerForm
             $"Efficiency {FormatEfficiency(_reclamationPlan.SavingsPerComputeHourGb)}";
     }
 
-    private async Task PreviewSelectedReclamationCleanupAsync()
-    {
-        if (_reclamationPlan == null) return;
-        StorageReclamationPlanItem[] selected = _reclamationPlan.Items.Where(item => item.Included && item.IsCurrentlyExecutable &&
-            item.ActionCategory is StorageReclamationActionCategory.ExactDuplicateCleanup or StorageReclamationActionCategory.ReviewedVisualFamilyCleanup or StorageReclamationActionCategory.ReviewedVisualDuplicateCleanup).ToArray();
-        if (selected.Length == 0) { MessageBox.Show(this, "No ready cleanup items are included in this plan.", "Storage Reclamation", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-        string warning = $"Selected cleanup preview\r\n\r\n{selected.Length:N0} files · {FormatBytes(selected.Sum(item => item.ExpectedReclaimBytes))} projected\r\n\r\n" +
-                         "Current evidence will be rebuilt and the existing exact/visual cleanup services will revalidate every item. Changed, protected, missing, stale, or keeper-mismatched items will be excluded.\r\n\r\nContinue to final cleanup confirmation?";
-        if (_cleanupOptions.PreferredAction == DuplicateCleanupAction.PermanentDelete)
-            warning = "WARNING: THE CONFIGURED CLEANUP ACTION IS PERMANENT DELETE.\r\n\r\n" + warning;
-        warning = warning.Replace("Continue to final cleanup confirmation?", $"Execute the currently valid selected items using {CleanupActionLabel(_cleanupOptions.PreferredAction)}?");
-        if (MessageBox.Show(this, warning, "Storage Reclamation Cleanup Preview", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-        await ExecuteSelectedReclamationCleanupAsync(selected);
-    }
+    private int VisibleReclamationItemCount()=>_reclamationPlan?.Items.Count(item=>!_reclamationCategoryFilter.HasValue||item.ActionCategory==_reclamationCategoryFilter.Value)??0;
 
-    private async Task ExecuteSelectedReclamationCleanupAsync(IReadOnlyList<StorageReclamationPlanItem> selected)
+    private async Task OpenSelectedOptimizationWorkflowAsync()
     {
-        string quarantine = _cleanupOptions.QuarantineFolder;
-        if (_cleanupOptions.PreferredAction == DuplicateCleanupAction.Quarantine && !Directory.Exists(quarantine))
-        {
-            MessageBox.Show(this, "The configured quarantine folder is unavailable. No files were changed.", "Storage Reclamation", MessageBoxButtons.OK, MessageBoxIcon.Warning); return;
-        }
-        try
-        {
-            int succeeded = 0, excluded = 0, failed = 0;
-            long reclaimed = 0;
-            ExactCleanupCandidate[] exact = selected.Where(item => item.ActionCategory == StorageReclamationActionCategory.ExactDuplicateCleanup)
-                .Select(item => new ExactCleanupCandidate(item.ExactGroupId!.Value, item.FileId, item.KeeperFileId!.Value, item.ExpectedReclaimBytes)).ToArray();
-            if (exact.Length > 0)
-            {
-                HashSet<(long GroupId, long FileId)> valid = _runtime.DuplicateCleanup.GetEligibleCandidates(50_000)
-                    .Select(item => (item.GroupId, item.FileId)).ToHashSet();
-                ExactCleanupCandidate[] currentExact = exact.Where(item => valid.Contains((item.GroupId, item.FileId))).ToArray();
-                excluded += exact.Length - currentExact.Length;
-                if (currentExact.Length > 0)
-                {
-                    DuplicateCleanupPlanSummary plan = await Task.Run(() => _runtime.DuplicateCleanup.CreatePlanForCandidates(currentExact, _cleanupOptions.PreferredAction, quarantine));
-                    DuplicateCleanupExecutionResult result = await _runtime.DuplicateCleanup.ExecutePlanAsync(plan.PlanId);
-                    succeeded += result.Succeeded; excluded += result.Excluded; failed += result.Failed; reclaimed += result.ReclaimedBytes;
-                }
-            }
-            VisualCleanupProposalItem[] family = RebuildVisualSelections(selected, family: true);
-            excluded += selected.Count(item => item.ActionCategory == StorageReclamationActionCategory.ReviewedVisualFamilyCleanup) - family.Length;
-            if (family.Length > 0)
-            {
-                VisualCleanupPlanRecord plan = await Task.Run(() => _runtime.VisualDuplicateCleanup.CreatePlan(family, _cleanupOptions.PreferredAction, quarantine, allowUnreviewed: true, minimumConfidence: 0));
-                DuplicateCleanupExecutionResult result = await _runtime.VisualDuplicateCleanup.ExecutePlanAsync(plan.PlanId);
-                succeeded += result.Succeeded; excluded += result.Excluded; failed += result.Failed; reclaimed += result.ReclaimedBytes;
-            }
-            VisualCleanupProposalItem[] pairs = RebuildVisualSelections(selected, family: false);
-            excluded += selected.Count(item => item.ActionCategory == StorageReclamationActionCategory.ReviewedVisualDuplicateCleanup) - pairs.Length;
-            if (pairs.Length > 0)
-            {
-                VisualCleanupPlanRecord plan = await Task.Run(() => _runtime.VisualDuplicateCleanup.CreatePlan(pairs, _cleanupOptions.PreferredAction, quarantine));
-                DuplicateCleanupExecutionResult result = await _runtime.VisualDuplicateCleanup.ExecutePlanAsync(plan.PlanId);
-                succeeded += result.Succeeded; excluded += result.Excluded; failed += result.Failed; reclaimed += result.ReclaimedBytes;
-            }
-            if (_reclamationPlan is { } planToUpdate)
-            {
-                _reclamationPlan = StorageReclamationPlannerService.RecordActuallyReclaimed(planToUpdate, reclaimed);
-                _reclamationStore?.Save(_reclamationPlan);
-                UpdateReclamationSummary();
-            }
-            MessageBox.Show(this, $"Cleanup handoff finished.\r\n\r\nSucceeded: {succeeded:N0}\r\nExcluded by revalidation: {excluded:N0}\r\nFailed: {failed:N0}\r\nActually reclaimed: {FormatBytes(reclaimed)}\r\n\r\nRescan affected locations before rebuilding the plan.",
-                "Storage Reclamation", MessageBoxButtons.OK, failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-            _runtime.PolicyEvaluation.Invalidate();
-            RefreshStorageReclamationStaleness();
-        }
-        catch (Exception ex) { ShowError("The selected cleanup handoff could not be completed. Existing cleanup safeguards remained authoritative.", ex); }
-    }
-
-    private VisualCleanupProposalItem[] RebuildVisualSelections(IReadOnlyList<StorageReclamationPlanItem> selected, bool family)
-    {
-        var result = new List<VisualCleanupProposalItem>();
-        StorageReclamationPlanItem[] requested = selected.Where(item => family
-            ? item.ActionCategory == StorageReclamationActionCategory.ReviewedVisualFamilyCleanup
-            : item.ActionCategory == StorageReclamationActionCategory.ReviewedVisualDuplicateCleanup).ToArray();
-        if (family)
-        {
-            foreach (IGrouping<long, StorageReclamationPlanItem> group in requested.Where(item => item.VisualFamilyId.HasValue).GroupBy(item => item.VisualFamilyId!.Value))
-            {
-                VisualFamilyCleanupProposal current = _runtime.VisualFamilies.BuildCleanupProposal(group.Key);
-                HashSet<long> fileIds = group.Select(item => item.FileId).ToHashSet();
-                result.AddRange(current.Items.Where(item => fileIds.Contains(item.Candidate.FileId)));
-            }
-        }
-        else
-        {
-            long[] groupIds = requested.Where(item => item.VisualGroupId.HasValue).Select(item => item.VisualGroupId!.Value).Distinct().ToArray();
-            if (groupIds.Length > 0)
-            {
-                VisualCleanupProposal current = _runtime.VisualDuplicateCleanup.BuildProposal(groupIds: groupIds, maximumItems: Math.Min(10_000, groupIds.Length));
-                HashSet<long> fileIds = requested.Select(item => item.FileId).ToHashSet();
-                result.AddRange(current.Items.Where(item => fileIds.Contains(item.Candidate.FileId)));
-            }
-        }
-        return result.GroupBy(item => item.Candidate.FileId).Select(group => group.First()).ToArray();
+        StorageReclamationPlanItem? item=SelectedReclamation().FirstOrDefault(value=>value.ActionCategory is StorageReclamationActionCategory.ExactDuplicateCleanup or StorageReclamationActionCategory.ReviewedVisualDuplicateCleanup or StorageReclamationActionCategory.ReviewedVisualFamilyCleanup);
+        if(item==null){MessageBox.Show(this,"Select a duplicate opportunity first.","Storage Optimization",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
+        _reclamationGrid.ClearSelection();foreach(DataGridViewRow row in _reclamationGrid.Rows)if(row.Tag is StorageReclamationPlanItem candidate&&candidate.ItemId==item.ItemId)row.Selected=true;
+        string tab=item.ExactGroupId.HasValue?"Duplicates — Exact":item.VisualFamilyId.HasValue?"Duplicates — Families":"Duplicates — Visual";
+        await LocateReclamationDuplicateAsync(tab);
     }
 
     private async Task QueueSelectedReclamationEncodesAsync()
     {
         if (_reclamationPlan == null || _reviewOptions.AddPolicyCandidatesToEncodeQueue == null) return;
-        IReadOnlyList<StorageReclamationPlanItem> selected = StorageReclamationQueueOrdering.GetIncludedPolicyItems(_reclamationPlan);
-        if (selected.Count == 0) { MessageBox.Show(this, "No ready policy re-encode items are included in this plan.", "Storage Reclamation", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+        StorageReclamationPlanItem[] rowSelection=SelectedReclamation().Where(item=>item.ActionCategory==StorageReclamationActionCategory.PolicyReencode&&item.PolicyQueueIntent!=null).ToArray();
+        IReadOnlyList<StorageReclamationPlanItem> selected = rowSelection.Length>0?rowSelection:StorageReclamationQueueOrdering.GetIncludedPolicyItems(_reclamationPlan);
+        if (selected.Count == 0) { MessageBox.Show(this, "Select one or more ready re-encode opportunities first.", "Storage Optimization", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
         LibraryPolicyStore store = _reviewOptions.PolicyStore ?? new LibraryPolicyStore(AppPaths.LibraryPolicyFile);
         LibraryPolicyDefinition? policy = store.LoadAll().FirstOrDefault(item => item.Id.Equals(_reclamationPlan.PolicyId, StringComparison.OrdinalIgnoreCase));
-        if (policy == null) { MessageBox.Show(this, "The policy used by this plan no longer exists. Rebuild the plan.", "Storage Reclamation", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+        if (policy == null) { MessageBox.Show(this, "The policy used by this plan no longer exists. Rebuild the opportunities.", "Storage Optimization", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
         LibraryPolicyCapabilitySnapshot capabilities = _reviewOptions.PolicyCapabilities ?? new LibraryPolicyCapabilitySnapshot();
         IReadOnlyList<LibraryPolicyEvaluationResult> current = await Task.Run(() => _runtime.PolicyEvaluation.EvaluateForPlanning(policy, capabilities, false));
         Dictionary<long, LibraryPolicyEvaluationResult> ready = current.Where(item => item.State == LibraryPolicyComplianceState.OptimizationCandidate && item.SuggestedAction == LibraryPolicySuggestedAction.Reencode)
@@ -320,9 +269,9 @@ public sealed partial class LibraryAnalyzerForm
                 PolicyIntentStillMatches(item.PolicyQueueIntent!, result, policy))
             .Select(item => item.PolicyQueueIntent!).ToArray();
         int excluded = selected.Count - queue.Length;
-        if (queue.Length == 0) { MessageBox.Show(this, "All selected encode opportunities changed or became unavailable. Rebuild the plan.", "Storage Reclamation", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+        if (queue.Length == 0) { MessageBox.Show(this, "All selected encode opportunities changed or became unavailable. Refresh the opportunities.", "Storage Optimization", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
         if (MessageBox.Show(this, $"Add {queue.Length:N0} revalidated policy item(s) to the normal Encode queue?\r\n\r\nEncoding will not start. Global settings will not change. {excluded:N0} stale item(s) will be excluded.",
-                "Storage Reclamation Encode Handoff", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                "Storage Optimization Encode Handoff", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         await _reviewOptions.AddPolicyCandidatesToEncodeQueue(queue);
         _reclamationStatus.Text = $"Added {queue.Length:N0} revalidated policy item(s) to the normal Encode queue; encoding was not started. {excluded:N0} stale item(s) excluded.";
     }
@@ -363,7 +312,7 @@ public sealed partial class LibraryAnalyzerForm
         StorageReclamationActionCategory.ExactDuplicateCleanup => "Exact duplicate cleanup",
         StorageReclamationActionCategory.ReviewedVisualFamilyCleanup => "Reviewed visual family",
         StorageReclamationActionCategory.ReviewedVisualDuplicateCleanup => "Reviewed visual duplicate",
-        StorageReclamationActionCategory.PolicyReencode => "Policy re-encode",
+        StorageReclamationActionCategory.PolicyReencode => "Large / inefficient re-encode",
         StorageReclamationActionCategory.Remux => "Remux",
         _ => "Review required"
     };

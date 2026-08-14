@@ -324,7 +324,9 @@ namespace MediaFlux.Services
                 request.CopyDataStreams,
                 request.CopyAttachments,
                 request.ContainerCompatibilityConfirmed,
-                request.ContainerDecisionCallback);
+                request.ContainerDecisionCallback,
+                request.SampleStart,
+                request.SampleDuration);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -479,7 +481,9 @@ namespace MediaFlux.Services
             bool copyDataStreams = true,
             bool copyAttachments = true,
             bool containerCompatibilityConfirmed = false,
-            Action<OutputContainerDecision>? containerDecisionCallback = null)
+            Action<OutputContainerDecision>? containerDecisionCallback = null,
+            TimeSpan? sampleStart = null,
+            TimeSpan? sampleDuration = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -506,7 +510,9 @@ namespace MediaFlux.Services
                 copyDataStreams,
                 copyAttachments,
                 containerCompatibilityConfirmed,
-                containerDecisionCallback);
+                containerDecisionCallback,
+                sampleStart,
+                sampleDuration);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -534,7 +540,9 @@ namespace MediaFlux.Services
             bool copyDataStreams = true,
             bool copyAttachments = true,
             bool containerCompatibilityConfirmed = false,
-            Action<OutputContainerDecision>? containerDecisionCallback = null)
+            Action<OutputContainerDecision>? containerDecisionCallback = null,
+            TimeSpan? sampleStart = null,
+            TimeSpan? sampleDuration = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -621,7 +629,9 @@ namespace MediaFlux.Services
             }
 
             // Total duration once for progress and target bitrate math
-            TimeSpan totalDuration = inputSource.KnownDurationSeconds is > 0
+            TimeSpan totalDuration = sampleDuration is { } requestedSample && requestedSample > TimeSpan.Zero
+                ? requestedSample
+                : inputSource.KnownDurationSeconds is > 0
                 ? TimeSpan.FromSeconds(inputSource.KnownDurationSeconds.Value)
                 : GetVideoDuration(input);
             if (totalDuration <= TimeSpan.Zero)
@@ -646,7 +656,9 @@ namespace MediaFlux.Services
                 forceMp4CompatibleAudio,
                 totalDuration,
                 qualityValue,
-                encoderSelection);
+                encoderSelection,
+                sampleStart,
+                sampleDuration);
 
             string pipelineDiagnostic = DescribeVideoPipeline(
                 inputSource,
@@ -786,7 +798,8 @@ namespace MediaFlux.Services
                         CopyDataStreams = allowDataCopy,
                         CopyAttachments = allowAttachmentCopy,
                         ContainerDecision = containerDecision,
-                        SourceProbe = sourceProbe
+                        SourceProbe = sourceProbe,
+                        ExpectedDurationSeconds = sampleDuration?.TotalSeconds
                     },
                     finalizationStatusCallback,
                     cancellationToken).ConfigureAwait(false);
@@ -1015,7 +1028,9 @@ namespace MediaFlux.Services
             bool forceMp4CompatibleAudio = false,
             TimeSpan knownDuration = default,
             int? qualityValue = null,
-            VideoEncoderSelection? encoderSelection = null)
+            VideoEncoderSelection? encoderSelection = null,
+            TimeSpan? sampleStart = null,
+            TimeSpan? sampleDuration = null)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -1064,6 +1079,8 @@ namespace MediaFlux.Services
                 },
                 ForceMp4CompatibleAudio = forceMp4CompatibleAudio,
                 KnownDuration = knownDuration,
+                SampleStart = sampleStart,
+                SampleDuration = sampleDuration,
                 NvencHighBitDepthOutputSupported =
                     supportsGpuResidentHighBitDepthOutput
             };

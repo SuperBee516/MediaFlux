@@ -34,7 +34,7 @@ public sealed class StorageReclamationUiTests : IDisposable
                     ReclamationPlanStore: new StorageReclamationPlanStore(planPath)));
                 form.Show();
                 TabControl tabs = Field<TabControl>(form, "_tabs");
-                TabPage tab = tabs.TabPages.Cast<TabPage>().Single(item => item.Text == "Storage Reclamation");
+                TabPage tab = tabs.TabPages.Cast<TabPage>().Single(item => item.Text == "Storage Optimization");
                 tabs.SelectedTab = tab;
                 NumericUpDown target = Field<NumericUpDown>(form, "_reclamationTarget");
                 target.Value = 0;
@@ -42,6 +42,15 @@ public sealed class StorageReclamationUiTests : IDisposable
                 Pump(build);
                 DataGridView grid = Field<DataGridView>(form, "_reclamationGrid");
                 Assert.DoesNotContain(grid.Rows.Cast<DataGridViewRow>(), row => !row.IsNewRow);
+                Assert.True(grid.MultiSelect);
+                Assert.Contains(grid.Columns.Cast<DataGridViewColumn>(),column=>column.Name=="PostSize");
+                DataGridView summary=Field<DataGridView>(form,"_reclamationOpportunitySummary");
+                Assert.Contains(summary.Columns.Cast<DataGridViewColumn>(),column=>column.Name=="Current");
+                Assert.Contains(summary.Columns.Cast<DataGridViewColumn>(),column=>column.Name=="Savings");
+                ComboBox policy=Field<ComboBox>(form,"_reclamationPolicy");Assert.Contains("General Archive",policy.SelectedItem?.ToString());
+                ContextMenuStrip menu=Field<ContextMenuStrip>(form,"_reclamationMenu");string[] names=menu.Items.Cast<ToolStripItem>().Select(item=>item.Name??"").ToArray();
+                Assert.Contains("MediaDetails",names);Assert.Contains("Encode",names);Assert.Contains("PresetEncode",names);Assert.Contains("LocateExact",names);Assert.Contains("LocateVisual",names);Assert.Contains("LocateFamily",names);Assert.DoesNotContain(names,name=>name.Contains("Cleanup",StringComparison.OrdinalIgnoreCase));
+                Assert.DoesNotContain(tab.Controls.OfType<Control>().SelectMany(Descendants).OfType<Button>(),button=>button.Text.Contains("cleanup",StringComparison.OrdinalIgnoreCase));
                 Assert.True(File.Exists(planPath));
                 StorageReclamationPlan saved = Assert.IsType<StorageReclamationPlan>(new StorageReclamationPlanStore(planPath).Load());
                 Assert.Equal(0, saved.RequestedReclaimBytes);
@@ -52,7 +61,7 @@ public sealed class StorageReclamationUiTests : IDisposable
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Storage Reclamation UI smoke test timed out.");
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Storage Optimization UI smoke test timed out.");
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
@@ -72,6 +81,7 @@ public sealed class StorageReclamationUiTests : IDisposable
         public Task<IReadOnlyList<ulong>> ExtractAsync(VisualFingerprintCandidate candidate, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<ulong>>(Array.Empty<ulong>());
     }
     private static T Field<T>(object instance, string name) => (T)(instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(instance) ?? throw new MissingFieldException(name));
+    private static IEnumerable<Control> Descendants(Control root){foreach(Control child in root.Controls){yield return child;foreach(Control nested in Descendants(child))yield return nested;}}
     private static Task InvokeTask(object instance, string name) => (Task)(instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(instance, null) ?? throw new MissingMethodException(name));
     private static void Pump(Task task)
     {

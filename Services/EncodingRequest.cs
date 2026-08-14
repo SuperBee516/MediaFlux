@@ -36,5 +36,7 @@ namespace MediaFlux.Services
         public Action<string>? OutputPathCallback { get; init; }
         public Action<string>? StagingPathCallback { get; init; }
         public Action<string>? FinalizationStatusCallback { get; init; }
+        public TimeSpan? SampleStart { get; init; }
+        public TimeSpan? SampleDuration { get; init; }
     }
 }

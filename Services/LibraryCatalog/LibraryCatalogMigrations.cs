@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 13;
+        public const int CurrentVersion = 14;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -752,6 +752,18 @@ namespace MediaFlux.Services.LibraryCatalog
                         ON visual_cleanup_plan_items(plan_id,status,group_id,file_id);
                     CREATE INDEX ix_visual_cleanup_items_family
                         ON visual_cleanup_plan_items(family_id,plan_id);
+                    """),
+                new LibraryCatalogMigration(
+                    14,
+                    "Scheduled analysis modes and resource policy",
+                    """
+                    ALTER TABLE library_maintenance_profiles ADD COLUMN analysis_mode INTEGER NOT NULL DEFAULT 0 CHECK(analysis_mode BETWEEN 0 AND 1);
+                    ALTER TABLE library_maintenance_profiles ADD COLUMN conflict_behavior INTEGER NOT NULL DEFAULT 0 CHECK(conflict_behavior BETWEEN 0 AND 2);
+                    ALTER TABLE library_maintenance_profiles ADD COLUMN analyze_families INTEGER NOT NULL DEFAULT 0 CHECK(analyze_families IN(0,1));
+                    ALTER TABLE library_maintenance_runs ADD COLUMN actions INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE library_maintenance_runs ADD COLUMN analysis_mode INTEGER NOT NULL DEFAULT 0 CHECK(analysis_mode BETWEEN 0 AND 1);
+                    ALTER TABLE library_maintenance_runs ADD COLUMN conflict_behavior INTEGER NOT NULL DEFAULT 0 CHECK(conflict_behavior BETWEEN 0 AND 2);
+                    ALTER TABLE library_maintenance_runs ADD COLUMN analyze_families INTEGER NOT NULL DEFAULT 0 CHECK(analyze_families IN(0,1));
                     """)
             };
 

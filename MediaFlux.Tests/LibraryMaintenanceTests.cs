@@ -21,8 +21,8 @@ public sealed class LibraryMaintenanceTests : IDisposable
     public void ProfileAndBoundedRunFactsSurviveRestart()
     {
         string db=Path.Combine(_root,"persist.db");long id;
-        using(var c=Create(db)){id=c.UpsertLocation(new(Path.Combine(_root,"persist"))).Id;LibraryMaintenanceProfile p=c.GetMaintenanceProfile(id) with{Enabled=true,Cadence=LibraryMaintenanceCadence.Weekly,Days=LibraryMaintenanceDays.Monday,PeriodicQuickScrubDays=90};c.SaveMaintenanceProfile(p);long run=c.BeginMaintenanceRun(id,LibraryMaintenanceTrigger.Manual,DateTime.UtcNow);c.CompleteMaintenanceRun(new(run,id,LibraryMaintenanceTrigger.Manual,LibraryMaintenanceOutcome.Completed,"Complete",DateTime.UtcNow.AddMinutes(-1),DateTime.UtcNow,1,2,0,3,0,0,1,0,"ok"));}
-        using(var c=Create(db)){LibraryMaintenanceProfile p=c.GetMaintenanceProfile(id);Assert.True(p.Enabled);Assert.Equal(90,p.PeriodicQuickScrubDays);Assert.Equal(LibraryMaintenanceOutcome.Completed,Assert.Single(c.GetMaintenanceHistory(id)).Outcome);Assert.Equal(LibraryCatalogMigrations.CurrentVersion,c.GetDiagnostics().SchemaVersion);}
+        using(var c=Create(db)){id=c.UpsertLocation(new(Path.Combine(_root,"persist"))).Id;LibraryMaintenanceProfile p=c.GetMaintenanceProfile(id) with{Enabled=true,Cadence=LibraryMaintenanceCadence.Weekly,Days=LibraryMaintenanceDays.Monday,PeriodicQuickScrubDays=90,AnalysisMode=LibraryMaintenanceAnalysisMode.FullReanalysis,ConflictBehavior=LibraryMaintenanceConflictBehavior.Skip,AnalyzeFamilies=true};c.SaveMaintenanceProfile(p);long run=c.BeginMaintenanceRun(id,LibraryMaintenanceTrigger.Manual,DateTime.UtcNow);c.CompleteMaintenanceRun(new(run,id,LibraryMaintenanceTrigger.Manual,LibraryMaintenanceOutcome.Completed,"Complete",DateTime.UtcNow.AddMinutes(-1),DateTime.UtcNow,1,2,0,3,0,0,1,0,"ok",p.Actions,p.AnalysisMode,p.ConflictBehavior,p.AnalyzeFamilies));}
+        using(var c=Create(db)){LibraryMaintenanceProfile p=c.GetMaintenanceProfile(id);Assert.True(p.Enabled);Assert.Equal(90,p.PeriodicQuickScrubDays);Assert.Equal(LibraryMaintenanceAnalysisMode.FullReanalysis,p.AnalysisMode);Assert.Equal(LibraryMaintenanceConflictBehavior.Skip,p.ConflictBehavior);Assert.True(p.AnalyzeFamilies);LibraryMaintenanceRun run=Assert.Single(c.GetMaintenanceHistory(id));Assert.Equal(LibraryMaintenanceOutcome.Completed,run.Outcome);Assert.True(run.AnalyzeFamilies);Assert.Equal(LibraryCatalogMigrations.CurrentVersion,c.GetDiagnostics().SchemaVersion);}
     }
 
     [Fact]
@@ -123,12 +123,41 @@ public sealed class LibraryMaintenanceTests : IDisposable
         stages.Clear();runtime.MaintenanceCatalog.SaveMaintenanceProfile(runtime.MaintenanceCatalog.GetMaintenanceProfile(location.Id) with{Actions=LibraryMaintenanceActions.IncrementalScan});await runtime.Maintenance.RunNowAsync(location.Id);Assert.DoesNotContain("Metadata",stages);Assert.DoesNotContain("Exact duplicates",stages);Assert.DoesNotContain("Visual analysis",stages);Assert.DoesNotContain("Quick Scrub",stages);
     }
 
+    [Fact]
+    public async Task IncrementalFindsMissingMetadataAndFullReanalysisForcesUnchangedWork()
+    {
+        string folder=Path.Combine(_root,"analysis-modes");Directory.CreateDirectory(folder);File.WriteAllBytes(Path.Combine(folder,"movie.mkv"),new byte[64]);var catalog=Create();LibraryLocationRecord location=catalog.UpsertLocation(new(folder));var probe=new CountingProbe();
+        catalog.SaveMaintenanceProfile(catalog.GetMaintenanceProfile(location.Id) with{Actions=LibraryMaintenanceActions.IncrementalScan});
+        using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},probe,new EmptyVisual());await runtime.Maintenance.RunNowAsync(location.Id);Assert.Equal(0,probe.Count);
+        runtime.MaintenanceCatalog.SaveMaintenanceProfile(runtime.MaintenanceCatalog.GetMaintenanceProfile(location.Id) with{Actions=LibraryMaintenanceActions.Metadata});await runtime.Maintenance.RunNowAsync(location.Id);Assert.Equal(1,probe.Count);
+        await runtime.Maintenance.RunNowAsync(location.Id);Assert.Equal(1,probe.Count);
+        runtime.MaintenanceCatalog.SaveMaintenanceProfile(runtime.MaintenanceCatalog.GetMaintenanceProfile(location.Id) with{AnalysisMode=LibraryMaintenanceAnalysisMode.FullReanalysis});await runtime.Maintenance.RunNowAsync(location.Id);Assert.Equal(2,probe.Count);Assert.Equal(LibraryMaintenanceAnalysisMode.FullReanalysis,runtime.MaintenanceCatalog.GetMaintenanceHistory(location.Id).First().AnalysisMode);
+    }
+
+    [Fact]
+    public async Task FamilyJobUsesVisualPipelineAndPersistsJobHistory()
+    {
+        string folder=Path.Combine(_root,"families");Directory.CreateDirectory(folder);File.WriteAllBytes(Path.Combine(folder,"movie.mkv"),new byte[64]);var catalog=Create();LibraryLocationRecord location=catalog.UpsertLocation(new(folder));catalog.SaveMaintenanceProfile(catalog.GetMaintenanceProfile(location.Id) with{Actions=LibraryMaintenanceActions.None,AnalyzeFamilies=true});
+        using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},new SuccessfulProbe(),new EmptyVisual());var stages=new List<string>();runtime.Maintenance.ProgressChanged+=x=>stages.Add(x.Stage);await runtime.Maintenance.RunNowAsync(location.Id);LibraryMaintenanceRun run=runtime.MaintenanceCatalog.GetMaintenanceHistory(location.Id).First();
+        Assert.True(run.AnalyzeFamilies);Assert.Equal(LibraryMaintenanceOutcome.Completed,run.Outcome);Assert.True(stages.IndexOf("Scanning")<stages.IndexOf("Visual analysis"));Assert.True(stages.IndexOf("Visual analysis")<stages.IndexOf("Duplicate families"));
+    }
+
+    [Fact]
+    public async Task ActiveEncodingCanSkipOrWaitAndWaitingCanBeCancelled()
+    {
+        string folder=Path.Combine(_root,"contention");Directory.CreateDirectory(folder);File.WriteAllBytes(Path.Combine(folder,"movie.mkv"),new byte[16]);var catalog=Create();LibraryLocationRecord location=catalog.UpsertLocation(new(folder));bool encoding=true;catalog.SaveMaintenanceProfile(catalog.GetMaintenanceProfile(location.Id) with{Actions=LibraryMaintenanceActions.IncrementalScan,ConflictBehavior=LibraryMaintenanceConflictBehavior.Skip});
+        using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},new SuccessfulProbe(),new EmptyVisual(),()=>encoding);await runtime.Maintenance.RunNowAsync(location.Id);LibraryMaintenanceRun skipped=runtime.MaintenanceCatalog.GetMaintenanceHistory(location.Id).First();Assert.Equal("Skipped",skipped.Stage);Assert.Equal(0,skipped.NewFiles);
+        runtime.MaintenanceCatalog.SaveMaintenanceProfile(runtime.MaintenanceCatalog.GetMaintenanceProfile(location.Id) with{ConflictBehavior=LibraryMaintenanceConflictBehavior.Wait});var waiting=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);runtime.Maintenance.ProgressChanged+=x=>{if(x.Stage=="Waiting")waiting.TrySetResult();};Task run=runtime.Maintenance.RunNowAsync(location.Id);await waiting.Task.WaitAsync(TimeSpan.FromSeconds(3));encoding=false;await run.WaitAsync(TimeSpan.FromSeconds(3));Assert.Equal(LibraryMaintenanceOutcome.Completed,runtime.MaintenanceCatalog.GetMaintenanceHistory(location.Id).First().Outcome);
+        encoding=true;using var cancellation=new CancellationTokenSource();Task cancelled=runtime.Maintenance.RunNowAsync(location.Id,cancellation.Token);await Task.Delay(100);cancellation.Cancel();await cancelled;Assert.Equal(LibraryMaintenanceOutcome.Cancelled,runtime.MaintenanceCatalog.GetMaintenanceHistory(location.Id).First().Outcome);
+    }
+
     private SqliteLibraryCatalog Create(string? db=null){var c=new SqliteLibraryCatalog(db??Path.Combine(_root,Guid.NewGuid()+".db"),Path.Combine(_root,"backups"),Path.Combine(_root,"recovery"));c.Initialize();return c;}
     private (long Location,long File,long Run) AddMaintenanceFile(SqliteLibraryCatalog c,string name){string folder=Path.Combine(_root,"facts",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);LibraryLocationRecord location=c.UpsertLocation(new(folder));LibraryScanHandle scan=c.BeginScan(location.Id);LibraryInventoryBatchResult batch=c.UpsertInventoryBatchDetailed(scan,new[]{new LibraryInventoryEntry(Path.Combine(folder,name),name,100,DateTime.UtcNow,VolumeId:"v",FileIdentity:name)},1);c.CompleteScan(scan,new(LibraryScanStatus.Completed,1,0,1,0,0,0));long run=c.BeginMaintenanceRun(location.Id,LibraryMaintenanceTrigger.Manual,DateTime.UtcNow);c.RecordMaintenanceCandidates(run,batch.Mutations);return(location.Id,batch.Mutations.Single().FileId,run);}
     private static LibraryIntegrityQueueItem Claim(SqliteLibraryCatalog c,long file){c.EnqueueIntegrity(file,LibraryIntegrityScrubType.Quick);return Assert.Single(c.ClaimIntegrityBatch(1,DateTime.UtcNow));}
     private static LibraryIntegrityResultWrite IntegrityResult(LibraryIntegrityQueueItem item,LibraryIntegrityResultState state)=>new(item.FileId,1,item.ScrubType,state,DateTime.UtcNow,item.SizeBytes,item.LastWriteUtc,item.VolumeId,item.FileIdentity,item.SizeBytes,item.DurationSeconds??0,1,LibraryIntegrityErrorCategory.None,"ok","test");
     private static LibraryMaintenanceProfile Profile(LibraryMaintenanceCadence cadence,TimeSpan start,TimeSpan end)=>new(1,1,true,cadence,LibraryMaintenanceDays.All,start,end,LibraryMaintenanceMissedRun.RunAtNextWindow,LibraryMaintenanceActions.Default,0,DateTime.UtcNow,DateTime.UtcNow);
     private sealed class SuccessfulProbe:ILibraryMetadataProbe{public string ToolVersion=>"test";public Task<MediaProbeResult> ProbeAsync(string path,CancellationToken token)=>Task.FromResult(new MediaProbeResult{Success=true,FormatName="matroska",DurationSeconds=60,Streams=new[]{new MediaProbeStreamInfo{CodecType="video",CodecName="h264",Width=1920,Height=1080}}});}
+    private sealed class CountingProbe:ILibraryMetadataProbe{private int _count;public int Count=>Volatile.Read(ref _count);public string ToolVersion=>"counting";public Task<MediaProbeResult> ProbeAsync(string path,CancellationToken token){Interlocked.Increment(ref _count);return Task.FromResult(new MediaProbeResult{Success=true,FormatName="matroska",DurationSeconds=60,Streams=new[]{new MediaProbeStreamInfo{CodecType="video",CodecName="h264",Width=1920,Height=1080}}});}}
     private sealed class EmptyVisual:ILibraryVisualFingerprintExtractor{public string ToolVersion=>"test";public Task<IReadOnlyList<ulong>> ExtractAsync(VisualFingerprintCandidate candidate,CancellationToken token)=>Task.FromResult<IReadOnlyList<ulong>>(Array.Empty<ulong>());}
     public void Dispose(){SqliteConnection.ClearAllPools();if(Directory.Exists(_root))Directory.Delete(_root,true);}
 }

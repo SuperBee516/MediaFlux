@@ -48,6 +48,7 @@ public interface IEncodingSystemTelemetryProvider { EncodingSystemTelemetry Samp
 public sealed class WindowsEncodingSystemTelemetryProvider : IEncodingSystemTelemetryProvider, IDisposable
 {
     private readonly Process _process = Process.GetCurrentProcess();
+    private readonly NvidiaSmiTelemetryReader _gpu = new();
     private ulong _previousIdle, _previousKernel, _previousUser; private TimeSpan _previousProcessCpu; private long _previousTimestamp;
     public EncodingSystemTelemetry Sample()
     {
@@ -60,13 +61,45 @@ public sealed class WindowsEncodingSystemTelemetryProvider : IEncodingSystemTele
             if(OperatingSystem.IsWindows()){var memory=new MemoryStatusEx();if(GlobalMemoryStatusEx(memory))available=(long)Math.Min(memory.AvailablePhysical, long.MaxValue);}
             _process.Refresh();
         }catch{}
-        return new(systemCpu,processCpu,available,_process.WorkingSet64,null,null,null,null,"GPU telemetry unavailable through supported current dependencies.");
+        (double? gpu,double? encode,double? decode,long? vram,string status)=_gpu.Sample();
+        return new(systemCpu,processCpu,available,_process.WorkingSet64,gpu,encode,decode,vram,status);
     }
     [StructLayout(LayoutKind.Sequential)] private struct FileTime{public uint Low,High;public ulong Value=>((ulong)High<<32)|Low;}
     [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Auto)] private sealed class MemoryStatusEx{public uint Length=(uint)Marshal.SizeOf<MemoryStatusEx>();public uint Load;public ulong TotalPhysical,AvailablePhysical,TotalPageFile,AvailablePageFile,TotalVirtual,AvailableVirtual,AvailableExtendedVirtual;}
     [DllImport("kernel32.dll")] private static extern bool GetSystemTimes(out FileTime idle,out FileTime kernel,out FileTime user);
     [DllImport("kernel32.dll",CharSet=CharSet.Auto)] private static extern bool GlobalMemoryStatusEx([In,Out] MemoryStatusEx value);
     public void Dispose()=>_process.Dispose();
+}
+
+internal sealed class NvidiaSmiTelemetryReader
+{
+    public (double? Gpu,double? Encode,double? Decode,long? Vram,string Status) Sample()
+    {
+        try
+        {
+            using var process=new Process{StartInfo=new ProcessStartInfo
+            {
+                FileName="nvidia-smi.exe",
+                Arguments="--query-gpu=utilization.gpu,utilization.encoder,utilization.decoder,memory.used --format=csv,noheader,nounits",
+                UseShellExecute=false,RedirectStandardOutput=true,RedirectStandardError=true,CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden
+            }};
+            if(!process.Start())return (null,null,null,null,"NVIDIA telemetry unavailable.");
+            if(!process.WaitForExit(1000)){try{process.Kill(true);}catch{}return(null,null,null,null,"NVIDIA telemetry timed out.");}
+            string output=process.StandardOutput.ReadToEnd().Split(new[]{'\r','\n'},StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()??"";
+            if(process.ExitCode!=0)return(null,null,null,null,"NVIDIA telemetry unavailable.");
+            return ParseLine(output);
+        }
+        catch{return(null,null,null,null,"GPU telemetry unavailable; nvidia-smi was not found or could not be queried.");}
+    }
+
+    internal static (double? Gpu,double? Encode,double? Decode,long? Vram,string Status) ParseLine(string output)
+    {
+        string[] values=(output??"").Split(',').Select(value=>value.Trim()).ToArray();
+        if(values.Length<4)return(null,null,null,null,"NVIDIA telemetry unavailable.");
+        double? Number(string value)=>double.TryParse(value,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out double number)?number:null;
+        double? gpu=Number(values[0]),encode=Number(values[1]),decode=Number(values[2]),memory=Number(values[3]);
+        return(gpu,encode,decode,memory.HasValue?(long?)(memory.Value*1048576d):null,"NVIDIA telemetry available through nvidia-smi.");
+    }
 }
 
 public static class EncodingDiagnosticInterpreter
