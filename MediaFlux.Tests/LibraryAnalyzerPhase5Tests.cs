@@ -843,9 +843,19 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 PumpUntil(() => members.Rows.Count == 2 && members.SelectedRows.Count == 1);
                 VisualSimilarityMemberRecord selectedMember = (VisualSimilarityMemberRecord)members.SelectedRows[0].Tag!;
-                PumpTask(InvokePrivateTask(form, "SetSelectedVisualKeeperAsync"));
+                long expectedNextGroupId = ((VisualSimilarityGroupRecord)groups.Rows[Math.Min(initialRow.Index + 1, groups.Rows.Count - 1)].Tag!).GroupId;
+                ContextMenuStrip visualMemberMenu = GetPrivateField<ContextMenuStrip>(form, "_visualMembersMenu");
+                InvokePrivate(form, "VisualMembersMenu_Opening", visualMemberMenu, new CancelEventArgs());
+                PumpTask(InvokePrivateTask(form, "SetSelectedVisualKeeperAsync", true));
                 Assert.Equal(selectedMember.FileId, catalog.GetVisualGroup(initialGroupId)!.ManualKeeperFileId);
                 Assert.True(catalog.GetVisualGroup(initialGroupId)!.Reviewed);
+                Assert.Equal(expectedNextGroupId, ((VisualSimilarityGroupRecord)groups.SelectedRows.Cast<DataGridViewRow>().Single().Tag!).GroupId);
+
+                initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                groups.ClearSelection();
+                initialRow.Selected = true;
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                PumpTask(InvokePrivateTask(form, "RefreshVisualMembersAsync"));
 
                 PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualProtectionAsync"));
                 Assert.True(catalog.GetVisualGroupMembers(initialGroupId).Single(member => member.FileId == selectedMember.FileId).IsProtected);

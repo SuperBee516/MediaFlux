@@ -18,6 +18,9 @@ namespace MediaFlux
         private readonly Label _visualStatus = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0), Text = "Visual similarity analysis has not run." };
         private readonly Label _visualPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
         private readonly ProgressBar _visualProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
+        private readonly CheckBox _visualComparisonPreviewEnabled = new() { Name = "VisualComparisonPreviewEnabled", Text = "Show Comparison Preview", AutoSize = true };
+        private readonly SplitContainer _visualDetailSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical };
+        private readonly Panel _visualComparisonPreview = new() { Dock = DockStyle.Fill, Visible = false };
         private readonly ContextMenuStrip _visualGroupsMenu = new();
         private readonly ContextMenuStrip _visualMembersMenu = new();
         private readonly Button _visualApplyButton = new() { Name = "VisualApplyButton", Text = "Apply", Dock = DockStyle.Top, Height = 30 };
@@ -25,6 +28,7 @@ namespace MediaFlux
         private int _visualPage;
         private long _visualTotal;
         private bool _loadingVisualGroups;
+        private DuplicateReviewSelectionAnchor? _visualAdvanceAfterRefresh;
         private int _visualMemberLoadVersion;
         private readonly SemaphoreSlim _visualMemberRefreshLock = new(1, 1);
 
@@ -46,6 +50,9 @@ namespace MediaFlux
             AddButton(analysis, "Resume", (_, _) => _runtime.VisualSimilarity.Resume());
             AddButton(analysis, "Cancel", (_, _) => _runtime.VisualSimilarity.Cancel());
             AddButton(analysis, "Keeper rules…", VisualKeeperRules_Click);
+            _visualComparisonPreviewEnabled.Checked = _reviewOptions.UiState?.ShowVisualComparisonPreview == true;
+            _visualComparisonPreviewEnabled.CheckedChanged += async (_, _) => await ToggleVisualComparisonPreviewAsync();
+            analysis.Controls.Add(_visualComparisonPreviewEnabled);
             _visualControlArea.Controls.Add(analysis, 0, 0);
 
             var filtersBox = new GroupBox { Text = "Filters", Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 7) };
@@ -164,7 +171,10 @@ namespace MediaFlux
             status.Controls.Add(_visualProgress); status.Controls.Add(_visualStatus);
             var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 240, Panel1MinSize = 140, Panel2MinSize = 140 };
             split.Panel1.Controls.Add(_visualGroupsGrid);
-            split.Panel2.Controls.Add(_visualMembersGrid);
+            _visualDetailSplit.Panel1.Controls.Add(_visualMembersGrid);
+            BuildVisualComparisonPreview();
+            _visualDetailSplit.Panel2.Controls.Add(_visualComparisonPreview);
+            split.Panel2.Controls.Add(_visualDetailSplit);
             tab.Controls.Add(split);
             tab.Controls.Add(status);
             tab.Controls.Add(pager);
@@ -244,16 +254,18 @@ namespace MediaFlux
             _loadingVisualGroups = true;
             try
             {
+                DuplicateReviewSelectionAnchor? advanceAfter = _visualAdvanceAfterRefresh;
+                _visualAdvanceAfterRefresh = null;
                 preferredGroupId ??= SelectedVisualGroup()?.GroupId;
                 VisualGroupQuery query = BuildVisualQuery();
                 VisualSimilarityGroupPage page = await Task.Run(() => _runtime.VisualCatalog.QueryVisualGroups(query));
-                if (IsDisposed) return;
+                if (IsDisposed || Disposing || _visualGroupsGrid.IsDisposed) return;
                 if (page.TotalCount > 0 && page.Groups.Count == 0 && _visualPage > 0)
                 {
                     _visualPage = (int)((page.TotalCount - 1) / VisualPageSize);
                     query = BuildVisualQuery();
                     page = await Task.Run(() => _runtime.VisualCatalog.QueryVisualGroups(query));
-                    if (IsDisposed) return;
+                    if (IsDisposed || Disposing || _visualGroupsGrid.IsDisposed) return;
                 }
                 _visualTotal = page.TotalCount;
                 _visualGroupsGrid.Rows.Clear();
@@ -264,12 +276,25 @@ namespace MediaFlux
                         group.NotMatch ? "Not a match" : group.Ignored ? "Ignored" : group.Reviewed ? "Reviewed" : "Unreviewed", group.EvidenceText);
                     _visualGroupsGrid.Rows[row].Tag = group;
                 }
-                DataGridViewRow? preferredRow = preferredGroupId.HasValue
-                    ? _visualGroupsGrid.Rows.Cast<DataGridViewRow>()
-                        .FirstOrDefault(row => row.Tag is VisualSimilarityGroupRecord group && group.GroupId == preferredGroupId.Value)
-                    : null;
-                if (preferredRow != null)
-                    SelectVisualGroupRow(preferredRow.Index);
+                if (advanceAfter is { } anchor)
+                {
+                    int targetIndex = LibraryDuplicateReviewSelectionPolicy.ResolveNextVisibleIndex(
+                        _visualGroupsGrid.Rows.Cast<DataGridViewRow>()
+                            .Select(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId)
+                            .ToArray(),
+                        anchor.GroupId,
+                        anchor.RowIndex);
+                    SelectVisualGroupRow(targetIndex);
+                }
+                else
+                {
+                    DataGridViewRow? preferredRow = preferredGroupId.HasValue
+                        ? _visualGroupsGrid.Rows.Cast<DataGridViewRow>()
+                            .FirstOrDefault(row => row.Tag is VisualSimilarityGroupRecord group && group.GroupId == preferredGroupId.Value)
+                        : null;
+                    if (preferredRow != null)
+                        SelectVisualGroupRow(preferredRow.Index);
+                }
                 long first = _visualTotal == 0 ? 0 : (long)_visualPage * VisualPageSize + 1;
                 long last = Math.Min(_visualTotal, ((long)_visualPage + 1) * VisualPageSize);
                 _visualPageLabel.Text = $"{first:N0}–{last:N0} of {_visualTotal:N0}";
@@ -306,8 +331,16 @@ namespace MediaFlux
                     _visualMembersGrid.Rows[0].Selected = true;
                     _visualMembersGrid.CurrentCell = _visualMembersGrid.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 }
+                await UpdateVisualComparisonPreviewAsync(members);
             }
             finally { _visualMemberRefreshLock.Release(); }
+        }
+
+        private DuplicateReviewSelectionAnchor? CaptureVisualReviewSelection(long groupId)
+        {
+            DataGridViewRow? row = _visualGroupsGrid.SelectedRows.Cast<DataGridViewRow>()
+                .FirstOrDefault(value => value.Tag is VisualSimilarityGroupRecord group && group.GroupId == groupId);
+            return row == null ? null : new DuplicateReviewSelectionAnchor(groupId, row.Index);
         }
 
         private VisualGroupQuery BuildVisualQuery()

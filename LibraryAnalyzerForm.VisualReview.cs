@@ -26,7 +26,7 @@ namespace MediaFlux
 
             AddVisualMenuItem(_visualMembersMenu, "Review / Compare", "Review", async () => await OpenVisualReviewAsync());
             AddVisualMenuItem(_visualMembersMenu, "Play / Preview", "Play", () => { PlaySelectedVisualMember(); return Task.CompletedTask; });
-            AddVisualMenuItem(_visualMembersMenu, "Set as keeper", "Keeper", async () => await SetSelectedVisualKeeperAsync());
+            AddVisualMenuItem(_visualMembersMenu, "Set as keeper", "Keeper", async () => await SetSelectedVisualKeeperAsync(advanceAfterPersistence: true));
             AddVisualMenuItem(_visualMembersMenu, "Keep this file / delete the other…", "KeepDeleteOther", async () => await KeepSelectedAndDeleteOtherAsync());
             AddVisualMenuItem(_visualMembersMenu, "Delete selected candidate…", "DeleteCandidate", async () => await DeleteSelectedVisualCandidateAsync());
             AddVisualMenuItem(_visualMembersMenu, "Protect", "Protect", async () => await ToggleSelectedVisualProtectionAsync());
@@ -86,13 +86,15 @@ namespace MediaFlux
         private static void SetMenuState(ContextMenuStrip menu, string name, bool enabled, string? text = null)
             => LibraryAnalyzerGridInteraction.SetMenuState(menu, name, enabled, text);
 
-        private async Task SetSelectedVisualKeeperAsync()
+        private async Task SetSelectedVisualKeeperAsync(bool advanceAfterPersistence = false)
         {
             if (SelectedVisualGroup() is not { } group || SelectedVisualMember() is not { } member)
                 return;
             if (!CanSelectVisualKeeper(member))
                 return;
+            DuplicateReviewSelectionAnchor? anchor = advanceAfterPersistence ? CaptureVisualReviewSelection(group.GroupId) : null;
             await SaveVisualKeeperAsync(group, member);
+            _visualAdvanceAfterRefresh = anchor;
             await RefreshVisualGroupsAsync(group.GroupId);
         }
 
@@ -181,6 +183,8 @@ namespace MediaFlux
             DataGridViewRow row = _visualGroupsGrid.Rows[rowIndex];
             row.Selected = true;
             _visualGroupsGrid.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            try { _visualGroupsGrid.FirstDisplayedScrollingRowIndex = rowIndex; }
+            catch (InvalidOperationException) { }
         }
 
         private async void VisualGroupsGrid_CellDoubleClick(object? sender, DataGridViewCellEventArgs e)

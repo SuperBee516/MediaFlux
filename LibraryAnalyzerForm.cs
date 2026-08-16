@@ -66,7 +66,9 @@ namespace MediaFlux
             _layoutController = new LibraryAnalyzerLayoutController(_reviewOptions.UiState);
             _statisticsFileBrowser = new LibraryFileBrowser(query => _runtime.Catalog.QueryFiles(query));
             _generalFileRemoval = new LibraryGeneralFileRemovalService(ResolveGeneralFileSnapshot,
-                new JsonLibraryGeneralFileRemovalAudit(Path.Combine(AppPaths.DataDirectory, "library-file-removal-audit.jsonl")));
+                new JsonLibraryGeneralFileRemovalAudit(Path.Combine(AppPaths.DataDirectory, "library-file-removal-audit.jsonl")),
+                reconcileSuccessfulRemoval: (fileId, path, reason) =>
+                    ((ILibraryRecoveryCatalog)_runtime.Catalog).MarkFileRemovedByCleanup(fileId, path, reason));
             _visualKeeperPreferences = (_reviewOptions.KeeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences()).Clone();
             _visualKeeperPreferences.Normalize();
             Text = "Library Analyzer";
@@ -125,6 +127,7 @@ namespace MediaFlux
             Interlocked.Increment(ref _duplicateMemberLoadVersion);
             _exactCleanupCancellation?.Cancel();
             _familyCleanupCancellation?.Cancel();
+            _visualEmbeddedPreviewCancellation?.Cancel();
             _reclamationBuildCancellation?.Cancel();
             _refreshTimer.Stop();
             _activityTimer.Stop();
@@ -434,6 +437,19 @@ namespace MediaFlux
             await RefreshOverviewAsync();
             await RefreshLocationsAsync();
             await RefreshFilesAsync();
+        }
+
+        private async Task RefreshAfterSuccessfulRemovalAsync()
+        {
+            _runtime.PolicyEvaluation.Invalidate();
+            await RefreshDuplicateGroupsAsync();
+            await RefreshVisualGroupsAsync();
+            await RefreshVisualFamiliesAsync();
+            await RefreshRecommendationsAsync();
+            await RefreshFilesAsync();
+            await RefreshOverviewAsync();
+            await RefreshLocationsAsync();
+            RefreshStorageReclamationStaleness();
         }
 
         private async Task RefreshCurrentStateAsync()

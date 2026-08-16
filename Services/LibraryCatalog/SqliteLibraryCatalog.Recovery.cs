@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -47,7 +49,8 @@ namespace MediaFlux.Services.LibraryCatalog
             });
         }
 
-        public void MarkFileRemovedByCleanup(long fileId, string expectedPath, string reason)
+        public void MarkFileRemovedByCleanup(long fileId, string expectedPath, string reason,
+            long? exactPlanId = null, long? visualPlanId = null, long? sourcePlanItemFileId = null)
         {
             ThrowIfDisposed();
             (_, string expectedKey) = LibraryCatalogPathNormalizer.NormalizeFullPath(expectedPath);
@@ -75,18 +78,250 @@ namespace MediaFlux.Services.LibraryCatalog
                     UpsertPresenceObservationCore(connection, transaction, locationId, fileId,
                         LibraryPresenceObservationState.ConfirmedMissing, "cleanup", reason);
 
-                using SqliteCommand retire = connection.CreateCommand();
-                retire.Transaction = transaction;
-                retire.CommandText =
-                    "UPDATE visual_similarity_groups SET lifecycle_state=$retired,lifecycle_reason=$reason," +
-                    "lifecycle_updated_utc_ticks=$now WHERE left_file_id=$file OR right_file_id=$file;";
-                retire.Parameters.AddWithValue("$retired", (int)LibraryMatchEligibilityState.Retired);
-                retire.Parameters.AddWithValue("$reason", reason ?? "Removed by Library Analyzer cleanup.");
-                retire.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
-                retire.Parameters.AddWithValue("$file", fileId);
-                retire.ExecuteNonQuery();
+                ReconcileDuplicateStateAfterDeletionCore(connection, transaction, fileId, expectedKey,
+                    reason ?? "Removed by Library Analyzer cleanup.", exactPlanId, visualPlanId,
+                    sourcePlanItemFileId ?? fileId);
                 return null;
             });
+        }
+
+        private static void ReconcileDuplicateStateAfterDeletionCore(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            long fileId,
+            string deletedPathKey,
+            string reason,
+            long? exactPlanId,
+            long? visualPlanId,
+            long sourcePlanItemFileId)
+        {
+            long now = DateTime.UtcNow.Ticks;
+            long[] exactGroupIds = ReadIds(connection, transaction,
+                "SELECT group_id FROM exact_duplicate_members WHERE file_id=$file;", fileId);
+            long[] familyIds = ReadIds(connection, transaction,
+                "SELECT family_id FROM visual_family_members WHERE file_id=$file UNION " +
+                "SELECT family_id FROM visual_family_edges WHERE left_file_id=$file OR right_file_id=$file;", fileId);
+
+            foreach (long groupId in exactGroupIds)
+            {
+                using SqliteCommand decision = connection.CreateCommand();
+                decision.Transaction = transaction;
+                decision.CommandText =
+                    "UPDATE duplicate_group_decisions SET manual_keeper_path_key='',reviewed=0,updated_utc_ticks=$now " +
+                    "WHERE manual_keeper_path_key=$path AND EXISTS(SELECT 1 FROM exact_duplicate_groups g WHERE g.id=$group " +
+                    "AND g.size_bytes=duplicate_group_decisions.size_bytes AND g.full_algorithm=duplicate_group_decisions.full_algorithm " +
+                    "AND g.full_version=duplicate_group_decisions.full_version AND g.full_hash=duplicate_group_decisions.full_hash);";
+                decision.Parameters.AddWithValue("$now", now);
+                decision.Parameters.AddWithValue("$path", deletedPathKey);
+                decision.Parameters.AddWithValue("$group", groupId);
+                decision.ExecuteNonQuery();
+            }
+
+            foreach (long groupId in exactGroupIds)
+                ReconcileExactGroupCore(connection, transaction, groupId, fileId, now);
+
+            using (SqliteCommand visualDecisions = connection.CreateCommand())
+            {
+                visualDecisions.Transaction = transaction;
+                visualDecisions.CommandText =
+                    "UPDATE visual_group_decisions SET manual_keeper_path_key='',reviewed=0,updated_utc_ticks=$now " +
+                    "WHERE group_key IN(SELECT group_key FROM visual_similarity_groups WHERE left_file_id=$file OR right_file_id=$file);";
+                visualDecisions.Parameters.AddWithValue("$file", fileId);
+                visualDecisions.Parameters.AddWithValue("$now", now);
+                visualDecisions.ExecuteNonQuery();
+            }
+            using (SqliteCommand visualMemberships = connection.CreateCommand())
+            {
+                visualMemberships.Transaction = transaction;
+                visualMemberships.CommandText =
+                    "DELETE FROM visual_candidate_pairs WHERE left_file_id=$file OR right_file_id=$file; " +
+                    "UPDATE visual_similarity_groups SET lifecycle_state=$retired,lifecycle_reason=$reason,lifecycle_updated_utc_ticks=$now " +
+                    "WHERE left_file_id=$file OR right_file_id=$file; " +
+                    "DELETE FROM visual_family_edges WHERE left_file_id=$file OR right_file_id=$file; " +
+                    "DELETE FROM visual_family_members WHERE file_id=$file;";
+                visualMemberships.Parameters.AddWithValue("$file", fileId);
+                visualMemberships.Parameters.AddWithValue("$retired", (int)LibraryMatchEligibilityState.Retired);
+                visualMemberships.Parameters.AddWithValue("$reason", reason);
+                visualMemberships.Parameters.AddWithValue("$now", now);
+                visualMemberships.ExecuteNonQuery();
+            }
+
+            foreach (long familyId in familyIds)
+                ReconcileVisualFamilyCore(connection, transaction, familyId, deletedPathKey, now);
+
+            ExecuteForFile(connection, transaction,
+                "DELETE FROM visual_hash_bands WHERE file_id=$file; " +
+                "DELETE FROM visual_fingerprints WHERE file_id=$file; " +
+                "DELETE FROM file_hash_facts WHERE file_id=$file;", fileId);
+
+            ReconcilePendingCleanupPlansCore(connection, transaction, fileId, reason,
+                exactPlanId, visualPlanId, sourcePlanItemFileId);
+        }
+
+        private static void ReconcileExactGroupCore(
+            SqliteConnection connection, SqliteTransaction transaction, long groupId, long fileId, long now)
+        {
+            using SqliteCommand count = connection.CreateCommand();
+            count.Transaction = transaction;
+            count.CommandText = "SELECT COUNT(*) FROM exact_duplicate_members WHERE group_id=$group;";
+            count.Parameters.AddWithValue("$group", groupId);
+            long members = Convert.ToInt64(count.ExecuteScalar());
+            if (members <= 2)
+            {
+                using SqliteCommand clearDecision = connection.CreateCommand();
+                clearDecision.Transaction = transaction;
+                clearDecision.CommandText =
+                    "UPDATE duplicate_group_decisions SET manual_keeper_path_key='',reviewed=0,updated_utc_ticks=$now " +
+                    "WHERE EXISTS(SELECT 1 FROM exact_duplicate_groups g WHERE g.id=$group " +
+                    "AND g.size_bytes=duplicate_group_decisions.size_bytes AND g.full_algorithm=duplicate_group_decisions.full_algorithm " +
+                    "AND g.full_version=duplicate_group_decisions.full_version AND g.full_hash=duplicate_group_decisions.full_hash); " +
+                    "UPDATE exact_duplicate_groups SET suggested_keeper_file_id=CASE WHEN suggested_keeper_file_id=$file THEN NULL ELSE suggested_keeper_file_id END," +
+                    "updated_utc_ticks=$now WHERE id=$group;";
+                clearDecision.Parameters.AddWithValue("$group", groupId);
+                clearDecision.Parameters.AddWithValue("$file", fileId);
+                clearDecision.Parameters.AddWithValue("$now", now);
+                clearDecision.ExecuteNonQuery();
+                return;
+            }
+
+            using (SqliteCommand removeMember = connection.CreateCommand())
+            {
+                removeMember.Transaction = transaction;
+                removeMember.CommandText = "DELETE FROM exact_duplicate_members WHERE group_id=$group AND file_id=$file;";
+                removeMember.Parameters.AddWithValue("$group", groupId);
+                removeMember.Parameters.AddWithValue("$file", fileId);
+                removeMember.ExecuteNonQuery();
+            }
+
+            using SqliteCommand update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText =
+                "UPDATE exact_duplicate_groups SET " +
+                "member_count=(SELECT COUNT(*) FROM exact_duplicate_members m WHERE m.group_id=$group)," +
+                "physical_copy_count=(SELECT COUNT(DISTINCT physical_identity_key) FROM exact_duplicate_members m WHERE m.group_id=$group)," +
+                "reclaimable_bytes=size_bytes*MAX(0,(SELECT COUNT(DISTINCT physical_identity_key) FROM exact_duplicate_members m WHERE m.group_id=$group)-1)," +
+                "suggested_keeper_file_id=CASE WHEN EXISTS(SELECT 1 FROM exact_duplicate_members m WHERE m.group_id=$group AND m.file_id=suggested_keeper_file_id) THEN suggested_keeper_file_id ELSE NULL END," +
+                "updated_utc_ticks=$now WHERE id=$group; " +
+                "UPDATE duplicate_group_decisions SET manual_keeper_path_key='',reviewed=0,updated_utc_ticks=$now " +
+                "WHERE manual_keeper_path_key<>'' AND EXISTS(SELECT 1 FROM exact_duplicate_groups g WHERE g.id=$group " +
+                "AND g.size_bytes=duplicate_group_decisions.size_bytes AND g.full_algorithm=duplicate_group_decisions.full_algorithm " +
+                "AND g.full_version=duplicate_group_decisions.full_version AND g.full_hash=duplicate_group_decisions.full_hash) " +
+                "AND NOT EXISTS(SELECT 1 FROM exact_duplicate_members m JOIN indexed_files f ON f.id=m.file_id " +
+                "WHERE m.group_id=$group AND f.path_key=duplicate_group_decisions.manual_keeper_path_key);";
+            update.Parameters.AddWithValue("$group", groupId);
+            update.Parameters.AddWithValue("$now", now);
+            update.ExecuteNonQuery();
+        }
+
+        private static void ReconcileVisualFamilyCore(
+            SqliteConnection connection, SqliteTransaction transaction, long familyId, string deletedPathKey, long now)
+        {
+            using SqliteCommand state = connection.CreateCommand();
+            state.Transaction = transaction;
+            state.CommandText = "SELECT family_key,(SELECT COUNT(*) FROM visual_family_members WHERE family_id=f.id)," +
+                                "(SELECT COUNT(*) FROM visual_family_edges WHERE family_id=f.id) FROM visual_families f WHERE id=$family;";
+            state.Parameters.AddWithValue("$family", familyId);
+            string oldKey;
+            long memberCount;
+            long edgeCount;
+            using (SqliteDataReader reader = state.ExecuteReader())
+            {
+                if (!reader.Read()) return;
+                oldKey = reader.GetString(0);
+                memberCount = reader.GetInt64(1);
+                edgeCount = reader.GetInt64(2);
+            }
+            if (memberCount < 3 || edgeCount != memberCount * (memberCount - 1) / 2)
+            {
+                using SqliteCommand remove = connection.CreateCommand();
+                remove.Transaction = transaction;
+                remove.CommandText = "DELETE FROM visual_family_decisions WHERE family_key=$key; DELETE FROM visual_families WHERE id=$family;";
+                remove.Parameters.AddWithValue("$key", oldKey);
+                remove.Parameters.AddWithValue("$family", familyId);
+                remove.ExecuteNonQuery();
+                return;
+            }
+
+            using SqliteCommand paths = connection.CreateCommand();
+            paths.Transaction = transaction;
+            paths.CommandText = "SELECT f.path_key FROM visual_family_members m JOIN indexed_files f ON f.id=m.file_id WHERE m.family_id=$family ORDER BY f.path_key;";
+            paths.Parameters.AddWithValue("$family", familyId);
+            var pathKeys = new List<string>();
+            using (SqliteDataReader reader = paths.ExecuteReader())
+                while (reader.Read()) pathKeys.Add(reader.GetString(0));
+            string newKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', pathKeys))));
+
+            using SqliteCommand update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText =
+                "UPDATE visual_family_decisions SET family_key=$new_key," +
+                "manual_keeper_path_key=CASE WHEN manual_keeper_path_key=$deleted OR NOT EXISTS(" +
+                "SELECT 1 FROM visual_family_members m JOIN indexed_files f ON f.id=m.file_id WHERE m.family_id=$family AND f.path_key=manual_keeper_path_key) THEN '' ELSE manual_keeper_path_key END," +
+                "reviewed=CASE WHEN manual_keeper_path_key=$deleted OR NOT EXISTS(" +
+                "SELECT 1 FROM visual_family_members m JOIN indexed_files f ON f.id=m.file_id WHERE m.family_id=$family AND f.path_key=manual_keeper_path_key) THEN 0 ELSE reviewed END," +
+                "updated_utc_ticks=$now WHERE family_key=$old_key; " +
+                "UPDATE visual_families SET family_key=$new_key,member_count=$count," +
+                "minimum_confidence=(SELECT MIN(confidence_score) FROM visual_family_edges WHERE family_id=$family)," +
+                "reclaimable_bytes=(SELECT SUM(f.size_bytes)-MAX(f.size_bytes) FROM visual_family_members m JOIN indexed_files f ON f.id=m.file_id WHERE m.family_id=$family)," +
+                "suggested_keeper_file_id=CASE WHEN EXISTS(SELECT 1 FROM visual_family_members m WHERE m.family_id=$family AND m.file_id=suggested_keeper_file_id) THEN suggested_keeper_file_id ELSE NULL END," +
+                "updated_utc_ticks=$now WHERE id=$family; " +
+                "UPDATE visual_family_members SET minimum_member_confidence=(SELECT MIN(e.confidence_score) FROM visual_family_edges e " +
+                "WHERE e.family_id=$family AND (e.left_file_id=visual_family_members.file_id OR e.right_file_id=visual_family_members.file_id)) WHERE family_id=$family;";
+            update.Parameters.AddWithValue("$new_key", newKey);
+            update.Parameters.AddWithValue("$old_key", oldKey);
+            update.Parameters.AddWithValue("$deleted", deletedPathKey);
+            update.Parameters.AddWithValue("$family", familyId);
+            update.Parameters.AddWithValue("$count", memberCount);
+            update.Parameters.AddWithValue("$now", now);
+            update.ExecuteNonQuery();
+        }
+
+        private static void ReconcilePendingCleanupPlansCore(
+            SqliteConnection connection, SqliteTransaction transaction, long fileId, string reason,
+            long? exactPlanId, long? visualPlanId, long sourcePlanItemFileId)
+        {
+            string message = "Excluded after another successful deletion reconciled this file or its keeper. " + reason;
+            using SqliteCommand command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+                "UPDATE duplicate_cleanup_plan_items SET status=$excluded,validation_error=$reason " +
+                "WHERE status IN($planned,$validated) AND (file_id=$file OR keeper_file_id=$file) " +
+                "AND NOT(plan_id=$exact_plan AND file_id=$source_item); " +
+                "UPDATE visual_cleanup_plan_items SET status=$excluded,validation_error=$reason " +
+                "WHERE status IN($planned,$validated) AND (file_id=$file OR keeper_file_id=$file) " +
+                "AND NOT(plan_id=$visual_plan AND file_id=$source_item);";
+            command.Parameters.AddWithValue("$excluded", (int)DuplicateCleanupItemStatus.Excluded);
+            command.Parameters.AddWithValue("$planned", (int)DuplicateCleanupItemStatus.Planned);
+            command.Parameters.AddWithValue("$validated", (int)DuplicateCleanupItemStatus.Validated);
+            command.Parameters.AddWithValue("$file", fileId);
+            command.Parameters.AddWithValue("$source_item", sourcePlanItemFileId);
+            command.Parameters.AddWithValue("$exact_plan", exactPlanId ?? -1);
+            command.Parameters.AddWithValue("$visual_plan", visualPlanId ?? -1);
+            command.Parameters.AddWithValue("$reason", message);
+            command.ExecuteNonQuery();
+        }
+
+        private static long[] ReadIds(
+            SqliteConnection connection, SqliteTransaction transaction, string sql, long fileId)
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = sql;
+            command.Parameters.AddWithValue("$file", fileId);
+            var result = new List<long>();
+            using SqliteDataReader reader = command.ExecuteReader();
+            while (reader.Read()) result.Add(reader.GetInt64(0));
+            return result.Distinct().ToArray();
+        }
+
+        private static void ExecuteForFile(
+            SqliteConnection connection, SqliteTransaction transaction, string sql, long fileId)
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = sql;
+            command.Parameters.AddWithValue("$file", fileId);
+            command.ExecuteNonQuery();
         }
 
         public void MarkFileRestoredFromQuarantine(long fileId, string expectedPath)

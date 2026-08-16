@@ -40,7 +40,18 @@ public sealed record LibraryMaintenanceRun(
     LibraryMaintenanceConflictBehavior ConflictBehavior = LibraryMaintenanceConflictBehavior.Wait,
     bool AnalyzeFamilies = false);
 
-public sealed record LibraryMaintenanceProgress(long RunId, long LocationId, string Stage, string Details);
+public sealed record LibraryMaintenanceProgress(
+    long RunId,
+    long LocationId,
+    string Stage,
+    string Details,
+    string JobName = "",
+    long Completed = 0,
+    long Total = 0,
+    string CurrentItem = "",
+    bool IsIndeterminate = true,
+    LibraryMaintenanceOutcome? Outcome = null,
+    bool IsActive = true);
 
 public interface ILibraryMaintenanceCatalog
 {

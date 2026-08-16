@@ -184,7 +184,8 @@ namespace MediaFlux.Services.LibraryCatalog
         IReadOnlyList<LibraryPresenceObservation> GetPresenceObservations(long fileId);
         void RecordPresenceObservation(long locationId, long fileId, LibraryPresenceObservationState state,
             string source, string details = "", long? relatedFileId = null);
-        void MarkFileRemovedByCleanup(long fileId, string expectedPath, string reason);
+        void MarkFileRemovedByCleanup(long fileId, string expectedPath, string reason,
+            long? exactPlanId = null, long? visualPlanId = null, long? sourcePlanItemFileId = null);
         void MarkFileRestoredFromQuarantine(long fileId, string expectedPath);
         void RestoreLocationAfterVerifiedNoChanges(long locationId);
         void SetVisualMatchLifecycle(long groupId, LibraryMatchEligibilityState state, string reason);

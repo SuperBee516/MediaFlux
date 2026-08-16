@@ -254,7 +254,8 @@ namespace MediaFlux.Services.LibraryCatalog
                                     : "Exact hash evidence confirmed; cleanup succeeded.");
                             _recovery?.MarkFileRemovedByCleanup(
                                 item.FileId, item.SourcePath,
-                                $"Visual cleanup plan {plan.PlanId} completed using {plan.Action}.");
+                                $"Visual cleanup plan {plan.PlanId} completed using {plan.Action}.", visualPlanId: plan.PlanId,
+                                sourcePlanItemFileId: item.FileId);
                             succeeded++;
                             reclaimed += item.SourceSizeBytes;
                         }
@@ -304,7 +305,8 @@ namespace MediaFlux.Services.LibraryCatalog
                     _visual.AppendVisualCleanupAudit(plan.PlanId,fileId,path,destination,plan.Action,DuplicateCleanupItemStatus.Succeeded,
                         item.ExactHash==null?"User-approved Delete Both visual cleanup succeeded; no keeper remains.":"Exact hash evidence confirmed; Delete Both cleanup succeeded; no keeper remains.");
                     _recovery?.MarkFileRemovedByCleanup(fileId, path,
-                        $"Visual Delete Both plan {plan.PlanId} completed using {plan.Action}.");
+                        $"Visual Delete Both plan {plan.PlanId} completed using {plan.Action}.", visualPlanId: plan.PlanId,
+                        sourcePlanItemFileId: item.FileId);
                     outcomes.Add(destination);
                     succeeded++;
                 }

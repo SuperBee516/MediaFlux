@@ -83,18 +83,21 @@ public sealed class LibraryGeneralFileRemovalService
     private readonly Func<long, string, LibraryGeneralFileSnapshot?> _resolve;
     private readonly ILibraryGeneralFileActions _actions;
     private readonly ILibraryGeneralFileRemovalAudit _audit;
+    private readonly Action<long, string, string>? _reconcileSuccessfulRemoval;
     private readonly Func<DateTime> _utcNow;
 
     public LibraryGeneralFileRemovalService(
         Func<long, string, LibraryGeneralFileSnapshot?> resolve,
         ILibraryGeneralFileRemovalAudit audit,
         ILibraryGeneralFileActions? actions = null,
-        Func<DateTime>? utcNow = null)
+        Func<DateTime>? utcNow = null,
+        Action<long, string, string>? reconcileSuccessfulRemoval = null)
     {
         _resolve = resolve ?? throw new ArgumentNullException(nameof(resolve));
         _audit = audit ?? throw new ArgumentNullException(nameof(audit));
         _actions = actions ?? new WindowsLibraryGeneralFileActions();
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
+        _reconcileSuccessfulRemoval = reconcileSuccessfulRemoval;
     }
 
     public LibraryGeneralFileRemovalPreview Preview(IEnumerable<(long FileId, string FullPath)> selection, DuplicateCleanupAction action)
@@ -141,6 +144,8 @@ public sealed class LibraryGeneralFileRemovalService
                 if (preview.Action == DuplicateCleanupAction.RecycleBin) _actions.Recycle(planned.FullPath);
                 else if (preview.Action == DuplicateCleanupAction.Quarantine) destination = _actions.Quarantine(planned.FullPath, quarantineRoot, planned.FileId);
                 else _actions.DeletePermanent(planned.FullPath);
+                _reconcileSuccessfulRemoval?.Invoke(planned.FileId, planned.FullPath,
+                    $"General Library Analyzer removal completed using {preview.Action}.");
                 reclaimed += planned.SizeBytes;
                 Record(planned, destination, DuplicateCleanupItemStatus.Succeeded, "");
             }

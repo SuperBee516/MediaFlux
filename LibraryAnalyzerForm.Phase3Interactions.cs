@@ -267,15 +267,16 @@ public sealed partial class LibraryAnalyzerForm
             $"Total selected size: {FormatBytes(preview.SelectedBytes)}\r\nAffected locations: {preview.AffectedLocations.Count:N0}\r\n{locations}\r\n\r\n" +
             $"Protected files excluded: {preview.ProtectedExcluded:N0}\r\nUnavailable/missing files excluded: {preview.UnavailableExcluded:N0}\r\n" +
             $"Expected reclaimable space: {FormatBytes(preview.ExpectedReclaimableBytes)}\r\nRequested action: {CleanupActionLabel(action)}\r\n\r\n" +
-            "Eligible files will be revalidated immediately before action. The affected locations must be rescanned afterward.";
+            "Eligible files will be revalidated immediately before action. Successful removals are reconciled across the catalog immediately; a later scan can verify the affected locations.";
         if (preview.Eligible.Count == 0) { MessageBox.Show(this, message, "Library Analyzer File Removal", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
         if (action == DuplicateCleanupAction.PermanentDelete)
             message = "WARNING: PERMANENT DELETE CANNOT BE UNDONE.\r\n\r\n" + message;
         if (MessageBox.Show(this, message + "\r\n\r\nContinue?", "Library Analyzer File Removal", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         LibraryGeneralFileRemovalResult result = await _generalFileRemoval.ExecuteAsync(preview, _cleanupOptions.QuarantineFolder);
-        MessageBox.Show(this, $"File removal finished.\r\n\r\nSucceeded: {result.Succeeded:N0}\r\nExcluded by revalidation: {result.Excluded:N0}\r\nFailed: {result.Failed:N0}\r\nReclaimed: {FormatBytes(result.ReclaimedBytes)}\r\n\r\nRescan affected locations to reconcile the catalog.",
+        MessageBox.Show(this, $"File removal finished.\r\n\r\nSucceeded: {result.Succeeded:N0}\r\nExcluded by revalidation: {result.Excluded:N0}\r\nFailed: {result.Failed:N0}\r\nReclaimed: {FormatBytes(result.ReclaimedBytes)}\r\n\r\nThe catalog and all duplicate views were reconciled immediately. A later scan can verify the affected locations.",
             "Library Analyzer File Removal", MessageBoxButtons.OK, result.Failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-        await refresh();
+        if (result.Succeeded > 0) await RefreshAfterSuccessfulRemovalAsync();
+        else await refresh();
     }
 
     private LibraryGeneralFileSnapshot? ResolveGeneralFileSnapshot(long fileId, string path)

@@ -1,4 +1,5 @@
 using MediaFlux.Models;
+using MediaFlux.Services;
 using MediaFlux.Services.LibraryCatalog;
 using System.Collections.Concurrent;
 using System.ComponentModel;
@@ -14,6 +15,17 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "MediaFlux-ExactManagementTests", Guid.NewGuid().ToString("N"));
 
     public LibraryAnalyzerExactManagementTests() => Directory.CreateDirectory(_root);
+
+    [Fact]
+    public void DuplicateReviewSelectionAdvancesInVisibleOrderAndDoesNotWrap()
+    {
+        Assert.Equal(1, LibraryDuplicateReviewSelectionPolicy.ResolveNextVisibleIndex(new long[] { 30, 20, 10 }, 30, 0));
+        Assert.Equal(2, LibraryDuplicateReviewSelectionPolicy.ResolveNextVisibleIndex(new long[] { 30, 20, 10 }, 20, 1));
+        Assert.Equal(2, LibraryDuplicateReviewSelectionPolicy.ResolveNextVisibleIndex(new long[] { 30, 20, 10 }, 10, 2));
+
+        // An active filter can remove the group that was just reviewed. Continue at its former position.
+        Assert.Equal(1, LibraryDuplicateReviewSelectionPolicy.ResolveNextVisibleIndex(new long[] { 30, 10 }, 20, 1));
+    }
 
     [Fact]
     public void ExactKeeperPolicyHonorsManualProtectionPreferredRootsAndDeterministicPathRules()
@@ -363,11 +375,12 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             DataGridViewRow selectedRow = members.Rows.Cast<DataGridViewRow>().Single(row => ((ExactDuplicateMemberRecord)row.Tag!).FileId == selected.FileId);
             selectedRow.Selected = true;
             members.CurrentCell = selectedRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-            InvokePrivate(form, "SetManualKeeper_Click", null, EventArgs.Empty);
             long groupId = ((ExactDuplicateGroupRecord)groups.Rows[0].Tag!).GroupId;
-            PumpUntil(() => catalog.GetDuplicateGroup(groupId)?.ManualKeeperFileId == selected.FileId);
-            PumpUntil(() => members.Rows.Cast<DataGridViewRow>().Any(row => ((ExactDuplicateMemberRecord)row.Tag!).IsManualKeeper));
+            long expectedNextGroupId = ((ExactDuplicateGroupRecord)groups.Rows[1].Tag!).GroupId;
+            InvokePrivate(form, "DuplicateMembersMenu_Opening", memberMenu, new CancelEventArgs());
+            PumpTask(InvokePrivateTask(form, "SetSelectedExactKeeperAsync", true));
             Assert.Equal(selected.FileId, catalog.GetDuplicateGroup(groupId)!.ManualKeeperFileId);
+            Assert.Equal(expectedNextGroupId, ((ExactDuplicateGroupRecord)groups.SelectedRows.Cast<DataGridViewRow>().Single().Tag!).GroupId);
             PumpFor(TimeSpan.FromMilliseconds(100));
             form.Close();
         });

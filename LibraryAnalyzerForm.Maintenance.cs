@@ -1,5 +1,6 @@
 using MediaFlux.Services.LibraryCatalog;
 using System.Numerics;
+using System.Diagnostics;
 
 namespace MediaFlux;
 
@@ -7,6 +8,10 @@ public sealed partial class LibraryAnalyzerForm
 {
     private readonly DataGridView _maintenanceGrid=CreateGrid(); private readonly DataGridView _maintenanceHistory=CreateGrid();
     private readonly Label _maintenanceStatus=new(){Dock=DockStyle.Bottom,Height=30,Padding=new Padding(8,7,0,0),Text="Scheduled maintenance is disabled until enabled per location."};
+    private readonly Label _maintenanceActivity=new(){Dock=DockStyle.Fill,AutoEllipsis=true,Padding=new Padding(8,4,8,0),Text="No scheduled job is active."};
+    private readonly Label _maintenanceCurrentItem=new(){Dock=DockStyle.Fill,AutoEllipsis=true,Padding=new Padding(8,0,8,4),ForeColor=SystemColors.GrayText};
+    private readonly ProgressBar _maintenanceProgress=new(){Dock=DockStyle.Fill,Style=ProgressBarStyle.Marquee,Visible=false};
+    private long _lastMaintenanceUiUpdateTicks;
 
     private void BuildScheduledMaintenanceTab()
     {
@@ -20,7 +25,12 @@ public sealed partial class LibraryAnalyzerForm
         AddMaintenanceColumn(_maintenanceGrid,"Location",240);AddMaintenanceColumn(_maintenanceGrid,"Enabled",70);AddMaintenanceColumn(_maintenanceGrid,"Schedule",110);AddMaintenanceColumn(_maintenanceGrid,"Mode",105);AddMaintenanceColumn(_maintenanceGrid,"Conflict",85);AddMaintenanceColumn(_maintenanceGrid,"Window",105);AddMaintenanceColumn(_maintenanceGrid,"Next run",135);AddMaintenanceColumn(_maintenanceGrid,"Last run",135);AddMaintenanceColumn(_maintenanceGrid,"Status",110);AddMaintenanceColumn(_maintenanceGrid,"Actions",360,true);
         AddMaintenanceColumn(_maintenanceHistory,"Started",135);AddMaintenanceColumn(_maintenanceHistory,"Location",220);AddMaintenanceColumn(_maintenanceHistory,"Jobs",230);AddMaintenanceColumn(_maintenanceHistory,"Mode",95);AddMaintenanceColumn(_maintenanceHistory,"Trigger",80);AddMaintenanceColumn(_maintenanceHistory,"Outcome",90);AddMaintenanceColumn(_maintenanceHistory,"Counts",260);AddMaintenanceColumn(_maintenanceHistory,"Details",420,true);
         var split=new SplitContainer{Dock=DockStyle.Fill,Orientation=Orientation.Horizontal,SplitterDistance=360,Panel1MinSize=170,Panel2MinSize=120};
-        split.Panel1.Controls.Add(_maintenanceGrid);split.Panel2.Controls.Add(_maintenanceHistory);tab.Controls.Add(split);tab.Controls.Add(_maintenanceStatus);tab.Controls.Add(actions);_tabs.TabPages.Add(tab);
+        split.Panel1.Controls.Add(_maintenanceGrid);split.Panel2.Controls.Add(_maintenanceHistory);
+        var activity=new TableLayoutPanel{Dock=DockStyle.Top,Height=58,ColumnCount=2,RowCount=2,Padding=new Padding(0,2,0,2)};
+        activity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));activity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,220));
+        activity.RowStyles.Add(new RowStyle(SizeType.Percent,50));activity.RowStyles.Add(new RowStyle(SizeType.Percent,50));
+        activity.Controls.Add(_maintenanceActivity,0,0);activity.Controls.Add(_maintenanceCurrentItem,0,1);activity.Controls.Add(_maintenanceProgress,1,0);activity.SetRowSpan(_maintenanceProgress,2);
+        tab.Controls.Add(split);tab.Controls.Add(_maintenanceStatus);tab.Controls.Add(activity);tab.Controls.Add(actions);_tabs.TabPages.Add(tab);
     }
 
     private async Task RefreshMaintenanceAsync()
@@ -64,5 +74,20 @@ public sealed partial class LibraryAnalyzerForm
     private static string DescribeMaintenanceActions(LibraryMaintenanceProfile p)=>string.Join(", ",DescribeMaintenanceActions(p.Actions,p.AnalyzeFamilies),p.PeriodicQuickScrubDays>0?$"Quick Scrub > {p.PeriodicQuickScrubDays} days":"").Trim(' ', ',');
     private static string DescribeMaintenanceActions(LibraryMaintenanceActions actions,bool families)=>string.Join(", ",Enum.GetValues<LibraryMaintenanceActions>().Where(x=>x!=LibraryMaintenanceActions.None&&x!=LibraryMaintenanceActions.Default&&BitOperations.IsPow2((uint)x)&&actions.HasFlag(x)).Select(ActionLabel).Append(families?"Duplicate families":"").Where(x=>x.Length>0));
     private static string ActionLabel(LibraryMaintenanceActions action)=>action switch{LibraryMaintenanceActions.IncrementalScan=>"Refresh / scan library catalog",LibraryMaintenanceActions.Metadata=>"Refresh missing or changed metadata",LibraryMaintenanceActions.ExactDuplicates=>"Analyze Exact Duplicates",LibraryMaintenanceActions.VisualDuplicates=>"Analyze Visual Duplicates",LibraryMaintenanceActions.QuickScrubNew=>"Quick Scrub new files",LibraryMaintenanceActions.QuickScrubNeverChecked=>"Quick Scrub never checked",LibraryMaintenanceActions.QuickScrubStale=>"Quick Scrub stale",LibraryMaintenanceActions.QuickScrubFailed=>"Retry failed/interrupted Quick Scrubs",_=>action.ToString()};
-    private void Maintenance_ProgressChanged(LibraryMaintenanceProgress p){if(IsDisposed||!IsHandleCreated)return;BeginInvoke(()=>_maintenanceStatus.Text=$"{p.Stage}: {p.Details}".TrimEnd(' ',':'));}
+    private void Maintenance_ProgressChanged(LibraryMaintenanceProgress p)
+    {
+        if(IsDisposed||!IsHandleCreated)return;
+        long now=Stopwatch.GetTimestamp();
+        if(p.IsActive&&p.Outcome==null&&_lastMaintenanceUiUpdateTicks!=0&&Stopwatch.GetElapsedTime(_lastMaintenanceUiUpdateTicks,now)<TimeSpan.FromMilliseconds(150))return;
+        _lastMaintenanceUiUpdateTicks=now;
+        BeginInvoke(() =>
+        {
+            if(IsDisposed)return;
+            string state=p.Outcome?.ToString()??(p.IsActive?"Running":"Idle");
+            _maintenanceActivity.Text=$"{state}: {p.JobName} · {p.Stage}".Trim(' ','·');
+            _maintenanceCurrentItem.Text=string.IsNullOrWhiteSpace(p.CurrentItem)?p.Details:$"{p.Details} · {p.CurrentItem}".Trim(' ','·');
+            _maintenanceStatus.Text=$"{p.Stage}: {p.Details}".TrimEnd(' ',':');
+            ConfigureProgress(_maintenanceProgress,p.IsActive,p.Completed,p.Total,!p.IsIndeterminate);
+        });
+    }
 }

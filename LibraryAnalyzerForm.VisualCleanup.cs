@@ -122,9 +122,10 @@ namespace MediaFlux
                 if (MessageBox.Show(this, confirmation, "Confirm visual duplicate cleanup", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return false;
                 VisualCleanupPlanRecord plan = await Task.Run(() => _runtime.VisualDuplicateCleanup.CreatePlan(approved, _cleanupOptions.PreferredAction, quarantine, allowUnreviewed, minimumConfidence));
                 DuplicateCleanupExecutionResult result = await _runtime.VisualDuplicateCleanup.ExecutePlanAsync(plan.PlanId);
-                MessageBox.Show(this, $"Visual cleanup plan {result.PlanId} finished.\r\n\r\nSucceeded: {result.Succeeded:N0}\r\nExcluded by revalidation: {result.Excluded:N0}\r\nFailed: {result.Failed:N0}\r\n\r\nRescan affected locations to reconcile the catalog.",
+                MessageBox.Show(this, $"Visual cleanup plan {result.PlanId} finished.\r\n\r\nSucceeded: {result.Succeeded:N0}\r\nExcluded by revalidation: {result.Excluded:N0}\r\nFailed: {result.Failed:N0}\r\n\r\nThe catalog and all duplicate views were reconciled immediately. A later scan can verify the location.",
                     "Library Analyzer cleanup", MessageBoxButtons.OK, result.Failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-                await RefreshVisualGroupsAsync();
+                if (result.Succeeded > 0) await RefreshAfterSuccessfulRemovalAsync();
+                else await RefreshVisualGroupsAsync();
                 return result.Succeeded > 0;
             }
             catch (Exception ex)

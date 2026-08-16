@@ -190,7 +190,7 @@ namespace MediaFlux
             if (fileIds.Length > 0) _runtime.Reanalysis.QueueFiles(fileIds, LibraryReanalysisWork.ExactHash);
         }
 
-        private async Task RefreshDuplicateGroupsAsync()
+        private async Task RefreshDuplicateGroupsAsync(DuplicateReviewSelectionAnchor? advanceAfter = null)
         {
             if (_loadingDuplicateGroups || IsDisposed) return;
             _loadingDuplicateGroups = true;
@@ -210,10 +210,23 @@ namespace MediaFlux
                         group.ProtectedMemberCount, Convert.ToHexString(group.FullHash.AsSpan(0, Math.Min(8, group.FullHash.Length))) + "…");
                     _duplicateGroupsGrid.Rows[row].Tag = group;
                 }
-                foreach (DataGridViewRow row in _duplicateGroupsGrid.Rows)
-                    row.Selected = row.Tag is ExactDuplicateGroupRecord group && selectedGroupIds.Contains(group.GroupId);
-                if (!hadSelection && _duplicateGroupsGrid.SelectedRows.Count == 0 && _duplicateGroupsGrid.Rows.Count > 0)
-                    _duplicateGroupsGrid.Rows[0].Selected = true;
+                if (advanceAfter is { } anchor)
+                {
+                    int targetIndex = LibraryDuplicateReviewSelectionPolicy.ResolveNextVisibleIndex(
+                        _duplicateGroupsGrid.Rows.Cast<DataGridViewRow>()
+                            .Select(row => ((ExactDuplicateGroupRecord)row.Tag!).GroupId)
+                            .ToArray(),
+                        anchor.GroupId,
+                        anchor.RowIndex);
+                    SelectDuplicateGroupRow(targetIndex);
+                }
+                else
+                {
+                    foreach (DataGridViewRow row in _duplicateGroupsGrid.Rows)
+                        row.Selected = row.Tag is ExactDuplicateGroupRecord group && selectedGroupIds.Contains(group.GroupId);
+                    if (!hadSelection && _duplicateGroupsGrid.SelectedRows.Count == 0 && _duplicateGroupsGrid.Rows.Count > 0)
+                        SelectDuplicateGroupRow(0);
+                }
                 long first = _duplicateTotal == 0 ? 0 : (long)_duplicatePage * DuplicatePageSize + 1;
                 long last = Math.Min(_duplicateTotal, ((long)_duplicatePage + 1) * DuplicatePageSize);
                 _duplicatePageLabel.Text = $"{first:N0}–{last:N0} of {_duplicateTotal:N0}";
@@ -273,6 +286,26 @@ namespace MediaFlux
             finally { _duplicateMemberRefreshLock.Release(); }
         }
 
+        private DuplicateReviewSelectionAnchor? CaptureDuplicateReviewSelection(long groupId)
+        {
+            DataGridViewRow? row = _duplicateGroupsGrid.SelectedRows.Cast<DataGridViewRow>()
+                .FirstOrDefault(value => value.Tag is ExactDuplicateGroupRecord group && group.GroupId == groupId);
+            return row == null ? null : new DuplicateReviewSelectionAnchor(groupId, row.Index);
+        }
+
+        private void SelectDuplicateGroupRow(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= _duplicateGroupsGrid.Rows.Count)
+                return;
+
+            _duplicateGroupsGrid.ClearSelection();
+            DataGridViewRow row = _duplicateGroupsGrid.Rows[rowIndex];
+            row.Selected = true;
+            _duplicateGroupsGrid.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            try { _duplicateGroupsGrid.FirstDisplayedScrollingRowIndex = rowIndex; }
+            catch (InvalidOperationException) { }
+        }
+
         private DuplicateGroupQuery BuildDuplicateQuery()
         {
             bool? reviewed = _duplicateReviewFilter.SelectedIndex switch { 1 => false, 2 => true, _ => null };
@@ -295,10 +328,14 @@ namespace MediaFlux
         }
 
         private async void SetManualKeeper_Click(object? sender, EventArgs e)
+            => await SetSelectedExactKeeperAsync(advanceAfterPersistence: false);
+
+        private async Task SetSelectedExactKeeperAsync(bool advanceAfterPersistence)
         {
             if (SelectedGroup() is not ExactDuplicateGroupRecord group || SelectedMember() is not ExactDuplicateMemberRecord member || member.GroupId != group.GroupId) return;
+            DuplicateReviewSelectionAnchor? anchor = advanceAfterPersistence ? CaptureDuplicateReviewSelection(group.GroupId) : null;
             _runtime.AnalysisCatalog.SaveDuplicateDecision(new DuplicateGroupDecision(group.GroupId, member.FileId, true, group.Ignored));
-            await RefreshDuplicateGroupsAsync();
+            await RefreshDuplicateGroupsAsync(anchor);
         }
 
         private async void ToggleProtection_Click(object? sender, EventArgs e)
@@ -330,7 +367,7 @@ namespace MediaFlux
             AddVisualMenuItem(_duplicateMembersMenu, "Compare With Keeper", "Compare", CompareSelectedExactWithKeeperAsync);
             _duplicateMembersMenu.Items.Add(new ToolStripSeparator());
             AddVisualMenuItem(_duplicateMembersMenu, "Re-analyze Selected Member(s)", "Reanalyze", () => { QueueExactMembers(SelectedExactMembers()); return Task.CompletedTask; });
-            AddVisualMenuItem(_duplicateMembersMenu, "Set as Keeper", "Keeper", () => { SetManualKeeper_Click(null, EventArgs.Empty); return Task.CompletedTask; });
+            AddVisualMenuItem(_duplicateMembersMenu, "Set as Keeper", "Keeper", () => SetSelectedExactKeeperAsync(advanceAfterPersistence: true));
             AddVisualMenuItem(_duplicateMembersMenu, "Protect", "Protect", ToggleSelectedExactProtectionAsync);
             AddVisualMenuItem(_duplicateMembersMenu, "Delete Candidate…", "DeleteCandidate", DeleteSelectedExactCandidateAsync);
             _duplicateMembersMenu.Items.Add(new ToolStripSeparator());
@@ -572,12 +609,12 @@ namespace MediaFlux
                 DuplicateCleanupExecutionResult result = await Task.Run(
                     async () => await _runtime.DuplicateCleanup.ExecutePlanAsync(plan.PlanId, token, progress).ConfigureAwait(false), token);
                 MessageBox.Show(this, $"Cleanup plan {result.PlanId} finished.\r\n\r\nSucceeded: {result.Succeeded:N0}\r\nExcluded by revalidation: {result.Excluded:N0}\r\nFailed: {result.Failed:N0}\r\nActual reclaimed: {FormatBytes(result.ReclaimedBytes)}\r\n" +
-                    (string.IsNullOrWhiteSpace(result.ErrorText) ? "" : $"Status: {result.ErrorText}\r\n") + "\r\nRescan affected locations to reconcile the catalog.",
+                    (string.IsNullOrWhiteSpace(result.ErrorText) ? "" : $"Status: {result.ErrorText}\r\n") +
+                    "\r\nThe catalog and all duplicate views were reconciled immediately. A later scan can verify the location.",
                     "Library Analyzer cleanup", MessageBoxButtons.OK,
                     result.Failed == 0 && string.IsNullOrWhiteSpace(result.ErrorText) ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-                await RefreshDuplicateGroupsAsync();
-                await RefreshOverviewAsync();
-                await RefreshLocationsAsync();
+                if (result.Succeeded > 0) await RefreshAfterSuccessfulRemovalAsync();
+                else await RefreshDuplicateGroupsAsync();
             }
             catch (OperationCanceledException)
             {
@@ -647,6 +684,7 @@ namespace MediaFlux
         }
 
         private ExactDuplicateGroupRecord[] SelectedGroups() => _duplicateGroupsGrid.SelectedRows.Cast<DataGridViewRow>().Select(row => row.Tag).OfType<ExactDuplicateGroupRecord>().ToArray();
+        private readonly record struct DuplicateReviewSelectionAnchor(long GroupId, int RowIndex);
         private long[] SelectedGroupIds() => SelectedGroups().Select(group => group.GroupId).Distinct().ToArray();
         private ExactDuplicateGroupRecord? SelectedGroup() => SelectedGroups().FirstOrDefault();
         private ExactDuplicateMemberRecord? SelectedMember() => _duplicateMembersGrid.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault()?.Tag as ExactDuplicateMemberRecord;

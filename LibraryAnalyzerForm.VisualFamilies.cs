@@ -524,10 +524,12 @@ public sealed partial class LibraryAnalyzerForm
                 result.Failed == 0 && string.IsNullOrWhiteSpace(result.ErrorText)
                     ? MessageBoxIcon.Information
                     : MessageBoxIcon.Warning);
-            await RefreshVisualFamiliesAsync();
-            await RefreshVisualGroupsAsync();
-            await RefreshOverviewAsync();
-            await RefreshLocationsAsync();
+            if (result.Succeeded > 0) await RefreshAfterSuccessfulRemovalAsync();
+            else
+            {
+                await RefreshVisualFamiliesAsync();
+                await RefreshVisualGroupsAsync();
+            }
         }
         catch (OperationCanceledException)
         {

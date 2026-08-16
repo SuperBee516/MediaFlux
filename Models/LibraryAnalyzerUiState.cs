@@ -2,6 +2,8 @@ namespace MediaFlux.Models;
 
 public sealed class LibraryAnalyzerUiState
 {
+    public bool ShowVisualComparisonPreview { get; set; }
+
     public Dictionary<string, LibraryAnalyzerGridLayout> GridLayouts { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
 

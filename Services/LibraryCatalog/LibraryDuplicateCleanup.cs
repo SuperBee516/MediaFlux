@@ -326,7 +326,8 @@ namespace MediaFlux.Services.LibraryCatalog
                             _analysis.RecordCleanupPlanItemOutcome(planId, item.FileId, item.SourcePath, destination, plan.Action,
                                 DuplicateCleanupItemStatus.Succeeded, "", "Validated exact duplicate cleanup succeeded.");
                             _recovery?.MarkFileRemovedByCleanup(item.FileId, item.SourcePath,
-                                $"Exact cleanup plan {planId} completed using {plan.Action}.");
+                                $"Exact cleanup plan {planId} completed using {plan.Action}.", exactPlanId: planId,
+                                sourcePlanItemFileId: item.FileId);
                             succeeded++; reclaimed += item.SourceSizeBytes;
                         }
                         catch (Exception ex)
