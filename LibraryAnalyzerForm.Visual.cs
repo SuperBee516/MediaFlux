@@ -19,7 +19,9 @@ namespace MediaFlux
         private readonly Label _visualPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
         private readonly ProgressBar _visualProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
         private readonly CheckBox _visualComparisonPreviewEnabled = new() { Name = "VisualComparisonPreviewEnabled", Text = "Show Comparison Preview", AutoSize = true };
+        // The top half of the tab keeps results and the optional preview side-by-side.
         private readonly SplitContainer _visualDetailSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical };
+        private readonly SplitContainer _visualResultsMembersSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 240, Panel1MinSize = 140, Panel2MinSize = 140 };
         private readonly Panel _visualComparisonPreview = new() { Dock = DockStyle.Fill, Visible = false };
         private readonly ContextMenuStrip _visualGroupsMenu = new();
         private readonly ContextMenuStrip _visualMembersMenu = new();
@@ -169,13 +171,12 @@ namespace MediaFlux
             pager.Controls.Add(next); pager.Controls.Add(previous); pager.Controls.Add(_visualPageLabel);
             var status = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, WrapContents = false };
             status.Controls.Add(_visualProgress); status.Controls.Add(_visualStatus);
-            var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 240, Panel1MinSize = 140, Panel2MinSize = 140 };
-            split.Panel1.Controls.Add(_visualGroupsGrid);
-            _visualDetailSplit.Panel1.Controls.Add(_visualMembersGrid);
+            _visualDetailSplit.Panel1.Controls.Add(_visualGroupsGrid);
             BuildVisualComparisonPreview();
             _visualDetailSplit.Panel2.Controls.Add(_visualComparisonPreview);
-            split.Panel2.Controls.Add(_visualDetailSplit);
-            tab.Controls.Add(split);
+            _visualResultsMembersSplit.Panel1.Controls.Add(_visualDetailSplit);
+            _visualResultsMembersSplit.Panel2.Controls.Add(_visualMembersGrid);
+            tab.Controls.Add(_visualResultsMembersSplit);
             tab.Controls.Add(status);
             tab.Controls.Add(pager);
             tab.Controls.Add(actions);
