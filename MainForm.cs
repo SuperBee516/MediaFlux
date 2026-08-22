@@ -247,6 +247,8 @@ namespace MediaFlux
             toolsToolStripMenuItem.DropDownItems.Insert(5, encoderBenchmarkToolStripMenuItem);
 
             // File → View Error Log
+            var videoSplitterToolStripMenuItem = new ToolStripMenuItem("Video Splitter / Trimmer…");
+            videoSplitterToolStripMenuItem.Click += VideoSplitterToolStripMenuItem_Click;
             var viewErrorLogToolStripMenuItem = new ToolStripMenuItem("View Error Log");
             viewErrorLogToolStripMenuItem.Click += ViewErrorLogToolStripMenuItem_Click;
             var viewDuplicateActionLogToolStripMenuItem = new ToolStripMenuItem("View Duplicate Action Log");
@@ -254,14 +256,16 @@ namespace MediaFlux
             var exitIndex = fileToolStripMenuItem.DropDownItems.IndexOf(exitToolStripMenuItem);
             if (exitIndex < 0)
             {
+                fileToolStripMenuItem.DropDownItems.Add(videoSplitterToolStripMenuItem);
                 fileToolStripMenuItem.DropDownItems.Add(viewErrorLogToolStripMenuItem);
                 fileToolStripMenuItem.DropDownItems.Add(viewDuplicateActionLogToolStripMenuItem);
             }
             else
             {
-                fileToolStripMenuItem.DropDownItems.Insert(exitIndex, viewErrorLogToolStripMenuItem);
-                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 1, viewDuplicateActionLogToolStripMenuItem);
-                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 2, new ToolStripSeparator());
+                fileToolStripMenuItem.DropDownItems.Insert(exitIndex, videoSplitterToolStripMenuItem);
+                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 1, viewErrorLogToolStripMenuItem);
+                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 2, viewDuplicateActionLogToolStripMenuItem);
+                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 3, new ToolStripSeparator());
             }
             InitializeDvdImportMenu();
 
@@ -759,6 +763,12 @@ namespace MediaFlux
                 _btnToggleEncodeInfoHeader.Text = collapsed ? ">" : "v";
 
             ApplyEncodeInfoSplitterState();
+        }
+
+        private void VideoSplitterToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            using var form = new VideoSplitterForm(_config, _configPath);
+            form.ShowDialog(this);
         }
 
         private void ApplyEncodeInfoSplitterState()

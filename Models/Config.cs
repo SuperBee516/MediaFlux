@@ -138,6 +138,13 @@ namespace MediaFlux.Models
         public int MainWindowY { get; set; } = 0;
         public int MainWindowWidth { get; set; } = 0;
         public int MainWindowHeight { get; set; } = 0;
+
+        // Video Splitter / Trimmer window placement. The actual trim selection is
+        // deliberately session-only until Phase 2 introduces saved projects.
+        public int VideoSplitterWindowX { get; set; } = int.MinValue;
+        public int VideoSplitterWindowY { get; set; } = int.MinValue;
+        public int VideoSplitterWindowWidth { get; set; } = 0;
+        public int VideoSplitterWindowHeight { get; set; } = 0;
         public bool MainWindowMaximized { get; set; } = false;
         public bool EncodeInfoHeaderCollapsed { get; set; } = false;
         // Zero preserves the application's default Summary / Preview height.
