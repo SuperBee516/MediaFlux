@@ -12,7 +12,7 @@
 
     <ApplicationIcon>images\mediaflux_icn.ico</ApplicationIcon>
     <PackageIcon>mediaflux_icn.png</PackageIcon>
-    <Version>0.1.48</Version>
+    <Version>0.1.49</Version>
   </PropertyGroup>
 
   <ItemGroup>

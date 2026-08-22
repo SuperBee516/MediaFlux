@@ -35,12 +35,12 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     private readonly Label _inPreviewLabel = CreatePreviewLabel("IN preview: —");
     private readonly Label _outPreviewLabel = CreatePreviewLabel("OUT preview: —");
     private readonly Label _keyframeLabel = CreatePreviewLabel("Keyframe boundary information will appear after loading a video.");
-    private readonly ComboBox _outputFolder = new() { DropDownStyle = ComboBoxStyle.DropDown, Width = 300 };
-    private readonly ComboBox _processingMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 190 };
-    private readonly CheckBox _playOutput = new() { Text = "Play output after completion", AutoSize = true };
-    private readonly Button _exportButton = new() { Text = "Process all segments", AutoSize = true };
-    private readonly Button _cancelExportButton = new() { Text = "Cancel", AutoSize = true, Enabled = false };
-    private readonly Button _openOutputButton = new() { Text = "Open Output Folder", AutoSize = true };
+    private readonly ComboBox _outputFolder = new() { Name = "SplitterOutputFolder", DropDownStyle = ComboBoxStyle.DropDown, Width = 300 };
+    private readonly ComboBox _processingMode = new() { Name = "SplitterProcessingMode", DropDownStyle = ComboBoxStyle.DropDownList, Width = 190 };
+    private readonly CheckBox _playOutput = new() { Name = "SplitterPlayOutput", Text = "Play output after completion", AutoSize = true };
+    private readonly Button _exportButton = new() { Name = "SplitterExportButton", Text = "Process all segments", AutoSize = true };
+    private readonly Button _cancelExportButton = new() { Name = "SplitterCancelExportButton", Text = "Cancel", AutoSize = true, Enabled = false };
+    private readonly Button _openOutputButton = new() { Name = "SplitterOpenOutputButton", Text = "Open Output Folder", AutoSize = true };
     private readonly ProgressBar _exportProgress = new() { Minimum = 0, Maximum = 100, Width = 190 };
     private readonly Label _exportDetails = CreatePreviewLabel("No processing is active.");
     private readonly System.Windows.Forms.Timer _previewDebounce = new() { Interval = 300 };
@@ -63,10 +63,11 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
 
         Text = "Video Splitter / Trimmer";
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(860, 650);
+        MinimumSize = new Size(940, 780);
         Size = RestoreSize();
         Font = new Font("Segoe UI", 9F);
         BackColor = Color.FromArgb(246, 248, 251);
+        AutoScaleMode = AutoScaleMode.Dpi;
         KeyPreview = true;
         AllowDrop = true;
 
@@ -98,8 +99,10 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(18), BackColor = BackColor };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        // Keep preview intentionally compact. The interaction and export areas
+        // are the working surface, so they receive the resizable remainder.
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 160));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(BuildHeader(), 0, 0);
         root.Controls.Add(BuildSourceInfo(), 0, 1);
@@ -131,22 +134,23 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
 
     private Control BuildPreview()
     {
-        var panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black, Margin = new Padding(0, 0, 0, 8), MinimumSize = new Size(400, 250) };
+        var panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black, Margin = new Padding(0, 0, 0, 8), MinimumSize = new Size(400, 150) };
         panel.Controls.Add(_playerHost);
         return panel;
     }
 
     private Control BuildTimeline()
     {
-        var container = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 3, Margin = new Padding(0, 0, 0, 8) };
-        container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var scrollHost = new Panel { Name = "SplitterEditingSurface", Dock = DockStyle.Fill, AutoScroll = true, Margin = new Padding(0, 0, 0, 8) };
+        var container = new TableLayoutPanel { AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Location = Point.Empty, ColumnCount = 1, RowCount = 4 };
         container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         container.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
+        container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         container.Controls.Add(new Label { Text = "Timeline", AutoSize = true, Font = new Font(Font, FontStyle.Bold), ForeColor = Color.FromArgb(55, 65, 81) }, 0, 0);
         container.Controls.Add(_timeline, 0, 1);
 
-        var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, Margin = new Padding(0, 5, 0, 0) };
+        var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = new Padding(0, 5, 0, 0), Padding = new Padding(0, 0, 4, 0) };
         controls.Controls.Add(_playPause);
         controls.Controls.Add(CreateButton("◀ 5s", () => SeekRelative(-5)));
         controls.Controls.Add(CreateButton("5s ▶", () => SeekRelative(5)));
@@ -168,13 +172,17 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         controls.Controls.Add(CreateButton("Mute", ToggleMute));
         container.Controls.Add(controls, 0, 2);
         container.Controls.Add(BuildEditingDetails(), 0, 3);
-        return container;
+        scrollHost.Controls.Add(container);
+        void FitEditingContentWidth() => container.Width = Math.Max(1, scrollHost.ClientSize.Width - (scrollHost.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0));
+        scrollHost.Resize += (_, _) => FitEditingContentWidth();
+        FitEditingContentWidth();
+        return scrollHost;
     }
 
     private Control BuildStatusBar()
     {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = Color.FromArgb(248, 250, 252), Padding = new Padding(8), Margin = new Padding(0, 5, 0, 0) };
-        var outputs = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false };
+        var panel = new TableLayoutPanel { Name = "SplitterExportPanel", Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 3, BackColor = Color.FromArgb(248, 250, 252), Padding = new Padding(8), Margin = new Padding(0, 5, 0, 0) };
+        var outputs = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Padding = new Padding(0, 0, 4, 0) };
         outputs.Controls.Add(new Label { Text = "Output folder", AutoSize = true, Margin = new Padding(0, 7, 4, 0) });
         outputs.Controls.Add(_outputFolder);
         outputs.Controls.Add(CreateButton("Browse…", BrowseOutputFolder));
@@ -185,9 +193,15 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         outputs.Controls.Add(_cancelExportButton);
         outputs.Controls.Add(_openOutputButton);
         panel.Controls.Add(outputs, 0, 0);
-        var progress = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, Margin = new Padding(0, 5, 0, 0) };
-        progress.Controls.Add(_exportProgress);
-        progress.Controls.Add(_exportDetails);
+        var progress = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 5, 0, 0) };
+        progress.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 196));
+        progress.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _exportDetails.AutoSize = false;
+        _exportDetails.AutoEllipsis = true;
+        _exportDetails.Dock = DockStyle.Fill;
+        _exportDetails.TextAlign = ContentAlignment.MiddleLeft;
+        progress.Controls.Add(_exportProgress, 0, 0);
+        progress.Controls.Add(_exportDetails, 1, 0);
         panel.Controls.Add(progress, 0, 1);
         _statusLabel.ForeColor = Color.FromArgb(100, 116, 139); _statusLabel.Dock = DockStyle.Fill; _statusLabel.Margin = new Padding(0, 4, 0, 0);
         panel.Controls.Add(_statusLabel, 0, 2);
@@ -196,26 +210,26 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
 
     private Control BuildEditingDetails()
     {
-        var outer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, Margin = new Padding(0, 10, 0, 0) };
+        var outer = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, AutoSize = true, Margin = new Padding(0, 10, 0, 0), Padding = new Padding(0, 0, 4, 0) };
         outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
         outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
 
-        var segments = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = Color.White, Padding = new Padding(10), Margin = new Padding(0, 0, 8, 0) };
+        var segments = new TableLayoutPanel { Name = "SplitterSegmentsPanel", Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, RowCount = 3, BackColor = Color.White, Padding = new Padding(10), Margin = new Padding(0, 0, 8, 0) };
         segments.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         segments.RowStyles.Add(new RowStyle(SizeType.Absolute, 130));
-        segments.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        segments.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
         segments.Controls.Add(new Label { Text = "Segments", AutoSize = true, Font = new Font(Font, FontStyle.Bold), ForeColor = Color.FromArgb(55, 65, 81) }, 0, 0);
         ConfigureSegmentsGrid();
         segments.Controls.Add(_segmentsGrid, 0, 1);
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
-        actions.Controls.Add(CreateButton("Add Segment", AddSegment));
-        actions.Controls.Add(CreateButton("Update Segment", UpdateSelectedSegment));
-        actions.Controls.Add(CreateButton("Remove", RemoveSelectedSegment));
-        actions.Controls.Add(CreateButton("Clear", ClearSegments));
-        actions.Controls.Add(CreateButton("Preview Selection", PreviewSelection));
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = false, Height = 60, WrapContents = true, Margin = new Padding(0, 6, 0, 0) };
+        actions.Controls.Add(CreateNamedButton("Add Segment", AddSegment, "AddSegmentButton"));
+        actions.Controls.Add(CreateNamedButton("Update Segment", UpdateSelectedSegment, "UpdateSegmentButton"));
+        actions.Controls.Add(CreateNamedButton("Remove", RemoveSelectedSegment, "RemoveSegmentButton"));
+        actions.Controls.Add(CreateNamedButton("Clear", ClearSegments, "ClearSegmentsButton"));
+        actions.Controls.Add(CreateNamedButton("Preview Selection", PreviewSelection, "PreviewSelectionButton"));
         segments.Controls.Add(actions, 0, 2);
 
-        var boundaries = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, BackColor = Color.White, Padding = new Padding(10) };
+        var boundaries = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, RowCount = 4, BackColor = Color.White, Padding = new Padding(10) };
         boundaries.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         boundaries.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         boundaries.Controls.Add(new Label { Text = "Boundary previews", AutoSize = true, Font = new Font(Font, FontStyle.Bold), ForeColor = Color.FromArgb(55, 65, 81) }, 0, 0);
@@ -752,6 +766,13 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     protected override void Dispose(bool disposing) { if (disposing) { _loadCts?.Dispose(); _previewCts?.Dispose(); _lifetimeCts.Dispose(); _previewDebounce.Dispose(); _playbackTimer.Dispose(); _inPreview.Image?.Dispose(); _outPreview.Image?.Dispose(); } base.Dispose(disposing); }
 
     private static Button CreateButton(string text, Action action) { var button = new Button { Text = text, AutoSize = true }; button.Click += (_, _) => action(); return button; }
+    private static Button CreateNamedButton(string text, Action action, string name)
+    {
+        Button button = CreateButton(text, action);
+        button.Name = name;
+        button.AccessibleName = text;
+        return button;
+    }
     private static Label CreateValueLabel(string text) => new() { Text = text, AutoSize = true, ForeColor = Color.FromArgb(55, 65, 81), MaximumSize = new Size(0, 42) };
     private static PictureBox CreatePreviewBox() => new() { Dock = DockStyle.Fill, Height = 95, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.FromArgb(30, 41, 59), Margin = new Padding(2, 6, 2, 2) };
     private static Label CreatePreviewLabel(string text) => new() { Text = text, AutoSize = true, ForeColor = Color.FromArgb(71, 85, 105), Margin = new Padding(2, 4, 2, 0) };

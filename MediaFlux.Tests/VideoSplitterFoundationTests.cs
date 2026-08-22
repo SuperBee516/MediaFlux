@@ -1,4 +1,6 @@
 using MediaFlux.Models;
+using System.Drawing;
+using System.Windows.Forms;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -54,6 +56,63 @@ public sealed class VideoSplitterFoundationTests : IDisposable
         Assert.Contains("within", outside, StringComparison.OrdinalIgnoreCase);
         Assert.True(VideoSplitterSegmentRules.TryValidate(1.25, 9.75, 10, out _));
         Assert.Equal("movie-Part03.mkv", VideoSplitterSegmentRules.CreateOutputFileName("C:\\clips\\movie.mkv", 3));
+    }
+
+    [Fact]
+    public void SplitterLayoutKeepsSegmentActionsAccessibleAcrossSupportedSizes()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                string configPath = Path.Combine(_root, "layout.json");
+                using var form = new VideoSplitterForm(new Config(), configPath);
+                foreach ((Size? size, bool maximized) in new[]
+                {
+                    ((Size?)new Size(1120, 760), false),
+                    ((Size?)form.MinimumSize, false),
+                    ((Size?)new Size(1440, 960), false),
+                    ((Size?)null, true)
+                })
+                {
+                    form.WindowState = FormWindowState.Normal;
+                    if (maximized) form.WindowState = FormWindowState.Maximized;
+                    else form.Size = size!.Value;
+                    form.Show();
+                    Application.DoEvents();
+                    Panel editing = (Panel)form.Controls.Find("SplitterEditingSurface", true).Single();
+                    Assert.True(editing.AutoScroll);
+                    editing.AutoScrollPosition = new Point(0, editing.VerticalScroll.Maximum);
+                    Application.DoEvents();
+                    Rectangle editingBounds = editing.RectangleToScreen(editing.ClientRectangle);
+                    foreach (string name in new[] { "AddSegmentButton", "UpdateSegmentButton", "RemoveSegmentButton", "ClearSegmentsButton", "PreviewSelectionButton" })
+                    {
+                        Control button = form.Controls.Find(name, true).Single();
+                        Assert.True(button.Visible, $"{name} should be visible.");
+                        Assert.True(editingBounds.IntersectsWith(button.RectangleToScreen(button.ClientRectangle)), $"{name} should be reachable in the editing surface.");
+                    }
+                    Control export = form.Controls.Find("SplitterExportPanel", true).Single();
+                    Assert.True(export.Visible);
+                    Assert.False(export.Bounds.IntersectsWith(editing.Bounds));
+                    Rectangle exportBounds = export.RectangleToScreen(export.ClientRectangle);
+                    foreach (string name in new[] { "SplitterOutputFolder", "SplitterProcessingMode", "SplitterPlayOutput", "SplitterExportButton", "SplitterCancelExportButton", "SplitterOpenOutputButton" })
+                    {
+                        Control control = form.Controls.Find(name, true).Single();
+                        Assert.True(control.Visible, $"{name} should be visible.");
+                        Assert.True(exportBounds.IntersectsWith(control.RectangleToScreen(control.ClientRectangle)), $"{name} should remain inside the export panel.");
+                    }
+                }
+                form.Close();
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Splitter layout test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
     public void Dispose()
