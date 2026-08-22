@@ -905,6 +905,21 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 }
                 Assert.True(sawDeleteBothPreview);
 
+                Assert.True(groups.MultiSelect);
+                initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                typeof(Control).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(groups, new object[] { new KeyEventArgs(Keys.Control | Keys.A) });
+                PumpTask(InvokePrivateTask(form, "MarkSelectedVisualReviewedAsync"));
+                Assert.All(groups.Rows.Cast<DataGridViewRow>(), row =>
+                    Assert.True(catalog.GetVisualGroup(((VisualSimilarityGroupRecord)row.Tag!).GroupId)!.Reviewed));
+                Assert.Equal(2, groups.SelectedRows.Count);
+                Assert.Equal(initialGroupId, ((VisualSimilarityGroupRecord)groups.CurrentRow!.Tag!).GroupId);
+                groups.ClearSelection();
+                initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                initialRow.Selected = true;
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+
                 PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualNotMatchAsync"));
                 Assert.True(catalog.GetVisualGroup(initialGroupId)!.NotMatch);
                 Assert.Single(groups.Rows.Cast<DataGridViewRow>());

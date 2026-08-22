@@ -106,11 +106,19 @@ namespace MediaFlux
             AddVisualGroupColumn("Resolution", "Resolution", 85);
             AddVisualGroupColumn("Review", "Review state", 95);
             AddVisualGroupColumn("Evidence", "Evidence", 430);
-            _visualGroupsGrid.MultiSelect = false;
+            _visualGroupsGrid.MultiSelect = true;
             _visualGroupsGrid.SelectionChanged += async (_, _) => await RefreshVisualMembersAsync();
             _visualGroupsGrid.CellDoubleClick += VisualGroupsGrid_CellDoubleClick;
             _visualGroupsGrid.KeyDown += async (_, e) =>
             {
+                if (e.Control && e.KeyCode == Keys.A)
+                {
+                    foreach (DataGridViewRow row in _visualGroupsGrid.Rows)
+                        row.Selected = true;
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                    return;
+                }
                 if (e.KeyCode != Keys.Enter)
                     return;
                 e.Handled = true;
@@ -244,8 +252,11 @@ namespace MediaFlux
 
         private void QueueSelectedVisualGroup_Click(object? sender, EventArgs e)
         {
-            if (SelectedVisualGroup() is not { } group) return;
-            long[] fileIds = _runtime.VisualCatalog.GetVisualGroupMembers(group.GroupId).Select(x => x.FileId).ToArray();
+            long[] fileIds = SelectedVisualGroups()
+                .SelectMany(group => _runtime.VisualCatalog.GetVisualGroupMembers(group.GroupId))
+                .Select(member => member.FileId)
+                .Distinct()
+                .ToArray();
             if (fileIds.Length > 0) _runtime.Reanalysis.QueueFiles(fileIds, LibraryReanalysisWork.VisualFingerprint);
         }
 
@@ -258,6 +269,7 @@ namespace MediaFlux
                 DuplicateReviewSelectionAnchor? advanceAfter = _visualAdvanceAfterRefresh;
                 _visualAdvanceAfterRefresh = null;
                 preferredGroupId ??= SelectedVisualGroup()?.GroupId;
+                long[] selectedGroupIds = SelectedVisualGroups().Select(group => group.GroupId).ToArray();
                 VisualGroupQuery query = BuildVisualQuery();
                 VisualSimilarityGroupPage page = await Task.Run(() => _runtime.VisualCatalog.QueryVisualGroups(query));
                 if (IsDisposed || Disposing || _visualGroupsGrid.IsDisposed) return;
@@ -289,11 +301,21 @@ namespace MediaFlux
                 }
                 else
                 {
+                    DataGridViewRow[] selectedRows = _visualGroupsGrid.Rows.Cast<DataGridViewRow>()
+                        .Where(row => row.Tag is VisualSimilarityGroupRecord group && selectedGroupIds.Contains(group.GroupId))
+                        .ToArray();
                     DataGridViewRow? preferredRow = preferredGroupId.HasValue
                         ? _visualGroupsGrid.Rows.Cast<DataGridViewRow>()
                             .FirstOrDefault(row => row.Tag is VisualSimilarityGroupRecord group && group.GroupId == preferredGroupId.Value)
                         : null;
-                    if (preferredRow != null)
+                    if (selectedRows.Length > 0)
+                    {
+                        foreach (DataGridViewRow row in selectedRows)
+                            row.Selected = true;
+                        DataGridViewRow currentRow = preferredRow ?? selectedRows[0];
+                        _visualGroupsGrid.CurrentCell = currentRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                    }
+                    else if (preferredRow != null)
                         SelectVisualGroupRow(preferredRow.Index);
                 }
                 long first = _visualTotal == 0 ? 0 : (long)_visualPage * VisualPageSize + 1;
@@ -312,8 +334,8 @@ namespace MediaFlux
             {
                 if (loadVersion != Volatile.Read(ref _visualMemberLoadVersion) || IsDisposed || Disposing || _visualMembersGrid.IsDisposed)
                     return;
-                if (_visualGroupsGrid.SelectedRows.Count == 0) { _visualMembersGrid.Rows.Clear(); return; }
-                long groupId = Convert.ToInt64(_visualGroupsGrid.SelectedRows[0].Cells[0].Value);
+                if (SelectedVisualGroup() is not { } selectedGroup) { _visualMembersGrid.Rows.Clear(); return; }
+                long groupId = selectedGroup.GroupId;
                 IReadOnlyList<VisualSimilarityMemberRecord> members = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroupMembers(groupId));
                 if (loadVersion != Volatile.Read(ref _visualMemberLoadVersion) || IsDisposed || Disposing || _visualMembersGrid.IsDisposed)
                     return;
@@ -389,8 +411,9 @@ namespace MediaFlux
 
         private async void ReviewSelectedVisualCleanup_Click(object? sender, EventArgs e)
         {
-            if (SelectedVisualGroup() is not { } group) return;
-            await PreviewVisualCleanupAsync(new[] { group.GroupId });
+            long[] groupIds = SelectedVisualGroups().Select(group => group.GroupId).ToArray();
+            if (groupIds.Length == 0) return;
+            await PreviewVisualCleanupAsync(groupIds);
         }
 
         private async void ReviewBulkVisualCleanup_Click(object? sender, EventArgs e) => await PreviewVisualCleanupAsync(null);
@@ -438,7 +461,10 @@ namespace MediaFlux
             catch (Exception ex) { ShowError("User decisions could not be restored. No media files were changed.", ex); }
         }
 
-        private VisualSimilarityGroupRecord? SelectedVisualGroup() => _visualGroupsGrid.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault()?.Tag as VisualSimilarityGroupRecord;
+        private VisualSimilarityGroupRecord[] SelectedVisualGroups() => _visualGroupsGrid.SelectedRows.Cast<DataGridViewRow>()
+            .Select(row => row.Tag).OfType<VisualSimilarityGroupRecord>().ToArray();
+        private VisualSimilarityGroupRecord? SelectedVisualGroup() => (_visualGroupsGrid.CurrentRow is { Selected: true } current ? current.Tag as VisualSimilarityGroupRecord : null)
+            ?? SelectedVisualGroups().FirstOrDefault();
         private VisualSimilarityMemberRecord? SelectedVisualMember() => _visualMembersGrid.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault()?.Tag as VisualSimilarityMemberRecord;
         private void AddVisualGroupColumn(string name, string header, int width, bool visible = true) => _visualGroupsGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width, Visible = visible });
         private void AddVisualMemberColumn(string name, string header, int width) => _visualMembersGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width });

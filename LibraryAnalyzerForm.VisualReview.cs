@@ -11,7 +11,12 @@ namespace MediaFlux
         private void ConfigureVisualContextMenus()
         {
             AddVisualMenuItem(_visualGroupsMenu, "Review / Compare", "Review", async () => await OpenVisualReviewAsync());
-            AddVisualMenuItem(_visualGroupsMenu, "Review cleanup plan…", "Cleanup", async () => { if (SelectedVisualGroup() is { } g) await PreviewVisualCleanupAsync(new[] { g.GroupId }); });
+            AddVisualMenuItem(_visualGroupsMenu, "Review cleanup plan…", "Cleanup", async () =>
+            {
+                long[] groupIds = SelectedVisualGroups().Select(group => group.GroupId).ToArray();
+                if (groupIds.Length > 0)
+                    await PreviewVisualCleanupAsync(groupIds);
+            });
             AddVisualMenuItem(_visualGroupsMenu, "Delete both files…", "DeleteBoth", async () => { if (SelectedVisualGroup() is { } g) await PreviewDeleteBothAsync(g.GroupId); });
             AddVisualMenuItem(_visualGroupsMenu, "Re-analyze Match", "Reanalyze", () => { QueueSelectedVisualGroup_Click(null, EventArgs.Empty); return Task.CompletedTask; });
             _visualGroupsMenu.Items.Add(new ToolStripSeparator());
@@ -108,11 +113,16 @@ namespace MediaFlux
 
         private async Task MarkSelectedVisualReviewedAsync()
         {
-            if (SelectedVisualGroup() is not { } group)
+            VisualSimilarityGroupRecord[] groups = SelectedVisualGroups();
+            if (groups.Length == 0)
                 return;
-            await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, group.Ignored, group.NotMatch)));
-            await RefreshVisualGroupsAsync(group.GroupId);
+            await Task.Run(() =>
+            {
+                foreach (VisualSimilarityGroupRecord group in groups)
+                    _runtime.VisualCatalog.SaveVisualDecision(
+                        new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, group.Ignored, group.NotMatch));
+            });
+            await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
         }
 
         private async Task ToggleSelectedVisualIgnoredAsync()
