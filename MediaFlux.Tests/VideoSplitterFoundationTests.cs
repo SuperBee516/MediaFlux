@@ -37,7 +37,8 @@ public sealed class VideoSplitterFoundationTests : IDisposable
             VideoSplitterWindowX = 220,
             VideoSplitterWindowY = 160,
             VideoSplitterWindowWidth = 1080,
-            VideoSplitterWindowHeight = 740
+            VideoSplitterWindowHeight = 740,
+            VideoSplitterPreviewSplitterDistance = 215
         }.Save(path);
 
         Config loaded = Config.Load(path);
@@ -45,6 +46,7 @@ public sealed class VideoSplitterFoundationTests : IDisposable
         Assert.Equal(160, loaded.VideoSplitterWindowY);
         Assert.Equal(1080, loaded.VideoSplitterWindowWidth);
         Assert.Equal(740, loaded.VideoSplitterWindowHeight);
+        Assert.Equal(215, loaded.VideoSplitterPreviewSplitterDistance);
     }
 
     [Fact]
@@ -56,6 +58,34 @@ public sealed class VideoSplitterFoundationTests : IDisposable
         Assert.Contains("within", outside, StringComparison.OrdinalIgnoreCase);
         Assert.True(VideoSplitterSegmentRules.TryValidate(1.25, 9.75, 10, out _));
         Assert.Equal("movie-Part03.mkv", VideoSplitterSegmentRules.CreateOutputFileName("C:\\clips\\movie.mkv", 3));
+    }
+
+    [Fact]
+    public void MarkersCanBeReplacedInEitherOrderAndExposeInvalidRanges()
+    {
+        var timeline = new TimelineControl();
+        timeline.SetDuration(20);
+        timeline.OutSeconds = 4;
+        timeline.InSeconds = 12;
+
+        Assert.Equal(12, timeline.InSeconds);
+        Assert.Equal(4, timeline.OutSeconds);
+        Assert.False(VideoSplitterSegmentRules.TryValidate(timeline.InSeconds, timeline.OutSeconds, 20, out _));
+
+        timeline.OutSeconds = 16;
+        Assert.True(VideoSplitterSegmentRules.TryValidate(timeline.InSeconds, timeline.OutSeconds, 20, out _));
+    }
+
+    [Fact]
+    public void SplitAtPointCreatesExactlyTwoContiguousEditableSegments()
+    {
+        Assert.True(VideoSplitterForm.TryCreateSplitSegments("C:\\clips\\movie.mkv", 12.5, 50, out VideoSplitterSegment[] segments, out _));
+        Assert.Collection(segments,
+            first => { Assert.Equal(0, first.StartSeconds); Assert.Equal(12.5, first.EndSeconds); Assert.Equal("movie-Part01.mkv", first.OutputFileName); },
+            second => { Assert.Equal(12.5, second.StartSeconds); Assert.Equal(50, second.EndSeconds); Assert.Equal("movie-Part02.mkv", second.OutputFileName); });
+        Assert.False(VideoSplitterForm.TryCreateSplitSegments("movie.mkv", 0, 50, out _, out string firstFrameError));
+        Assert.Contains("after", firstFrameError, StringComparison.OrdinalIgnoreCase);
+        Assert.False(VideoSplitterForm.TryCreateSplitSegments("movie.mkv", 50, 50, out _, out _));
     }
 
     [Fact]
@@ -94,6 +124,11 @@ public sealed class VideoSplitterFoundationTests : IDisposable
                         Assert.True(button.Visible, $"{name} should be visible.");
                         Assert.True(editingBounds.IntersectsWith(button.RectangleToScreen(button.ClientRectangle)), $"{name} should be reachable in the editing surface.");
                     }
+                    SplitContainer workspace = (SplitContainer)form.Controls.Find("SplitterPreviewEditorSplit", true).Single();
+                    Assert.True(workspace.Panel1MinSize >= 150);
+                    Assert.True(workspace.Panel2MinSize >= 180);
+                    Assert.True(workspace.SplitterDistance >= workspace.Panel1MinSize);
+                    Assert.True(form.Controls.Find("SplitAtCurrentPositionButton", true).Single().Visible);
                     Control export = form.Controls.Find("SplitterExportPanel", true).Single();
                     Assert.True(export.Visible);
                     Assert.False(export.Bounds.IntersectsWith(editing.Bounds));

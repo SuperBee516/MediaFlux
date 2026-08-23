@@ -24,6 +24,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     private readonly Label _detailsLabel = CreateValueLabel("Source information will appear here.");
     private readonly Label _timeLabel = CreateValueLabel("0:00.000 / 0:00.000");
     private readonly Label _statusLabel = CreateValueLabel("Ready");
+    private readonly Label _rangeStateLabel = CreatePreviewLabel("Set IN, then Set OUT to mark a segment.");
     private readonly TextBox _inText = new() { Width = 105 };
     private readonly TextBox _outText = new() { Width = 105 };
     private readonly TrackBar _volume = new() { Minimum = 0, Maximum = 100, Value = 80, TickStyle = TickStyle.None, Width = 100 };
@@ -44,6 +45,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     private readonly ProgressBar _exportProgress = new() { Minimum = 0, Maximum = 100, Width = 190 };
     private readonly Label _exportDetails = CreatePreviewLabel("No processing is active.");
     private readonly System.Windows.Forms.Timer _previewDebounce = new() { Interval = 300 };
+    private readonly ToolTip _toolTip = new();
     private CancellationTokenSource? _previewCts;
     private bool _previewSelectionOnly;
     private double _selectionPreviewEnd;
@@ -54,6 +56,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     private string? _sourcePath;
     private bool _updatingTimestampText;
     private bool _isPlaying;
+    private SplitContainer? _previewEditorSplit;
 
     public VideoSplitterForm(Config config, string configPath)
     {
@@ -96,19 +99,15 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
 
     private void BuildLayout()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(18), BackColor = BackColor };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(18), BackColor = BackColor };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        // Keep preview intentionally compact. The interaction and export areas
-        // are the working surface, so they receive the resizable remainder.
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 160));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(BuildHeader(), 0, 0);
         root.Controls.Add(BuildSourceInfo(), 0, 1);
-        root.Controls.Add(BuildPreview(), 0, 2);
-        root.Controls.Add(BuildTimeline(), 0, 3);
-        root.Controls.Add(BuildStatusBar(), 0, 4);
+        root.Controls.Add(BuildWorkspace(), 0, 2);
+        root.Controls.Add(BuildStatusBar(), 0, 3);
         Controls.Add(root);
     }
 
@@ -139,10 +138,41 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         return panel;
     }
 
+    private Control BuildWorkspace()
+    {
+        var split = new SplitContainer
+        {
+            Name = "SplitterPreviewEditorSplit",
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Horizontal,
+            SplitterWidth = 6,
+            BackColor = BackColor,
+            Margin = new Padding(0, 0, 0, 8)
+        };
+        split.Panel1.Padding = new Padding(0, 0, 0, 8);
+        split.Panel1.Controls.Add(BuildPreview());
+        split.Panel2.Controls.Add(BuildTimeline());
+        split.Resize += (_, _) => { if (split.Panel1MinSize > 0) ApplyPreviewSplitterDistance(); };
+        split.SplitterMoved += (_, _) => _config.VideoSplitterPreviewSplitterDistance = split.SplitterDistance;
+        _previewEditorSplit = split;
+        return split;
+    }
+
+    private void ApplyPreviewSplitterDistance()
+    {
+        if (_previewEditorSplit == null || _previewEditorSplit.ClientSize.Height <= 0) return;
+        int maximum = _previewEditorSplit.ClientSize.Height - _previewEditorSplit.Panel2MinSize - _previewEditorSplit.SplitterWidth;
+        if (maximum < _previewEditorSplit.Panel1MinSize) return;
+        int preferred = _config.VideoSplitterPreviewSplitterDistance > 0
+            ? _config.VideoSplitterPreviewSplitterDistance
+            : Math.Min(220, maximum);
+        _previewEditorSplit.SplitterDistance = Math.Clamp(preferred, _previewEditorSplit.Panel1MinSize, maximum);
+    }
+
     private Control BuildTimeline()
     {
         var scrollHost = new Panel { Name = "SplitterEditingSurface", Dock = DockStyle.Fill, AutoScroll = true, Margin = new Padding(0, 0, 0, 8) };
-        var container = new TableLayoutPanel { AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Location = Point.Empty, ColumnCount = 1, RowCount = 4 };
+        var container = new TableLayoutPanel { AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Location = Point.Empty, ColumnCount = 1, RowCount = 5 };
         container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         container.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
         container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -159,19 +189,21 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         controls.Controls.Add(_timeLabel);
         controls.Controls.Add(new Label { Text = "IN", AutoSize = true, Margin = new Padding(16, 7, 3, 0) });
         controls.Controls.Add(_inText);
-        controls.Controls.Add(CreateButton("Set IN", () => SetIn(_timeline.PositionSeconds)));
+        Button setIn = CreateButton("Set IN", () => SetIn(CurrentPlaybackPosition()));
+        _toolTip.SetToolTip(setIn, "Mark the current blue playhead as the start of the next segment (I).");
+        controls.Controls.Add(setIn);
         controls.Controls.Add(new Label { Text = "OUT", AutoSize = true, Margin = new Padding(10, 7, 3, 0) });
         controls.Controls.Add(_outText);
-        controls.Controls.Add(CreateButton("Set OUT", () => SetOut(_timeline.PositionSeconds)));
-        controls.Controls.Add(new Label { Text = "Zoom", AutoSize = true, Margin = new Padding(16, 7, 3, 0) });
-        var zoom = new NumericUpDown { Minimum = 1, Maximum = 20, Value = 1, Width = 52, DecimalPlaces = 0 };
-        zoom.ValueChanged += (_, _) => _timeline.Zoom = (double)zoom.Value;
-        controls.Controls.Add(zoom);
+        Button setOut = CreateButton("Set OUT", () => SetOut(CurrentPlaybackPosition()));
+        _toolTip.SetToolTip(setOut, "Mark the current blue playhead as the end of the next segment (O).");
+        controls.Controls.Add(setOut);
         controls.Controls.Add(new Label { Text = "Volume", AutoSize = true, Margin = new Padding(16, 7, 3, 0) });
         controls.Controls.Add(_volume);
         controls.Controls.Add(CreateButton("Mute", ToggleMute));
         container.Controls.Add(controls, 0, 2);
-        container.Controls.Add(BuildEditingDetails(), 0, 3);
+        _rangeStateLabel.Margin = new Padding(0, 5, 0, 0);
+        container.Controls.Add(_rangeStateLabel, 0, 3);
+        container.Controls.Add(BuildEditingDetails(), 0, 4);
         scrollHost.Controls.Add(container);
         void FitEditingContentWidth() => container.Width = Math.Max(1, scrollHost.ClientSize.Width - (scrollHost.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0));
         scrollHost.Resize += (_, _) => FitEditingContentWidth();
@@ -216,13 +248,14 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
 
         var segments = new TableLayoutPanel { Name = "SplitterSegmentsPanel", Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, RowCount = 3, BackColor = Color.White, Padding = new Padding(10), Margin = new Padding(0, 0, 8, 0) };
         segments.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        segments.RowStyles.Add(new RowStyle(SizeType.Absolute, 130));
+        segments.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
         segments.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
         segments.Controls.Add(new Label { Text = "Segments", AutoSize = true, Font = new Font(Font, FontStyle.Bold), ForeColor = Color.FromArgb(55, 65, 81) }, 0, 0);
         ConfigureSegmentsGrid();
         segments.Controls.Add(_segmentsGrid, 0, 1);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = false, Height = 60, WrapContents = true, Margin = new Padding(0, 6, 0, 0) };
         actions.Controls.Add(CreateNamedButton("Add Segment", AddSegment, "AddSegmentButton"));
+        actions.Controls.Add(CreateNamedButton("Split at Current Position", SplitAtCurrentPosition, "SplitAtCurrentPositionButton"));
         actions.Controls.Add(CreateNamedButton("Update Segment", UpdateSelectedSegment, "UpdateSegmentButton"));
         actions.Controls.Add(CreateNamedButton("Remove", RemoveSelectedSegment, "RemoveSegmentButton"));
         actions.Controls.Add(CreateNamedButton("Clear", ClearSegments, "ClearSegmentsButton"));
@@ -333,6 +366,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         {
             dynamic player = _playerHost.Player;
             player.URL = path;
+            player.stretchToFit = false;
             player.settings.volume = _volume.Value;
             player.settings.mute = false;
             player.Ctlcontrols.pause();
@@ -403,6 +437,18 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     }
 
     private void SeekRelative(double seconds) => SeekTo(_timeline.PositionSeconds + seconds);
+    private double CurrentPlaybackPosition()
+    {
+        if (_sourcePath == null || !_isPlaying) return _timeline.PositionSeconds;
+        try
+        {
+            double position = Math.Clamp(Convert.ToDouble(((dynamic)_playerHost.Player).Ctlcontrols.currentPosition, CultureInfo.InvariantCulture), 0, _durationSeconds);
+            _timeline.PositionSeconds = position;
+            UpdateTimestampText();
+            return position;
+        }
+        catch { return _timeline.PositionSeconds; }
+    }
     private void SeekFrame(int direction)
     {
         // Windows Media Player seeks by time rather than decoded frames. A frame
@@ -412,8 +458,21 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         SeekRelative(direction / fps);
         _statusLabel.Text = "Fine seek uses the source frame-rate interval; playback decode seeking is not guaranteed frame-accurate.";
     }
-    private void SetIn(double seconds) { _timeline.InSeconds = Math.Min(seconds, _timeline.OutSeconds); UpdateTimestampText(); }
-    private void SetOut(double seconds) { _timeline.OutSeconds = Math.Max(seconds, _timeline.InSeconds); UpdateTimestampText(); }
+    private void SetIn(double seconds)
+    {
+        if (_sourcePath == null) return;
+        _timeline.InSeconds = Math.Clamp(seconds, 0, _durationSeconds);
+        UpdateTimestampText();
+        _statusLabel.Text = "IN marker set at the current playhead.";
+    }
+
+    private void SetOut(double seconds)
+    {
+        if (_sourcePath == null) return;
+        _timeline.OutSeconds = Math.Clamp(seconds, 0, _durationSeconds);
+        UpdateTimestampText();
+        _statusLabel.Text = "OUT marker set at the current playhead.";
+    }
     private void ToggleMute()
     {
         try { dynamic player = _playerHost.Player; player.settings.mute = !(bool)player.settings.mute; }
@@ -431,6 +490,27 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         _inText.Text = FormatTime(_timeline.InSeconds);
         _outText.Text = FormatTime(_timeline.OutSeconds);
         _updatingTimestampText = false;
+        UpdateRangeState();
+    }
+
+    private void UpdateRangeState()
+    {
+        if (_sourcePath == null || _durationSeconds <= 0)
+        {
+            _rangeStateLabel.Text = "Set IN, then Set OUT to mark a segment.";
+            _rangeStateLabel.ForeColor = Color.FromArgb(100, 116, 139);
+            return;
+        }
+        if (TryCurrentRange(out _))
+        {
+            _rangeStateLabel.Text = $"Range ready: IN {FormatTime(_timeline.InSeconds)} → OUT {FormatTime(_timeline.OutSeconds)} ({FormatTime(_timeline.OutSeconds - _timeline.InSeconds)}).";
+            _rangeStateLabel.ForeColor = Color.FromArgb(22, 101, 52);
+        }
+        else
+        {
+            _rangeStateLabel.Text = "Range not ready: OUT must be later than IN. Set or edit the markers again.";
+            _rangeStateLabel.ForeColor = Color.FromArgb(185, 28, 28);
+        }
     }
 
     private void AddSegment()
@@ -439,7 +519,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         int number = _segments.Count + 1;
         _segments.Add(new VideoSplitterSegment(number, _timeline.InSeconds, _timeline.OutSeconds, VideoSplitterSegmentRules.CreateOutputFileName(_sourcePath!, number)));
         RefreshSegmentsGrid(selectIndex: _segments.Count - 1);
-        _statusLabel.Text = $"Added segment {number}. Export is intentionally deferred to Phase 3.";
+        _statusLabel.Text = $"Added segment {number}. Review its output name and process it when ready.";
     }
 
     private void UpdateSelectedSegment()
@@ -467,6 +547,41 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         _segments.Clear();
         RefreshSegmentsGrid(-1);
         _statusLabel.Text = "All segments cleared.";
+    }
+
+    private void SplitAtCurrentPosition()
+    {
+        if (_sourcePath == null) { ShowSegmentError("Load a source video before splitting it."); return; }
+        if (!TryCreateSplitSegments(_sourcePath, _timeline.PositionSeconds, _durationSeconds, out VideoSplitterSegment[] segments, out string error))
+        {
+            ShowSegmentError(error);
+            return;
+        }
+        _segments.Clear();
+        _segments.AddRange(segments);
+        _timeline.InSeconds = segments[0].StartSeconds;
+        _timeline.OutSeconds = segments[0].EndSeconds;
+        RefreshSegmentsGrid(0);
+        SeekTo(_timeline.PositionSeconds);
+        _statusLabel.Text = $"Created two planned segments at {FormatTime(_timeline.PositionSeconds)}. Review them before processing.";
+    }
+
+    internal static bool TryCreateSplitSegments(string sourcePath, double splitSeconds, double durationSeconds, out VideoSplitterSegment[] segments, out string error)
+    {
+        segments = Array.Empty<VideoSplitterSegment>();
+        if (durationSeconds <= 0) { error = "The source duration is not available."; return false; }
+        if (splitSeconds <= 0 || splitSeconds >= durationSeconds)
+        {
+            error = "Choose a split point after the first frame and before the end of the video.";
+            return false;
+        }
+        segments = new[]
+        {
+            new VideoSplitterSegment(1, 0, splitSeconds, VideoSplitterSegmentRules.CreateOutputFileName(sourcePath, 1)),
+            new VideoSplitterSegment(2, splitSeconds, durationSeconds, VideoSplitterSegmentRules.CreateOutputFileName(sourcePath, 2))
+        };
+        error = string.Empty;
+        return true;
     }
 
     private void RestoreSelectedSegment()
@@ -732,8 +847,8 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     {
         if (ActiveControl is TextBox) return;
         if (e.KeyCode == Keys.Space) { TogglePlayback(); e.SuppressKeyPress = true; }
-        else if (e.KeyCode == Keys.I) SetIn(_timeline.PositionSeconds);
-        else if (e.KeyCode == Keys.O) SetOut(_timeline.PositionSeconds);
+        else if (e.KeyCode == Keys.I) SetIn(CurrentPlaybackPosition());
+        else if (e.KeyCode == Keys.O) SetOut(CurrentPlaybackPosition());
         else if (e.KeyCode == Keys.Left && e.Shift) SeekFrame(-1);
         else if (e.KeyCode == Keys.Right && e.Shift) SeekFrame(1);
         else if (e.KeyCode == Keys.Left) SeekRelative(-1);
@@ -757,13 +872,28 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     }
     private void PersistBounds()
     {
-        if (WindowState != FormWindowState.Normal) return;
-        _config.VideoSplitterWindowX = Left; _config.VideoSplitterWindowY = Top; _config.VideoSplitterWindowWidth = Width; _config.VideoSplitterWindowHeight = Height;
+        if (WindowState == FormWindowState.Normal)
+        {
+            _config.VideoSplitterWindowX = Left; _config.VideoSplitterWindowY = Top; _config.VideoSplitterWindowWidth = Width; _config.VideoSplitterWindowHeight = Height;
+        }
         try { _config.Save(_configPath); } catch (Exception ex) { ErrorLogService.Append(Application.StartupPath, "Save Video Splitter window placement failed", exception: ex); }
     }
     private Size RestoreSize() => _config.VideoSplitterWindowWidth >= MinimumSize.Width && _config.VideoSplitterWindowHeight >= MinimumSize.Height ? new Size(_config.VideoSplitterWindowWidth, _config.VideoSplitterWindowHeight) : new Size(1120, 760);
-    protected override void OnShown(EventArgs e) { base.OnShown(e); if (_config.VideoSplitterWindowX != int.MinValue && _config.VideoSplitterWindowY != int.MinValue) Location = new Point(_config.VideoSplitterWindowX, _config.VideoSplitterWindowY); try { _playerHost.CreateControl(); } catch (Exception ex) { ErrorLogService.Append(Application.StartupPath, "Initialize Video Splitter preview player failed", exception: ex); _statusLabel.Text = "Windows preview player is not available on this computer."; } }
-    protected override void Dispose(bool disposing) { if (disposing) { _loadCts?.Dispose(); _previewCts?.Dispose(); _lifetimeCts.Dispose(); _previewDebounce.Dispose(); _playbackTimer.Dispose(); _inPreview.Image?.Dispose(); _outPreview.Image?.Dispose(); } base.Dispose(disposing); }
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        if (_config.VideoSplitterWindowX != int.MinValue && _config.VideoSplitterWindowY != int.MinValue) Location = new Point(_config.VideoSplitterWindowX, _config.VideoSplitterWindowY);
+        if (_previewEditorSplit != null)
+        {
+            // SplitContainer validates panel minimums immediately. Defer them until
+            // the shown form has its real client height, including at high DPI.
+            _previewEditorSplit.Panel1MinSize = 150;
+            _previewEditorSplit.Panel2MinSize = 180;
+            ApplyPreviewSplitterDistance();
+        }
+        try { _playerHost.CreateControl(); } catch (Exception ex) { ErrorLogService.Append(Application.StartupPath, "Initialize Video Splitter preview player failed", exception: ex); _statusLabel.Text = "Windows preview player is not available on this computer."; }
+    }
+    protected override void Dispose(bool disposing) { if (disposing) { _loadCts?.Dispose(); _previewCts?.Dispose(); _lifetimeCts.Dispose(); _previewDebounce.Dispose(); _playbackTimer.Dispose(); _toolTip.Dispose(); _inPreview.Image?.Dispose(); _outPreview.Image?.Dispose(); } base.Dispose(disposing); }
 
     private static Button CreateButton(string text, Action action) { var button = new Button { Text = text, AutoSize = true }; button.Click += (_, _) => action(); return button; }
     private static Button CreateNamedButton(string text, Action action, string name)
@@ -818,14 +948,15 @@ internal sealed class TimelineControl : Control
     private double _position;
     private double _in;
     private double _out;
-    private double _zoom = 1;
     public event EventHandler<double>? PositionChanged;
     public event EventHandler? RangeChanged;
     public TimelineControl() { DoubleBuffered = true; BackColor = Color.White; MinimumSize = new Size(300, 70); Cursor = Cursors.Hand; }
-    public double Zoom { get => _zoom; set { _zoom = Math.Clamp(value, 1, 20); Invalidate(); } }
     public double PositionSeconds { get => _position; set { _position = Math.Clamp(value, 0, _duration); Invalidate(); } }
-    public double InSeconds { get => _in; set { _in = Math.Clamp(value, 0, _out); Invalidate(); RangeChanged?.Invoke(this, EventArgs.Empty); } }
-    public double OutSeconds { get => _out; set { _out = Math.Clamp(value, _in, _duration); Invalidate(); RangeChanged?.Invoke(this, EventArgs.Empty); } }
+    // Markers deliberately retain their independent positions. This lets a user
+    // replace IN or OUT in either order; callers present an explicit invalid-range
+    // state until IN precedes OUT instead of silently snapping to an old marker.
+    public double InSeconds { get => _in; set { _in = Math.Clamp(value, 0, _duration); Invalidate(); RangeChanged?.Invoke(this, EventArgs.Empty); } }
+    public double OutSeconds { get => _out; set { _out = Math.Clamp(value, 0, _duration); Invalidate(); RangeChanged?.Invoke(this, EventArgs.Empty); } }
     public void SetDuration(double seconds) { _duration = Math.Max(0, seconds); _position = 0; _in = 0; _out = _duration; Invalidate(); RangeChanged?.Invoke(this, EventArgs.Empty); }
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -834,8 +965,14 @@ internal sealed class TimelineControl : Control
         if (_duration <= 0) { TextRenderer.DrawText(g, "Open or drop a video file to start trimming", Font, ClientRectangle, Color.FromArgb(100, 116, 139), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter); return; }
         (double start, double visible) = Viewport();
         float left = ToX(_in, start, visible, track); float right = ToX(_out, start, visible, track);
-        using var rangeBrush = new SolidBrush(Color.FromArgb(147, 197, 253)); g.FillRectangle(rangeBrush, Math.Min(left, right), track.Top, Math.Abs(right - left), track.Height);
-        DrawMarker(g, left, track, Color.FromArgb(22, 101, 52)); DrawMarker(g, right, track, Color.FromArgb(185, 28, 28)); DrawMarker(g, ToX(_position, start, visible, track), track, Color.FromArgb(37, 99, 235));
+        if (_in < _out)
+        {
+            using var rangeBrush = new SolidBrush(Color.FromArgb(147, 197, 253));
+            g.FillRectangle(rangeBrush, left, track.Top, right - left, track.Height);
+        }
+        DrawMarker(g, left, track, Color.FromArgb(22, 101, 52), "IN");
+        DrawMarker(g, right, track, Color.FromArgb(185, 28, 28), "OUT");
+        DrawMarker(g, ToX(_position, start, visible, track), track, Color.FromArgb(37, 99, 235), null);
         TextRenderer.DrawText(g, VideoSplitterForm.FormatTime(start), Font, new Point(track.Left, track.Bottom + 7), Color.FromArgb(100, 116, 139));
         string end = VideoSplitterForm.FormatTime(Math.Min(_duration, start + visible)); Size size = TextRenderer.MeasureText(end, Font); TextRenderer.DrawText(g, end, Font, new Point(track.Right - size.Width, track.Bottom + 7), Color.FromArgb(100, 116, 139));
     }
@@ -854,7 +991,18 @@ internal sealed class TimelineControl : Control
         double value = Math.Clamp(start + (x - track.Left) / (double)track.Width * visible, 0, _duration);
         if (_dragTarget == DragTarget.In) InSeconds = value; else if (_dragTarget == DragTarget.Out) OutSeconds = value; else { PositionSeconds = value; PositionChanged?.Invoke(this, value); }
     }
-    private (double start, double visible) Viewport() { double visible = _duration / _zoom; return (Math.Clamp(_position - visible / 2, 0, Math.Max(0, _duration - visible)), visible); }
+    private (double start, double visible) Viewport() => (0, _duration);
     private static float ToX(double value, double start, double visible, Rectangle track) => track.Left + (float)(Math.Clamp((value - start) / visible, 0, 1) * track.Width);
-    private static void DrawMarker(Graphics g, float x, Rectangle track, Color color) { using var pen = new Pen(color, 2); g.DrawLine(pen, x, track.Top - 12, x, track.Bottom + 12); using var brush = new SolidBrush(color); g.FillPolygon(brush, new[] { new PointF(x - 5, track.Top - 12), new PointF(x + 5, track.Top - 12), new PointF(x, track.Top - 5) }); }
+    private static void DrawMarker(Graphics g, float x, Rectangle track, Color color, string? label)
+    {
+        using var pen = new Pen(color, 2);
+        g.DrawLine(pen, x, track.Top - 12, x, track.Bottom + 12);
+        using var brush = new SolidBrush(color);
+        g.FillPolygon(brush, new[] { new PointF(x - 5, track.Top - 12), new PointF(x + 5, track.Top - 12), new PointF(x, track.Top - 5) });
+        if (!string.IsNullOrEmpty(label))
+        {
+            Size size = TextRenderer.MeasureText(label, SystemFonts.MessageBoxFont);
+            TextRenderer.DrawText(g, label, SystemFonts.MessageBoxFont, new Point(Math.Max(0, (int)x - size.Width / 2), 1), color);
+        }
+    }
 }

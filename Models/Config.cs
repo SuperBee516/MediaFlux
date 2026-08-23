@@ -145,6 +145,10 @@ namespace MediaFlux.Models
         public int VideoSplitterWindowY { get; set; } = int.MinValue;
         public int VideoSplitterWindowWidth { get; set; } = 0;
         public int VideoSplitterWindowHeight { get; set; } = 0;
+        // Zero keeps the balanced default preview/editor proportion. Persisting this
+        // independently from the window bounds makes the splitter feel stable when
+        // the window is restored on a different display or DPI scale.
+        public int VideoSplitterPreviewSplitterDistance { get; set; } = 0;
         public bool MainWindowMaximized { get; set; } = false;
         public bool EncodeInfoHeaderCollapsed { get; set; } = false;
         // Zero preserves the application's default Summary / Preview height.
