@@ -149,6 +149,10 @@ namespace MediaFlux.Models
         // independently from the window bounds makes the splitter feel stable when
         // the window is restored on a different display or DPI scale.
         public int VideoSplitterPreviewSplitterDistance { get; set; } = 0;
+        public int VideoSplitterMediaEditorSplitterDistance { get; set; } = 0;
+        public int VideoSplitterTimelineDetailsSplitterDistance { get; set; } = 0;
+        public int VideoSplitterBoundarySegmentsSplitterDistance { get; set; } = 0;
+        public int VideoSplitterSegmentsOutputSplitterDistance { get; set; } = 0;
         public bool MainWindowMaximized { get; set; } = false;
         public bool EncodeInfoHeaderCollapsed { get; set; } = false;
         // Zero preserves the application's default Summary / Preview height.

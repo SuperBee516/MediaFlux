@@ -38,7 +38,11 @@ public sealed class VideoSplitterFoundationTests : IDisposable
             VideoSplitterWindowY = 160,
             VideoSplitterWindowWidth = 1080,
             VideoSplitterWindowHeight = 740,
-            VideoSplitterPreviewSplitterDistance = 215
+            VideoSplitterPreviewSplitterDistance = 215,
+            VideoSplitterMediaEditorSplitterDistance = 390,
+            VideoSplitterTimelineDetailsSplitterDistance = 225,
+            VideoSplitterBoundarySegmentsSplitterDistance = 315,
+            VideoSplitterSegmentsOutputSplitterDistance = 230
         }.Save(path);
 
         Config loaded = Config.Load(path);
@@ -47,6 +51,10 @@ public sealed class VideoSplitterFoundationTests : IDisposable
         Assert.Equal(1080, loaded.VideoSplitterWindowWidth);
         Assert.Equal(740, loaded.VideoSplitterWindowHeight);
         Assert.Equal(215, loaded.VideoSplitterPreviewSplitterDistance);
+        Assert.Equal(390, loaded.VideoSplitterMediaEditorSplitterDistance);
+        Assert.Equal(225, loaded.VideoSplitterTimelineDetailsSplitterDistance);
+        Assert.Equal(315, loaded.VideoSplitterBoundarySegmentsSplitterDistance);
+        Assert.Equal(230, loaded.VideoSplitterSegmentsOutputSplitterDistance);
     }
 
     [Fact]
@@ -88,6 +96,33 @@ public sealed class VideoSplitterFoundationTests : IDisposable
         Assert.False(VideoSplitterForm.TryCreateSplitSegments("movie.mkv", 50, 50, out _, out _));
     }
 
+    [Theory]
+    [InlineData(640)]
+    [InlineData(1200)]
+    public void TimelineMapsFullDurationToItsVisibleClientRectangle(int width)
+    {
+        using var timeline = new TimelineControl { Size = new Size(width, 100) };
+        timeline.SetDuration(100);
+        timeline.InSeconds = 25;
+        timeline.OutSeconds = 99.5;
+        timeline.PositionSeconds = 75;
+        Rectangle track = timeline.TrackRectangleForTesting;
+
+        foreach (double percent in new[] { 0d, 0.25, 0.5, 0.75, 0.995, 1d })
+        {
+            float x = timeline.XForSecondsForTesting(percent * 100);
+            Assert.InRange(x, track.Left, track.Right);
+            Assert.Equal(track.Left + track.Width * percent, x, 1);
+            Assert.Equal(percent * 100, timeline.SecondsForXForTesting((int)Math.Round(x)), 0.25);
+        }
+
+        timeline.Width += 137;
+        Assert.Equal(25, timeline.InSeconds);
+        Assert.Equal(99.5, timeline.OutSeconds);
+        Assert.Equal(75, timeline.PositionSeconds);
+        Assert.Equal(timeline.TrackRectangleForTesting.Right, timeline.XForSecondsForTesting(100), 1);
+    }
+
     [Fact]
     public void SplitterLayoutKeepsSegmentActionsAccessibleAcrossSupportedSizes()
     {
@@ -113,31 +148,31 @@ public sealed class VideoSplitterFoundationTests : IDisposable
                     else form.Size = size!.Value;
                     form.Show();
                     Application.DoEvents();
-                    Panel editing = (Panel)form.Controls.Find("SplitterEditingSurface", true).Single();
-                    Assert.True(editing.AutoScroll);
-                    editing.AutoScrollPosition = new Point(0, editing.VerticalScroll.Maximum);
-                    Application.DoEvents();
-                    Rectangle editingBounds = editing.RectangleToScreen(editing.ClientRectangle);
-                    foreach (string name in new[] { "AddSegmentButton", "UpdateSegmentButton", "RemoveSegmentButton", "ClearSegmentsButton", "PreviewSelectionButton" })
+                    string[] splitterNames = { "SplitterMediaEditor", "SplitterTimelineDetails", "SplitterBoundarySegments", "SplitterSegmentsOutput" };
+                    foreach (string splitterName in splitterNames)
                     {
-                        Control button = form.Controls.Find(name, true).Single();
-                        Assert.True(button.Visible, $"{name} should be visible.");
-                        Assert.True(editingBounds.IntersectsWith(button.RectangleToScreen(button.ClientRectangle)), $"{name} should be reachable in the editing surface.");
+                        SplitContainer splitter = (SplitContainer)form.Controls.Find(splitterName, true).Single();
+                        Assert.True(splitter.Visible, $"{splitterName} should be visible.");
+                        int available = (splitter.Orientation == Orientation.Vertical ? splitter.ClientSize.Width : splitter.ClientSize.Height) - splitter.SplitterWidth;
+                        Assert.InRange(splitter.SplitterDistance, splitter.Panel1MinSize, available - splitter.Panel2MinSize);
                     }
-                    SplitContainer workspace = (SplitContainer)form.Controls.Find("SplitterPreviewEditorSplit", true).Single();
-                    Assert.True(workspace.Panel1MinSize >= 150);
-                    Assert.True(workspace.Panel2MinSize >= 180);
-                    Assert.True(workspace.SplitterDistance >= workspace.Panel1MinSize);
-                    Assert.True(form.Controls.Find("SplitAtCurrentPositionButton", true).Single().Visible);
-                    Control export = form.Controls.Find("SplitterExportPanel", true).Single();
-                    Assert.True(export.Visible);
-                    Assert.False(export.Bounds.IntersectsWith(editing.Bounds));
-                    Rectangle exportBounds = export.RectangleToScreen(export.ClientRectangle);
-                    foreach (string name in new[] { "SplitterOutputFolder", "SplitterProcessingMode", "SplitterPlayOutput", "SplitterExportButton", "SplitterCancelExportButton", "SplitterOpenOutputButton" })
+                    Assert.DoesNotContain(form.Controls.Find("SplitterEditingSurface", true), control => control is ScrollableControl scrollable && scrollable.AutoScroll);
+
+                    Control boundary = form.Controls.Find("SplitterBoundaryPanel", true).Single();
+                    Control segments = form.Controls.Find("SplitterSegmentsPanel", true).Single();
+                    Control output = form.Controls.Find("SplitterExportPanel", true).Single();
+                    Assert.False(boundary.RectangleToScreen(boundary.ClientRectangle).IntersectsWith(segments.RectangleToScreen(segments.ClientRectangle)));
+                    Assert.False(segments.RectangleToScreen(segments.ClientRectangle).IntersectsWith(output.RectangleToScreen(output.ClientRectangle)));
+
+                    foreach (string name in new[]
+                    {
+                        "SetInButton", "SetOutButton", "AddSegmentButton", "UpdateSegmentButton", "RemoveSegmentButton",
+                        "ClearSegmentsButton", "PreviewSelectionButton", "SplitAtCurrentPositionButton", "SplitterOutputFolder",
+                        "SplitterProcessingMode", "SplitterPlayOutput", "SplitterExportButton", "SplitterCancelExportButton", "SplitterOpenOutputButton"
+                    })
                     {
                         Control control = form.Controls.Find(name, true).Single();
                         Assert.True(control.Visible, $"{name} should be visible.");
-                        Assert.True(exportBounds.IntersectsWith(control.RectangleToScreen(control.ClientRectangle)), $"{name} should remain inside the export panel.");
                     }
                 }
                 form.Close();
