@@ -128,6 +128,23 @@ public sealed class VideoSplitterExportService
         if (errors.Count > 0) return new VideoSplitterExportResult { Warnings = errors };
         if (!File.Exists(_ffmpegPath)) return new VideoSplitterExportResult { Warnings = new[] { $"FFmpeg was not found at '{_ffmpegPath}'." } };
 
+        MediaProbeResult sourceProbe;
+        try
+        {
+            sourceProbe = await _probe.ProbeAsync(request.SourcePath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            return new VideoSplitterExportResult { Warnings = new[] { $"The source streams could not be inspected: {ex.Message}" } };
+        }
+
+        if (!sourceProbe.Success)
+            return new VideoSplitterExportResult { Warnings = new[] { $"The source streams could not be inspected: {sourceProbe.ErrorMessage}" } };
+
+        if (!sourceProbe.Streams.Any(IsPlayableVideo))
+            return new VideoSplitterExportResult { Warnings = new[] { "The source does not contain a playable video stream." } };
+
         var results = new List<VideoSplitterSegmentExportResult>();
         bool canceled = false;
         for (int index = 0; index < request.Segments.Count; index++)
@@ -135,7 +152,7 @@ public sealed class VideoSplitterExportService
             VideoSplitterSegment segment = request.Segments[index];
             try
             {
-                VideoSplitterSegmentExportResult result = await ExportSegmentAsync(request, segment, index + 1, progress, cancellationToken).ConfigureAwait(false);
+                VideoSplitterSegmentExportResult result = await ExportSegmentAsync(request, sourceProbe, segment, index + 1, progress, cancellationToken).ConfigureAwait(false);
                 results.Add(result);
                 if (result.WasCanceled) { canceled = true; break; }
             }
@@ -149,7 +166,7 @@ public sealed class VideoSplitterExportService
         return new VideoSplitterExportResult { Segments = results, WasCanceled = canceled };
     }
 
-    private async Task<VideoSplitterSegmentExportResult> ExportSegmentAsync(VideoSplitterExportRequest request, VideoSplitterSegment segment, int position, IProgress<VideoSplitterExportProgress>? progress, CancellationToken token)
+    private async Task<VideoSplitterSegmentExportResult> ExportSegmentAsync(VideoSplitterExportRequest request, MediaProbeResult sourceProbe, VideoSplitterSegment segment, int position, IProgress<VideoSplitterExportProgress>? progress, CancellationToken token)
     {
         string finalPath = Path.Combine(Path.GetFullPath(request.OutputFolder), OutputPathService.SanitizeFileName(segment.OutputFileName));
         string stagingPath = OutputPathService.CreateStagingPath(finalPath);
@@ -157,9 +174,10 @@ public sealed class VideoSplitterExportService
         try
         {
             double duration = segment.DurationSeconds;
+            StreamMappingPlan mapping = CreateStreamMappingPlan(sourceProbe, stagingPath);
             IReadOnlyList<string> args = request.Mode == VideoSplitterProcessingMode.StreamCopy
-                ? BuildStreamCopyArguments(request.SourcePath, stagingPath, segment.StartSeconds, duration)
-                : BuildAccurateReencodeArguments(request.SourcePath, stagingPath, segment.StartSeconds, duration, request.VideoEncoder, request.EncoderPreset, request.QualityValue);
+                ? BuildStreamCopyArguments(request.SourcePath, stagingPath, segment.StartSeconds, duration, mapping)
+                : BuildAccurateReencodeArguments(request.SourcePath, stagingPath, segment.StartSeconds, duration, request.VideoEncoder, request.EncoderPreset, request.QualityValue, mapping);
             _log?.Invoke($"[VideoSplitter] {request.Mode}: {string.Join(" ", args)}");
             var state = new ProgressState(position, request.Segments.Count, Path.GetFileName(finalPath), duration, progress, request.Mode);
             MediaToolProcessResult process = await _runner.RunAsync(new MediaToolProcessRequest { FileName = _ffmpegPath, Arguments = args, Timeout = Timeout.InfiniteTimeSpan, SendQuitOnCancellation = true, StandardOutputLineCallback = state.Handle }, token).ConfigureAwait(false);
@@ -167,7 +185,7 @@ public sealed class VideoSplitterExportService
             if (process.ExitCode != 0) return Failed(segment, finalPath, $"FFmpeg failed: {LastLine(diagnostics)}", diagnostics, stagingPath);
 
             MediaProbeResult probe = await _probe.ProbeAsync(stagingPath, token).ConfigureAwait(false);
-            if (!probe.Success || probe.DurationSeconds is not > 0 || !probe.Streams.Any(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase)))
+            if (!probe.Success || probe.DurationSeconds is not > 0 || !probe.Streams.Any(IsPlayableVideo))
                 return Failed(segment, finalPath, "The staged output failed FFprobe validation.", diagnostics, stagingPath);
             if (Math.Abs(probe.DurationSeconds.Value - duration) > Math.Max(2, duration * .12))
                 return Failed(segment, finalPath, "The staged output duration differs too much from the requested selection.", diagnostics, stagingPath);
@@ -188,16 +206,83 @@ public sealed class VideoSplitterExportService
         }
     }
 
-    internal static IReadOnlyList<string> BuildStreamCopyArguments(string source, string staging, double start, double duration) => new[] { "-hide_banner", "-y", "-progress", "pipe:1", "-nostats", "-ss", F(start), "-i", source, "-t", F(duration), "-map", "0:v?", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?", "-c", "copy", "-map_metadata", "0", "-avoid_negative_ts", "make_zero", staging };
-    internal static IReadOnlyList<string> BuildAccurateReencodeArguments(string source, string staging, double start, double duration, string encoder, string preset, int quality)
+    internal static IReadOnlyList<string> BuildStreamCopyArguments(string source, string staging, double start, double duration) =>
+        BuildStreamCopyArguments(source, staging, start, duration, StreamMappingPlan.Fallback(staging));
+
+    internal static IReadOnlyList<string> BuildStreamCopyArguments(string source, string staging, double start, double duration, StreamMappingPlan mapping)
+    {
+        var args = new List<string> { "-hide_banner", "-y", "-progress", "pipe:1", "-nostats", "-ss", F(start), "-i", source, "-t", F(duration) };
+        AddVideoMaps(args, mapping);
+        args.AddRange(new[] { "-map", "0:a?", "-map", "0:s?", "-map", "0:t?", "-c", "copy", "-map_metadata", "0", "-avoid_negative_ts", "make_zero", staging });
+        return args;
+    }
+
+    internal static IReadOnlyList<string> BuildAccurateReencodeArguments(string source, string staging, double start, double duration, string encoder, string preset, int quality) =>
+        BuildAccurateReencodeArguments(source, staging, start, duration, encoder, preset, quality, StreamMappingPlan.Fallback(staging));
+
+    internal static IReadOnlyList<string> BuildAccurateReencodeArguments(string source, string staging, double start, double duration, string encoder, string preset, int quality, StreamMappingPlan mapping)
     {
         string selectedEncoder = string.IsNullOrWhiteSpace(encoder) ? "libx264" : encoder;
-        var args = new List<string> { "-hide_banner", "-y", "-progress", "pipe:1", "-nostats", "-i", source, "-ss", F(start), "-t", F(duration), "-map", "0:v?", "-map", "0:a?", "-map", "0:s?", "-c:v", selectedEncoder };
+        var args = new List<string> { "-hide_banner", "-y", "-progress", "pipe:1", "-nostats", "-i", source, "-ss", F(start), "-t", F(duration) };
+        AddVideoMaps(args, mapping);
+        args.AddRange(new[] { "-map", "0:a?", "-map", "0:s?", "-c:v", selectedEncoder });
         if (selectedEncoder.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase)) args.AddRange(new[] { "-preset", string.IsNullOrWhiteSpace(preset) ? "p5" : preset, "-rc", "vbr", "-cq", Math.Clamp(quality, 0, 51).ToString(CultureInfo.InvariantCulture), "-b:v", "0" });
         else if (selectedEncoder.EndsWith("_qsv", StringComparison.OrdinalIgnoreCase)) args.AddRange(new[] { "-preset", string.IsNullOrWhiteSpace(preset) ? "medium" : preset, "-global_quality", Math.Clamp(quality, 0, 51).ToString(CultureInfo.InvariantCulture) });
         else args.AddRange(new[] { "-preset", string.IsNullOrWhiteSpace(preset) ? "medium" : preset, "-crf", Math.Clamp(quality, 0, 51).ToString(CultureInfo.InvariantCulture) });
-        args.AddRange(new[] { "-c:a", "aac", "-c:s", "copy", "-map_metadata", "0", staging });
+        args.AddRange(new[] { "-c:a", "aac", "-c:s", "copy" });
+        for (int artworkIndex = 0; artworkIndex < mapping.AttachedPictureStreamIndexes.Count; artworkIndex++)
+        {
+            int outputVideoIndex = mapping.PlayableVideoStreamIndexes.Count + artworkIndex;
+            args.AddRange(new[] { $"-c:v:{outputVideoIndex}", "copy", $"-disposition:v:{outputVideoIndex}", "attached_pic" });
+        }
+        args.AddRange(new[] { "-map_metadata", "0", staging });
         return args;
+    }
+
+    internal static StreamMappingPlan CreateStreamMappingPlan(MediaProbeResult source, string outputPath)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        IReadOnlyList<int> playable = source.Streams.Where(IsPlayableVideo).Select(stream => stream.Index).ToArray();
+        IReadOnlyList<int> attachedPictures = CanCopyAttachedArtwork(source.Streams.Where(IsAttachedPicture), outputPath)
+            ? source.Streams.Where(IsAttachedPicture).Select(stream => stream.Index).ToArray()
+            : Array.Empty<int>();
+        return new StreamMappingPlan(playable, attachedPictures);
+    }
+
+    private static void AddVideoMaps(List<string> args, StreamMappingPlan mapping)
+    {
+        if (mapping.PlayableVideoStreamIndexes.Count == 0)
+            args.AddRange(new[] { "-map", "0:V?" });
+        else
+            foreach (int index in mapping.PlayableVideoStreamIndexes)
+                args.AddRange(new[] { "-map", $"0:{index}" });
+
+        foreach (int index in mapping.AttachedPictureStreamIndexes)
+            args.AddRange(new[] { "-map", $"0:{index}" });
+    }
+
+    private static bool IsPlayableVideo(MediaProbeStreamInfo stream) =>
+        stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase) && !IsAttachedPicture(stream);
+
+    private static bool IsAttachedPicture(MediaProbeStreamInfo stream) =>
+        stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase) &&
+        stream.Dispositions.TryGetValue("attached_pic", out bool attached) && attached;
+
+    private static bool CanCopyAttachedArtwork(IEnumerable<MediaProbeStreamInfo> streams, string outputPath)
+    {
+        MediaProbeStreamInfo[] artwork = streams.ToArray();
+        if (artwork.Length == 0) return false;
+        string extension = Path.GetExtension(outputPath);
+        if (extension.Equals(".mkv", StringComparison.OrdinalIgnoreCase)) return true;
+        if (!extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase) &&
+            !extension.Equals(".m4v", StringComparison.OrdinalIgnoreCase) &&
+            !extension.Equals(".mov", StringComparison.OrdinalIgnoreCase)) return false;
+        return artwork.All(stream => stream.CodecName.Equals("mjpeg", StringComparison.OrdinalIgnoreCase) || stream.CodecName.Equals("png", StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal sealed record StreamMappingPlan(IReadOnlyList<int> PlayableVideoStreamIndexes, IReadOnlyList<int> AttachedPictureStreamIndexes)
+    {
+        public static StreamMappingPlan Fallback(string outputPath) => new(Array.Empty<int>(), Array.Empty<int>());
     }
     private static string F(double value) => Math.Max(0, value).ToString("0.###", CultureInfo.InvariantCulture);
     private static VideoSplitterSegmentExportResult Failed(VideoSplitterSegment segment, string output, string error, string diagnostics, string staging) => new() { Segment = segment, OutputPath = output, ErrorMessage = error, DiagnosticOutput = diagnostics, CleanupMessage = DeleteStage(staging) };
