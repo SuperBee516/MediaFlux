@@ -69,6 +69,35 @@ public sealed class VideoSplitterFoundationTests : IDisposable
     }
 
     [Fact]
+    public void AutomaticSegmentNamesSkipCurrentNamesAndExistingOutputs()
+    {
+        File.WriteAllText(Path.Combine(_root, "movie-Part01.mp4"), "existing");
+
+        string name = VideoSplitterSegmentRules.CreateUniqueOutputFileName(
+            Path.Combine(_root, "movie.mp4"),
+            1,
+            _root,
+            new[] { "movie-Part02.mp4" });
+
+        Assert.Equal("movie-Part03.mp4", name);
+    }
+
+    [Fact]
+    public void AutoRenameProducesUnusedDeterministicNames()
+    {
+        File.WriteAllText(Path.Combine(_root, "movie-Part01.mp4"), "existing");
+        VideoSplitterSegment[] renamed = VideoSplitterForm.AutoRenameConflictingOutputs(new[]
+        {
+            new VideoSplitterSegment(1, 0, 1, "movie-Part01.mp4"),
+            new VideoSplitterSegment(2, 1, 2, "movie-Part02.mp4")
+        }, _root);
+
+        Assert.Equal("movie-Part01 (2).mp4", renamed[0].OutputFileName);
+        Assert.Equal("movie-Part02.mp4", renamed[1].OutputFileName);
+        Assert.Equal(2, renamed.Select(segment => segment.OutputFileName).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [Fact]
     public void MarkersCanBeReplacedInEitherOrderAndExposeInvalidRanges()
     {
         var timeline = new TimelineControl();

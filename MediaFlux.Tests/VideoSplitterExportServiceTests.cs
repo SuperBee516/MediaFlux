@@ -81,6 +81,27 @@ public sealed class VideoSplitterExportServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExplicitOverwriteReplacesExistingValidatedOutput()
+    {
+        string output = Path.Combine(_root, "replace.mp4");
+        File.WriteAllText(output, "old");
+        var runner = new ScriptedRunner((request, _) =>
+        {
+            File.WriteAllText(request.Arguments.Last(), "new");
+            return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
+        });
+        var service = new VideoSplitterExportService(_ffmpeg, runner, new SuccessfulProbe());
+
+        VideoSplitterExportResult result = await service.ExportAsync(Request(
+            _root,
+            new[] { new VideoSplitterSegment(1, 0, 2, "replace.mp4") },
+            overwrite: true));
+
+        Assert.True(result.Success);
+        Assert.Equal("new", File.ReadAllText(output));
+    }
+
+    [Fact]
     public async Task CancellationRemovesStagingFileAndKeepsPriorSuccess()
     {
         int calls = 0;
@@ -97,7 +118,7 @@ public sealed class VideoSplitterExportServiceTests : IDisposable
         Assert.True(result.Segments[1].WasCanceled); Assert.Empty(Directory.EnumerateFiles(_root, "*.partial*"));
     }
 
-    private VideoSplitterExportRequest Request(string folder, IReadOnlyList<VideoSplitterSegment> segments, VideoSplitterProcessingMode mode = VideoSplitterProcessingMode.StreamCopy) => new() { SourcePath = _source, OutputFolder = folder, Segments = segments, SourceDurationSeconds = 10, Mode = mode };
+    private VideoSplitterExportRequest Request(string folder, IReadOnlyList<VideoSplitterSegment> segments, VideoSplitterProcessingMode mode = VideoSplitterProcessingMode.StreamCopy, bool overwrite = false) => new() { SourcePath = _source, OutputFolder = folder, Segments = segments, SourceDurationSeconds = 10, Mode = mode, OverwriteExistingOutput = overwrite };
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 
     private sealed class SuccessfulProbe : IMediaProbeService

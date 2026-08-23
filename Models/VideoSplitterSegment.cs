@@ -27,4 +27,29 @@ public static class VideoSplitterSegmentRules
         string extension = Path.GetExtension(sourcePath);
         return $"{stem}-Part{number:00}{(string.IsNullOrWhiteSpace(extension) ? ".mp4" : extension)}";
     }
+
+    public static string CreateUniqueOutputFileName(string sourcePath, int startingNumber, string? outputFolder, IEnumerable<string>? reservedNames = null)
+    {
+        var reserved = new HashSet<string>(reservedNames ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        for (int number = Math.Max(1, startingNumber); ; number++)
+        {
+            string candidate = CreateOutputFileName(sourcePath, number);
+            if (reserved.Contains(candidate)) continue;
+            if (!string.IsNullOrWhiteSpace(outputFolder) && File.Exists(Path.Combine(outputFolder, candidate))) continue;
+            return candidate;
+        }
+    }
+
+    public static string CreateUnusedFileName(string preferredName, string outputFolder, IEnumerable<string>? reservedNames = null)
+    {
+        var reserved = new HashSet<string>(reservedNames ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        string extension = Path.GetExtension(preferredName);
+        string stem = Path.GetFileNameWithoutExtension(preferredName);
+        for (int suffix = 1; ; suffix++)
+        {
+            string candidate = suffix == 1 ? preferredName : $"{stem} ({suffix}){extension}";
+            if (reserved.Contains(candidate) || File.Exists(Path.Combine(outputFolder, candidate))) continue;
+            return candidate;
+        }
+    }
 }

@@ -70,6 +70,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     private string? _sourcePath;
     private bool _updatingTimestampText;
     private bool _isPlaying;
+    private bool _playbackRequested;
     private double _confirmedPlaybackPosition;
     private SplitContainer? _mediaEditorSplit;
     private SplitContainer? _timelineDetailsSplit;
@@ -258,7 +259,8 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         card.Controls.Add(rangeRow, 0, 3);
         _toolTip.SetToolTip(_setInButton, "Set the green IN marker to the current blue playhead (I).");
         _toolTip.SetToolTip(_setOutButton, "Set the red OUT marker to the current blue playhead (O).");
-        _toolTip.SetToolTip(_splitAtPositionButton, "Replace the plan with two segments divided at the current playhead.");
+        _toolTip.SetToolTip(_timeline, "NOW (blue) is playback position; IN (green) and OUT (red) define the selected range.");
+        _toolTip.SetToolTip(_splitAtPositionButton, "Add two segments divided at the current blue NOW playhead; existing segments are retained.");
         return card;
     }
 
@@ -480,6 +482,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
             player.settings.volume = _volume.Value;
             player.settings.mute = false;
             player.URL = path;
+            _playbackRequested = false;
             SetPlaybackState(false);
             _playbackTimer.Start();
         }
@@ -507,16 +510,28 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         {
             dynamic player = _playerHost.Player;
             int state = Convert.ToInt32(player.playState, CultureInfo.InvariantCulture);
-            bool shouldPlay = state != 3;
-            if (shouldPlay) player.Ctlcontrols.play(); else player.Ctlcontrols.pause();
-            SetPlaybackState(shouldPlay);
-            _playbackTimer.Start();
+            if (_isPlaying || state == 3) PausePlayback(player); else StartPlayback(player);
         }
         catch (Exception ex)
         {
             ErrorLogService.Append(Application.StartupPath, "Video Splitter playback command failed", _sourcePath, ex);
             _statusLabel.Text = "The preview player is unavailable for this file.";
         }
+    }
+
+    private void StartPlayback(dynamic player)
+    {
+        player.controls.play();
+        _playbackRequested = true;
+        SetPlaybackState(true);
+        _playbackTimer.Start();
+    }
+
+    private void PausePlayback(dynamic player)
+    {
+        player.controls.pause();
+        _playbackRequested = false;
+        SetPlaybackState(false);
     }
 
     private void SynchronizePlaybackPosition()
@@ -526,15 +541,18 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         {
             dynamic player = _playerHost.Player;
             int state = Convert.ToInt32(player.playState, CultureInfo.InvariantCulture);
-            SetPlaybackState(state == 3);
-            double position = Convert.ToDouble(player.Ctlcontrols.currentPosition, CultureInfo.InvariantCulture);
+            if (state == 3) _playbackRequested = true;
+            else if (state is 1 or 2 or 8 or 10) _playbackRequested = false;
+            SetPlaybackState(state == 3 || (_playbackRequested && state is 6 or 9 or 11));
+            double position = Convert.ToDouble(player.controls.currentPosition, CultureInfo.InvariantCulture);
             if ((_previewSelectionOnly && position >= _selectionPreviewEnd) || position >= _durationSeconds - 0.05)
             {
-                try { player.Ctlcontrols.pause(); } catch { }
+                try { player.controls.pause(); } catch { }
+                _playbackRequested = false;
                 if (_previewSelectionOnly)
                 {
-                    try { player.Ctlcontrols.currentPosition = _timeline.InSeconds; } catch { }
-                    position = _timeline.InSeconds;
+                    try { player.controls.currentPosition = _selectionPreviewEnd; } catch { }
+                    position = _selectionPreviewEnd;
                     _statusLabel.Text = "Selection preview finished.";
                 }
                 _previewSelectionOnly = false;
@@ -553,7 +571,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         seconds = Math.Clamp(seconds, 0, _durationSeconds);
         try
         {
-            ((dynamic)_playerHost.Player).Ctlcontrols.currentPosition = seconds;
+            ((dynamic)_playerHost.Player).controls.currentPosition = seconds;
             _confirmedPlaybackPosition = seconds;
             _timeline.PositionSeconds = seconds;
         }
@@ -571,7 +589,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         if (_sourcePath == null || !_isPlaying) return _timeline.PositionSeconds;
         try
         {
-            double position = Math.Clamp(Convert.ToDouble(((dynamic)_playerHost.Player).Ctlcontrols.currentPosition, CultureInfo.InvariantCulture), 0, _durationSeconds);
+            double position = Math.Clamp(Convert.ToDouble(((dynamic)_playerHost.Player).controls.currentPosition, CultureInfo.InvariantCulture), 0, _durationSeconds);
             _timeline.PositionSeconds = position;
             _confirmedPlaybackPosition = position;
             UpdateTimestampText();
@@ -680,8 +698,9 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     private void AddSegment()
     {
         if (!TryCurrentRange(out string error)) { ShowSegmentError(error); return; }
-        int number = _segments.Count + 1;
-        _segments.Add(new VideoSplitterSegment(number, _timeline.InSeconds, _timeline.OutSeconds, VideoSplitterSegmentRules.CreateOutputFileName(_sourcePath!, number)));
+        int number = NextSegmentNumber();
+        string name = VideoSplitterSegmentRules.CreateUniqueOutputFileName(_sourcePath!, number, CurrentOutputFolder(), _segments.Select(segment => segment.OutputFileName));
+        _segments.Add(new VideoSplitterSegment(number, _timeline.InSeconds, _timeline.OutSeconds, name));
         RefreshSegmentsGrid(selectIndex: _segments.Count - 1);
         _statusLabel.Text = $"Added segment {number}. Review its output name and process it when ready.";
     }
@@ -716,18 +735,24 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     private void SplitAtCurrentPosition()
     {
         if (_sourcePath == null) { ShowSegmentError("Load a source video before splitting it."); return; }
-        if (!TryCreateSplitSegments(_sourcePath, _timeline.PositionSeconds, _durationSeconds, out VideoSplitterSegment[] segments, out string error))
+        double splitSeconds = _timeline.PositionSeconds;
+        if (!TryCreateSplitSegments(_sourcePath, splitSeconds, _durationSeconds, out VideoSplitterSegment[] segments, out string error))
         {
             ShowSegmentError(error);
             return;
         }
-        _segments.Clear();
+        int firstIndex = _segments.Count;
+        int firstNumber = NextSegmentNumber();
+        string firstName = VideoSplitterSegmentRules.CreateUniqueOutputFileName(_sourcePath, firstNumber, CurrentOutputFolder(), _segments.Select(segment => segment.OutputFileName));
+        string secondName = VideoSplitterSegmentRules.CreateUniqueOutputFileName(_sourcePath, firstNumber + 1, CurrentOutputFolder(), _segments.Select(segment => segment.OutputFileName).Append(firstName));
+        segments[0] = segments[0] with { Number = firstNumber, OutputFileName = firstName };
+        segments[1] = segments[1] with { Number = firstNumber + 1, OutputFileName = secondName };
         _segments.AddRange(segments);
         _timeline.InSeconds = segments[0].StartSeconds;
         _timeline.OutSeconds = segments[0].EndSeconds;
-        RefreshSegmentsGrid(0);
-        SeekTo(_timeline.PositionSeconds);
-        _statusLabel.Text = $"Created two planned segments at {FormatTime(_timeline.PositionSeconds)}. Review them before processing.";
+        RefreshSegmentsGrid(firstIndex);
+        SeekTo(splitSeconds);
+        _statusLabel.Text = $"Added two split parts at {FormatTime(splitSeconds)}. Existing segments were retained.";
     }
 
     internal static bool TryCreateSplitSegments(string sourcePath, double splitSeconds, double durationSeconds, out VideoSplitterSegment[] segments, out string error)
@@ -765,19 +790,34 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         _previewSelectionOnly = true;
         _selectionPreviewEnd = _timeline.OutSeconds;
         SeekTo(_timeline.InSeconds);
-        if (!_isPlaying) TogglePlayback();
+        try { StartPlayback((dynamic)_playerHost.Player); }
+        catch (Exception ex)
+        {
+            _previewSelectionOnly = false;
+            ErrorLogService.Append(Application.StartupPath, "Video Splitter selection preview failed", _sourcePath, ex);
+            _statusLabel.Text = "The preview player could not play this selection.";
+            return;
+        }
         _statusLabel.Text = $"Previewing selected range: {FormatTime(_timeline.InSeconds)}–{FormatTime(_timeline.OutSeconds)}.";
     }
 
     private bool TryCurrentRange(out string error) => VideoSplitterSegmentRules.TryValidate(_timeline.InSeconds, _timeline.OutSeconds, _durationSeconds, out error);
     private void ShowSegmentError(string error) { _statusLabel.Text = error; MessageBox.Show(this, error, "Video Splitter / Trimmer", MessageBoxButtons.OK, MessageBoxIcon.Information); }
     private int SelectedSegmentIndex() => _segmentsGrid.SelectedRows.Count == 1 ? _segmentsGrid.SelectedRows[0].Index : -1;
+    private int NextSegmentNumber() => _segments.Count == 0 ? 1 : _segments.Max(segment => segment.Number) + 1;
+    private string? CurrentOutputFolder()
+    {
+        string folder = _outputFolder.Text.Trim();
+        if (string.IsNullOrWhiteSpace(folder)) folder = _sourcePath == null ? "" : Path.GetDirectoryName(_sourcePath) ?? "";
+        try { return string.IsNullOrWhiteSpace(folder) ? null : Path.GetFullPath(folder); }
+        catch { return null; }
+    }
     private void RenumberSegments()
     {
         for (int index = 0; index < _segments.Count; index++)
         {
             VideoSplitterSegment segment = _segments[index];
-            _segments[index] = segment with { Number = index + 1, OutputFileName = VideoSplitterSegmentRules.CreateOutputFileName(_sourcePath ?? "segment.mp4", index + 1) };
+            _segments[index] = segment with { Number = index + 1 };
         }
     }
     private void RefreshSegmentsGrid(int selectIndex)
@@ -813,12 +853,21 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         string fullFolder;
         try { fullFolder = Path.GetFullPath(folder); }
         catch (Exception ex) { ShowSegmentError($"The output folder is invalid: {ex.Message}"); return; }
-        string[] existing = _segments.Select(segment => Path.Combine(fullFolder, OutputPathService.SanitizeFileName(segment.OutputFileName))).Where(File.Exists).ToArray();
+        string[] existing = _segments.Select(segment => Path.Combine(fullFolder, OutputPathService.SanitizeFileName(segment.OutputFileName))).Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (existing.Length > 0)
         {
-            DialogResult answer = MessageBox.Show(this, $"{existing.Length} output file(s) already exist. Overwrite them?\r\n\r\n{string.Join("\r\n", existing.Take(5).Select(Path.GetFileName))}", "Confirm overwrite", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-            if (answer != DialogResult.Yes) return;
-            overwrite = true;
+            OutputConflictChoice choice = OutputConflictDialog.Show(this, existing);
+            if (choice == OutputConflictChoice.Cancel) return;
+            if (choice == OutputConflictChoice.AutoRename)
+            {
+                int selectedIndex = SelectedSegmentIndex();
+                VideoSplitterSegment[] renamed = AutoRenameConflictingOutputs(_segments, fullFolder);
+                _segments.Clear();
+                _segments.AddRange(renamed);
+                RefreshSegmentsGrid(selectedIndex);
+                _statusLabel.Text = "Existing output conflicts were automatically renamed.";
+            }
+            else overwrite = true;
         }
         string encoder = ResolveConfiguredEncoder();
         VideoSplitterProcessingMode mode = _processingMode.SelectedIndex == 1 ? VideoSplitterProcessingMode.AccurateReencode : VideoSplitterProcessingMode.StreamCopy;
@@ -869,6 +918,20 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
             return EncoderRegistry.Default.Resolve(_config.LastEncoderId, VideoEncoderCompatibility.ParseCodecFamily(_config.LastVideoCodec)).Selection.FfmpegCodec;
         }
         catch { return "libx264"; }
+    }
+
+    internal static VideoSplitterSegment[] AutoRenameConflictingOutputs(IEnumerable<VideoSplitterSegment> segments, string outputFolder)
+    {
+        var result = new List<VideoSplitterSegment>();
+        var reserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (VideoSplitterSegment segment in segments)
+        {
+            string preferred = OutputPathService.SanitizeFileName(segment.OutputFileName, $"Source-Part{segment.Number:00}.mp4");
+            string available = VideoSplitterSegmentRules.CreateUnusedFileName(preferred, outputFolder, reserved);
+            reserved.Add(available);
+            result.Add(segment with { OutputFileName = available });
+        }
+        return result.ToArray();
     }
 
     private void UpdateExportProgress(VideoSplitterExportProgress update)
@@ -1033,6 +1096,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         _confirmedPlaybackPosition = 0;
         _segments.Clear();
         _playbackTimer.Stop();
+        _playbackRequested = false;
         SetPlaybackState(false);
         RefreshSegmentsGrid(-1);
         _timeline.SetDuration(0);
@@ -1123,6 +1187,64 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
             return true;
         }
         return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds) && seconds >= 0;
+    }
+}
+
+internal enum OutputConflictChoice { Overwrite, AutoRename, Cancel }
+
+internal sealed class OutputConflictDialog : MediaFluxForm
+{
+    private OutputConflictChoice _choice = OutputConflictChoice.Cancel;
+
+    private OutputConflictDialog(IReadOnlyList<string> paths)
+    {
+        Text = "Output files already exist";
+        StartPosition = FormStartPosition.CenterParent;
+        MinimumSize = new Size(520, 280);
+        Size = new Size(620, 340);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        Font = new Font("Segoe UI", 9F);
+        BackColor = Color.FromArgb(246, 248, 251);
+
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(18) };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.Controls.Add(new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(560, 0),
+            Text = $"{paths.Count} destination file(s) already exist. Choose how MediaFlux should handle them."
+        }, 0, 0);
+        root.Controls.Add(new TextBox
+        {
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            Text = string.Join(Environment.NewLine, paths.Select(Path.GetFileName)),
+            Margin = new Padding(0, 12, 0, 12)
+        }, 0, 1);
+
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
+        actions.Controls.Add(CreateChoiceButton("Cancel", OutputConflictChoice.Cancel));
+        actions.Controls.Add(CreateChoiceButton("Auto-Rename", OutputConflictChoice.AutoRename));
+        actions.Controls.Add(CreateChoiceButton("Overwrite", OutputConflictChoice.Overwrite));
+        root.Controls.Add(actions, 0, 2);
+        Controls.Add(root);
+    }
+
+    private Button CreateChoiceButton(string text, OutputConflictChoice choice)
+    {
+        var button = new Button { Text = text, AutoSize = true, Margin = new Padding(8, 0, 0, 0) };
+        button.Click += (_, _) => { _choice = choice; DialogResult = DialogResult.OK; Close(); };
+        return button;
+    }
+
+    public static OutputConflictChoice Show(IWin32Window owner, IReadOnlyList<string> paths)
+    {
+        using var dialog = new OutputConflictDialog(paths);
+        return dialog.ShowDialog(owner) == DialogResult.OK ? dialog._choice : OutputConflictChoice.Cancel;
     }
 }
 
