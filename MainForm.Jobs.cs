@@ -30,7 +30,7 @@ public partial class MainForm
     {
         if (_encodingActive) return;
         var due = EncodeJobService.Due(_encodeJobs, DateTime.Now).FirstOrDefault();
-        if (due != null) await RunJobAsync(due, scheduled: true);
+        if (due != null) await RunJobAsync(due.Id, scheduled: true);
     }
 
     private void ShowJobManager()
@@ -39,11 +39,17 @@ public partial class MainForm
         form.ShowDialog(this);
     }
 
-    private async void HandleJobManagerAction(EncodeJob job, string action)
+    private async void HandleJobManagerAction(Guid jobId, string action)
     {
+        EncodeJob? job = EncodeJobService.FindById(_encodeJobs, jobId);
+        if (job == null)
+        {
+            ShowStatusInfo("The selected saved job no longer exists.");
+            return;
+        }
         switch (action)
         {
-            case "Run Now": await RunJobAsync(job, scheduled: false); break;
+            case "Run Now": await RunJobAsync(jobId, scheduled: false); break;
             case "Edit Job": case "Change Schedule":
                 using (var editor = new JobEditorForm(job)) if (editor.ShowDialog(this) == DialogResult.OK) SaveJobs();
                 break;
@@ -174,21 +180,43 @@ public partial class MainForm
         UpdateEncoderUiState();
     }
 
-    private async Task RunJobAsync(EncodeJob job, bool scheduled)
+    private async Task RunJobAsync(Guid jobId, bool scheduled)
     {
-        if (_encodingActive) { job.LastResult = "Deferred: MediaFlux is already encoding."; SaveJobs(); ShowStatusInfo(job.LastResult); return; }
+        EncodeJob? persistedJob = EncodeJobService.FindById(_encodeJobs, jobId);
+        if (persistedJob == null)
+        {
+            ShowStatusInfo("The saved job could not be found.");
+            return;
+        }
+        // All execution inputs become immutable before the queue is touched.
+        EncodeJob job = EncodeJobService.CreateExecutionSnapshot(persistedJob);
+        ErrorLogService.Append(AppPaths.UserDataDirectory, "Starting saved job", details: $"Id={job.Id}; Name={job.Name}; Files={job.Files.Count}; FirstSource={job.Files.FirstOrDefault()?.SourcePath ?? "--"}");
+        if (_encodingActive) { UpdateJobResult(jobId, EncodeJobStatus.Ready, "Deferred: MediaFlux is already encoding."); ShowStatusInfo("Deferred: MediaFlux is already encoding."); return; }
         var sources = EncodeJobService.SplitAvailableFiles(job.Files);
         var missing = sources.Missing;
         var available = sources.Available;
-        if (available.Count == 0) { job.Status = EncodeJobStatus.Failed; job.LastResult = "No saved source files are available."; job.LastRunUtc = DateTime.UtcNow; SaveJobs(); ShowStatusInfo(job.LastResult); return; }
-        job.Status = EncodeJobStatus.Running; job.LastRunUtc = DateTime.UtcNow; job.LastResult = missing.Count == 0 ? "Running." : $"Running {available.Count} available file(s); {missing.Count} source file(s) unavailable."; SaveJobs();
+        if (available.Count == 0) { UpdateJobResult(jobId, EncodeJobStatus.Failed, "No saved source files are available."); ShowStatusInfo("No saved source files are available."); return; }
+        UpdateJobResult(jobId, EncodeJobStatus.Running, missing.Count == 0 ? "Running." : $"Running {available.Count} available file(s); {missing.Count} source file(s) unavailable.");
         ApplyJobSettings(job.Settings);
         await LoadJobIntoMainQueueAsync(job);
-        if (dgvEncodeQueue.Rows.Count == 0) { job.Status = EncodeJobStatus.Failed; job.LastResult = "Could not load any valid source files into the encode queue."; SaveJobs(); return; }
+        if (dgvEncodeQueue.Rows.Count == 0) { UpdateJobResult(jobId, EncodeJobStatus.Failed, "Could not load any valid source files into the encode queue."); return; }
         await StartEncodeAsync(processAllOverride: true);
-        job.Status = _cancelEncode ? EncodeJobStatus.Failed : _encodeFailedCount > 0 ? EncodeJobStatus.CompletedWithErrors : EncodeJobStatus.Completed;
-        job.LastResult = job.Status == EncodeJobStatus.Completed ? "Completed." : job.Status == EncodeJobStatus.CompletedWithErrors ? $"Completed with {_encodeFailedCount} failed file(s)." : "Stopped or failed.";
+        EncodeJobStatus outcome = _cancelEncode ? EncodeJobStatus.Failed : _encodeFailedCount > 0 ? EncodeJobStatus.CompletedWithErrors : EncodeJobStatus.Completed;
+        string result = outcome == EncodeJobStatus.Completed ? "Completed." : outcome == EncodeJobStatus.CompletedWithErrors ? $"Completed with {_encodeFailedCount} failed file(s)." : "Stopped or failed.";
+        UpdateJobResult(jobId, outcome, result);
+        ErrorLogService.Append(AppPaths.UserDataDirectory, "Completed saved job", details: $"Id={job.Id}; Name={job.Name}; Status={outcome}; Result={result}");
+        if (scheduled) ShowStatusInfo($"Scheduled job '{job.Name}' {result}");
+    }
+
+    private void UpdateJobResult(Guid jobId, EncodeJobStatus status, string result)
+    {
+        EncodeJob? job = EncodeJobService.FindById(_encodeJobs, jobId);
+        if (job == null)
+            return;
+        job.Status = status;
+        job.LastRunUtc = DateTime.UtcNow;
+        job.LastResult = result;
+        job.ModifiedUtc = DateTime.UtcNow;
         SaveJobs();
-        if (scheduled) ShowStatusInfo($"Scheduled job '{job.Name}' {job.LastResult}");
     }
 }

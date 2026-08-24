@@ -58,4 +58,31 @@ public sealed class EncodeJobServiceTests : IDisposable
         var loaded = Assert.Single(service.Load()).Settings;
         Assert.Equal("High Quality", loaded.CompressionProfile); Assert.Equal(19, loaded.QualityValue); Assert.Equal("720p", loaded.Resolution); Assert.Equal("Stereo (2.0)", loaded.AudioChannels); Assert.Equal("libx265", loaded.EncoderId); Assert.Equal("Matroska", loaded.OutputContainer); Assert.True(loaded.TenBit);
     }
+
+    [Fact]
+    public void JobIdentityAndExecutionSnapshotSurviveDisplayReordering()
+    {
+        var first = new EncodeJob { Name = "Similar job", Files = new() { new() { SourcePath = "A-source.mkv" } } };
+        var second = new EncodeJob { Name = "Similar job", Files = new() { new() { SourcePath = "B-source.mkv" } } };
+        var third = new EncodeJob { Name = "Similar job", Files = new() { new() { SourcePath = "C-source.mkv" } } };
+        var displayOrder = new List<EncodeJob> { third, first, second };
+
+        EncodeJob selected = Assert.IsType<EncodeJob>(EncodeJobService.FindById(displayOrder, first.Id));
+        EncodeJob snapshot = EncodeJobService.CreateExecutionSnapshot(selected);
+        displayOrder.Reverse(); selected.Files[0].SourcePath = "wrong-after-refresh.mkv";
+
+        Assert.Equal(first.Id, snapshot.Id);
+        Assert.Equal(new[] { "A-source.mkv" }, snapshot.Files.Select(file => file.SourcePath));
+        Assert.NotEqual(second.Id, snapshot.Id); Assert.NotEqual(third.Id, snapshot.Id);
+    }
+
+    [Fact]
+    public void DueScheduledJobResolvesItsOwnIdRatherThanCollectionPosition()
+    {
+        var due = new EncodeJob { Name = "A", ScheduleType = EncodeJobScheduleType.Once, ScheduledLocalTime = DateTime.Now.AddMinutes(-1), Status = EncodeJobStatus.Scheduled, Files = new() { new() { SourcePath = "scheduled-a.mkv" } } };
+        var other = new EncodeJob { Name = "B", ScheduleType = EncodeJobScheduleType.Once, ScheduledLocalTime = DateTime.Now.AddHours(1), Status = EncodeJobStatus.Scheduled, Files = new() { new() { SourcePath = "scheduled-b.mkv" } } };
+        var dueId = Assert.Single(EncodeJobService.Due(new[] { other, due }, DateTime.Now)).Id;
+        EncodeJob snapshot = EncodeJobService.CreateExecutionSnapshot(Assert.IsType<EncodeJob>(EncodeJobService.FindById(new[] { other, due }, dueId)));
+        Assert.Equal(due.Id, snapshot.Id); Assert.Equal("scheduled-a.mkv", Assert.Single(snapshot.Files).SourcePath);
+    }
 }

@@ -58,4 +58,30 @@ public sealed class EncodeJobService
             job.Status = EncodeJobStatus.Scheduled;
         else if (job.Status == EncodeJobStatus.Disabled) job.Status = EncodeJobStatus.Ready;
     }
+
+    public static EncodeJob? FindById(IEnumerable<EncodeJob> jobs, Guid jobId) =>
+        jobs.FirstOrDefault(job => job.Id == jobId);
+
+    public static EncodeJob CreateExecutionSnapshot(EncodeJob job) => new()
+    {
+        Id = job.Id,
+        Name = job.Name,
+        Files = job.Files.Select(file => new EncodeJobFile
+        {
+            SourcePath = file.SourcePath,
+            CustomCompressionProfile = file.CustomCompressionProfile,
+            CustomTargetMb = file.CustomTargetMb
+        }).ToList(),
+        Settings = job.Settings.Clone(),
+        ScheduleType = job.ScheduleType,
+        ScheduledLocalTime = job.ScheduledLocalTime,
+        Enabled = job.Enabled,
+        CreatedUtc = job.CreatedUtc,
+        ModifiedUtc = job.ModifiedUtc,
+        Status = job.Status,
+        LastRunUtc = job.LastRunUtc,
+        LastResult = job.LastResult,
+        EstimatedOutputBytes = job.EstimatedOutputBytes,
+        EstimatedSavingsBytes = job.EstimatedSavingsBytes
+    };
 }
