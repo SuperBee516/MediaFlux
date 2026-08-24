@@ -46,4 +46,16 @@ public sealed class EncodeJobServiceTests : IDisposable
         var result = EncodeJobService.SplitAvailableFiles(new[] { new EncodeJobFile { SourcePath = availablePath }, new EncodeJobFile { SourcePath = Path.Combine(_root, "gone.mkv") } });
         Assert.Equal(availablePath, Assert.Single(result.Available).SourcePath); Assert.Single(result.Missing);
     }
+
+    [Fact]
+    public void EditedEncodeSettingsRoundTripWithoutChangingTheOriginalSnapshot()
+    {
+        var service = new EncodeJobService(Path.Combine(_root, "jobs.json"));
+        var original = new EncodeJobSettings { CompressionProfile = "Medium Quality (Default)", VideoCodec = "Hevc", QualityValue = 22, Resolution = "1080p", AudioChannels = "Stereo (2.0)" };
+        var edited = original.Clone(); edited.CompressionProfile = "High Quality"; edited.QualityValue = 19; edited.Resolution = "720p"; edited.EncoderId = "libx265"; edited.OutputContainer = "Matroska"; edited.TenBit = true;
+        Assert.Equal("Medium Quality (Default)", original.CompressionProfile); // Cancel/discard keeps the original snapshot intact.
+        service.Save(new[] { new EncodeJob { Settings = edited } });
+        var loaded = Assert.Single(service.Load()).Settings;
+        Assert.Equal("High Quality", loaded.CompressionProfile); Assert.Equal(19, loaded.QualityValue); Assert.Equal("720p", loaded.Resolution); Assert.Equal("Stereo (2.0)", loaded.AudioChannels); Assert.Equal("libx265", loaded.EncoderId); Assert.Equal("Matroska", loaded.OutputContainer); Assert.True(loaded.TenBit);
+    }
 }

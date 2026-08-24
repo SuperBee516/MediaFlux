@@ -44,4 +44,11 @@ public sealed class EncodeJobSettings
     public string VideoFormat { get; set; } = "";
     public bool AutoTargetSize { get; set; }
     public string TargetSize { get; set; } = "";
+    public string Resolution { get; set; } = "";
+    public bool DeleteSourceAfterCompression { get; set; }
+    public bool EnableOutputSuffix { get; set; }
+    public bool EnableCodecSuffix { get; set; }
+    public string OutputSuffix { get; set; } = "";
+
+    public EncodeJobSettings Clone() => (EncodeJobSettings)MemberwiseClone();
 }

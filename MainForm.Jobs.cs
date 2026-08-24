@@ -1,5 +1,6 @@
 using MediaFlux.Models;
 using MediaFlux.Services;
+using MediaFlux.Services.Encoders;
 
 namespace MediaFlux;
 
@@ -43,8 +44,20 @@ public partial class MainForm
         switch (action)
         {
             case "Run Now": await RunJobAsync(job, scheduled: false); break;
-            case "Edit Job": case "Edit Encode Settings": case "Change Schedule":
+            case "Edit Job": case "Change Schedule":
                 using (var editor = new JobEditorForm(job)) if (editor.ShowDialog(this) == DialogResult.OK) SaveJobs();
+                break;
+            case "Edit Encode Settings":
+                using (var editor = new EncodeJobSettingsForm(job.Name, job.Settings))
+                {
+                    if (editor.ShowDialog(this) == DialogResult.OK)
+                    {
+                        job.Settings = editor.EditedSettings;
+                        job.ModifiedUtc = DateTime.UtcNow;
+                        RefreshJobEstimates(job);
+                        SaveJobs();
+                    }
+                }
                 break;
             case "View Files": MessageBox.Show(this, string.Join(Environment.NewLine, job.Files.Select(file => file.SourcePath)), job.Name, MessageBoxButtons.OK, MessageBoxIcon.Information); break;
             case "Load into Main Queue": await LoadJobIntoMainQueueAsync(job); break;
@@ -78,8 +91,44 @@ public partial class MainForm
         EncoderId = _config.LastEncoderId, VideoCodec = _config.LastVideoCodec, EncoderPreset = _config.LastEncoderPreset,
         OutputContainer = _config.LastOutputContainer, QualityValue = _config.LastQualityValue,
         TenBit = chkTenBit?.Checked == true, AudioChannels = comboAudioChannels?.Text ?? "", VideoFormat = comboVideoFormat.Text,
-        AutoTargetSize = chkAutoTargetSize.Checked, TargetSize = txtTargetSize.Text
+        AutoTargetSize = chkAutoTargetSize.Checked, TargetSize = txtTargetSize.Text, Resolution = comboResolution?.Text ?? "",
+        DeleteSourceAfterCompression = chkDeleteSource.Checked, EnableOutputSuffix = _config.EnableOutputSuffix,
+        EnableCodecSuffix = _config.EnableCodecSuffix, OutputSuffix = _config.OutputSuffix
     };
+
+    private void RefreshJobEstimates(EncodeJob job)
+    {
+        // Reuse the same SizeEstimateService used by the main queue. A fixed
+        // target is exact; profile-based estimates are refreshed per source.
+        if (!job.Settings.AutoTargetSize && double.TryParse(job.Settings.TargetSize, out double targetMb) && targetMb > 0)
+        {
+            job.EstimatedOutputBytes = (long)(targetMb * 1024d * 1024d * job.Files.Count);
+            long sourceBytes = job.Files.Where(file => File.Exists(file.SourcePath)).Sum(file => new FileInfo(file.SourcePath).Length);
+            if (sourceBytes > 0) job.EstimatedSavingsBytes = Math.Max(0, sourceBytes - job.EstimatedOutputBytes);
+            return;
+        }
+
+        try
+        {
+            VideoCodecFamily codec = VideoEncoderCompatibility.ParseCodecFamily(job.Settings.VideoCodec);
+            string encoderId = VideoEncoderCompatibility.ResolveEncoderId(job.Settings.EncoderId, codec);
+            VideoEncoderSelection encoder = EncoderRegistry.Default.Resolve(encoderId, codec).Selection;
+            int? targetHeight = job.Settings.Resolution switch { "720p" => 720, "1080p" => 1080, "1440p" => 1440, "4K" => 2160, _ => null };
+            int? audioChannels = job.Settings.AudioChannels.StartsWith("Stereo", StringComparison.OrdinalIgnoreCase) ? 2 : job.Settings.AudioChannels.StartsWith("5.1", StringComparison.OrdinalIgnoreCase) ? 6 : null;
+            double estimateMb = job.Files.Where(file => File.Exists(file.SourcePath)).Sum(file => _sizeEstimateService.EstimateAutoTargetMbSmart(file.SourcePath, job.Settings.CompressionProfile, encoder, job.Settings.QualityValue, targetHeight, audioChannels));
+            if (estimateMb > 0)
+            {
+                job.EstimatedOutputBytes = (long)(estimateMb * 1024d * 1024d);
+                long sourceBytes = job.Files.Where(file => File.Exists(file.SourcePath)).Sum(file => new FileInfo(file.SourcePath).Length);
+                if (sourceBytes > 0) job.EstimatedSavingsBytes = Math.Max(0, sourceBytes - job.EstimatedOutputBytes);
+            }
+        }
+        catch
+        {
+            // Preserve the existing estimate when source metadata or a selected
+            // encoder is unavailable; execution still performs normal validation.
+        }
+    }
 
     private async Task LoadJobIntoMainQueueAsync(EncodeJob job)
     {
@@ -104,9 +153,11 @@ public partial class MainForm
         cmbEncodeOutput.Text = settings.OutputFolder;
         txtTargetSize.Text = settings.TargetSize;
         chkAutoTargetSize.Checked = settings.AutoTargetSize;
+        chkDeleteSource.Checked = settings.DeleteSourceAfterCompression;
         if (chkTenBit != null) chkTenBit.Checked = settings.TenBit;
         SelectComboText(comboCompressionProfile, settings.CompressionProfile);
         if (comboAudioChannels != null) SelectComboText(comboAudioChannels, settings.AudioChannels);
+        if (comboResolution != null) SelectComboText(comboResolution, settings.Resolution);
         _applyingEncodeDropdownSettings = true;
         try
         {
@@ -117,6 +168,9 @@ public partial class MainForm
             if (nudAutoQuality != null) nudAutoQuality.Value = Math.Clamp(settings.QualityValue, (int)nudAutoQuality.Minimum, (int)nudAutoQuality.Maximum);
         }
         finally { _applyingEncodeDropdownSettings = false; }
+        _config.EnableOutputSuffix = settings.EnableOutputSuffix;
+        _config.EnableCodecSuffix = settings.EnableCodecSuffix;
+        _config.OutputSuffix = settings.OutputSuffix;
         UpdateEncoderUiState();
     }
 
