@@ -620,6 +620,22 @@ namespace MediaFlux.Services
             bool allowSubtitleCopy = containerDecision.CopySubtitles;
             bool allowDataCopy = containerDecision.CopyDataStreams;
             bool allowAttachmentCopy = containerDecision.CopyAttachments;
+            if (copyDataStreams && !allowDataCopy)
+            {
+                MediaProbeStreamInfo[] omittedDataStreams = sourceProbe.Streams
+                    .Where(stream => stream.CodecType.Equals(
+                        "data", StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (omittedDataStreams.Length > 0)
+                {
+                    string descriptions = string.Join(", ", omittedDataStreams
+                        .Select(DescribeUnsupportedDataStream)
+                        .Distinct(StringComparer.OrdinalIgnoreCase));
+                    _log?.Invoke(
+                        $"[EncodingService] Excluded {omittedDataStreams.Length} unsupported " +
+                        $"data stream(s) from {containerDecision.Resolved} output: {descriptions}.");
+                }
+            }
 
             bool forceMp4CompatibleAudio = isAsfFamilyInput &&
                 string.Equals(Path.GetExtension(finalOutput), ".mp4", StringComparison.OrdinalIgnoreCase);
@@ -825,6 +841,18 @@ namespace MediaFlux.Services
                 containerDecisionReason: containerDecision.Reason,
                 finalOutputLastWriteUtcTicks:
                     finalization.FinalOutputLastWriteUtcTicks);
+        }
+
+        private static string DescribeUnsupportedDataStream(MediaProbeStreamInfo stream)
+        {
+            string codec = string.IsNullOrWhiteSpace(stream.CodecName)
+                ? "unknown"
+                : stream.CodecName;
+            string handler = stream.Tags.TryGetValue("handler_name", out string? value) &&
+                !string.IsNullOrWhiteSpace(value)
+                ? value
+                : stream.CodecLongName;
+            return string.IsNullOrWhiteSpace(handler) ? codec : $"{codec} ({handler})";
         }
 
         private static void AppendBounded(StringBuilder builder, string line, int maxCharacters)

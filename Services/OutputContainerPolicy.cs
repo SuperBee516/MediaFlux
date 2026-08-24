@@ -11,6 +11,10 @@ namespace MediaFlux.Services
             new[] { "mov_text", "tx3g", "webvtt" },
             StringComparer.OrdinalIgnoreCase);
 
+        // FFmpeg's Matroska muxer accepts attachments, but not arbitrary AVMEDIA_TYPE_DATA
+        // streams. Keep this capability explicit so mapping and container selection agree.
+        public static bool SupportsGenericDataStreams(OutputContainer container) => false;
+
         public static OutputContainerSelection ParseSelection(string? value) =>
             Enum.TryParse(value, true, out OutputContainerSelection parsed)
                 ? parsed
@@ -35,7 +39,6 @@ namespace MediaFlux.Services
                 ? SelectStreams(source, input.SubtitleStreamIndexes, input.HasExplicitStreamSelection, "subtitle", int.MaxValue)
                 : Array.Empty<MediaProbeStreamInfo>();
             int attachmentCount = copyAttachments && !input.HasExplicitStreamSelection ? Count(source, "attachment") : 0;
-            int dataCount = copyDataStreams && !input.HasExplicitStreamSelection ? Count(source, "data") : 0;
 
             var warnings = new List<string>();
             if (!audioWillBeTranscoded)
@@ -58,8 +61,6 @@ namespace MediaFlux.Services
                 warnings.Add($"subtitle codec(s) that MP4 cannot preserve by stream copy: {string.Join(", ", incompatibleSubtitles)}");
             if (attachmentCount > 0)
                 warnings.Add($"{attachmentCount} attachment stream(s) that MP4 will not preserve");
-            if (dataCount > 0)
-                warnings.Add($"{dataCount} data stream(s) that MP4 will not preserve");
 
             OutputContainer resolved = requested switch
             {
@@ -85,7 +86,11 @@ namespace MediaFlux.Services
                 Reason = reason,
                 CompatibilityWarnings = warnings,
                 CopySubtitles = copySubtitles && (matroska || incompatibleSubtitles.Length == 0),
-                CopyDataStreams = copyDataStreams && matroska && !input.HasExplicitStreamSelection,
+                // Neither supported output container can safely mux arbitrary FFmpeg data
+                // streams. They are intentionally omitted rather than driving Auto to MKV.
+                CopyDataStreams = copyDataStreams &&
+                    SupportsGenericDataStreams(resolved) &&
+                    !input.HasExplicitStreamSelection,
                 CopyAttachments = copyAttachments && matroska && !input.HasExplicitStreamSelection
             };
         }

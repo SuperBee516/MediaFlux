@@ -72,9 +72,9 @@ public sealed class FfprobeServiceTests : IDisposable
                         {
                           "index": 2,
                           "id": "0x20",
-                          "codec_name": "dvd_subtitle",
-                          "codec_type": "subtitle",
-                          "tags": { "language": "spa" },
+                          "codec_name": "rtp",
+                          "codec_type": "data",
+                          "tags": { "handler_name": "GPAC ISO Hint Handler" },
                           "disposition": { "forced": 1 }
                         }
                       ],
@@ -117,6 +117,7 @@ public sealed class FfprobeServiceTests : IDisposable
         Assert.Equal("smpte170m", result.Streams[0].ColorSpace);
         Assert.Equal(30000d / 1001d, result.Streams[0].FrameRate!.Value, precision: 6);
         Assert.Equal("eng", result.Streams[1].Language);
+        Assert.Equal("GPAC ISO Hint Handler", result.Streams[2].Tags["handler_name"]);
         Assert.True(result.Streams[2].Dispositions["forced"]);
         Assert.Equal("Chapter 1", Assert.Single(result.Chapters).Title);
         Assert.Equal(_mediaPath, runner.LastRequest?.Arguments[^1]);

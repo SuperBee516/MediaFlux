@@ -99,12 +99,15 @@ namespace MediaFlux.Services
             if (request.SampleStart is { } sampleStart && sampleStart > TimeSpan.Zero)
                 builder.Append($"-ss {Seconds(sampleStart.TotalSeconds)} ");
             AppendInput(builder, request.Input);
+            bool copyDataStreams = request.CopyDataStreams &&
+                OutputContainerPolicy.SupportsGenericDataStreams(
+                    request.ContainerDecision.Resolved);
             AppendStreamMapping(
                 builder,
                 request.Input,
                 request.MapMode,
                 request.CopySubtitles,
-                request.CopyDataStreams,
+                copyDataStreams,
                 request.CopyAttachments);
             builder.Append("-map_metadata 0 -map_chapters 0 ");
             if (request.SampleDuration is { } sampleDuration && sampleDuration > TimeSpan.Zero)

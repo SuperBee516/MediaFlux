@@ -218,10 +218,27 @@ namespace MediaFlux.Services
                 }
 
                 string language = "";
+                var streamTags = new Dictionary<string, string>(
+                    StringComparer.OrdinalIgnoreCase);
                 if (stream.TryGetProperty("tags", out JsonElement tags) &&
                     tags.ValueKind == JsonValueKind.Object)
                 {
-                    language = GetString(tags, "language");
+                    foreach (JsonProperty property in tags.EnumerateObject())
+                    {
+                        string value = property.Value.ValueKind switch
+                        {
+                            JsonValueKind.String => property.Value.GetString() ?? "",
+                            JsonValueKind.Number => property.Value.GetRawText(),
+                            JsonValueKind.True => "true",
+                            JsonValueKind.False => "false",
+                            _ => ""
+                        };
+                        if (!string.IsNullOrWhiteSpace(value))
+                            streamTags[property.Name] = value;
+                    }
+                    language = streamTags.TryGetValue("language", out string? tagLanguage)
+                        ? tagLanguage ?? ""
+                        : "";
                 }
 
                 streams.Add(new MediaProbeStreamInfo
@@ -244,6 +261,7 @@ namespace MediaFlux.Services
                     ColorTransfer = GetString(stream, "color_transfer"),
                     ColorPrimaries = GetString(stream, "color_primaries"),
                     Language = language,
+                    Tags = streamTags,
                     ChannelLayout = GetString(stream, "channel_layout"),
                     Width = GetInt32(stream, "width"),
                     Height = GetInt32(stream, "height"),

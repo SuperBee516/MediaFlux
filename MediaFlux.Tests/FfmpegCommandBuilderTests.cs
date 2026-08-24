@@ -20,7 +20,7 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Equal(
             "-y -hwaccel cuda -hwaccel_output_format cuda " +
             "-i \"C:\\Media\\source.mkv\" " +
-            "-map 0:v:0 -map 0:a? -map 0:s? -map 0:d? " +
+            "-map 0:v:0 -map 0:a? -map 0:s? -dn " +
             "-map_metadata 0 -map_chapters 0 " +
             "-c:s copy -c:v hevc_nvenc -rc vbr -cq 24 -preset p6 " +
             "-tune hq -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 " +
@@ -369,7 +369,7 @@ public sealed class FfmpegCommandBuilderTests
         string arguments = CreateBuilder().Build(request);
 
         Assert.Contains(
-            "-map 0:v:0 -map 0:a? -map 0:s? -map 0:d? ",
+            "-map 0:v:0 -map 0:a? -map 0:s? -dn ",
             arguments);
         Assert.Contains("-map_metadata 0 -map_chapters 0 ", arguments);
         Assert.Contains("-c:s copy ", arguments);
@@ -480,7 +480,7 @@ public sealed class FfmpegCommandBuilderTests
         new(EncoderRegistry.Default, _ => 160);
 
     [Fact]
-    public void MatroskaCommand_UsesExplicitMuxerAndPreservationMappings()
+    public void MatroskaCommand_ExcludesUnsupportedDataStreams()
     {
         var builder = new FfmpegCommandBuilder(EncoderRegistry.Default, _ => 192);
         string arguments = builder.Build(CreateRequest(
@@ -489,7 +489,8 @@ public sealed class FfmpegCommandBuilderTests
             outputContainer: OutputContainer.Matroska));
 
         Assert.Contains("-map 0:s?", arguments);
-        Assert.Contains("-map 0:d?", arguments);
+        Assert.DoesNotContain("-map 0:d?", arguments);
+        Assert.Contains("-dn", arguments);
         Assert.Contains("-map 0:t?", arguments);
         Assert.Contains("-c:t copy", arguments);
         Assert.Contains("-f matroska", arguments);

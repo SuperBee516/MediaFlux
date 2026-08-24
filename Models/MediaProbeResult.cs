@@ -42,6 +42,8 @@ namespace MediaFlux.Models
         public string ColorTransfer { get; init; } = "";
         public string ColorPrimaries { get; init; } = "";
         public string Language { get; init; } = "";
+        public IReadOnlyDictionary<string, string> Tags { get; init; } =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public string ChannelLayout { get; init; } = "";
         public int? Width { get; init; }
         public int? Height { get; init; }

@@ -23,7 +23,6 @@ public sealed class OutputContainerPolicyTests
     [InlineData("subtitle", "hdmv_pgs_subtitle")]
     [InlineData("subtitle", "ass")]
     [InlineData("attachment", "ttf")]
-    [InlineData("data", "bin_data")]
     [InlineData("audio", "dts")]
     public void Auto_UsesMatroska_WhenMp4WouldLoseOrRiskSelectedStream(
         string type,
@@ -56,7 +55,7 @@ public sealed class OutputContainerPolicyTests
     }
 
     [Fact]
-    public void ExplicitMatroska_PreservesSelectedStreamClasses()
+    public void ExplicitMatroska_OmitsUnsupportedDataStreams()
     {
         OutputContainerDecision decision = Decide(
             OutputContainerSelection.Matroska,
@@ -68,7 +67,21 @@ public sealed class OutputContainerPolicyTests
         Assert.Equal(OutputContainer.Matroska, decision.Resolved);
         Assert.True(decision.CopySubtitles);
         Assert.True(decision.CopyAttachments);
-        Assert.True(decision.CopyDataStreams);
+        Assert.False(decision.CopyDataStreams);
+    }
+
+    [Fact]
+    public void Auto_DoesNotSelectMatroskaSolelyForUnsupportedDataStreams()
+    {
+        OutputContainerDecision decision = Decide(
+            OutputContainerSelection.Auto,
+            Stream("video", "h264"),
+            Stream("audio", "aac"),
+            Stream("data", "rtp"));
+
+        Assert.Equal(OutputContainer.Mp4, decision.Resolved);
+        Assert.False(decision.CopyDataStreams);
+        Assert.Empty(decision.CompatibilityWarnings);
     }
 
     [Fact]
