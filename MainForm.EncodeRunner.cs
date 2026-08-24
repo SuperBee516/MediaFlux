@@ -30,12 +30,45 @@ namespace MediaFlux
                 return;
             }
 
-            bool requestedAll = processAllOverride ?? (chkProcessAll?.Checked ?? true);
-            var requestedRows = (requestedAll
-                    ? dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
-                    : dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>())
-                .Where(row => !row.IsNewRow)
+            var eligibleRows = GetEncodeRowsInVisualOrder()
+                .Where(row => row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true })
                 .ToList();
+            var scope = EncodingScopeResolver.Analyze(
+                eligibleRows,
+                dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>());
+
+            EncodingScopeChoice scopeChoice;
+            if (processAllOverride == true)
+            {
+                scopeChoice = EncodingScopeChoice.EntireQueue;
+            }
+            else if (processAllOverride == false)
+            {
+                scopeChoice = EncodingScopeChoice.Selected;
+            }
+            else if (scope.RequiresChoice)
+            {
+                DialogResult choice = EncodingScopeForm.ShowChoice(
+                    this,
+                    scope.SelectedJobs.Count,
+                    scope.EligibleJobs.Count);
+                scopeChoice = choice == DialogResult.Yes
+                    ? EncodingScopeChoice.Selected
+                    : choice == DialogResult.No
+                        ? EncodingScopeChoice.EntireQueue
+                        : EncodingScopeChoice.Cancel;
+            }
+            else
+            {
+                scopeChoice = EncodingScopeChoice.EntireQueue;
+            }
+
+            IReadOnlyList<DataGridViewRow>? resolvedRows = scope.Resolve(scopeChoice);
+            if (resolvedRows == null)
+                return;
+
+            bool requestedAll = ReferenceEquals(resolvedRows, scope.EligibleJobs);
+            var requestedRows = resolvedRows.ToList();
             var initiallyRequestedRows = requestedRows.ToList();
 
             if (!requestedAll && requestedRows.Count == 0)
