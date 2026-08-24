@@ -13,8 +13,6 @@ namespace MediaFlux
 
         // Menu & Status
         private MenuStrip menuStrip1;
-        private ToolStripMenuItem scheduleEncodeStartToolStripMenuItem;
-        private ToolStripMenuItem cancelScheduledStartToolStripMenuItem;
         private ToolStripMenuItem fileToolStripMenuItem;
         private ToolStripMenuItem exitToolStripMenuItem;
         private ToolStripMenuItem exportQueueToolStripMenuItem;
@@ -334,22 +332,6 @@ namespace MediaFlux
             // ─── Clear Folder History ────────────────────────────────────
             clearFolderHistoryToolStripMenuItem.Text = "Clear Folder History";
             clearFolderHistoryToolStripMenuItem.Click += clearFolderHistoryToolStripMenuItem_Click;
-
-            // --- Schedule Encode Start ---
-            scheduleEncodeStartToolStripMenuItem = new ToolStripMenuItem();
-            cancelScheduledStartToolStripMenuItem = new ToolStripMenuItem();
-
-            scheduleEncodeStartToolStripMenuItem.Text = "Schedule Encode Start…";
-            scheduleEncodeStartToolStripMenuItem.Click += scheduleEncodeStartToolStripMenuItem_Click;
-
-            cancelScheduledStartToolStripMenuItem.Text = "Cancel Scheduled Start";
-            cancelScheduledStartToolStripMenuItem.Click += cancelScheduledStartToolStripMenuItem_Click;
-            cancelScheduledStartToolStripMenuItem.Enabled = false;
-
-            // Insert into Tools menu
-            toolsToolStripMenuItem.DropDownItems.Insert(2, scheduleEncodeStartToolStripMenuItem);
-            toolsToolStripMenuItem.DropDownItems.Insert(3, cancelScheduledStartToolStripMenuItem);
-            toolsToolStripMenuItem.DropDownItems.Insert(4, new ToolStripSeparator());
 
             // ─── Exit ────────────────────────────────────────────────────
             exitToolStripMenuItem.Text = "Exit";

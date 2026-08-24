@@ -47,8 +47,6 @@ namespace MediaFlux
         private readonly EncodeQueueRunner _encodeQueueRunner;
         private readonly EncodingDiagnosticsService _encodingDiagnosticsService;
 
-        private DateTime? _encodeScheduledUtc = null;
-        private CancellationTokenSource? _encodeScheduleCts = null;
         private CancellationTokenSource? _encodeCts = null;
         private StringBuilder? _activeJobLogSb;
         private int _encodeFailedCount;
@@ -256,24 +254,35 @@ namespace MediaFlux
             var exitIndex = fileToolStripMenuItem.DropDownItems.IndexOf(exitToolStripMenuItem);
             if (exitIndex < 0)
             {
-                fileToolStripMenuItem.DropDownItems.Add(videoSplitterToolStripMenuItem);
                 fileToolStripMenuItem.DropDownItems.Add(viewErrorLogToolStripMenuItem);
                 fileToolStripMenuItem.DropDownItems.Add(viewDuplicateActionLogToolStripMenuItem);
             }
             else
             {
-                fileToolStripMenuItem.DropDownItems.Insert(exitIndex, videoSplitterToolStripMenuItem);
-                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 1, viewErrorLogToolStripMenuItem);
-                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 2, viewDuplicateActionLogToolStripMenuItem);
-                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 3, new ToolStripSeparator());
+                fileToolStripMenuItem.DropDownItems.Insert(exitIndex, viewErrorLogToolStripMenuItem);
+                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 1, viewDuplicateActionLogToolStripMenuItem);
+                fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 2, new ToolStripSeparator());
             }
+            toolsToolStripMenuItem.DropDownItems.Add(videoSplitterToolStripMenuItem);
             InitializeDvdImportMenu();
+
+            var minimizeToTrayItem = new ToolStripMenuItem("Minimize to System Tray");
+            minimizeToTrayItem.Click += (_, __) => MinimizeToSystemTray();
+            int fileExitIndex = fileToolStripMenuItem.DropDownItems.IndexOf(exitToolStripMenuItem);
+            fileToolStripMenuItem.DropDownItems.Insert(
+                fileExitIndex < 0 ? fileToolStripMenuItem.DropDownItems.Count : fileExitIndex,
+                minimizeToTrayItem);
 
             //History service init
             var historyPath = Path.Combine(AppPaths.DataDirectory, "history.json");
             _historyService = new HistoryService(historyPath);
             _presetService = new EncodingPresetService(
                 Path.Combine(AppPaths.DataDirectory, "encoding_presets.json"));
+            InitializeJobManager();
+            InitializeSystemTray();
+            var jobManagerToolStripMenuItem = new ToolStripMenuItem("Job Manager…");
+            jobManagerToolStripMenuItem.Click += (_, __) => ShowJobManager();
+            toolsToolStripMenuItem.DropDownItems.Add(jobManagerToolStripMenuItem);
 
             // Touch lblResolution so the field is considered "used" by the analyzer
             _ = lblResolution;
@@ -481,7 +490,11 @@ namespace MediaFlux
 
             if (_collapsedQueueStatusLabel != null)
             {
-                _collapsedQueueStatusLabel.Text = displayText;
+                double savings = Math.Max(0, _queueTotalSourceMb - _queueTotalEstimatedMb);
+                string estimates = _queueTotalEstimatedMb > 0 && _queueTotalSourceMb > 0
+                    ? $"Estimated Output: {FormatSize(_queueTotalEstimatedMb)}   |   Est. Savings: {FormatSize(savings)} ({(savings / _queueTotalSourceMb) * 100:0}% saved)"
+                    : "Estimated Output: --   |   Est. Savings: --";
+                _collapsedQueueStatusLabel.Text = $"{displayText}   |   {estimates}";
                 UpdateCollapsedQueueStatusLabelMaximumWidth();
             }
         }
@@ -3289,6 +3302,7 @@ namespace MediaFlux
                 _mediaRemuxCts?.Cancel();
                 DisposeLibraryAnalyzer();
                 _encodingDiagnosticsService.Dispose();
+                DisposeSystemTray();
 
                 lock (_monLock)
                 {
@@ -4351,26 +4365,6 @@ namespace MediaFlux
             }
         }
 
-        private void scheduleEncodeStartToolStripMenuItem_Click(object? sender, EventArgs e)
-        {
-            using var dlg = new ScheduleForm();
-            if (dlg.ShowDialog(this) != DialogResult.OK) return;
-
-            _encodeScheduledUtc = dlg.ScheduledUtc;
-            cancelScheduledStartToolStripMenuItem.Enabled = true;
-
-            var local = _encodeScheduledUtc.Value.ToLocalTime();
-            toolStripStatusLabel1.Text = $"Encode scheduled for {local:g}";
-        }
-
-        private void cancelScheduledStartToolStripMenuItem_Click(object? sender, EventArgs e)
-        {
-            _encodeScheduledUtc = null;
-            _encodeScheduleCts?.Cancel();
-            cancelScheduledStartToolStripMenuItem.Enabled = false;
-            toolStripStatusLabel1.Text = "Scheduled start canceled.";
-        }
-
         // Which extensions count as "video" for drag-drop (fallback if checklist isn't loaded yet)
         private static readonly string[] DefaultVideoExts =
         {
@@ -4432,6 +4426,7 @@ namespace MediaFlux
             toolStripStatusLabel1.Text = on
                 ? (isUpscale ? "Upscaling…" : "Encoding…")
                 : "Ready";
+            UpdateTrayStatus();
 
             // Keep normal cursor
             if (this.Cursor != Cursors.Default)

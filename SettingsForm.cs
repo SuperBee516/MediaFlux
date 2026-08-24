@@ -42,6 +42,7 @@ namespace MediaFlux
         private NumericUpDown nudVisualBulkCleanupConfidence = null!;
         private Label lblVisualBulkCleanupWarning = null!;
         private CheckBox chkSemiAutomaticVisualKeeperApproval = null!;
+        private CheckBox chkMinimizeToSystemTray = null!;
         private NumericUpDown nudVisualMassReviewMaximumMatches = null!;
         private NumericUpDown nudVisualMassReviewMinimumMargin = null!;
         private NumericUpDown nudVisualMassReviewMinimumConfidence = null!;
@@ -82,6 +83,7 @@ namespace MediaFlux
             chkEnableCodecSuffix.Checked = cfg.EnableCodecSuffix;
             chkRememberCheckboxes.Checked = cfg.RememberCheckboxStates;
             chkPreventSleepDuringEncoding.Checked = cfg.PreventSleepDuringEncoding;
+            InitializeSystemTraySettingsControl(cfg);
             chkLimitGpuEncodingQueueToOneJob.Checked = cfg.LimitGpuEncodingQueueToOneJob;
             chkDeleteFailedEncodeOutputs.Checked = cfg.DeleteFailedEncodeOutputs;
             chkDeleteCanceledEncodeOutputs.Checked = cfg.DeleteCanceledEncodeOutputs;
@@ -792,6 +794,7 @@ namespace MediaFlux
             Config.EnableCodecSuffix = chkEnableCodecSuffix.Checked;
             Config.RememberCheckboxStates = chkRememberCheckboxes.Checked;
             Config.PreventSleepDuringEncoding = chkPreventSleepDuringEncoding.Checked;
+            Config.MinimizeToSystemTrayWhenMinimized = chkMinimizeToSystemTray.Checked;
             Config.LimitGpuEncodingQueueToOneJob = chkLimitGpuEncodingQueueToOneJob.Checked;
             Config.DeleteFailedEncodeOutputs = chkDeleteFailedEncodeOutputs.Checked;
             Config.DeleteCanceledEncodeOutputs = chkDeleteCanceledEncodeOutputs.Checked;

@@ -37,6 +37,10 @@ namespace MediaFlux
             menu.Items.Add("Start Selected Files", null, StartSelectedEncodeFilesFromContextMenu_Click);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Add to Encoding Queue", null, AddToEncodeQueueFromContextMenu_Click);
+            var saveAsJob = new ToolStripMenuItem("Save as Job");
+            saveAsJob.DropDownItems.Add("Selected Files…", null, (_, __) => SaveJobFromQueue(selectedOnly: true));
+            saveAsJob.DropDownItems.Add("Entire Queue…", null, (_, __) => SaveJobFromQueue(selectedOnly: false));
+            menu.Items.Add(saveAsJob);
 
             var customSettings = new ToolStripMenuItem("Custom Encode Settings");
             var customProfileMenu = new ToolStripMenuItem("Quality / File Size");
@@ -110,9 +114,6 @@ namespace MediaFlux
             menu.Items.Add("Remux Selected to MKV (Stream Copy)", null, RemuxSelectedToMkv_Click);
             menu.Items.Add("Open Duplicate Manager", null, ShowDuplicateManager_Click);
             menu.Items.Add("Include Selected Exact Duplicate(s) in Encode", null, IncludeSelectedDuplicateRowsInEncode_Click);
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Schedule Start…", null, ScheduleEncode_Click);
-
             dgvEncodeQueue.ContextMenuStrip = menu;
         }
 

@@ -13,8 +13,7 @@ namespace MediaFlux
                 ToolTipText = "Inspect an accessible VIDEO_TS folder and combine a selected DVD title."
             };
             importDvdFolderItem.Click += ImportDvdFolder_Click;
-            fileToolStripMenuItem.DropDownItems.Insert(0, importDvdFolderItem);
-            fileToolStripMenuItem.DropDownItems.Insert(1, new ToolStripSeparator());
+            toolsToolStripMenuItem.DropDownItems.Add(importDvdFolderItem);
         }
 
         private void ImportDvdFolder_Click(object? sender, EventArgs e)

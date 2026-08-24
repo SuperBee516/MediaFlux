@@ -1,0 +1,61 @@
+using System.Text.Json;
+using MediaFlux.Models;
+
+namespace MediaFlux.Services;
+
+public sealed class EncodeJobService
+{
+    private readonly string _path;
+    private readonly JsonSerializerOptions _json = new() { WriteIndented = true };
+    public EncodeJobService(string path) => _path = path;
+
+    public List<EncodeJob> Load()
+    {
+        try
+        {
+            if (!File.Exists(_path)) return new();
+            return JsonSerializer.Deserialize<List<EncodeJob>>(File.ReadAllText(_path), _json) ?? new();
+        }
+        catch (Exception ex)
+        {
+            ErrorLogService.Append(AppPaths.UserDataDirectory, "Load encode jobs failed", _path, ex);
+            return new();
+        }
+    }
+
+    public void Save(IEnumerable<EncodeJob> jobs)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        string temporary = _path + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(jobs, _json));
+        File.Move(temporary, _path, overwrite: true); // same-volume atomic replace
+    }
+
+    public static IReadOnlyList<EncodeJob> Due(IEnumerable<EncodeJob> jobs, DateTime localNow) =>
+        jobs.Where(job => job.Enabled && job.ScheduleType == EncodeJobScheduleType.Once &&
+                          job.ScheduledLocalTime <= localNow && job.Status == EncodeJobStatus.Scheduled)
+            .OrderBy(job => job.ScheduledLocalTime).ToArray();
+
+    public static IReadOnlyList<T> SelectScope<T>(IEnumerable<T> orderedEligible, IEnumerable<T> selected, bool selectedOnly)
+    {
+        var all = orderedEligible.ToArray();
+        if (!selectedOnly) return all;
+        var selectedSet = new HashSet<T>(selected);
+        return all.Where(selectedSet.Contains).ToArray();
+    }
+
+    public static (IReadOnlyList<EncodeJobFile> Available, IReadOnlyList<EncodeJobFile> Missing) SplitAvailableFiles(IEnumerable<EncodeJobFile> files)
+    {
+        var available = new List<EncodeJobFile>(); var missing = new List<EncodeJobFile>();
+        foreach (var file in files) (File.Exists(file.SourcePath) ? available : missing).Add(file);
+        return (available, missing);
+    }
+
+    public static void RefreshStatus(EncodeJob job)
+    {
+        if (!job.Enabled) job.Status = EncodeJobStatus.Disabled;
+        else if (job.ScheduleType == EncodeJobScheduleType.Once && job.Status is EncodeJobStatus.Ready or EncodeJobStatus.Scheduled)
+            job.Status = EncodeJobStatus.Scheduled;
+        else if (job.Status == EncodeJobStatus.Disabled) job.Status = EncodeJobStatus.Ready;
+    }
+}

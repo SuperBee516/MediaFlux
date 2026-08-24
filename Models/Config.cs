@@ -58,6 +58,7 @@ namespace MediaFlux.Models
 
         public bool RememberCheckboxStates { get; set; } = true;
         public bool PreventSleepDuringEncoding { get; set; } = false;
+        public bool MinimizeToSystemTrayWhenMinimized { get; set; } = false;
         public bool LimitGpuEncodingQueueToOneJob { get; set; } = false;
         public bool DeleteFailedEncodeOutputs { get; set; } = false;
         public bool DeleteCanceledEncodeOutputs { get; set; } = false;

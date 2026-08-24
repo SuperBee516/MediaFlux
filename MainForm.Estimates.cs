@@ -589,6 +589,8 @@ namespace MediaFlux
                     : "--";
             }
 
+            UpdateRelocatedEncodeStatus(lblEncodeStatus?.Text);
+
             UpdateSelectedSpaceTotals();
             UpdateEncodePreview();
         }

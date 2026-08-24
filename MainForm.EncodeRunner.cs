@@ -137,33 +137,6 @@ namespace MediaFlux
             _encodeCts = new CancellationTokenSource();
             var encodeToken = _encodeCts.Token;
 
-            // Handle "start at scheduled time" if set
-            if (_encodeScheduledUtc.HasValue)
-            {
-                var wait = _encodeScheduledUtc.Value - DateTime.UtcNow;
-                if (wait > TimeSpan.Zero)
-                {
-                    toolStripStatusLabel1.Text =
-                        $"Waiting until {_encodeScheduledUtc.Value.ToLocalTime():g}…";
-
-                    _encodeScheduleCts = new CancellationTokenSource();
-                    try
-                    {
-                        await Task.Delay(wait, _encodeScheduleCts.Token);
-                    }
-                    catch (TaskCanceledException)
-                    {
-                        // user cancelled the scheduled start
-                    }
-                }
-
-                _encodeScheduledUtc = null;
-                cancelScheduledStartToolStripMenuItem.Enabled = false;
-
-                // after waiting, switch back to encoding status
-                SetStatusEncoding(true);
-            }
-
             var queueStartedUtc = DateTime.UtcNow;
 
             // Snapshot the requested rows before a possible scheduled wait. An explicit
@@ -377,42 +350,6 @@ namespace MediaFlux
             toolStripStatusLabel1.Text = _encodeQueuePaused
                 ? "Encode queue paused."
                 : "Encode queue resumed.";
-        }
-
-        private async void ScheduleEncode_Click(object? sender, EventArgs e)
-        {
-            if (dgvEncodeQueue.Rows.Count == 0)
-            {
-                ShowStatusInfo("Add files before scheduling an encode.");
-                return;
-            }
-
-            using var dlg = new ScheduleForm();
-            if (dlg.ShowDialog(this) != DialogResult.OK) return;
-
-            var runAtUtc = dlg.ScheduledUtc;
-            var delay = runAtUtc - DateTime.UtcNow;
-            if (delay <= TimeSpan.Zero) delay = TimeSpan.Zero;
-
-            _encodeScheduleCts?.Cancel();
-            _encodeScheduleCts = new CancellationTokenSource();
-            var token = _encodeScheduleCts.Token;
-
-            toolStripStatusLabel1.Text = $"Encode scheduled for {runAtUtc.ToLocalTime():g}";
-
-            try
-            {
-                await Task.Delay(delay, token);
-                if (token.IsCancellationRequested) return;
-
-                // fire the same path your Start button uses
-                btnStartEncode.PerformClick();
-                toolStripStatusLabel1.Text = "Scheduled encode started.";
-            }
-            catch (TaskCanceledException)
-            {
-                toolStripStatusLabel1.Text = "Scheduled encode canceled.";
-            }
         }
 
         private async Task EncodeSingleRow(DataGridViewRow row, CancellationToken cancellationToken)
@@ -708,6 +645,7 @@ namespace MediaFlux
             _runningEncodeJobs[row] = isDvdEncode
                 ? dvdOptions!.OutputPath
                 : file;
+            UpdateTrayStatus();
             string attemptedOutputPath = string.Empty;
             string stagedOutputPath = string.Empty;
             OutputContainerDecision? appliedContainerDecision = null;
@@ -1211,6 +1149,7 @@ namespace MediaFlux
                 if (diagnosticStarted && diagnosticSummary == null)
                     _encodingDiagnosticsService.Cancel(meta.StatisticsOperationId);
                 _runningEncodeJobs.TryRemove(row, out _);
+                UpdateTrayStatus();
                 if (ReferenceEquals(_activeJobLogSb, jobLog))
                     _activeJobLogSb = null; // stop log capture for this job
                 Ui(() =>
