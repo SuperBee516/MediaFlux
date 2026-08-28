@@ -264,6 +264,7 @@ namespace MediaFlux
                 fileToolStripMenuItem.DropDownItems.Insert(exitIndex + 2, new ToolStripSeparator());
             }
             toolsToolStripMenuItem.DropDownItems.Add(videoSplitterToolStripMenuItem);
+            InitializeCommercialDetectorMenu();
             InitializeDvdImportMenu();
 
             var minimizeToTrayItem = new ToolStripMenuItem("Minimize to System Tray");

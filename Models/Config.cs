@@ -154,6 +154,14 @@ namespace MediaFlux.Models
         public int VideoSplitterTimelineDetailsSplitterDistance { get; set; } = 0;
         public int VideoSplitterBoundarySegmentsSplitterDistance { get; set; } = 0;
         public int VideoSplitterSegmentsOutputSplitterDistance { get; set; } = 0;
+        public int CommercialDetectorWindowX { get; set; } = int.MinValue;
+        public int CommercialDetectorWindowY { get; set; } = int.MinValue;
+        public int CommercialDetectorWindowWidth { get; set; } = 0;
+        public int CommercialDetectorWindowHeight { get; set; } = 0;
+        public int CommercialDetectorPreviewSplitterDistance { get; set; } = 0;
+        public int CommercialDetectorWorkspaceSplitterDistance { get; set; } = 0;
+        public bool CommercialDetectorAdvancedExpanded { get; set; } = false;
+        public CommercialDetectorPreferences CommercialDetectorPreferences { get; set; } = new();
         public bool MainWindowMaximized { get; set; } = false;
         public bool EncodeInfoHeaderCollapsed { get; set; } = false;
         // Zero preserves the application's default Summary / Preview height.
@@ -184,6 +192,7 @@ namespace MediaFlux.Models
             var config = JsonSerializer.Deserialize<Config>(json) ?? new Config();
 
             config.CheckboxStates ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            config.CommercialDetectorPreferences ??= new CommercialDetectorPreferences();
             config.EnabledVideoExtensions ??= new List<string>();
             if (config.LargeQueueThreshold < 1)
                 config.LargeQueueThreshold = 300;

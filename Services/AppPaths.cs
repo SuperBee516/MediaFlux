@@ -23,6 +23,7 @@ namespace MediaFlux.Services
         public static string LibraryPolicyFile => Path.Combine(DataDirectory, "library-policies.json");
         public static string StorageReclamationPlanFile => Path.Combine(DataDirectory, "storage-reclamation-plan.json");
         public static string EncodeJobsFile => Path.Combine(DataDirectory, "encode-jobs.json");
+        public static string CommercialDetectorAnalysisFile => Path.Combine(DataDirectory, "commercial-detector-analysis.json");
         public static string TempDirectory => Path.Combine(UserDataDirectory, "temp");
         public static string ConfigFile => Path.Combine(UserDataDirectory, "config.json");
         public static string BackupDirectory => Path.Combine(RootDirectory, "Backups");

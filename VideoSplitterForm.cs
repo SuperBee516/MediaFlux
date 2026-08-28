@@ -1064,26 +1064,9 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
 
     private async Task<Image?> CreateBoundaryPreviewAsync(string sourcePath, double seconds, string boundary, CancellationToken token)
     {
-        FfmpegToolPaths tools = FfmpegToolResolver.Resolve(AppPaths.InstallDirectory, _config.FfmpegPath, _config.FfprobePath);
-        if (!tools.HasFfmpeg) return null;
-        string directory = Path.Combine(AppPaths.DataDirectory, "video-splitter-previews");
-        Directory.CreateDirectory(directory);
-        string imagePath = Path.Combine(directory, $"{Guid.NewGuid():N}-{boundary}.jpg");
-        double frameInterval = _sourceFrameRate > 0 ? 1d / _sourceFrameRate : 1d / 30d;
-        double previewSeconds = Math.Clamp(seconds, 0, Math.Max(0, _durationSeconds - frameInterval));
-        try
-        {
-            var result = await new MediaToolProcessRunner().RunAsync(new MediaToolProcessRequest
-            {
-                FileName = tools.FfmpegPath,
-                Arguments = new[] { "-hide_banner", "-loglevel", "error", "-ss", previewSeconds.ToString("0.###", CultureInfo.InvariantCulture), "-i", sourcePath, "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "3", "-y", imagePath },
-                Timeout = TimeSpan.FromSeconds(30)
-            }, token);
-            if (result.ExitCode != 0 || !File.Exists(imagePath)) return null;
-            using var image = Image.FromFile(imagePath);
-            return new Bitmap(image);
-        }
-        finally { try { if (File.Exists(imagePath)) File.Delete(imagePath); } catch { } }
+        _ = boundary;
+        return await new VideoFramePreviewService(AppPaths.InstallDirectory, _config.FfmpegPath)
+            .ExtractAsync(sourcePath, seconds, _durationSeconds, _sourceFrameRate, 320, token);
     }
 
     private async Task UpdateKeyframeAwarenessAsync(string sourcePath, double start, double end, CancellationToken token)
