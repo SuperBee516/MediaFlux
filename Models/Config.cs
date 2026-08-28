@@ -160,6 +160,7 @@ namespace MediaFlux.Models
         public int CommercialDetectorWindowHeight { get; set; } = 0;
         public int CommercialDetectorPreviewSplitterDistance { get; set; } = 0;
         public int CommercialDetectorWorkspaceSplitterDistance { get; set; } = 0;
+        public int CommercialDetectorSourceWorkspaceSplitterDistance { get; set; } = 0;
         public bool CommercialDetectorAdvancedExpanded { get; set; } = false;
         public CommercialDetectorPreferences CommercialDetectorPreferences { get; set; } = new();
         public bool MainWindowMaximized { get; set; } = false;

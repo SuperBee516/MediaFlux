@@ -47,7 +47,7 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
     private readonly Button _analyze = new() { Name = "CommercialAnalyzeButton", Text = "Analyze Video", AutoSize = true };
     private readonly Button _cancel = new() { Name = "CommercialCancelButton", Text = "Cancel", AutoSize = true };
     private readonly Button _advancedToggle = new() { Name = "CommercialAdvancedToggle", AutoSize = true };
-    private readonly Panel _advancedHost = new() { Name = "CommercialAdvancedSettings", Dock = DockStyle.Fill, AutoSize = true };
+    private readonly Panel _advancedHost = new() { Name = "CommercialAdvancedSettings", Dock = DockStyle.Top, AutoSize = true };
     private readonly CheckBox _blackEnabled = Check("Black / Fade");
     private readonly NumericUpDown _blackDuration = Number(.01M, 10, .15M, 2, .05M);
     private readonly NumericUpDown _blackThreshold = Number(1, 100, 10, 0, 1);
@@ -96,6 +96,7 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
     private readonly Label _exportDetails = ValueLabel("Analyze the source to enable export.");
     private readonly SplitContainer _previewSplit = Split("CommercialPreviewSplitter", Orientation.Vertical);
     private readonly SplitContainer _workspaceSplit = Split("CommercialWorkspaceSplitter", Orientation.Horizontal);
+    private readonly SplitContainer _sourceWorkspaceSplit = Split("CommercialSourceWorkspaceSplitter", Orientation.Horizontal);
     private CommercialDetectionPreset _basePreset = CommercialDetectionPreset.Standard;
     private CommercialDetectorViewState _viewState;
     private bool _applyingSettings;
@@ -149,20 +150,42 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
 
     private void BuildLayout()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(14), BackColor = BackColor };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(14), BackColor = BackColor };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.Controls.Add(BuildHeader(), 0, 0);
-        root.Controls.Add(BuildSourceCard(), 0, 1);
-        root.Controls.Add(_advancedHost, 0, 2);
-        root.Controls.Add(BuildProgressRow(), 0, 3);
-        root.Controls.Add(_summary, 0, 4);
-        root.Controls.Add(BuildWorkspace(), 0, 5);
+        root.Controls.Add(BuildSourceWorkspace(), 0, 1);
         Controls.Add(root);
+    }
+
+    private Control BuildSourceWorkspace()
+    {
+        var sourceContent = new TableLayoutPanel
+        {
+            Name = "CommercialSourceAnalysisContent",
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            RowCount = 4,
+            Margin = Padding.Empty
+        };
+        sourceContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        sourceContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        sourceContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        sourceContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        sourceContent.Controls.Add(BuildSourceCard(), 0, 0);
+        sourceContent.Controls.Add(_advancedHost, 0, 1);
+        sourceContent.Controls.Add(BuildProgressRow(), 0, 2);
+        _summary.Margin = new Padding(0, 0, 0, 6);
+        sourceContent.Controls.Add(_summary, 0, 3);
+
+        _sourceWorkspaceSplit.Panel1.AutoScroll = true;
+        _sourceWorkspaceSplit.Panel1.Padding = new Padding(0, 0, 0, 6);
+        _sourceWorkspaceSplit.Panel2.Padding = new Padding(0, 6, 0, 0);
+        _sourceWorkspaceSplit.Panel1.Controls.Add(sourceContent);
+        _sourceWorkspaceSplit.Panel2.Controls.Add(BuildWorkspace());
+        return _sourceWorkspaceSplit;
     }
 
     private Control BuildHeader()
@@ -888,6 +911,7 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e); if (_config.CommercialDetectorWindowX != int.MinValue && _config.CommercialDetectorWindowY != int.MinValue) Location = new Point(_config.CommercialDetectorWindowX, _config.CommercialDetectorWindowY);
+        ConfigureSplitter(_sourceWorkspaceSplit, 180, 360, _config.CommercialDetectorSourceWorkspaceSplitterDistance, 205);
         ConfigureSplitter(_previewSplit, 380, 420, _config.CommercialDetectorPreviewSplitterDistance, Math.Max(380, _previewSplit.Width / 2)); ConfigureSplitter(_workspaceSplit, 330, 170, _config.CommercialDetectorWorkspaceSplitterDistance, Math.Max(330, _workspaceSplit.Height / 2));
         try { _playerHost.CreateControl(); dynamic player = _playerHost.Player; player.uiMode = "none"; player.stretchToFit = false; player.enableContextMenu = false; }
         catch (Exception ex) { ErrorLogService.Append(Application.StartupPath, "Initialize Commercial Detector preview failed", exception: ex); _status.Text = "Preview is unavailable on this computer; analysis remains available."; }
@@ -904,6 +928,7 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
         }
         _lifetimeCts.Cancel(); CancelOperation(); _framePreviewCts?.Cancel(); _playbackTimer.Stop(); try { ((dynamic)_playerHost.Player).close(); } catch { }
         if (WindowState == FormWindowState.Normal) { _config.CommercialDetectorWindowX = Left; _config.CommercialDetectorWindowY = Top; _config.CommercialDetectorWindowWidth = Width; _config.CommercialDetectorWindowHeight = Height; }
+        _config.CommercialDetectorSourceWorkspaceSplitterDistance = _sourceWorkspaceSplit.SplitterDistance;
         _config.CommercialDetectorPreviewSplitterDistance = _previewSplit.SplitterDistance; _config.CommercialDetectorWorkspaceSplitterDistance = _workspaceSplit.SplitterDistance;
         CapturePreferences();
         try { _config.Save(_configPath); } catch (Exception ex) { ErrorLogService.Append(Application.StartupPath, "Save Commercial Detector window state failed", exception: ex); }

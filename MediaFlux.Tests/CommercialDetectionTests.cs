@@ -191,6 +191,11 @@ public sealed class CommercialDetectionTests
                 foreach (Size size in new[] { form.MinimumSize, new Size(1280, 860), new Size(1500, 980) })
                 {
                     form.Size = size; form.Show(); Application.DoEvents();
+                    SplitContainer sourceWorkspace = (SplitContainer)form.Controls.Find("CommercialSourceWorkspaceSplitter", true).Single();
+                    Assert.True(sourceWorkspace.Panel1.AutoScroll);
+                    Assert.True(sourceWorkspace.Panel1MinSize >= 180);
+                    Assert.True(sourceWorkspace.Panel2MinSize >= 360);
+                    Assert.InRange(sourceWorkspace.SplitterDistance, sourceWorkspace.Panel1MinSize, sourceWorkspace.Height - sourceWorkspace.SplitterWidth - sourceWorkspace.Panel2MinSize);
                     if (!form.Controls.Find("CommercialAdvancedSettings", true).Single().Visible)
                     {
                         ((Button)form.Controls.Find("CommercialAdvancedToggle", true).Single()).PerformClick();
@@ -421,6 +426,7 @@ public sealed class CommercialDetectorPersistenceTests
             var config = new Config
             {
                 CommercialDetectorAdvancedExpanded = true,
+                CommercialDetectorSourceWorkspaceSplitterDistance = 245,
                 CommercialDetectorPreferences = new CommercialDetectorPreferences
                 {
                     DetectionPreset = nameof(CommercialDetectionPreset.Aggressive),
@@ -433,6 +439,7 @@ public sealed class CommercialDetectorPersistenceTests
             Config restored = Config.Load(path);
 
             Assert.True(restored.CommercialDetectorAdvancedExpanded);
+            Assert.Equal(245, restored.CommercialDetectorSourceWorkspaceSplitterDistance);
             Assert.Equal(nameof(CommercialDetectionPreset.Aggressive), restored.CommercialDetectorPreferences.DetectionPreset);
             Assert.Equal(1, restored.CommercialDetectorPreferences.ExportModeIndex);
             Assert.Equal("{source}_Spot_{index:000}", restored.CommercialDetectorPreferences.FilenameTemplate);
