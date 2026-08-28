@@ -126,6 +126,49 @@ public sealed class VideoSplitterFoundationTests : IDisposable
     }
 
     [Theory]
+    [InlineData(VideoSplitterSplitKeep.BothSides, 2, 0, 12.5, 12.5, 50)]
+    [InlineData(VideoSplitterSplitKeep.BeforeNow, 1, 0, 12.5, 0, 0)]
+    [InlineData(VideoSplitterSplitKeep.AfterNow, 1, 12.5, 50, 0, 0)]
+    public void SplitKeepSelectorCreatesOnlyRequestedRanges(VideoSplitterSplitKeep keep, int count, double firstStart, double firstEnd, double secondStart, double secondEnd)
+    {
+        Assert.True(VideoSplitterForm.TryCreateSplitSegments("movie.mkv", 12.5, 50, keep, out VideoSplitterSegment[] segments, out _));
+
+        Assert.Equal(count, segments.Length);
+        Assert.Equal(firstStart, segments[0].StartSeconds);
+        Assert.Equal(firstEnd, segments[0].EndSeconds);
+        if (count == 2)
+        {
+            Assert.Equal(secondStart, segments[1].StartSeconds);
+            Assert.Equal(secondEnd, segments[1].EndSeconds);
+        }
+    }
+
+    [Theory]
+    [InlineData(VideoSplitterSplitKeep.BothSides, 0)]
+    [InlineData(VideoSplitterSplitKeep.BeforeNow, 0.0005)]
+    [InlineData(VideoSplitterSplitKeep.AfterNow, 49.9995)]
+    public void SplitKeepSelectorRejectsNearBoundaryZeroLengthRanges(VideoSplitterSplitKeep keep, double position)
+    {
+        Assert.False(VideoSplitterForm.TryCreateSplitSegments("movie.mkv", position, 50, keep, out _, out string error));
+        Assert.Contains("after", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PreviewSeekBeforeFirstPlaybackWaitsForASeekablePlayerAndUsesCurrentPosition()
+    {
+        var previewSeek = new PreviewSeekCoordinator();
+        previewSeek.Request(0);
+        previewSeek.Request(14.25);
+
+        Assert.True(previewSeek.TryGet(out double position));
+        Assert.Equal(14.25, position);
+        Assert.False(PreviewSeekCoordinator.CanSeek(9));
+        Assert.True(PreviewSeekCoordinator.CanSeek(10));
+        previewSeek.Complete();
+        Assert.False(previewSeek.TryGet(out _));
+    }
+
+    [Theory]
     [InlineData(640)]
     [InlineData(1200)]
     public void TimelineMapsFullDurationToItsVisibleClientRectangle(int width)
@@ -196,7 +239,7 @@ public sealed class VideoSplitterFoundationTests : IDisposable
                     foreach (string name in new[]
                     {
                         "SetInButton", "SetOutButton", "AddSegmentButton", "UpdateSegmentButton", "RemoveSegmentButton",
-                        "ClearSegmentsButton", "PreviewSelectionButton", "SplitAtCurrentPositionButton", "SplitterOutputFolder",
+                        "ClearSegmentsButton", "PreviewSelectionButton", "SplitKeepSelector", "SplitAtCurrentPositionButton", "SplitterOutputFolder",
                         "SplitterProcessingMode", "SplitterPlayOutput", "SplitterExportButton", "SplitterCancelExportButton", "SplitterOpenOutputButton"
                     })
                     {

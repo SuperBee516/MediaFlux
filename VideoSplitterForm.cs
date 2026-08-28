@@ -38,6 +38,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     private readonly Button _setOutButton = CreateUiButton("Set OUT", "SetOutButton");
     private readonly Button _addSegmentButton = CreateUiButton("Add Segment", "AddSegmentButton");
     private readonly Button _splitAtPositionButton = CreateUiButton("Split at Current Position", "SplitAtCurrentPositionButton");
+    private readonly ComboBox _splitKeep = new() { Name = "SplitKeepSelector", DropDownStyle = ComboBoxStyle.DropDownList, Width = 104 };
     private readonly Button _updateSegmentButton = CreateUiButton("Update Segment", "UpdateSegmentButton");
     private readonly Button _removeSegmentButton = CreateUiButton("Remove", "RemoveSegmentButton");
     private readonly Button _clearSegmentsButton = CreateUiButton("Clear", "ClearSegmentsButton");
@@ -72,6 +73,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     private bool _isPlaying;
     private bool _playbackRequested;
     private double _confirmedPlaybackPosition;
+    private readonly PreviewSeekCoordinator _previewSeek = new();
     private SplitContainer? _mediaEditorSplit;
     private SplitContainer? _timelineDetailsSplit;
     private SplitContainer? _boundarySegmentsSplit;
@@ -96,6 +98,8 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         BuildLayout();
         _processingMode.Items.AddRange(new object[] { "Fast / Lossless — Stream Copy", "Accurate Cut — Re-encode" });
         _processingMode.SelectedIndex = 0;
+        _splitKeep.Items.AddRange(new object[] { "Both sides", "Before NOW", "After NOW" });
+        _splitKeep.SelectedIndex = 0;
         foreach (string folder in _config.LastOutputFolders.Where(Directory.Exists)) _outputFolder.Items.Add(folder);
         _timeline.PositionChanged += (_, seconds) => SeekTo(seconds);
         _timeline.RangeChanged += (_, _) => { UpdateTimestampText(); ScheduleBoundaryPreviews(); };
@@ -255,12 +259,16 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         _rangeStateLabel.Dock = DockStyle.Fill;
         _rangeStateLabel.AutoEllipsis = true;
         rangeRow.Controls.Add(_rangeStateLabel, 0, 0);
-        rangeRow.Controls.Add(_splitAtPositionButton, 1, 0);
+        var splitActions = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+        splitActions.Controls.Add(new Label { Text = "Keep:", AutoSize = true, Margin = new Padding(0, 7, 3, 0) });
+        splitActions.Controls.Add(_splitKeep);
+        splitActions.Controls.Add(_splitAtPositionButton);
+        rangeRow.Controls.Add(splitActions, 1, 0);
         card.Controls.Add(rangeRow, 0, 3);
         _toolTip.SetToolTip(_setInButton, "Set the green IN marker to the current blue playhead (I).");
         _toolTip.SetToolTip(_setOutButton, "Set the red OUT marker to the current blue playhead (O).");
         _toolTip.SetToolTip(_timeline, "NOW (blue) is playback position; IN (green) and OUT (red) define the selected range.");
-        _toolTip.SetToolTip(_splitAtPositionButton, "Add two segments divided at the current blue NOW playhead; existing segments are retained.");
+        _toolTip.SetToolTip(_splitAtPositionButton, "Add the requested side(s) divided at the current blue NOW playhead; existing segments are retained.");
         return card;
     }
 
@@ -483,6 +491,9 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
             player.settings.mute = false;
             player.URL = path;
             _playbackRequested = false;
+            // WMP does not paint the first frame until it receives a seek after the
+            // media becomes ready. Keep the request until that state is reached.
+            _previewSeek.Request(_timeline.PositionSeconds);
             SetPlaybackState(false);
             _playbackTimer.Start();
         }
@@ -545,6 +556,8 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
             else if (state is 1 or 2 or 8 or 10) _playbackRequested = false;
             SetPlaybackState(state == 3 || (_playbackRequested && state is 6 or 9 or 11));
             double position = Convert.ToDouble(player.controls.currentPosition, CultureInfo.InvariantCulture);
+            if (TryApplyPendingPreviewSeek(player, state, out double requestedPosition))
+                position = requestedPosition;
             if ((_previewSelectionOnly && position >= _selectionPreviewEnd) || position >= _durationSeconds - 0.05)
             {
                 try { player.controls.pause(); } catch { }
@@ -565,22 +578,51 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         catch { SetPlaybackState(false); }
     }
 
-    private void SeekTo(double seconds)
+    private void SeekTo(double seconds, bool applyImmediately = false)
     {
         if (_sourcePath == null) return;
         seconds = Math.Clamp(seconds, 0, _durationSeconds);
+        // Timeline drags can produce many events. The 100 ms playback timer
+        // coalesces them into WMP seeks while the timeline itself remains instant.
+        _previewSeek.Request(seconds);
+        _confirmedPlaybackPosition = seconds;
+        _timeline.PositionSeconds = seconds;
+        if (applyImmediately) TryApplyPendingPreviewSeekImmediately();
+        UpdateTimestampText();
+    }
+
+    private void TryApplyPendingPreviewSeekImmediately()
+    {
+        if (!_previewSeek.TryGet(out double position)) return;
         try
         {
-            ((dynamic)_playerHost.Player).controls.currentPosition = seconds;
-            _confirmedPlaybackPosition = seconds;
-            _timeline.PositionSeconds = seconds;
+            ((dynamic)_playerHost.Player).controls.currentPosition = position;
+            _previewSeek.Complete();
         }
         catch
         {
-            _timeline.PositionSeconds = _confirmedPlaybackPosition;
+            _previewSeek.Complete();
             _statusLabel.Text = "The preview player could not seek to that position.";
         }
-        UpdateTimestampText();
+    }
+
+    private bool TryApplyPendingPreviewSeek(dynamic player, int state, out double position)
+    {
+        position = 0;
+        if (!_previewSeek.TryGet(out position) || !PreviewSeekCoordinator.CanSeek(state)) return false;
+        try
+        {
+            player.controls.currentPosition = position;
+            _previewSeek.Complete();
+            _confirmedPlaybackPosition = position;
+            return true;
+        }
+        catch
+        {
+            _previewSeek.Complete();
+            _statusLabel.Text = "The preview player could not seek to that position.";
+            return false;
+        }
     }
 
     private void SeekRelative(double seconds) => SeekTo(_timeline.PositionSeconds + seconds);
@@ -736,38 +778,52 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
     {
         if (_sourcePath == null) { ShowSegmentError("Load a source video before splitting it."); return; }
         double splitSeconds = _timeline.PositionSeconds;
-        if (!TryCreateSplitSegments(_sourcePath, splitSeconds, _durationSeconds, out VideoSplitterSegment[] segments, out string error))
+        VideoSplitterSplitKeep keep = (VideoSplitterSplitKeep)_splitKeep.SelectedIndex;
+        if (!TryCreateSplitSegments(_sourcePath, splitSeconds, _durationSeconds, keep, out VideoSplitterSegment[] segments, out string error))
         {
             ShowSegmentError(error);
             return;
         }
         int firstIndex = _segments.Count;
         int firstNumber = NextSegmentNumber();
-        string firstName = VideoSplitterSegmentRules.CreateUniqueOutputFileName(_sourcePath, firstNumber, CurrentOutputFolder(), _segments.Select(segment => segment.OutputFileName));
-        string secondName = VideoSplitterSegmentRules.CreateUniqueOutputFileName(_sourcePath, firstNumber + 1, CurrentOutputFolder(), _segments.Select(segment => segment.OutputFileName).Append(firstName));
-        segments[0] = segments[0] with { Number = firstNumber, OutputFileName = firstName };
-        segments[1] = segments[1] with { Number = firstNumber + 1, OutputFileName = secondName };
+        IEnumerable<string> reserved = _segments.Select(segment => segment.OutputFileName);
+        for (int index = 0; index < segments.Length; index++)
+        {
+            int number = firstNumber + index;
+            string name = VideoSplitterSegmentRules.CreateUniqueOutputFileName(_sourcePath, number, CurrentOutputFolder(), reserved);
+            segments[index] = segments[index] with { Number = number, OutputFileName = name };
+            reserved = reserved.Append(name);
+        }
         _segments.AddRange(segments);
         _timeline.InSeconds = segments[0].StartSeconds;
         _timeline.OutSeconds = segments[0].EndSeconds;
         RefreshSegmentsGrid(firstIndex);
         SeekTo(splitSeconds);
-        _statusLabel.Text = $"Added two split parts at {FormatTime(splitSeconds)}. Existing segments were retained.";
+        _statusLabel.Text = $"Added {segments.Length} split part{(segments.Length == 1 ? "" : "s")} at {FormatTime(splitSeconds)}. Existing segments were retained.";
     }
 
     internal static bool TryCreateSplitSegments(string sourcePath, double splitSeconds, double durationSeconds, out VideoSplitterSegment[] segments, out string error)
+        => TryCreateSplitSegments(sourcePath, splitSeconds, durationSeconds, VideoSplitterSplitKeep.BothSides, out segments, out error);
+
+    internal static bool TryCreateSplitSegments(string sourcePath, double splitSeconds, double durationSeconds, VideoSplitterSplitKeep keep, out VideoSplitterSegment[] segments, out string error)
     {
         segments = Array.Empty<VideoSplitterSegment>();
         if (durationSeconds <= 0) { error = "The source duration is not available."; return false; }
-        if (splitSeconds <= 0 || splitSeconds >= durationSeconds)
+        const double minimumSegmentSeconds = 0.001;
+        if (splitSeconds <= minimumSegmentSeconds || splitSeconds >= durationSeconds - minimumSegmentSeconds)
         {
             error = "Choose a split point after the first frame and before the end of the video.";
             return false;
         }
-        segments = new[]
+        segments = keep switch
         {
-            new VideoSplitterSegment(1, 0, splitSeconds, VideoSplitterSegmentRules.CreateOutputFileName(sourcePath, 1)),
-            new VideoSplitterSegment(2, splitSeconds, durationSeconds, VideoSplitterSegmentRules.CreateOutputFileName(sourcePath, 2))
+            VideoSplitterSplitKeep.BeforeNow => new[] { new VideoSplitterSegment(1, 0, splitSeconds, VideoSplitterSegmentRules.CreateOutputFileName(sourcePath, 1)) },
+            VideoSplitterSplitKeep.AfterNow => new[] { new VideoSplitterSegment(1, splitSeconds, durationSeconds, VideoSplitterSegmentRules.CreateOutputFileName(sourcePath, 1)) },
+            _ => new[]
+            {
+                new VideoSplitterSegment(1, 0, splitSeconds, VideoSplitterSegmentRules.CreateOutputFileName(sourcePath, 1)),
+                new VideoSplitterSegment(2, splitSeconds, durationSeconds, VideoSplitterSegmentRules.CreateOutputFileName(sourcePath, 2))
+            }
         };
         error = string.Empty;
         return true;
@@ -789,7 +845,7 @@ internal sealed partial class VideoSplitterForm : MediaFluxForm
         if (!TryCurrentRange(out string error)) { ShowSegmentError(error); return; }
         _previewSelectionOnly = true;
         _selectionPreviewEnd = _timeline.OutSeconds;
-        SeekTo(_timeline.InSeconds);
+        SeekTo(_timeline.InSeconds, applyImmediately: true);
         try { StartPlayback((dynamic)_playerHost.Player); }
         catch (Exception ex)
         {
@@ -1246,6 +1302,29 @@ internal sealed class OutputConflictDialog : MediaFluxForm
         using var dialog = new OutputConflictDialog(paths);
         return dialog.ShowDialog(owner) == DialogResult.OK ? dialog._choice : OutputConflictChoice.Cancel;
     }
+}
+
+public enum VideoSplitterSplitKeep
+{
+    BothSides,
+    BeforeNow,
+    AfterNow
+}
+
+internal sealed class PreviewSeekCoordinator
+{
+    private double? _pendingPosition;
+
+    public void Request(double position) => _pendingPosition = position;
+    public bool TryGet(out double position)
+    {
+        position = _pendingPosition ?? 0;
+        return _pendingPosition.HasValue;
+    }
+    public void Complete() => _pendingPosition = null;
+
+    // WMP's ready, stopped, paused, and playing states all accept a preview seek.
+    public static bool CanSeek(int playState) => playState is 1 or 2 or 3 or 10;
 }
 
 internal sealed class WindowsMediaPlayerHost : AxHost

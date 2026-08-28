@@ -38,6 +38,18 @@ public sealed class VideoSplitterExportServiceTests : IDisposable
     }
 
     [Fact]
+    public void AccurateCutWebmCommandUsesWebmCompatibleVideoAndAudioCodecs()
+    {
+        IReadOnlyList<string> args = VideoSplitterExportService.BuildAccurateReencodeArguments("in.webm", "out.webm", 3, 4, "hevc_nvenc", "p5", 22);
+
+        Assert.Contains("libvpx-vp9", args);
+        Assert.Contains("libopus", args);
+        Assert.DoesNotContain("hevc_nvenc", args);
+        Assert.DoesNotContain("aac", args);
+        Assert.Contains("-b:v", args);
+    }
+
+    [Fact]
     public void AccurateCutMapsMjpegAttachedArtworkByCopyAndOnlyEncodesPlayableVideo()
     {
         MediaProbeResult source = SourceWithArtwork();

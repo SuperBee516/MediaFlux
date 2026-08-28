@@ -222,14 +222,18 @@ public sealed class VideoSplitterExportService
 
     internal static IReadOnlyList<string> BuildAccurateReencodeArguments(string source, string staging, double start, double duration, string encoder, string preset, int quality, StreamMappingPlan mapping)
     {
-        string selectedEncoder = string.IsNullOrWhiteSpace(encoder) ? "libx264" : encoder;
+        bool webmOutput = Path.GetExtension(staging).Equals(".webm", StringComparison.OrdinalIgnoreCase);
+        // WebM cannot mux the normal H.264/HEVC plus AAC Accurate Cut defaults.
+        // Keep the configured encoder unchanged for every other output container.
+        string selectedEncoder = webmOutput ? "libvpx-vp9" : string.IsNullOrWhiteSpace(encoder) ? "libx264" : encoder;
         var args = new List<string> { "-hide_banner", "-y", "-progress", "pipe:1", "-nostats", "-i", source, "-ss", F(start), "-t", F(duration) };
         AddVideoMaps(args, mapping);
         args.AddRange(new[] { "-map", "0:a?", "-map", "0:s?", "-c:v", selectedEncoder });
-        if (selectedEncoder.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase)) args.AddRange(new[] { "-preset", string.IsNullOrWhiteSpace(preset) ? "p5" : preset, "-rc", "vbr", "-cq", Math.Clamp(quality, 0, 51).ToString(CultureInfo.InvariantCulture), "-b:v", "0" });
+        if (webmOutput) args.AddRange(new[] { "-crf", Math.Clamp(quality, 0, 51).ToString(CultureInfo.InvariantCulture), "-b:v", "0" });
+        else if (selectedEncoder.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase)) args.AddRange(new[] { "-preset", string.IsNullOrWhiteSpace(preset) ? "p5" : preset, "-rc", "vbr", "-cq", Math.Clamp(quality, 0, 51).ToString(CultureInfo.InvariantCulture), "-b:v", "0" });
         else if (selectedEncoder.EndsWith("_qsv", StringComparison.OrdinalIgnoreCase)) args.AddRange(new[] { "-preset", string.IsNullOrWhiteSpace(preset) ? "medium" : preset, "-global_quality", Math.Clamp(quality, 0, 51).ToString(CultureInfo.InvariantCulture) });
         else args.AddRange(new[] { "-preset", string.IsNullOrWhiteSpace(preset) ? "medium" : preset, "-crf", Math.Clamp(quality, 0, 51).ToString(CultureInfo.InvariantCulture) });
-        args.AddRange(new[] { "-c:a", "aac", "-c:s", "copy" });
+        args.AddRange(new[] { "-c:a", webmOutput ? "libopus" : "aac", "-c:s", "copy" });
         for (int artworkIndex = 0; artworkIndex < mapping.AttachedPictureStreamIndexes.Count; artworkIndex++)
         {
             int outputVideoIndex = mapping.PlayableVideoStreamIndexes.Count + artworkIndex;
