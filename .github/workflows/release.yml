@@ -54,11 +54,16 @@ jobs:
 
           "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          # Velopack 1.2.0 requires a three-part SemVer package version and
-          # requires it to be newer than the previous package. Keep the
-          # requested four-part release/tag identity while mapping its package
-          # artifact to the next patch version.
-          $packageVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') { "$($matches[1]).$($matches[2]).$([int]$matches[3] + 1)" } else { $version }
+          # Keep normal releases on a three-part public tag/version. Velopack
+          # requires its package version to be newer than the prior package;
+          # package artifacts therefore use the next patch version while the
+          # public release identity remains the requested version.
+          if ($version -match '^(\d+)\.(\d+)\.(\d+)(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?$') {
+            $packageVersion = "$($matches[1]).$($matches[2]).$([int]$matches[3] + 1)"
+          }
+          else {
+            $packageVersion = $version
+          }
           "packageVersion=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
