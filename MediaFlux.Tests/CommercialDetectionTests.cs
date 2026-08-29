@@ -187,21 +187,53 @@ public sealed class CommercialDetectionTests
             try
             {
                 SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
-                using var form = new CommercialDetectorForm(new Config(), Path.Combine(root, "config.json"));
-                foreach (Size size in new[] { form.MinimumSize, new Size(1280, 860), new Size(1500, 980) })
+                using var form = new CommercialDetectorForm(
+                    new Config { CommercialDetectorSourceWorkspaceSplitterDistance = 5000 },
+                    Path.Combine(root, "config.json"));
+                foreach (Size size in new[] { form.MinimumSize, new Size(1320, 960), new Size(1700, 1100) })
                 {
-                    form.Size = size; form.Show(); Application.DoEvents();
+                    form.WindowState = FormWindowState.Normal;
+                    form.Size = size;
+                    form.Show();
+                    Application.DoEvents();
                     SplitContainer sourceWorkspace = (SplitContainer)form.Controls.Find("CommercialSourceWorkspaceSplitter", true).Single();
+                    SplitContainer reviewWorkspace = (SplitContainer)form.Controls.Find("CommercialWorkspaceSplitter", true).Single();
+                    SplitContainer previewWorkspace = (SplitContainer)form.Controls.Find("CommercialPreviewSplitter", true).Single();
+                    Control sourceContent = form.Controls.Find("CommercialSourceAnalysisContent", true).Single();
                     Assert.True(sourceWorkspace.Panel1.AutoScroll);
-                    Assert.True(sourceWorkspace.Panel1MinSize >= 180);
-                    Assert.True(sourceWorkspace.Panel2MinSize >= 360);
+                    Assert.True(sourceWorkspace.Panel1MinSize > 0);
+                    Assert.True(sourceWorkspace.Panel2MinSize >= reviewWorkspace.Panel1MinSize + reviewWorkspace.Panel2MinSize);
                     Assert.InRange(sourceWorkspace.SplitterDistance, sourceWorkspace.Panel1MinSize, sourceWorkspace.Height - sourceWorkspace.SplitterWidth - sourceWorkspace.Panel2MinSize);
+                    Assert.True(sourceWorkspace.SplitterDistance < 5000, "An invalid legacy splitter distance should be discarded.");
+                    Assert.True(previewWorkspace.Panel1MinSize > 0 && previewWorkspace.Panel2MinSize > 0);
+
+                    if (form.Controls.Find("CommercialAdvancedSettings", true).Single().Visible)
+                    {
+                        ((Button)form.Controls.Find("CommercialAdvancedToggle", true).Single()).PerformClick();
+                        Application.DoEvents();
+                    }
+                    Rectangle sourceViewport = sourceWorkspace.Panel1.RectangleToScreen(sourceWorkspace.Panel1.ClientRectangle);
+                    foreach (string name in new[] { "CommercialSourcePath", "CommercialAnalyzeButton", "CommercialCancelButton", "CommercialAdvancedToggle" })
+                    {
+                        Control control = form.Controls.Find(name, true).Single();
+                        Assert.True(sourceViewport.Contains(control.RectangleToScreen(control.ClientRectangle)), $"{name} should be fully visible in the collapsed Source Analysis pane at {size}.");
+                    }
+
+                    int collapsedSourceHeight = sourceWorkspace.SplitterDistance;
                     if (!form.Controls.Find("CommercialAdvancedSettings", true).Single().Visible)
                     {
                         ((Button)form.Controls.Find("CommercialAdvancedToggle", true).Single()).PerformClick();
                         Application.DoEvents();
                     }
                     Assert.True(form.Controls.Find("CommercialAdvancedSettings", true).Single().Visible);
+                    Assert.True(sourceWorkspace.SplitterDistance >= collapsedSourceHeight,
+                        "Opening Advanced Settings should not make Source Analysis smaller.");
+                    Assert.True(
+                        !sourceWorkspace.Panel1.VerticalScroll.Visible || sourceContent.Height > sourceWorkspace.Panel1.ClientSize.Height,
+                        "Source Analysis should scroll only when its expanded content does not fit.");
+                    Rectangle upperPane = sourceWorkspace.Panel1.RectangleToScreen(sourceWorkspace.Panel1.ClientRectangle);
+                    Rectangle lowerPane = sourceWorkspace.Panel2.RectangleToScreen(sourceWorkspace.Panel2.ClientRectangle);
+                    Assert.False(upperPane.IntersectsWith(lowerPane), "Source Analysis must not overlap the review workspace.");
                     ComboBox preset = (ComboBox)form.Controls.Find("CommercialPreset", true).Single();
                     NumericUpDown blackDuration = (NumericUpDown)form.Controls.Find("CommercialBlackDuration", true).Single();
                     preset.SelectedItem = CommercialDetectionPreset.Standard.ToString();
@@ -220,12 +252,53 @@ public sealed class CommercialDetectionTests
                     Assert.False(form.Controls.Find("CommercialExportSelected", true).Single().Enabled);
                     Assert.False(form.Controls.Find("CommercialExportAll", true).Single().Enabled);
                 }
+
+                form.WindowState = FormWindowState.Maximized;
+                Application.DoEvents();
+                SplitContainer maximizedSourceWorkspace = (SplitContainer)form.Controls.Find("CommercialSourceWorkspaceSplitter", true).Single();
+                Assert.InRange(maximizedSourceWorkspace.SplitterDistance, maximizedSourceWorkspace.Panel1MinSize,
+                    maximizedSourceWorkspace.Height - maximizedSourceWorkspace.SplitterWidth - maximizedSourceWorkspace.Panel2MinSize);
                 form.Close();
             }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Commercial Detector layout test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+        Directory.Delete(root, recursive: true);
+    }
+
+    [Fact]
+    public void CommercialDetectorRejectsClippedExpandedLegacySplitterDistance()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-CommercialDetectorLegacyUi", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root); Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                using var form = new CommercialDetectorForm(
+                    new Config
+                    {
+                        CommercialDetectorAdvancedExpanded = true,
+                        CommercialDetectorSourceWorkspaceSplitterDistance = 180
+                    },
+                    Path.Combine(root, "config.json"));
+                form.Show();
+                Application.DoEvents();
+                SplitContainer sourceWorkspace = (SplitContainer)form.Controls.Find("CommercialSourceWorkspaceSplitter", true).Single();
+                Assert.True(form.Controls.Find("CommercialAdvancedSettings", true).Single().Visible);
+                Assert.True(sourceWorkspace.SplitterDistance > 180,
+                    "A legacy distance that reveals only the Advanced Settings heading should be reset to a usable height.");
+                Assert.True(sourceWorkspace.Panel2.Height >= sourceWorkspace.Panel2MinSize);
+                form.Close();
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Commercial Detector legacy splitter test timed out.");
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
         Directory.Delete(root, recursive: true);
     }

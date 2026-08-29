@@ -97,6 +97,10 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
     private readonly SplitContainer _previewSplit = Split("CommercialPreviewSplitter", Orientation.Vertical);
     private readonly SplitContainer _workspaceSplit = Split("CommercialWorkspaceSplitter", Orientation.Horizontal);
     private readonly SplitContainer _sourceWorkspaceSplit = Split("CommercialSourceWorkspaceSplitter", Orientation.Horizontal);
+    private TableLayoutPanel? _sourceAnalysisContent;
+    private bool _sourceSplitterReady;
+    private bool _sourceSplitterUserAdjusted;
+    private bool _adjustingSourceSplitter;
     private CommercialDetectionPreset _basePreset = CommercialDetectionPreset.Standard;
     private CommercialDetectorViewState _viewState;
     private bool _applyingSettings;
@@ -160,7 +164,7 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
 
     private Control BuildSourceWorkspace()
     {
-        var sourceContent = new TableLayoutPanel
+        _sourceAnalysisContent = new TableLayoutPanel
         {
             Name = "CommercialSourceAnalysisContent",
             Dock = DockStyle.Top,
@@ -170,20 +174,23 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
             RowCount = 4,
             Margin = Padding.Empty
         };
-        sourceContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        sourceContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        sourceContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        sourceContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        sourceContent.Controls.Add(BuildSourceCard(), 0, 0);
-        sourceContent.Controls.Add(_advancedHost, 0, 1);
-        sourceContent.Controls.Add(BuildProgressRow(), 0, 2);
+        _sourceAnalysisContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _sourceAnalysisContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _sourceAnalysisContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _sourceAnalysisContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _sourceAnalysisContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _sourceAnalysisContent.Controls.Add(BuildSourceCard(), 0, 0);
+        _sourceAnalysisContent.Controls.Add(_advancedHost, 0, 1);
+        _sourceAnalysisContent.Controls.Add(BuildProgressRow(), 0, 2);
         _summary.Margin = new Padding(0, 0, 0, 6);
-        sourceContent.Controls.Add(_summary, 0, 3);
+        _sourceAnalysisContent.Controls.Add(_summary, 0, 3);
 
         _sourceWorkspaceSplit.Panel1.AutoScroll = true;
-        _sourceWorkspaceSplit.Panel1.Padding = new Padding(0, 0, 0, 6);
+        _sourceWorkspaceSplit.Panel1.BackColor = BackColor;
+        _sourceWorkspaceSplit.Panel1.Padding = new Padding(0, 0, 6, 4);
+        _sourceWorkspaceSplit.Panel2.BackColor = BackColor;
         _sourceWorkspaceSplit.Panel2.Padding = new Padding(0, 6, 0, 0);
-        _sourceWorkspaceSplit.Panel1.Controls.Add(sourceContent);
+        _sourceWorkspaceSplit.Panel1.Controls.Add(_sourceAnalysisContent);
         _sourceWorkspaceSplit.Panel2.Controls.Add(BuildWorkspace());
         return _sourceWorkspaceSplit;
     }
@@ -200,6 +207,9 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
     private Control BuildSourceCard()
     {
         TableLayoutPanel card = Card("Source & Analysis", 4);
+        card.AutoSize = true;
+        card.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        card.Dock = DockStyle.Top;
         for (int index = 0; index < 4; index++) card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var sourceRow = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3, Margin = new Padding(0, 7, 0, 2) };
         sourceRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); sourceRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); sourceRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -215,6 +225,9 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
     private void BuildAdvancedSettings()
     {
         var card = Card("Advanced Settings", 3); card.Margin = new Padding(0, 8, 0, 8);
+        card.AutoSize = true;
+        card.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        card.Dock = DockStyle.Top;
         for (int index = 0; index < 3; index++) card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var groups = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 4, Margin = new Padding(0, 7, 0, 0) };
         for (int index = 0; index < 4; index++) groups.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
@@ -346,6 +359,9 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
         DragDrop += async (_, e) => { if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0) await LoadSourceAsync(files[0]); };
         KeyDown += CommercialDetectorForm_KeyDown;
         ContextMenuStrip reviewMenu = BuildReviewContextMenu(); _timeline.ContextMenuStrip = reviewMenu; _segments.ContextMenuStrip = reviewMenu;
+        _sourceWorkspaceSplit.SplitterMoving += SourceWorkspaceSplit_SplitterMoving;
+        _sourceWorkspaceSplit.SplitterMoved += SourceWorkspaceSplit_SplitterMoved;
+        _sourceWorkspaceSplit.SizeChanged += (_, _) => ClampSourceWorkspaceSplitter(preferContent: false);
         FormClosing += CommercialDetectorForm_FormClosing;
     }
 
@@ -849,7 +865,15 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
 
     private void SetAdvancedExpanded(bool expanded)
     {
-        if (_advancedHost.Controls.Count == 0) BuildAdvancedSettings(); _advancedHost.Visible = expanded; _advancedToggle.Text = expanded ? "Hide Advanced Settings ▲" : "Advanced Settings ▼"; _config.CommercialDetectorAdvancedExpanded = expanded;
+        if (_advancedHost.Controls.Count == 0) BuildAdvancedSettings();
+        _advancedHost.Visible = expanded;
+        _advancedToggle.Text = expanded ? "Hide Advanced Settings ▲" : "Advanced Settings ▼";
+        _config.CommercialDetectorAdvancedExpanded = expanded;
+        if (_sourceSplitterReady)
+        {
+            _sourceAnalysisContent?.PerformLayout();
+            ClampSourceWorkspaceSplitter(preferContent: !_sourceSplitterUserAdjusted);
+        }
     }
 
     private void CapturePreferences()
@@ -911,11 +935,77 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e); if (_config.CommercialDetectorWindowX != int.MinValue && _config.CommercialDetectorWindowY != int.MinValue) Location = new Point(_config.CommercialDetectorWindowX, _config.CommercialDetectorWindowY);
-        ConfigureSplitter(_sourceWorkspaceSplit, 180, 360, _config.CommercialDetectorSourceWorkspaceSplitterDistance, 205);
-        ConfigureSplitter(_previewSplit, 380, 420, _config.CommercialDetectorPreviewSplitterDistance, Math.Max(380, _previewSplit.Width / 2)); ConfigureSplitter(_workspaceSplit, 330, 170, _config.CommercialDetectorWorkspaceSplitterDistance, Math.Max(330, _workspaceSplit.Height / 2));
+        InitializeSourceWorkspaceSplitter();
+        ConfigureSplitter(_previewSplit, ScaleForDpi(380), ScaleForDpi(420), _config.CommercialDetectorPreviewSplitterDistance, Math.Max(ScaleForDpi(380), _previewSplit.Width / 2));
+        int reviewMinimum = ScaleForDpi(300); int segmentsMinimum = ScaleForDpi(260); int workspaceAvailable = _workspaceSplit.ClientSize.Height - _workspaceSplit.SplitterWidth;
+        ConfigureSplitter(_workspaceSplit, reviewMinimum, segmentsMinimum, _config.CommercialDetectorWorkspaceSplitterDistance, Math.Max(reviewMinimum, workspaceAvailable - segmentsMinimum));
         try { _playerHost.CreateControl(); dynamic player = _playerHost.Player; player.uiMode = "none"; player.stretchToFit = false; player.enableContextMenu = false; }
         catch (Exception ex) { ErrorLogService.Append(Application.StartupPath, "Initialize Commercial Detector preview failed", exception: ex); _status.Text = "Preview is unavailable on this computer; analysis remains available."; }
     }
+
+    private void InitializeSourceWorkspaceSplitter()
+    {
+        int available = _sourceWorkspaceSplit.ClientSize.Height - _sourceWorkspaceSplit.SplitterWidth;
+        if (available <= 0) return;
+        _adjustingSourceSplitter = true;
+        try
+        {
+            _sourceWorkspaceSplit.Panel1MinSize = ScaleForDpi(145);
+            int requiredReviewHeight = ScaleForDpi(300) + ScaleForDpi(260) + _workspaceSplit.SplitterWidth + _sourceWorkspaceSplit.Panel2.Padding.Vertical;
+            _sourceWorkspaceSplit.Panel2MinSize = Math.Min(requiredReviewHeight, Math.Max(0, available - _sourceWorkspaceSplit.Panel1MinSize));
+            int preferred = PreferredSourceHeight();
+            int maximum = MaximumSourceHeight();
+            int persisted = _config.CommercialDetectorSourceWorkspaceSplitterDistance;
+            int minimumUsablePersisted = _advancedHost.Visible
+                ? Math.Min(maximum, _sourceWorkspaceSplit.Panel1MinSize + ScaleForDpi(80))
+                : _sourceWorkspaceSplit.Panel1MinSize;
+            bool persistedIsUsable = persisted >= minimumUsablePersisted && persisted <= maximum;
+            _sourceWorkspaceSplit.SplitterDistance = persistedIsUsable ? persisted : Math.Clamp(preferred, _sourceWorkspaceSplit.Panel1MinSize, maximum);
+            _sourceSplitterUserAdjusted = false;
+            _sourceSplitterReady = true;
+        }
+        finally { _adjustingSourceSplitter = false; }
+    }
+
+    private int PreferredSourceHeight()
+    {
+        if (_sourceAnalysisContent == null) return ScaleForDpi(175);
+        int width = Math.Max(ScaleForDpi(640), _sourceWorkspaceSplit.Panel1.ClientSize.Width - _sourceWorkspaceSplit.Panel1.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth);
+        return _sourceAnalysisContent.GetPreferredSize(new Size(width, 0)).Height + _sourceWorkspaceSplit.Panel1.Padding.Vertical;
+    }
+
+    private int MaximumSourceHeight()
+    {
+        int available = _sourceWorkspaceSplit.ClientSize.Height - _sourceWorkspaceSplit.SplitterWidth;
+        int structuralMaximum = Math.Max(_sourceWorkspaceSplit.Panel1MinSize, available - _sourceWorkspaceSplit.Panel2MinSize);
+        int contentMaximum = PreferredSourceHeight() + Font.Height * 2;
+        return Math.Max(_sourceWorkspaceSplit.Panel1MinSize, Math.Min(structuralMaximum, contentMaximum));
+    }
+
+    private void ClampSourceWorkspaceSplitter(bool preferContent)
+    {
+        if (!_sourceSplitterReady || _adjustingSourceSplitter || _sourceWorkspaceSplit.IsDisposed) return;
+        int maximum = MaximumSourceHeight();
+        int target = preferContent ? PreferredSourceHeight() : _sourceWorkspaceSplit.SplitterDistance;
+        target = Math.Clamp(target, _sourceWorkspaceSplit.Panel1MinSize, maximum);
+        if (target == _sourceWorkspaceSplit.SplitterDistance) return;
+        _adjustingSourceSplitter = true;
+        try { _sourceWorkspaceSplit.SplitterDistance = target; }
+        finally { _adjustingSourceSplitter = false; }
+    }
+
+    private void SourceWorkspaceSplit_SplitterMoving(object? sender, SplitterCancelEventArgs e)
+    {
+        if (!_sourceSplitterReady) return;
+        e.SplitY = Math.Clamp(e.SplitY, _sourceWorkspaceSplit.Panel1MinSize, MaximumSourceHeight());
+    }
+
+    private void SourceWorkspaceSplit_SplitterMoved(object? sender, SplitterEventArgs e)
+    {
+        if (_sourceSplitterReady && !_adjustingSourceSplitter) _sourceSplitterUserAdjusted = true;
+    }
+
+    private int ScaleForDpi(int logicalPixels) => (int)Math.Round(logicalPixels * DeviceDpi / 96d);
 
     private void CommercialDetectorForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
