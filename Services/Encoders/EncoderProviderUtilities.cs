@@ -9,6 +9,9 @@ namespace MediaFlux.Services.Encoders
             StringBuilder builder,
             EncoderArgumentContext context)
         {
+            if (!context.RequiresVideoFilter)
+                return;
+
             if (!string.IsNullOrEmpty(context.ScaleExpression))
             {
                 builder.Append(
@@ -19,6 +22,20 @@ namespace MediaFlux.Services.Encoders
             {
                 builder.Append($"-vf format={context.OutputPixelFormat} ");
             }
+        }
+
+        public static string BuildCudaVideoFilter(
+            string scaleExpression,
+            string outputPixelFormat)
+        {
+            if (string.IsNullOrWhiteSpace(outputPixelFormat))
+                throw new ArgumentException("An output pixel format is required.", nameof(outputPixelFormat));
+
+            // FFmpeg's first filter option uses '=' (not ':'). Subsequent named
+            // options are colon-separated, for example scale_cuda=-2:1080:format=nv12.
+            return string.IsNullOrEmpty(scaleExpression)
+                ? $"scale_cuda=format={outputPixelFormat}"
+                : $"scale_cuda={scaleExpression}:interp_algo=lanczos:format={outputPixelFormat}";
         }
 
         public static void AppendCodecAndTenBitFlags(

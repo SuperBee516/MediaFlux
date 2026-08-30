@@ -675,7 +675,9 @@ namespace MediaFlux.Services
                 qualityValue,
                 encoderSelection,
                 sampleStart,
-                sampleDuration);
+                sampleDuration,
+                sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals(
+                    "video", StringComparison.OrdinalIgnoreCase))?.PixelFormat);
 
             string pipelineDiagnostic = DescribeVideoPipeline(
                 inputSource,
@@ -1068,7 +1070,8 @@ namespace MediaFlux.Services
             int? qualityValue = null,
             VideoEncoderSelection? encoderSelection = null,
             TimeSpan? sampleStart = null,
-            TimeSpan? sampleDuration = null)
+            TimeSpan? sampleDuration = null,
+            string? sourcePixelFormat = null)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -1147,7 +1150,8 @@ namespace MediaFlux.Services
                 NvencHighBitDepthOutputSupported =
                     supportsGpuResidentHighBitDepthOutput,
                 NvencCudaFormatConversionSupported =
-                    supportsCudaFormatConversion
+                    supportsCudaFormatConversion,
+                SourcePixelFormat = sourcePixelFormat ?? ""
             };
 
             var builder = new FfmpegCommandBuilder(

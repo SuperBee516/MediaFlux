@@ -52,7 +52,6 @@ namespace MediaFlux.Services
             string outputPixelFormat = wantsTenBit
                 ? (provider.Capabilities.IsHardware ? "p010le" : "yuv420p10le")
                 : (provider.Capabilities.IsHardware ? "nv12" : "yuv420p");
-
             string scaleExpression = request.ScaleMode switch
             {
                 EncodingService.ScaleMode.To720p => "-2:720",
@@ -61,6 +60,11 @@ namespace MediaFlux.Services
                 EncodingService.ScaleMode.To4K => "-2:2160",
                 _ => string.Empty
             };
+            bool sourceIsTenBit = IsTenBitPixelFormat(request.SourcePixelFormat);
+            bool requiresVideoFilter =
+                !string.IsNullOrEmpty(scaleExpression) ||
+                string.IsNullOrWhiteSpace(request.SourcePixelFormat) ||
+                sourceIsTenBit != wantsTenBit;
 
             var context = new EncoderArgumentContext
             {
@@ -82,12 +86,20 @@ namespace MediaFlux.Services
                         VideoEncoderIds.Nvenc,
                         StringComparison.OrdinalIgnoreCase) &&
                     request.NvencHighBitDepthOutputSupported,
+                UseGpuResidentFrames =
+                    validated.UseGpu &&
+                    selection.EncoderId.Equals(
+                        VideoEncoderIds.Nvenc,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    request.NvencCudaFormatConversionSupported,
                 UseGpuResidentFormatConversion =
                     validated.UseGpu &&
                     selection.EncoderId.Equals(
                         VideoEncoderIds.Nvenc,
                         StringComparison.OrdinalIgnoreCase) &&
-                    request.NvencCudaFormatConversionSupported
+                    request.NvencCudaFormatConversionSupported &&
+                    requiresVideoFilter,
+                RequiresVideoFilter = requiresVideoFilter
             };
 
             var builder = new StringBuilder();
@@ -355,5 +367,10 @@ namespace MediaFlux.Services
                        ".asf",
                        StringComparison.OrdinalIgnoreCase);
         }
+
+        private static bool IsTenBitPixelFormat(string? value) =>
+            !string.IsNullOrWhiteSpace(value) &&
+            (value.Contains("10", StringComparison.OrdinalIgnoreCase) ||
+             value.StartsWith("p010", StringComparison.OrdinalIgnoreCase));
     }
 }

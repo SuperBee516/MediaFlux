@@ -79,7 +79,7 @@ namespace MediaFlux.Services.Encoders
             if (!context.UseGpu || context.IsAsfFamilyInput)
                 return;
 
-            if (context.UseGpuResidentFormatConversion)
+            if (context.UseGpuResidentFrames)
                 builder.Append("-hwaccel cuda -hwaccel_output_format cuda ");
             else
                 builder.Append("-hwaccel cuda ");
@@ -91,10 +91,9 @@ namespace MediaFlux.Services.Encoders
         {
             if (context.UseGpuResidentFormatConversion)
             {
-                string scale = string.IsNullOrEmpty(context.ScaleExpression)
-                    ? "scale_cuda"
-                    : $"scale_cuda={context.ScaleExpression}:interp_algo=lanczos";
-                builder.Append($"-vf {scale}:format={context.OutputPixelFormat} ");
+                builder.Append(
+                    $"-vf {EncoderProviderUtilities.BuildCudaVideoFilter(
+                        context.ScaleExpression, context.OutputPixelFormat)} ");
                 return;
             }
 

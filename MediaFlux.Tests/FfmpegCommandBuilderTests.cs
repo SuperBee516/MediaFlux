@@ -18,7 +18,7 @@ public sealed class FfmpegCommandBuilderTests
         string arguments = CreateBuilder().Build(request);
 
         Assert.Contains("-hwaccel cuda -hwaccel_output_format cuda ", arguments);
-        Assert.Contains("-vf scale_cuda:format=nv12 ", arguments);
+        Assert.Contains("-vf scale_cuda=format=nv12 ", arguments);
         Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
         Assert.Contains("-metadata:s:v:0 BPS= ", arguments);
     }
@@ -57,7 +57,7 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Contains(
             "-hwaccel cuda -hwaccel_output_format cuda ",
             arguments);
-        Assert.Contains("-vf scale_cuda:format=p010le ", arguments);
+        Assert.Contains("-vf scale_cuda=format=p010le ", arguments);
         Assert.Contains(
             "-profile:v main10 -pix_fmt p010le -highbitdepth 1 ",
             arguments);
@@ -80,6 +80,34 @@ public sealed class FfmpegCommandBuilderTests
             arguments);
         Assert.Contains("-highbitdepth 1 ", arguments);
         Assert.DoesNotContain("scale=-2:1080:flags=lanczos", arguments);
+    }
+
+    [Fact]
+    public void HevcMain10ToEightBitNvencUsesValidCudaConversionSyntax()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            sourcePixelFormat: "yuv420p10le"));
+
+        Assert.Contains("-vf scale_cuda=format=nv12 ", arguments);
+        Assert.DoesNotContain("scale_cuda:format", arguments);
+        Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
+    }
+
+    [Fact]
+    public void NvencEightBitScalingUsesValidCudaConversionSyntax()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            sourcePixelFormat: "yuv420p10le",
+            scaleMode: EncodingService.ScaleMode.To1080p));
+
+        Assert.Contains(
+            "-vf scale_cuda=-2:1080:interp_algo=lanczos:format=nv12 ",
+            arguments);
+        Assert.DoesNotContain("scale_cuda:format", arguments);
     }
 
     [Fact]
@@ -294,6 +322,19 @@ public sealed class FfmpegCommandBuilderTests
 
         Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=yuv420p ", arguments);
         Assert.Contains("-profile:v main -pix_fmt yuv420p ", arguments);
+    }
+
+    [Fact]
+    public void MatchingNvencSourceAndOutputNeedsNoConversionFilter()
+    {
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc", useGpu: true, sourcePixelFormat: "yuv420p");
+
+        string arguments = CreateBuilder().Build(request);
+
+        Assert.DoesNotContain("-vf ", arguments);
+        Assert.DoesNotContain("scale_cuda:format", arguments);
+        Assert.Contains("-hwaccel cuda -hwaccel_output_format cuda ", arguments);
     }
 
     [Theory]
@@ -557,6 +598,7 @@ public sealed class FfmpegCommandBuilderTests
             EncodingService.ScaleMode.None,
         bool nvencHighBitDepthOutputSupported = false,
         bool nvencCudaFormatConversionSupported = true,
+        string sourcePixelFormat = "",
         OutputContainer outputContainer = OutputContainer.Mp4)
     {
         ResolvedVideoEncoder encoder =
@@ -580,6 +622,7 @@ public sealed class FfmpegCommandBuilderTests
              scaleMode,
              nvencHighBitDepthOutputSupported,
              nvencCudaFormatConversionSupported,
+             sourcePixelFormat,
              outputContainer);
     }
 
@@ -602,6 +645,7 @@ public sealed class FfmpegCommandBuilderTests
             EncodingService.ScaleMode.None,
         bool nvencHighBitDepthOutputSupported = false,
         bool nvencCudaFormatConversionSupported = true,
+        string sourcePixelFormat = "",
         OutputContainer outputContainer = OutputContainer.Mp4)
     {
 
@@ -648,7 +692,8 @@ public sealed class FfmpegCommandBuilderTests
             NvencHighBitDepthOutputSupported =
                 nvencHighBitDepthOutputSupported,
             NvencCudaFormatConversionSupported =
-                nvencCudaFormatConversionSupported
+                nvencCudaFormatConversionSupported,
+            SourcePixelFormat = sourcePixelFormat
         };
     }
 }
