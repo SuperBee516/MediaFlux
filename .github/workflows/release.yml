@@ -54,6 +54,15 @@ jobs:
 
           "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # Keep public releases on three-part versions while ensuring Velopack
+          # receives a strictly newer package version than the prior channel.
+          if ($version -match '^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$') {
+            $packageVersion = "$($matches[1]).$($matches[2]).$([int]$matches[3] + 1)"
+          }
+          else {
+            $packageVersion = $version
+          }
+          "packageVersion=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Restore and build
@@ -176,7 +185,7 @@ jobs:
         run: |
           .\.tools\vpk.exe pack `
             --packId MediaFlux `
-            --packVersion ${{ steps.version.outputs.value }} `
+            --packVersion ${{ steps.version.outputs.packageVersion }} `
             --packDir .\artifacts\publish `
             --outputDir .\artifacts\releases `
             --mainExe MediaFlux.exe `
@@ -191,7 +200,8 @@ jobs:
         shell: pwsh
         run: |
           $expected = '${{ steps.version.outputs.value }}'
-          $package = Get-ChildItem '.\artifacts\releases' -Filter "MediaFlux-$expected-full.nupkg" | Select-Object -First 1
+          $expectedPackage = '${{ steps.version.outputs.packageVersion }}'
+          $package = Get-ChildItem '.\artifacts\releases' -Filter "MediaFlux-$expectedPackage-full.nupkg" | Select-Object -First 1
           if ($null -eq $package) {
             throw "No full update package was created for release version '$expected'."
           }
@@ -209,8 +219,8 @@ jobs:
             try { [xml]$manifest = $reader.ReadToEnd() }
             finally { $reader.Dispose() }
             $packageVersion = [string]$manifest.package.metadata.version
-            if ($packageVersion -ne $expected) {
-              throw "Update package version '$packageVersion' does not match release version '$expected'."
+            if ($packageVersion -ne $expectedPackage) {
+              throw "Update package version '$packageVersion' does not match expected package version '$expectedPackage'."
             }
 
             $extractedExe = Join-Path $env:RUNNER_TEMP 'MediaFlux-version-check.exe'
