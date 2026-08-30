@@ -654,6 +654,8 @@ namespace MediaFlux.Services
             if (totalDuration <= TimeSpan.Zero)
                 _log?.Invoke("[EncodingService] Warning: could not determine duration, progress percent will be 0.");
 
+            string sourcePixelFormat = sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals(
+                "video", StringComparison.OrdinalIgnoreCase))?.PixelFormat ?? "";
             string ffArgs = BuildFfmpegArgs(
                 inputSource,
                 output,
@@ -676,8 +678,7 @@ namespace MediaFlux.Services
                 encoderSelection,
                 sampleStart,
                 sampleDuration,
-                sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals(
-                    "video", StringComparison.OrdinalIgnoreCase))?.PixelFormat);
+                sourcePixelFormat);
 
             string pipelineDiagnostic = DescribeVideoPipeline(
                 inputSource,
@@ -703,95 +704,37 @@ namespace MediaFlux.Services
                 $"using '{input}' -> staged '{output}' (final '{finalOutput}')");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
 
-            var stderrBuilder = new StringBuilder();
+            FfmpegProcessResult runResult = await RunFfmpegAsync(
+                ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
 
-            var psi = new ProcessStartInfo
+            if (runResult.ExitCode != 0 &&
+                ShouldRetryWithSoftwareFrames(ffArgs, runResult.StandardError))
             {
-                FileName = _ffmpegPath,
-                Arguments = ffArgs,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                RedirectStandardInput = true,
-                CreateNoWindow = true,
-                ErrorDialog = false,
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
+                string failedPipeline = pipelineDiagnostic;
+                _log?.Invoke(
+                    "[EncodingService] GPU-resident NVENC pipeline could not negotiate " +
+                    "CUDA frames with the selected FFmpeg build; retrying once with " +
+                    "CUDA decode and explicit software-frame conversion. Failure: " +
+                    SummarizeFfmpegFailure(runResult.StandardError));
+                callback("[MediaFlux] GPU frame pipeline was incompatible; retrying with software-frame conversion.");
 
-            using var proc = new Process { StartInfo = psi };
-
-            proc.OutputDataReceived += (s, e) =>
-            {
-                if (e.Data != null)
-                    HandleProgressLine(e.Data, callback, totalDuration);
-            };
-
-            proc.ErrorDataReceived += (s, e) =>
-            {
-                if (e.Data != null)
-                {
-                    HandleProgressLine(e.Data, callback, totalDuration);
-                    AppendBounded(stderrBuilder, e.Data, MaxCapturedFfmpegCharacters);
-                }
-            };
-
-            try
-            {
-                proc.Start();
-            }
-            catch (Exception ex)
-            {
-                _log?.Invoke($"[EncodingService] Failed to start ffmpeg: {ex}");
-                throw;
+                ffArgs = BuildFfmpegArgs(
+                    inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                    encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                    mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                    containerDecision, forceMp4CompatibleAudio, totalDuration,
+                    qualityValue, encoderSelection, sampleStart, sampleDuration,
+                    sourcePixelFormat, preferNvencGpuResidentFrames: false);
+                pipelineDiagnostic = DescribeVideoPipeline(
+                    inputSource, videoCodec, useGpu, tenBit, ffArgs);
+                _log?.Invoke(
+                    $"[EncodingService] Pipeline fallback: {failedPipeline} -> " +
+                    $"{pipelineDiagnostic}. ffmpeg arguments: {ffArgs}");
+                runResult = await RunFfmpegAsync(
+                    ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
             }
 
-            proc.BeginOutputReadLine();
-            proc.BeginErrorReadLine();
-
-            CancellationTokenRegistration ctr = default;
-            try
-            {
-                if (cancellationToken.CanBeCanceled)
-                {
-                    ctr = cancellationToken.Register(() =>
-                    {
-                        try
-                        {
-                            if (!proc.HasExited)
-                            {
-                                _log?.Invoke("[EncodingService] Cancellation requested. Sending 'q' to ffmpeg.");
-                                try
-                                {
-                                    proc.StandardInput.WriteLine("q");
-                                    proc.StandardInput.Flush();
-                                }
-                                catch (Exception ex)
-                                {
-                                    _log?.Invoke($"[EncodingService] Failed to send 'q' to ffmpeg: {ex}");
-                                }
-                            }
-                        }
-                        catch
-                        {
-                            // Ignore races/exceptions here
-                        }
-                    });
-                }
-
-                await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                _log?.Invoke("[EncodingService] Encode operation cancelled.");
-                await EnsureProcessExitedAfterCancellationAsync(proc).ConfigureAwait(false);
-                throw;
-            }
-            finally
-            {
-                ctr.Dispose();
-            }
-
-            if (proc.ExitCode != 0)
+            if (runResult.ExitCode != 0)
             {
                 string logPath = ErrorLogService.Append(
                     _appPath,
@@ -799,13 +742,13 @@ namespace MediaFlux.Services
                     inputSource.SourcePath,
                     details:
                     $"Output     : {output}{Environment.NewLine}" +
-                    $"Exit Code  : {proc.ExitCode}{Environment.NewLine}" +
+                    $"Exit Code  : {runResult.ExitCode}{Environment.NewLine}" +
                     $"Arguments  : {ffArgs}{Environment.NewLine}{Environment.NewLine}" +
                     "FFmpeg Output:" + Environment.NewLine +
-                    stderrBuilder);
+                    runResult.StandardError);
 
-                _log?.Invoke($"[EncodingService] ffmpeg exited with code {proc.ExitCode}. See central log: {logPath}");
-                throw new InvalidOperationException($"ffmpeg exited with code {proc.ExitCode}. See central log: {logPath}");
+                _log?.Invoke($"[EncodingService] ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
+                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
             }
 
             _log?.Invoke(
@@ -882,6 +825,117 @@ namespace MediaFlux.Services
                 builder.AppendLine("[Additional FFmpeg diagnostic output truncated by MediaFlux.]");
             }
         }
+
+        private async Task<FfmpegProcessResult> RunFfmpegAsync(
+            string arguments,
+            Action<string> callback,
+            TimeSpan totalDuration,
+            CancellationToken cancellationToken)
+        {
+            var stderrBuilder = new StringBuilder();
+            var psi = new ProcessStartInfo
+            {
+                FileName = _ffmpegPath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                RedirectStandardInput = true,
+                CreateNoWindow = true,
+                ErrorDialog = false,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+
+            using var proc = new Process { StartInfo = psi };
+            proc.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                    HandleProgressLine(e.Data, callback, totalDuration);
+            };
+            proc.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data == null)
+                    return;
+
+                HandleProgressLine(e.Data, callback, totalDuration);
+                AppendBounded(stderrBuilder, e.Data, MaxCapturedFfmpegCharacters);
+            };
+
+            try
+            {
+                proc.Start();
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"[EncodingService] Failed to start ffmpeg: {ex}");
+                throw;
+            }
+
+            CancellationTokenRegistration ctr = default;
+            try
+            {
+                if (cancellationToken.CanBeCanceled)
+                {
+                    ctr = cancellationToken.Register(() =>
+                    {
+                        try
+                        {
+                            if (!proc.HasExited)
+                            {
+                                _log?.Invoke("[EncodingService] Cancellation requested. Sending 'q' to ffmpeg.");
+                                proc.StandardInput.WriteLine("q");
+                                proc.StandardInput.Flush();
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore cancellation races with FFmpeg shutdown.
+                        }
+                    });
+                }
+
+                await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _log?.Invoke("[EncodingService] Encode operation cancelled.");
+                await EnsureProcessExitedAfterCancellationAsync(proc).ConfigureAwait(false);
+                throw;
+            }
+            finally
+            {
+                ctr.Dispose();
+            }
+
+            return new FfmpegProcessResult(proc.ExitCode, stderrBuilder.ToString());
+        }
+
+        private static bool ShouldRetryWithSoftwareFrames(
+            string arguments,
+            string standardError)
+        {
+            if (!arguments.Contains("-hwaccel_output_format cuda ", StringComparison.Ordinal))
+                return false;
+
+            return standardError.Contains(
+                "Impossible to convert between the formats supported by the filter",
+                StringComparison.OrdinalIgnoreCase) ||
+                standardError.Contains("Error reinitializing filters!", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string SummarizeFfmpegFailure(string standardError)
+        {
+            string? detail = standardError.Split(
+                    ["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault(line => line.Contains("Impossible to convert", StringComparison.OrdinalIgnoreCase))
+                ?? standardError.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault();
+            return string.IsNullOrWhiteSpace(detail) ? "No FFmpeg diagnostic was captured." : detail.Trim();
+        }
+
+        private sealed record FfmpegProcessResult(int ExitCode, string StandardError);
 
         private async Task EnsureProcessExitedAfterCancellationAsync(Process proc)
         {
@@ -1071,7 +1125,8 @@ namespace MediaFlux.Services
             VideoEncoderSelection? encoderSelection = null,
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
-            string? sourcePixelFormat = null)
+            string? sourcePixelFormat = null,
+            bool preferNvencGpuResidentFrames = true)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -1099,15 +1154,9 @@ namespace MediaFlux.Services
                     "build does not support that pixel format. Choose a supported encoder " +
                     "or configure a newer FFmpeg build.");
             }
-            bool supportsCudaFormatConversion =
-                isNvenc && useGpu &&
-                FfmpegEncoderCapabilityService.SupportsFilter(
-                    _ffmpegPath,
-                    "scale_cuda");
             bool supportsGpuResidentHighBitDepthOutput =
                 useGpu &&
                 tenBit &&
-                supportsCudaFormatConversion &&
                 resolved.Selection.EncoderId.Equals(
                     VideoEncoderIds.Nvenc,
                     StringComparison.OrdinalIgnoreCase) &&
@@ -1149,8 +1198,8 @@ namespace MediaFlux.Services
                 SampleDuration = sampleDuration,
                 NvencHighBitDepthOutputSupported =
                     supportsGpuResidentHighBitDepthOutput,
-                NvencCudaFormatConversionSupported =
-                    supportsCudaFormatConversion,
+                PreferNvencGpuResidentFrames =
+                    preferNvencGpuResidentFrames,
                 SourcePixelFormat = sourcePixelFormat ?? ""
             };
 
@@ -1191,9 +1240,14 @@ namespace MediaFlux.Services
                     : "NVDEC/CUDA frames kept on GPU -> NVENC";
             }
 
-            return tenBit
-                ? "NVDEC -> host 10-bit conversion -> NVENC (FFmpeg compatibility fallback)"
-                : "NVDEC -> NVENC";
+            if (ffmpegArguments.Contains("-vf ", StringComparison.Ordinal))
+            {
+                return tenBit
+                    ? "NVDEC -> host 10-bit conversion -> NVENC"
+                    : "NVDEC -> host 8-bit conversion -> NVENC";
+            }
+
+            return "NVDEC -> NVENC";
         }
 
         private void EnsureEncoderAvailable(

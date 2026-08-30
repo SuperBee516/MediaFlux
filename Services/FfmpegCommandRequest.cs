@@ -28,7 +28,10 @@ namespace MediaFlux.Services
         public required bool ForceMp4CompatibleAudio { get; init; }
         public required TimeSpan KnownDuration { get; init; }
         public bool NvencHighBitDepthOutputSupported { get; init; }
-        public bool NvencCudaFormatConversionSupported { get; init; }
+        // CUDA frame output is an optional fast path.  It is deliberately kept
+        // separate from NVENC availability because some FFmpeg builds expose
+        // both features but cannot negotiate CUDA frames with a given format.
+        public bool PreferNvencGpuResidentFrames { get; init; } = true;
         public string SourcePixelFormat { get; init; } = "";
         public TimeSpan? SampleStart { get; init; }
         public TimeSpan? SampleDuration { get; init; }

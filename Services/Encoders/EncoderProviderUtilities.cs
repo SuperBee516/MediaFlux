@@ -24,20 +24,6 @@ namespace MediaFlux.Services.Encoders
             }
         }
 
-        public static string BuildCudaVideoFilter(
-            string scaleExpression,
-            string outputPixelFormat)
-        {
-            if (string.IsNullOrWhiteSpace(outputPixelFormat))
-                throw new ArgumentException("An output pixel format is required.", nameof(outputPixelFormat));
-
-            // FFmpeg's first filter option uses '=' (not ':'). Subsequent named
-            // options are colon-separated, for example scale_cuda=-2:1080:format=nv12.
-            return string.IsNullOrEmpty(scaleExpression)
-                ? $"scale_cuda=format={outputPixelFormat}"
-                : $"scale_cuda={scaleExpression}:interp_algo=lanczos:format={outputPixelFormat}";
-        }
-
         public static void AppendCodecAndTenBitFlags(
             StringBuilder builder,
             EncoderArgumentContext context)
@@ -58,7 +44,13 @@ namespace MediaFlux.Services.Encoders
                 builder.Append("-profile:v high ");
             }
 
-            builder.Append($"-pix_fmt {context.OutputPixelFormat} ");
+            // NVENC receives CUDA frames as the `cuda` hardware format.  Asking
+            // FFmpeg to force nv12/p010le at this boundary inserts auto_scale
+            // and breaks otherwise compatible zero-copy jobs.  The matching
+            // source format and explicit Main/Main10 profile remain the output
+            // contract; conversion paths always emit the software pix_fmt.
+            if (!context.UseGpuResidentFrames)
+                builder.Append($"-pix_fmt {context.OutputPixelFormat} ");
             if (context.WantsTenBit && context.UseGpuResidentHighBitDepthOutput)
                 builder.Append("-highbitdepth 1 ");
         }

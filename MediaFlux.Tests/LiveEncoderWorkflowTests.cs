@@ -327,26 +327,11 @@ public sealed class LiveEncoderWorkflowTests
             Assert.True(
                 tenBitResult.Success,
                 BuildFailureMessage(tenBitResult, log));
-            bool supportsHighBitDepthOutput =
-                FfmpegEncoderCapabilityService.SupportsEncoderOption(
-                    tools.FfmpegPath,
-                    "hevc_nvenc",
-                    "highbitdepth");
-            if (supportsHighBitDepthOutput)
-            {
-                Assert.Contains(
-                    "-hwaccel_output_format cuda ",
-                    tenBitResult.DiagnosticArguments);
-                Assert.Contains(
-                    "-highbitdepth 1 ",
-                    tenBitResult.DiagnosticArguments);
-            }
-            else
-            {
-                Assert.Contains(
-                    "-vf format=p010le ",
-                    tenBitResult.DiagnosticArguments);
-            }
+            // 8-bit input requires an explicit software-frame conversion to
+            // p010 before NVENC; this avoids FFmpeg's implicit CUDA bridge.
+            Assert.Contains("-vf format=p010le ", tenBitResult.DiagnosticArguments);
+            Assert.DoesNotContain(
+                "-hwaccel_output_format cuda ", tenBitResult.DiagnosticArguments);
 
             using JsonDocument tenBitProbe = await ProbeAsync(
                 tools,
@@ -362,6 +347,54 @@ public sealed class LiveEncoderWorkflowTests
                 line => line.Contains(
                     "Video pipeline:",
                     StringComparison.Ordinal));
+        }
+        finally
+        {
+            DeleteWorkingFolder(root);
+        }
+    }
+
+    [Fact]
+    public async Task NvencConvertsTenBitHevcToEightBitWithBundledFfmpegWhenEnabled()
+    {
+        ToolPaths? tools = GetLiveToolPaths();
+        if (tools == null || !string.Equals(
+                Environment.GetEnvironmentVariable(NvencEnvironmentVariable), "1",
+                StringComparison.Ordinal))
+            return;
+
+        string root = CreateWorkingFolder();
+        try
+        {
+            string source = await CreateTenBitHevcSourceAsync(tools, root);
+            var log = new List<string>();
+            var service = new EncodingService(
+                Path.GetDirectoryName(tools.FfmpegPath)!, _ => { }, log.Add,
+                tools.FfmpegPath, tools.FfprobePath);
+            VideoEncoderSelection encoder = EncoderRegistry.Default.Resolve(
+                VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc).Selection;
+
+            EncodingService.EncodeResult result = await service.EncodeWithResultAsync(
+                new EncodingRequest
+                {
+                    Input = EncodingInputSource.FromFile(source),
+                    OutputFolder = root,
+                    Suffix = "_nvenc_8bit",
+                    Encoder = encoder,
+                    UseGpu = true,
+                    EncoderPreset = "p1",
+                    QualityValue = 30,
+                    CopySubtitles = false
+                });
+
+            Assert.True(result.Success, BuildFailureMessage(result, log));
+            Assert.Contains("-hwaccel cuda -i ", result.DiagnosticArguments);
+            Assert.Contains("-vf format=nv12 ", result.DiagnosticArguments);
+            Assert.DoesNotContain("-hwaccel_output_format cuda", result.DiagnosticArguments);
+            using JsonDocument probe = await ProbeAsync(tools, result.OutputPath);
+            AssertVideoStream(probe, "hevc", "yuv420p", 320, 180);
+            Assert.Contains(log, line => line.Contains(
+                "host 8-bit conversion", StringComparison.Ordinal));
         }
         finally
         {
@@ -450,6 +483,25 @@ public sealed class LiveEncoderWorkflowTests
             $"Live source generation failed.{Environment.NewLine}" +
             result.StandardError);
         Assert.True(File.Exists(sourcePath));
+        return sourcePath;
+    }
+
+    private static async Task<string> CreateTenBitHevcSourceAsync(
+        ToolPaths tools,
+        string root)
+    {
+        string sourcePath = Path.Combine(root, "source-main10.mkv");
+        ProcessResult result = await RunProcessAsync(tools.FfmpegPath,
+        [
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24",
+            "-t", "2", "-vf", "format=yuv420p10le",
+            "-c:v", "libx265", "-preset", "ultrafast",
+            "-x265-params", "log-level=error", "-pix_fmt", "yuv420p10le",
+            sourcePath
+        ]);
+        Assert.True(result.ExitCode == 0,
+            $"10-bit live source generation failed.{Environment.NewLine}{result.StandardError}");
         return sourcePath;
     }
 

@@ -91,14 +91,11 @@ namespace MediaFlux.Services
                     selection.EncoderId.Equals(
                         VideoEncoderIds.Nvenc,
                         StringComparison.OrdinalIgnoreCase) &&
-                    request.NvencCudaFormatConversionSupported,
-                UseGpuResidentFormatConversion =
-                    validated.UseGpu &&
-                    selection.EncoderId.Equals(
-                        VideoEncoderIds.Nvenc,
-                        StringComparison.OrdinalIgnoreCase) &&
-                    request.NvencCudaFormatConversionSupported &&
-                    requiresVideoFilter,
+                    request.PreferNvencGpuResidentFrames &&
+                    // A software format/scale filter must receive software
+                    // frames.  Do not make FFmpeg insert an implicit bridge
+                    // between CUDA and system-memory filter domains.
+                    !requiresVideoFilter,
                 RequiresVideoFilter = requiresVideoFilter
             };
 

@@ -16,7 +16,6 @@ namespace MediaFlux.Services.Encoders
         public required bool IsAsfFamilyInput { get; init; }
         public required bool UseGpuResidentHighBitDepthOutput { get; init; }
         public required bool UseGpuResidentFrames { get; init; }
-        public required bool UseGpuResidentFormatConversion { get; init; }
         public required bool RequiresVideoFilter { get; init; }
         public required string OutputPixelFormat { get; init; }
     }

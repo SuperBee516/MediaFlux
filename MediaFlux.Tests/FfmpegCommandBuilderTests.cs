@@ -17,8 +17,8 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.Contains("-hwaccel cuda -hwaccel_output_format cuda ", arguments);
-        Assert.Contains("-vf scale_cuda=format=nv12 ", arguments);
+        Assert.Contains("-hwaccel cuda -i ", arguments);
+        Assert.Contains("-vf format=nv12 ", arguments);
         Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
         Assert.Contains("-metadata:s:v:0 BPS= ", arguments);
     }
@@ -44,7 +44,7 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
-    public void NvencHevcTenBitUsesGpuResidentHighBitDepthWhenSupported()
+    public void NvencHevcTenBitUsesExplicitSoftwareFormatWhenNeeded()
     {
         FfmpegCommandRequest request = CreateRequest(
             "hevc_nvenc",
@@ -54,17 +54,15 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.Contains(
-            "-hwaccel cuda -hwaccel_output_format cuda ",
-            arguments);
-        Assert.Contains("-vf scale_cuda=format=p010le ", arguments);
+        Assert.Contains("-hwaccel cuda -i ", arguments);
+        Assert.Contains("-vf format=p010le ", arguments);
         Assert.Contains(
             "-profile:v main10 -pix_fmt p010le -highbitdepth 1 ",
             arguments);
     }
 
     [Fact]
-    public void NvencHevcTenBitScalingStaysOnCudaWhenSupported()
+    public void NvencHevcTenBitScalingUsesSoftwareFrames()
     {
         FfmpegCommandRequest request = CreateRequest(
             "hevc_nvenc",
@@ -75,28 +73,27 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.Contains(
-            "-vf scale_cuda=-2:1080:interp_algo=lanczos:format=p010le ",
-            arguments);
+        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=p010le ", arguments);
         Assert.Contains("-highbitdepth 1 ", arguments);
-        Assert.DoesNotContain("scale=-2:1080:flags=lanczos", arguments);
+        Assert.DoesNotContain("scale_cuda", arguments);
     }
 
     [Fact]
-    public void HevcMain10ToEightBitNvencUsesValidCudaConversionSyntax()
+    public void HevcMain10ToEightBitNvencUsesSoftwareFrameConversion()
     {
         string arguments = CreateBuilder().Build(CreateRequest(
             "hevc_nvenc",
             useGpu: true,
             sourcePixelFormat: "yuv420p10le"));
 
-        Assert.Contains("-vf scale_cuda=format=nv12 ", arguments);
-        Assert.DoesNotContain("scale_cuda:format", arguments);
+        Assert.Contains("-hwaccel cuda -i ", arguments);
+        Assert.Contains("-vf format=nv12 ", arguments);
+        Assert.DoesNotContain("scale_cuda", arguments);
         Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
     }
 
     [Fact]
-    public void NvencEightBitScalingUsesValidCudaConversionSyntax()
+    public void NvencEightBitScalingUsesSoftwareFrameConversion()
     {
         string arguments = CreateBuilder().Build(CreateRequest(
             "hevc_nvenc",
@@ -104,20 +101,17 @@ public sealed class FfmpegCommandBuilderTests
             sourcePixelFormat: "yuv420p10le",
             scaleMode: EncodingService.ScaleMode.To1080p));
 
-        Assert.Contains(
-            "-vf scale_cuda=-2:1080:interp_algo=lanczos:format=nv12 ",
-            arguments);
-        Assert.DoesNotContain("scale_cuda:format", arguments);
+        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=nv12 ", arguments);
+        Assert.DoesNotContain("scale_cuda", arguments);
     }
 
     [Fact]
-    public void NvencHevcTenBitRetainsCompatibilityPathWhenUnsupported()
+    public void NvencHevcTenBitUsesSoftwareFormatForBitDepthConversion()
     {
         FfmpegCommandRequest request = CreateRequest(
             "hevc_nvenc",
             useGpu: true,
-            tenBit: true,
-            nvencCudaFormatConversionSupported: false);
+            tenBit: true);
 
         string arguments = CreateBuilder().Build(request);
 
@@ -305,8 +299,7 @@ public sealed class FfmpegCommandBuilderTests
             encoder,
             useGpu: true,
             tenBit: tenBit,
-            nvencHighBitDepthOutputSupported: tenBit,
-            nvencCudaFormatConversionSupported: true));
+            nvencHighBitDepthOutputSupported: tenBit));
 
         Assert.Contains($"format={pixelFormat}", arguments);
         Assert.Contains($"-profile:v {profile} -pix_fmt {pixelFormat}", arguments);
@@ -335,6 +328,21 @@ public sealed class FfmpegCommandBuilderTests
         Assert.DoesNotContain("-vf ", arguments);
         Assert.DoesNotContain("scale_cuda:format", arguments);
         Assert.Contains("-hwaccel cuda -hwaccel_output_format cuda ", arguments);
+        Assert.DoesNotContain("-pix_fmt nv12 ", arguments);
+    }
+
+    [Fact]
+    public void MatchingTenBitNvencSourceKeepsCudaFramesWithoutForcingSoftwarePixFmt()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, tenBit: true,
+            nvencHighBitDepthOutputSupported: true,
+            sourcePixelFormat: "yuv420p10le"));
+
+        Assert.Contains("-hwaccel cuda -hwaccel_output_format cuda ", arguments);
+        Assert.DoesNotContain("-vf ", arguments);
+        Assert.Contains("-profile:v main10 ", arguments);
+        Assert.DoesNotContain("-pix_fmt p010le ", arguments);
     }
 
     [Theory]
@@ -597,7 +605,6 @@ public sealed class FfmpegCommandBuilderTests
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None,
         bool nvencHighBitDepthOutputSupported = false,
-        bool nvencCudaFormatConversionSupported = true,
         string sourcePixelFormat = "",
         OutputContainer outputContainer = OutputContainer.Mp4)
     {
@@ -621,7 +628,6 @@ public sealed class FfmpegCommandBuilderTests
              knownMappedAncillaryBitrateKbps,
              scaleMode,
              nvencHighBitDepthOutputSupported,
-             nvencCudaFormatConversionSupported,
              sourcePixelFormat,
              outputContainer);
     }
@@ -644,7 +650,6 @@ public sealed class FfmpegCommandBuilderTests
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None,
         bool nvencHighBitDepthOutputSupported = false,
-        bool nvencCudaFormatConversionSupported = true,
         string sourcePixelFormat = "",
         OutputContainer outputContainer = OutputContainer.Mp4)
     {
@@ -691,8 +696,6 @@ public sealed class FfmpegCommandBuilderTests
             KnownDuration = knownDuration ?? TimeSpan.FromMinutes(10),
             NvencHighBitDepthOutputSupported =
                 nvencHighBitDepthOutputSupported,
-            NvencCudaFormatConversionSupported =
-                nvencCudaFormatConversionSupported,
             SourcePixelFormat = sourcePixelFormat
         };
     }
