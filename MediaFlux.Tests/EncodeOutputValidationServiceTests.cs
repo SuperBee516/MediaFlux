@@ -244,6 +244,107 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void DegenerateSourceChapterDroppedByFfmpegPassesAfterNormalization()
+    {
+        MediaProbeResult source = CloneProbe(
+            SourceProbe(),
+            durationSeconds: 420.908,
+            chapters: Chapters(
+                (3, 0.000000, 0.000292, "Chapter 03"),
+                (4, 0.000292, 379.629542, "Chapter 04"),
+                (5, 379.629542, 420.908000, "Chapter 05")));
+        MediaProbeResult output = CloneProbe(
+            OutputProbe(duration: 420.825),
+            chapters: Chapters(
+                (4, 0.000000, 379.546542, "Chapter 04"),
+                (5, 379.546542, 420.825000, "Chapter 05")));
+        var log = new List<string>();
+
+        string error = EncodeOutputValidationService.ValidateProbe(
+            Request(), source, output, log.Add);
+
+        Assert.Equal("", error);
+        Assert.Contains(log, entry =>
+            entry.Contains("Ignored malformed/degenerate source chapter 3", StringComparison.Ordinal) &&
+            entry.Contains("below the 50 ms tolerance", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(10d, 10d)]
+    [InlineData(10d, 9.9d)]
+    public void ZeroOrNegativeDurationChapterIsIgnored(double start, double end)
+    {
+        MediaProbeResult source = CloneProbe(
+            SourceProbe(),
+            chapters: Chapters(
+                (1, start, end, "Broken"),
+                (2, 10, 60, "Meaningful")));
+        MediaProbeResult output = CloneProbe(
+            OutputProbe(),
+            chapters: Chapters((2, 10, 60, "Meaningful")));
+
+        string error = EncodeOutputValidationService.ValidateProbe(
+            Request(), source, output);
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
+    public void SmallChapterTimestampRebasingAndRoundingPasses()
+    {
+        MediaProbeResult source = CloneProbe(
+            SourceProbe(),
+            durationSeconds: 180.083,
+            chapters: Chapters(
+                (1, 0.083, 120.083, "One"),
+                (2, 120.083, 180.083, "Two")));
+        MediaProbeResult output = CloneProbe(
+            OutputProbe(duration: 180),
+            chapters: Chapters(
+                (1, 0, 120, "One"),
+                (2, 120, 180, "Two")));
+
+        Assert.Equal(
+            "",
+            EncodeOutputValidationService.ValidateProbe(Request(), source, output));
+    }
+
+    [Fact]
+    public void MissingMeaningfulChapterFailsPreservationValidation()
+    {
+        MediaProbeResult source = CloneProbe(
+            SourceProbe(),
+            chapters: Chapters(
+                (1, 0, 40, "One"),
+                (2, 40, 100, "Two")));
+        MediaProbeResult output = CloneProbe(
+            OutputProbe(),
+            chapters: Chapters((1, 0, 100, "One")));
+
+        string error = EncodeOutputValidationService.ValidateProbe(
+            Request(), source, output);
+
+        Assert.Contains("Meaningful chapter preservation failed", error);
+    }
+
+    [Fact]
+    public void NormalMatchingChaptersContinueToPass()
+    {
+        MediaProbeResult chapters = CloneProbe(
+            SourceProbe(),
+            chapters: Chapters(
+                (1, 0, 40, "One"),
+                (2, 40, 100, "Two")));
+
+        Assert.Equal(
+            "",
+            EncodeOutputValidationService.ValidateProbe(
+                Request(),
+                chapters,
+                CloneProbe(OutputProbe(), chapters: chapters.Chapters)));
+    }
+
+    [Fact]
     public void DvdValidationUsesCombinedLogicalDurationNotFirstSegmentDuration()
     {
         EncodeOutputValidationRequest request = new()
@@ -431,6 +532,16 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
             }
         };
     }
+
+    private static IReadOnlyList<MediaProbeChapterInfo> Chapters(
+        params (int Id, double Start, double End, string Title)[] values) =>
+        values.Select(value => new MediaProbeChapterInfo
+        {
+            Id = value.Id,
+            StartSeconds = value.Start,
+            EndSeconds = value.End,
+            Title = value.Title
+        }).ToArray();
 
     public void Dispose()
     {

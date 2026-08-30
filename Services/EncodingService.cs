@@ -158,7 +158,8 @@ namespace MediaFlux.Services
                             _ffprobePath,
                             new MediaToolProcessRunner()),
                         new FfmpegDecodeIntegritySpotCheckService(
-                            _ffmpegPath)));
+                            _ffmpegPath),
+                        _log));
 
             // Capture the current SynchronizationContext (WinForms UI thread) to marshal progress callbacks safely.
             _syncContext = SynchronizationContext.Current;

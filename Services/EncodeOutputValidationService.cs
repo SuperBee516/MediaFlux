@@ -133,17 +133,27 @@ namespace MediaFlux.Services
     public sealed class EncodeOutputValidationService :
         IEncodeOutputValidationService
     {
+        // FFmpeg can discard container-created chapter entries shorter than this.
+        private const double MinimumMeaningfulChapterDurationSeconds = 0.050;
+
+        // Allows common mux timestamp rebasing/rounding while still detecting a
+        // meaningful chapter boundary or duration change.
+        private const double ChapterTimestampToleranceSeconds = 0.125;
+
         private readonly IMediaProbeService _probeService;
         private readonly IDecodeIntegritySpotCheckService _decodeIntegrityService;
+        private readonly Action<string>? _log;
 
         public EncodeOutputValidationService(
             IMediaProbeService probeService,
-            IDecodeIntegritySpotCheckService decodeIntegrityService)
+            IDecodeIntegritySpotCheckService decodeIntegrityService,
+            Action<string>? log = null)
         {
             _probeService = probeService ??
                 throw new ArgumentNullException(nameof(probeService));
             _decodeIntegrityService = decodeIntegrityService ??
                 throw new ArgumentNullException(nameof(decodeIntegrityService));
+            _log = log;
         }
 
         public async Task<EncodeOutputValidationResult> ValidateStagedAsync(
@@ -270,7 +280,7 @@ namespace MediaFlux.Services
                     $"FFprobe could not read the encoded output: {outputProbe.ErrorMessage}");
             }
 
-            string validationError = ValidateProbe(request, sourceProbe, outputProbe);
+            string validationError = ValidateProbe(request, sourceProbe, outputProbe, _log);
             if (!string.IsNullOrWhiteSpace(validationError))
                 return Failed(validationError);
 
@@ -309,7 +319,8 @@ namespace MediaFlux.Services
         internal static string ValidateProbe(
             EncodeOutputValidationRequest request,
             MediaProbeResult source,
-            MediaProbeResult output)
+            MediaProbeResult output,
+            Action<string>? log = null)
         {
             MediaProbeStreamInfo? sourceVideo = FirstStream(source, "video");
             MediaProbeStreamInfo? outputVideo = FirstStream(output, "video");
@@ -445,13 +456,12 @@ namespace MediaFlux.Services
                     return $"The encoded output contains {actual} attachment stream(s), but {expected} were selected for preservation.";
             }
 
-            if (source.Chapters.Count > 0 &&
-                output.Chapters.Count < source.Chapters.Count)
-            {
-                return
-                    $"The encoded output contains {output.Chapters.Count} chapter(s), but " +
-                    $"the source contains {source.Chapters.Count}.";
-            }
+            string chapterError = ValidateChapterPreservation(
+                source.Chapters,
+                output.Chapters,
+                log);
+            if (!string.IsNullOrWhiteSpace(chapterError))
+                return chapterError;
 
             if (source.FormatTags.TryGetValue("title", out string? sourceTitle) &&
                 !string.IsNullOrWhiteSpace(sourceTitle) &&
@@ -470,6 +480,170 @@ namespace MediaFlux.Services
 
             return "";
         }
+
+        private static string ValidateChapterPreservation(
+            IReadOnlyList<MediaProbeChapterInfo> sourceChapters,
+            IReadOnlyList<MediaProbeChapterInfo> outputChapters,
+            Action<string>? log)
+        {
+            IReadOnlyList<MediaProbeChapterInfo> source = NormalizeChapters(
+                sourceChapters,
+                "source",
+                log);
+            IReadOnlyList<MediaProbeChapterInfo> output = NormalizeChapters(
+                outputChapters,
+                "output",
+                log);
+
+            if (source.Count == 0)
+                return "";
+
+            if (output.Count != source.Count)
+            {
+                return
+                    $"Meaningful chapter preservation failed: the encoded output contains " +
+                    $"{output.Count} meaningful chapter(s), but the source contains " +
+                    $"{source.Count}.";
+            }
+
+            // FFmpeg may rebase container timestamps (for example, a source
+            // beginning at 0.083 seconds becoming 0 in the output). Compare
+            // chapter positions in that normalized timeline, but always compare
+            // the chapter durations directly.
+            double positionOffset = GetChapterPositionOffset(source[0], output[0]);
+            for (int index = 0; index < source.Count; index++)
+            {
+                MediaProbeChapterInfo expected = source[index];
+                MediaProbeChapterInfo actual = output[index];
+                int chapterNumber = index + 1;
+
+                if (!string.IsNullOrWhiteSpace(expected.Title) &&
+                    !string.Equals(
+                        expected.Title.Trim(),
+                        actual.Title?.Trim() ?? "",
+                        StringComparison.Ordinal))
+                {
+                    return
+                        $"Meaningful chapter preservation failed: chapter {chapterNumber} " +
+                        $"title changed from '{expected.Title}' to " +
+                        $"'{actual.Title ?? ""}'.";
+                }
+
+                string timestampError = ValidateChapterTimestamps(
+                    expected,
+                    actual,
+                    chapterNumber,
+                    positionOffset);
+                if (!string.IsNullOrWhiteSpace(timestampError))
+                    return timestampError;
+            }
+
+            return "";
+        }
+
+        private static double GetChapterPositionOffset(
+            MediaProbeChapterInfo source,
+            MediaProbeChapterInfo output) =>
+            source.StartSeconds is double sourceStart &&
+            output.StartSeconds is double outputStart
+                ? outputStart - sourceStart
+                : 0;
+
+        private static IReadOnlyList<MediaProbeChapterInfo> NormalizeChapters(
+            IReadOnlyList<MediaProbeChapterInfo> chapters,
+            string side,
+            Action<string>? log)
+        {
+            var meaningful = new List<MediaProbeChapterInfo>(chapters.Count);
+            foreach (MediaProbeChapterInfo chapter in chapters)
+            {
+                if (IsDegenerateChapter(chapter, out string reason))
+                {
+                    log?.Invoke(
+                        $"[EncodeOutputValidation] Ignored malformed/degenerate {side} " +
+                        $"chapter {chapter.Id} ({FormatChapterRange(chapter)}): {reason}.");
+                    continue;
+                }
+
+                meaningful.Add(chapter);
+            }
+
+            return meaningful;
+        }
+
+        private static bool IsDegenerateChapter(
+            MediaProbeChapterInfo chapter,
+            out string reason)
+        {
+            if (chapter.StartSeconds is not double start ||
+                chapter.EndSeconds is not double end ||
+                !double.IsFinite(start) ||
+                !double.IsFinite(end))
+            {
+                reason = "chapter timestamps are unavailable";
+                return false;
+            }
+
+            double duration = end - start;
+            if (duration <= 0)
+            {
+                reason = "end is not after start";
+                return true;
+            }
+
+            if (duration < MinimumMeaningfulChapterDurationSeconds)
+            {
+                reason =
+                    $"duration {duration:0.######} seconds is below the " +
+                    $"{MinimumMeaningfulChapterDurationSeconds * 1000:0} ms tolerance";
+                return true;
+            }
+
+            reason = "";
+            return false;
+        }
+
+        private static string ValidateChapterTimestamps(
+            MediaProbeChapterInfo expected,
+            MediaProbeChapterInfo actual,
+            int chapterNumber,
+            double positionOffset)
+        {
+            if (expected.StartSeconds is not double expectedStart ||
+                expected.EndSeconds is not double expectedEnd)
+            {
+                return "";
+            }
+
+            if (actual.StartSeconds is not double actualStart ||
+                actual.EndSeconds is not double actualEnd)
+            {
+                return
+                    $"Meaningful chapter preservation failed: chapter {chapterNumber} " +
+                    "timestamps are missing from the encoded output.";
+            }
+
+            double positionDifference = Math.Abs(
+                actualStart - (expectedStart + positionOffset));
+            double durationDifference = Math.Abs(
+                (actualEnd - actualStart) - (expectedEnd - expectedStart));
+            if (positionDifference > ChapterTimestampToleranceSeconds ||
+                durationDifference > ChapterTimestampToleranceSeconds)
+            {
+                return
+                    $"Meaningful chapter preservation failed: chapter {chapterNumber} " +
+                    $"position changed by {positionDifference:0.###} seconds and duration " +
+                    $"changed by {durationDifference:0.###} seconds (allowed " +
+                    $"{ChapterTimestampToleranceSeconds:0.###} seconds for mux timestamp " +
+                    "rebasing/rounding).";
+            }
+
+            return "";
+        }
+
+        private static string FormatChapterRange(MediaProbeChapterInfo chapter) =>
+            $"{chapter.StartSeconds?.ToString("0.######", CultureInfo.InvariantCulture) ?? "unknown"}" +
+            $"-{chapter.EndSeconds?.ToString("0.######", CultureInfo.InvariantCulture) ?? "unknown"}";
 
         internal static long MinimumPlausibleSize(double? durationSeconds)
         {
