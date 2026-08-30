@@ -48,23 +48,12 @@ jobs:
             $version = "${{ github.ref_name }}".TrimStart('v')
           }
 
-          if ($version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?$') {
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
             throw "'$version' is not a supported semantic version."
           }
 
           "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          # Keep normal releases on a three-part public tag/version. Velopack
-          # requires its package version to be newer than the prior package;
-          # package artifacts therefore use the next patch version while the
-          # public release identity remains the requested version.
-          if ($version -match '^(\d+)\.(\d+)\.(\d+)(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?$') {
-            $packageVersion = "$($matches[1]).$($matches[2]).$([int]$matches[3] + 1)"
-          }
-          else {
-            $packageVersion = $version
-          }
-          "packageVersion=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Restore and build
@@ -84,6 +73,16 @@ jobs:
             -p:DebugType=None `
             -p:DebugSymbols=false `
             -o .\artifacts\publish
+
+      - name: Verify application version
+        shell: pwsh
+        run: |
+          $expected = '${{ steps.version.outputs.value }}'
+          $exe = (Resolve-Path '.\artifacts\publish\MediaFlux.exe').Path
+          $actual = ([System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion -split '\+')[0]
+          if ($actual -ne $expected) {
+            throw "Published executable version '$actual' does not match release version '$expected'."
+          }
 
       - name: Verify release payload
         shell: pwsh
@@ -177,7 +176,7 @@ jobs:
         run: |
           .\.tools\vpk.exe pack `
             --packId MediaFlux `
-            --packVersion ${{ steps.version.outputs.packageVersion }} `
+            --packVersion ${{ steps.version.outputs.value }} `
             --packDir .\artifacts\publish `
             --outputDir .\artifacts\releases `
             --mainExe MediaFlux.exe `
@@ -187,6 +186,43 @@ jobs:
             --icon .\images\mediaflux_icn.ico `
             --runtime win-x64 `
             --shortcuts Desktop,StartMenuRoot
+
+      - name: Verify installer and update package versions
+        shell: pwsh
+        run: |
+          $expected = '${{ steps.version.outputs.value }}'
+          $package = Get-ChildItem '.\artifacts\releases' -Filter "MediaFlux-$expected-full.nupkg" | Select-Object -First 1
+          if ($null -eq $package) {
+            throw "No full update package was created for release version '$expected'."
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($package.FullName)
+          try {
+            $nuspec = $zip.GetEntry('MediaFlux.nuspec')
+            $application = $zip.GetEntry('lib/app/MediaFlux.exe')
+            if ($null -eq $nuspec -or $null -eq $application) {
+              throw "The update package is missing required versioned payload metadata."
+            }
+
+            $reader = [System.IO.StreamReader]::new($nuspec.Open())
+            try { [xml]$manifest = $reader.ReadToEnd() }
+            finally { $reader.Dispose() }
+            $packageVersion = [string]$manifest.package.metadata.version
+            if ($packageVersion -ne $expected) {
+              throw "Update package version '$packageVersion' does not match release version '$expected'."
+            }
+
+            $extractedExe = Join-Path $env:RUNNER_TEMP 'MediaFlux-version-check.exe'
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($application, $extractedExe, $true)
+            $applicationVersion = ([System.Diagnostics.FileVersionInfo]::GetVersionInfo($extractedExe).ProductVersion -split '\+')[0]
+            if ($applicationVersion -ne $expected) {
+              throw "Packaged application version '$applicationVersion' does not match release version '$expected'."
+            }
+          }
+          finally {
+            $zip.Dispose()
+          }
 
       - name: Publish GitHub Release
         shell: pwsh

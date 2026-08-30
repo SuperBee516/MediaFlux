@@ -3,7 +3,6 @@ using System.Reflection;
 using System.Windows.Forms;
 using MediaFlux.Services;
 using Velopack.Exceptions;
-using Velopack.Locators;
 using Velopack.Sources;
 
 namespace MediaFlux
@@ -17,24 +16,13 @@ namespace MediaFlux
         {
             get
             {
-                try
-                {
-                    var installed = VelopackLocator.Current.CurrentlyInstalledVersion;
-                    if (installed != null)
-                        return installed.ToString();
-                }
-                catch
-                {
-                    // Development and legacy portable builds have no Velopack metadata.
-                }
-
-                string? informational = Assembly.GetExecutingAssembly()
+                string? informational = typeof(UpdateManager).Assembly
                     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
                     .InformationalVersion;
                 if (!string.IsNullOrWhiteSpace(informational))
                     return informational.Split('+')[0];
 
-                var version = Assembly.GetExecutingAssembly().GetName().Version;
+                var version = typeof(UpdateManager).Assembly.GetName().Version;
                 return version == null ? "unknown" : $"{version.Major}.{version.Minor}.{version.Build}";
             }
         }

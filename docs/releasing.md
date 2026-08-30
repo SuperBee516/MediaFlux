@@ -12,7 +12,7 @@ Never place a GitHub access token in the MediaFlux application or its configurat
 
 ## Create a release
 
-The simplest path is **Actions > Build and Publish MediaFlux Release > Run workflow**. Enter a three-part semantic version such as `0.2.0`. A version containing a suffix, such as `0.2.0-beta.1`, is published as a pre-release and is not offered to normal installations.
+The simplest path is **Actions > Build and Publish MediaFlux Release > Run workflow**. Enter a three-part semantic version such as `0.2.0`. A version containing a suffix, such as `0.2.0-beta.1`, is published as a pre-release and is not offered to normal installations. The value is the single release identity: it becomes tag `vX.Y.Z`, the GitHub release, the application version shown in MediaFlux, and the Velopack installer/update-package version. Do not use a version already present in the published Velopack assets.
 
 The same workflow runs when a `v*` tag is pushed. It performs these tasks automatically:
 
@@ -22,6 +22,7 @@ The same workflow runs when a `v*` tag is pushed. It performs these tasks automa
 4. Generate release notes from commits since the previous tag.
 5. Create the Velopack installer, portable bundle, full update package, and delta package when a prior package exists.
 6. Publish the GitHub Release and its update feed.
+7. Verify that the executable, package manifest, and package payload all report the requested release version before publishing.
 
 ## Validate an update
 
@@ -31,5 +32,6 @@ Before announcing a stable release:
 2. Create a new release with a higher version.
 3. In the installed prior version, select **Help > Check for Updates**.
 4. Confirm settings, history, presets, Explorer commands, and configured FFmpeg tools still work after restart.
+5. Confirm the MediaFlux title bar reports the same `vX.Y.Z` version as the GitHub release tag.
 
 Legacy ZIP-based copies are not Velopack installations. Their update command opens the Releases page so the installer can be run once. All later upgrades are handled inside MediaFlux.
