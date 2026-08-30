@@ -41,6 +41,14 @@ namespace MediaFlux.Services
             string,
             Lazy<bool>> EncoderOptionCache =
             new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<
+            string,
+            Lazy<bool>> EncoderPixelFormatCache =
+            new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<
+            string,
+            Lazy<bool>> FilterCache =
+            new(StringComparer.OrdinalIgnoreCase);
 
         public static FfmpegEncoderCapabilities GetCapabilities(
             string ffmpegPath)
@@ -113,6 +121,20 @@ namespace MediaFlux.Services
             return options;
         }
 
+        internal static IReadOnlySet<string> ParseEncoderPixelFormats(string output)
+        {
+            string? line = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault(value => value.Contains(
+                    "Supported pixel formats:", StringComparison.OrdinalIgnoreCase));
+            if (line == null)
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            string values = line.Split(':', 2).Last();
+            return new HashSet<string>(
+                values.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries),
+                StringComparer.OrdinalIgnoreCase);
+        }
+
         internal static bool SupportsEncoderOption(
             string ffmpegPath,
             string encoderName,
@@ -143,10 +165,42 @@ namespace MediaFlux.Services
                     LazyThreadSafetyMode.ExecutionAndPublication)).Value;
         }
 
+        internal static bool SupportsEncoderPixelFormat(
+            string ffmpegPath,
+            string encoderName,
+            string pixelFormat)
+        {
+            if (string.IsNullOrWhiteSpace(encoderName) ||
+                string.IsNullOrWhiteSpace(pixelFormat))
+                return false;
+
+            string key = $"{CreateCacheKey(ffmpegPath)}|{encoderName}|pixfmt|{pixelFormat}";
+            return EncoderPixelFormatCache.GetOrAdd(
+                key,
+                _ => new Lazy<bool>(
+                    () => InspectEncoderPixelFormat(ffmpegPath, encoderName, pixelFormat),
+                    LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        }
+
+        internal static bool SupportsFilter(string ffmpegPath, string filterName)
+        {
+            if (string.IsNullOrWhiteSpace(filterName))
+                return false;
+
+            string key = $"{CreateCacheKey(ffmpegPath)}|filter|{filterName}";
+            return FilterCache.GetOrAdd(
+                key,
+                _ => new Lazy<bool>(
+                    () => InspectFilter(ffmpegPath, filterName),
+                    LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        }
+
         internal static void ClearCache()
         {
             Cache.Clear();
             EncoderOptionCache.Clear();
+            EncoderPixelFormatCache.Clear();
+            FilterCache.Clear();
         }
 
         private static string CreateCacheKey(string ffmpegPath)
@@ -304,6 +358,61 @@ namespace MediaFlux.Services
             {
                 TryTerminate(process);
                 return false;
+            }
+        }
+
+        private static bool InspectEncoderPixelFormat(
+            string ffmpegPath,
+            string encoderName,
+            string pixelFormat)
+        {
+            string output = InspectEncoderHelp(ffmpegPath, encoderName);
+            return ParseEncoderPixelFormats(output).Contains(pixelFormat);
+        }
+
+        private static bool InspectFilter(string ffmpegPath, string filterName)
+        {
+            string output = RunFfmpegText(ffmpegPath, "-hide_banner -filters");
+            return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(line => line.TrimStart().Split(
+                    (char[]?)null,
+                    StringSplitOptions.RemoveEmptyEntries)
+                    .Contains(filterName, StringComparer.OrdinalIgnoreCase));
+        }
+
+        private static string InspectEncoderHelp(string ffmpegPath, string encoderName) =>
+            RunFfmpegText(ffmpegPath, $"-hide_banner -h encoder={encoderName}");
+
+        private static string RunFfmpegText(string ffmpegPath, string arguments)
+        {
+            if (string.IsNullOrWhiteSpace(ffmpegPath) || !File.Exists(ffmpegPath))
+                return "";
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = ffmpegPath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            using var process = new Process { StartInfo = startInfo };
+            try
+            {
+                process.Start();
+                Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+                Task<string> stderr = process.StandardError.ReadToEndAsync();
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
+                return stdout.GetAwaiter().GetResult() + Environment.NewLine +
+                       stderr.GetAwaiter().GetResult();
+            }
+            catch
+            {
+                TryTerminate(process);
+                return "";
             }
         }
 

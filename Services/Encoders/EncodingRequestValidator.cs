@@ -62,11 +62,15 @@ namespace MediaFlux.Services.Encoders
 
             IVideoEncoderProvider provider = resolved.Provider;
             EncoderCapabilities capabilities = provider.Capabilities;
-            bool normalizedTenBit =
-                tenBit &&
-                capabilities.SupportsTenBit &&
-                selection.CodecFamily is
-                    VideoCodecFamily.Hevc or VideoCodecFamily.Av1;
+            if (tenBit &&
+                (!capabilities.SupportsTenBit ||
+                 selection.CodecFamily == VideoCodecFamily.H264))
+            {
+                throw new NotSupportedException(
+                    $"Requested: {selection.CodecFamily} 10-bit. " +
+                    $"Encoder '{selection.FfmpegCodec}' does not support that output format. " +
+                    "Choose an HEVC/AV1 10-bit-capable encoder or request 8-bit output.");
+            }
 
             return new ValidatedEncoderSettings(
                 resolved,
@@ -75,7 +79,7 @@ namespace MediaFlux.Services.Encoders
                 QualityValue: provider.NormalizeQuality(
                     selection.CodecFamily,
                     qualityValue),
-                TenBit: normalizedTenBit,
+                TenBit: tenBit,
                 ConcurrentEncoderSessions:
                     concurrentEncoderSessions &&
                     capabilities.IsHardware &&

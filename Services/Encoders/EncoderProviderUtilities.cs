@@ -11,23 +11,13 @@ namespace MediaFlux.Services.Encoders
         {
             if (!string.IsNullOrEmpty(context.ScaleExpression))
             {
-                if (context.WantsTenBit &&
-                    !string.IsNullOrEmpty(context.TenBitPixelFormat))
-                {
-                    builder.Append(
-                        $"-vf scale={context.ScaleExpression}:flags=lanczos," +
-                        $"format={context.TenBitPixelFormat} ");
-                }
-                else
-                {
-                    builder.Append(
-                        $"-vf scale={context.ScaleExpression}:flags=lanczos ");
-                }
+                builder.Append(
+                    $"-vf scale={context.ScaleExpression}:flags=lanczos," +
+                    $"format={context.OutputPixelFormat} ");
             }
-            else if (context.WantsTenBit &&
-                     !string.IsNullOrEmpty(context.TenBitPixelFormat))
+            else
             {
-                builder.Append($"-vf format={context.TenBitPixelFormat} ");
+                builder.Append($"-vf format={context.OutputPixelFormat} ");
             }
         }
 
@@ -36,31 +26,24 @@ namespace MediaFlux.Services.Encoders
             EncoderArgumentContext context)
         {
             builder.Append($"-c:v {context.Selection.FfmpegCodec} ");
+        }
 
-            if (!context.WantsTenBit ||
-                string.IsNullOrEmpty(context.TenBitPixelFormat))
-            {
-                return;
-            }
-
-            if (context.UseGpuResidentHighBitDepthOutput)
-            {
-                if (context.Selection.CodecFamily == VideoCodecFamily.Hevc)
-                    builder.Append("-profile:v main10 ");
-
-                builder.Append("-highbitdepth 1 ");
-                return;
-            }
-
+        public static void AppendOutputFormatFlags(
+            StringBuilder builder,
+            EncoderArgumentContext context)
+        {
             if (context.Selection.CodecFamily == VideoCodecFamily.Hevc)
             {
-                builder.Append(
-                    $"-profile:v main10 -pix_fmt {context.TenBitPixelFormat} ");
+                builder.Append(context.WantsTenBit ? "-profile:v main10 " : "-profile:v main ");
             }
-            else if (context.Selection.CodecFamily == VideoCodecFamily.Av1)
+            else if (context.Selection.CodecFamily == VideoCodecFamily.H264)
             {
-                builder.Append($"-pix_fmt {context.TenBitPixelFormat} ");
+                builder.Append("-profile:v high ");
             }
+
+            builder.Append($"-pix_fmt {context.OutputPixelFormat} ");
+            if (context.WantsTenBit && context.UseGpuResidentHighBitDepthOutput)
+                builder.Append("-highbitdepth 1 ");
         }
 
     }

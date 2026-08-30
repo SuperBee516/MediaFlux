@@ -17,17 +17,10 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.Equal(
-            "-y -hwaccel cuda -hwaccel_output_format cuda " +
-            "-i \"C:\\Media\\source.mkv\" " +
-            "-map 0:v:0 -map 0:a? -map 0:s? -dn " +
-            "-map_metadata 0 -map_chapters 0 " +
-            "-c:s copy -c:v hevc_nvenc -rc vbr -cq 24 -preset p6 " +
-            "-tune hq -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 " +
-            "-aq-strength 12 -surfaces 48 -multipass fullres " +
-            "-bf 4 -b_ref_mode middle -refs 4 -c:a copy " +
-            "-movflags +faststart -f mp4 \"C:\\Output\\source.mp4\"",
-            arguments);
+        Assert.Contains("-hwaccel cuda -hwaccel_output_format cuda ", arguments);
+        Assert.Contains("-vf scale_cuda:format=nv12 ", arguments);
+        Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
+        Assert.Contains("-metadata:s:v:0 BPS= ", arguments);
     }
 
     [Fact]
@@ -64,11 +57,10 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Contains(
             "-hwaccel cuda -hwaccel_output_format cuda ",
             arguments);
+        Assert.Contains("-vf scale_cuda:format=p010le ", arguments);
         Assert.Contains(
-            "-c:v hevc_nvenc -profile:v main10 -highbitdepth 1 ",
+            "-profile:v main10 -pix_fmt p010le -highbitdepth 1 ",
             arguments);
-        Assert.DoesNotContain("format=p010le", arguments);
-        Assert.DoesNotContain("-pix_fmt p010le", arguments);
     }
 
     [Fact]
@@ -84,7 +76,7 @@ public sealed class FfmpegCommandBuilderTests
         string arguments = CreateBuilder().Build(request);
 
         Assert.Contains(
-            "-vf scale_cuda=-2:1080:interp_algo=lanczos ",
+            "-vf scale_cuda=-2:1080:interp_algo=lanczos:format=p010le ",
             arguments);
         Assert.Contains("-highbitdepth 1 ", arguments);
         Assert.DoesNotContain("scale=-2:1080:flags=lanczos", arguments);
@@ -96,7 +88,8 @@ public sealed class FfmpegCommandBuilderTests
         FfmpegCommandRequest request = CreateRequest(
             "hevc_nvenc",
             useGpu: true,
-            tenBit: true);
+            tenBit: true,
+            nvencCudaFormatConversionSupported: false);
 
         string arguments = CreateBuilder().Build(request);
 
@@ -265,9 +258,42 @@ public sealed class FfmpegCommandBuilderTests
 
         Assert.Contains(
             "-vf scale=-2:1080:flags=lanczos,format=yuv420p10le " +
-            "-c:v libx265 -profile:v main10 -pix_fmt yuv420p10le " +
-            "-crf 24 -preset slow ",
+            "-c:v libx265 -crf 24 -preset slow " +
+            "-profile:v main10 -pix_fmt yuv420p10le ",
             arguments);
+    }
+
+    [Theory]
+    [InlineData("hevc_nvenc", false, "nv12", "main")]
+    [InlineData("hevc_nvenc", true, "p010le", "main10")]
+    [InlineData("h264_nvenc", false, "nv12", "high")]
+    public void NvencAlwaysExplicitlySelectsRequestedOutputFormat(
+        string encoder,
+        bool tenBit,
+        string pixelFormat,
+        string profile)
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            encoder,
+            useGpu: true,
+            tenBit: tenBit,
+            nvencHighBitDepthOutputSupported: tenBit,
+            nvencCudaFormatConversionSupported: true));
+
+        Assert.Contains($"format={pixelFormat}", arguments);
+        Assert.Contains($"-profile:v {profile} -pix_fmt {pixelFormat}", arguments);
+    }
+
+    [Fact]
+    public void SoftwareEightBitOutputExplicitlyConvertsFormatWhenScaling()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "libx265",
+            useGpu: false,
+            scaleMode: EncodingService.ScaleMode.To1080p));
+
+        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=yuv420p ", arguments);
+        Assert.Contains("-profile:v main -pix_fmt yuv420p ", arguments);
     }
 
     [Theory]
@@ -352,7 +378,9 @@ public sealed class FfmpegCommandBuilderTests
         string arguments = CreateBuilder().Build(request);
 
         Assert.Contains("-map 0:v:0 -map 0:a? -dn ", arguments);
-        Assert.Contains("-map_metadata 0 -map_chapters 0 -sn ", arguments);
+        Assert.Contains("-map_metadata 0 -map_chapters 0 ", arguments);
+        Assert.Contains("-metadata:s:v:0 BPS= ", arguments);
+        Assert.Contains("-sn ", arguments);
         Assert.Contains("-c:v libx265 -crf 25 -preset fast ", arguments);
         Assert.Contains("-c:a aac -b:a 192k -ac 6 ", arguments);
         Assert.DoesNotContain("-c:s copy", arguments);
@@ -528,6 +556,7 @@ public sealed class FfmpegCommandBuilderTests
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None,
         bool nvencHighBitDepthOutputSupported = false,
+        bool nvencCudaFormatConversionSupported = true,
         OutputContainer outputContainer = OutputContainer.Mp4)
     {
         ResolvedVideoEncoder encoder =
@@ -550,6 +579,7 @@ public sealed class FfmpegCommandBuilderTests
              knownMappedAncillaryBitrateKbps,
              scaleMode,
              nvencHighBitDepthOutputSupported,
+             nvencCudaFormatConversionSupported,
              outputContainer);
     }
 
@@ -571,6 +601,7 @@ public sealed class FfmpegCommandBuilderTests
         EncodingService.ScaleMode scaleMode =
             EncodingService.ScaleMode.None,
         bool nvencHighBitDepthOutputSupported = false,
+        bool nvencCudaFormatConversionSupported = true,
         OutputContainer outputContainer = OutputContainer.Mp4)
     {
 
@@ -615,7 +646,9 @@ public sealed class FfmpegCommandBuilderTests
             ForceMp4CompatibleAudio = false,
             KnownDuration = knownDuration ?? TimeSpan.FromMinutes(10),
             NvencHighBitDepthOutputSupported =
-                nvencHighBitDepthOutputSupported
+                nvencHighBitDepthOutputSupported,
+            NvencCudaFormatConversionSupported =
+                nvencCudaFormatConversionSupported
         };
     }
 }

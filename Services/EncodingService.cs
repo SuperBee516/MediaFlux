@@ -683,6 +683,15 @@ namespace MediaFlux.Services
                 useGpu,
                 tenBit,
                 ffArgs);
+            MediaProbeStreamInfo? sourceVideo = sourceProbe.Streams.FirstOrDefault(
+                stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+            _log?.Invoke(
+                $"[EncodingService] Output format intent: Requested: " +
+                $"{requestedEncoder.CodecFamily} {(tenBit ? "10-bit" : "8-bit")}; " +
+                $"Source: {sourceVideo?.CodecName ?? "unknown"} " +
+                $"{sourceVideo?.Profile ?? ""} / {sourceVideo?.PixelFormat ?? "unknown"}; " +
+                $"Encoder: {requestedEncoder.FfmpegCodec}; " +
+                $"Pipeline/conversion selected: {pipelineDiagnostic}.");
             callback($"[MediaFlux] Video pipeline: {pipelineDiagnostic}");
             _log?.Invoke(
                 $"[EncodingService] Video pipeline: {pipelineDiagnostic}");
@@ -1068,9 +1077,34 @@ namespace MediaFlux.Services
                         encoderSelection.EncoderId,
                         encoderSelection.CodecFamily);
             EnsureEncoderAvailable(resolved.Selection);
+            bool isNvenc = resolved.Selection.EncoderId.Equals(
+                VideoEncoderIds.Nvenc,
+                StringComparison.OrdinalIgnoreCase);
+            string requiredEncoderPixelFormat = tenBit ? "p010le" : "nv12";
+            FfmpegEncoderCapabilities capabilities =
+                FfmpegEncoderCapabilityService.GetCapabilities(_ffmpegPath);
+            if (isNvenc && capabilities.InspectionSucceeded &&
+                !FfmpegEncoderCapabilityService.SupportsEncoderPixelFormat(
+                    _ffmpegPath,
+                    resolved.Selection.FfmpegCodec,
+                    requiredEncoderPixelFormat))
+            {
+                throw new NotSupportedException(
+                    $"Requested: {resolved.Selection.CodecFamily} " +
+                    $"{(tenBit ? "10-bit" : "8-bit")} ({requiredEncoderPixelFormat}). " +
+                    $"Encoder '{resolved.Selection.FfmpegCodec}' in the configured FFmpeg " +
+                    "build does not support that pixel format. Choose a supported encoder " +
+                    "or configure a newer FFmpeg build.");
+            }
+            bool supportsCudaFormatConversion =
+                isNvenc && useGpu &&
+                FfmpegEncoderCapabilityService.SupportsFilter(
+                    _ffmpegPath,
+                    "scale_cuda");
             bool supportsGpuResidentHighBitDepthOutput =
                 useGpu &&
                 tenBit &&
+                supportsCudaFormatConversion &&
                 resolved.Selection.EncoderId.Equals(
                     VideoEncoderIds.Nvenc,
                     StringComparison.OrdinalIgnoreCase) &&
@@ -1111,7 +1145,9 @@ namespace MediaFlux.Services
                 SampleStart = sampleStart,
                 SampleDuration = sampleDuration,
                 NvencHighBitDepthOutputSupported =
-                    supportsGpuResidentHighBitDepthOutput
+                    supportsGpuResidentHighBitDepthOutput,
+                NvencCudaFormatConversionSupported =
+                    supportsCudaFormatConversion
             };
 
             var builder = new FfmpegCommandBuilder(

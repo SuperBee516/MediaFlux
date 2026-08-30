@@ -382,13 +382,19 @@ namespace MediaFlux.Services
             if (request.TenBit && !outputIsTenBit)
             {
                 return
-                    $"The encoded pixel format '{outputVideo.PixelFormat}' is not 10-bit as requested.";
+                    $"{DescribeVideoFormatIntent(request, sourceVideo, outputVideo)} " +
+                    "The encoded pixel format is not 10-bit as requested.";
             }
             if (!request.TenBit && outputIsTenBit)
             {
                 return
-                    $"The encoded pixel format '{outputVideo.PixelFormat}' is not compatible with 8-bit output.";
+                    $"{DescribeVideoFormatIntent(request, sourceVideo, outputVideo)} " +
+                    "The encoded pixel format is not compatible with 8-bit output.";
             }
+
+            string profileError = ValidateRequestedProfile(request, outputVideo);
+            if (!string.IsNullOrWhiteSpace(profileError))
+                return profileError;
 
             string durationError = ValidateDuration(
                 request.Input.Kind,
@@ -715,6 +721,40 @@ namespace MediaFlux.Services
 
         private static string Describe(int? value) =>
             value?.ToString(CultureInfo.InvariantCulture) ?? "unknown";
+
+        private static string DescribeVideoFormatIntent(
+            EncodeOutputValidationRequest request,
+            MediaProbeStreamInfo source,
+            MediaProbeStreamInfo actual) =>
+            $"Requested: {request.Encoder.CodecFamily} " +
+            $"{(request.TenBit ? "10-bit" : "8-bit")}; " +
+            $"Source: {source.CodecName} {source.Profile} / {source.PixelFormat}; " +
+            $"Encoder: {request.Encoder.FfmpegCodec}; " +
+            $"Actual: {actual.CodecName} {actual.Profile} / {actual.PixelFormat}.";
+
+        private static string ValidateRequestedProfile(
+            EncodeOutputValidationRequest request,
+            MediaProbeStreamInfo output)
+        {
+            if (string.IsNullOrWhiteSpace(output.Profile))
+                return "";
+
+            string? expected = request.Encoder.CodecFamily switch
+            {
+                VideoCodecFamily.Hevc => request.TenBit ? "main10" : "main",
+                VideoCodecFamily.H264 => "high",
+                _ => null
+            };
+            if (expected == null)
+                return "";
+
+            string actual = output.Profile.Replace(" ", "", StringComparison.Ordinal)
+                .Trim();
+            return actual.Equals(expected, StringComparison.OrdinalIgnoreCase)
+                ? ""
+                : $"The encoded video profile '{output.Profile}' is not the expected " +
+                  $"{expected} profile for the requested output.";
+        }
 
         private static EncodeOutputValidationResult Failed(string message) => new()
         {

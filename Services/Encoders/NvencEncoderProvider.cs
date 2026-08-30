@@ -79,29 +79,24 @@ namespace MediaFlux.Services.Encoders
             if (!context.UseGpu || context.IsAsfFamilyInput)
                 return;
 
-            if (context.WantsTenBit &&
-                !context.UseGpuResidentHighBitDepthOutput)
-                builder.Append("-hwaccel cuda ");
-            else
+            if (context.UseGpuResidentFormatConversion)
                 builder.Append("-hwaccel cuda -hwaccel_output_format cuda ");
+            else
+                builder.Append("-hwaccel cuda ");
         }
 
         public void AppendVideoFilters(
             StringBuilder builder,
             EncoderArgumentContext context)
         {
-            if (!string.IsNullOrEmpty(context.ScaleExpression) &&
-                context.UseGpu &&
-                (!context.WantsTenBit ||
-                 context.UseGpuResidentHighBitDepthOutput))
+            if (context.UseGpuResidentFormatConversion)
             {
-                builder.Append(
-                    $"-vf scale_cuda={context.ScaleExpression}:interp_algo=lanczos ");
+                string scale = string.IsNullOrEmpty(context.ScaleExpression)
+                    ? "scale_cuda"
+                    : $"scale_cuda={context.ScaleExpression}:interp_algo=lanczos";
+                builder.Append($"-vf {scale}:format={context.OutputPixelFormat} ");
                 return;
             }
-
-            if (context.UseGpuResidentHighBitDepthOutput)
-                return;
 
             EncoderProviderUtilities.AppendSoftwareVideoFilters(builder, context);
         }

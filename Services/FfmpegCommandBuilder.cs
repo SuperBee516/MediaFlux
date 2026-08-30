@@ -49,11 +49,9 @@ namespace MediaFlux.Services
 
             bool wantsTenBit = validated.TenBit;
 
-            string? tenBitPixelFormat = wantsTenBit
-                ? (provider.Capabilities.IsHardware
-                    ? "p010le"
-                    : "yuv420p10le")
-                : null;
+            string outputPixelFormat = wantsTenBit
+                ? (provider.Capabilities.IsHardware ? "p010le" : "yuv420p10le")
+                : (provider.Capabilities.IsHardware ? "nv12" : "yuv420p");
 
             string scaleExpression = request.ScaleMode switch
             {
@@ -69,7 +67,8 @@ namespace MediaFlux.Services
                 Selection = selection,
                 UseGpu = validated.UseGpu,
                 WantsTenBit = wantsTenBit,
-                TenBitPixelFormat = tenBitPixelFormat,
+                TenBitPixelFormat = wantsTenBit ? outputPixelFormat : null,
+                OutputPixelFormat = outputPixelFormat,
                 ScaleExpression = scaleExpression,
                 Preset = validated.Preset,
                 QualityValue = validated.QualityValue,
@@ -82,7 +81,13 @@ namespace MediaFlux.Services
                     selection.EncoderId.Equals(
                         VideoEncoderIds.Nvenc,
                         StringComparison.OrdinalIgnoreCase) &&
-                    request.NvencHighBitDepthOutputSupported
+                    request.NvencHighBitDepthOutputSupported,
+                UseGpuResidentFormatConversion =
+                    validated.UseGpu &&
+                    selection.EncoderId.Equals(
+                        VideoEncoderIds.Nvenc,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    request.NvencCudaFormatConversionSupported
             };
 
             var builder = new StringBuilder();
@@ -110,6 +115,7 @@ namespace MediaFlux.Services
                 copyDataStreams,
                 request.CopyAttachments);
             builder.Append("-map_metadata 0 -map_chapters 0 ");
+            AppendObsoleteVideoStatisticsCleanup(builder);
             if (request.SampleDuration is { } sampleDuration && sampleDuration > TimeSpan.Zero)
                 builder.Append($"-t {Seconds(sampleDuration.TotalSeconds)} ");
 
@@ -134,6 +140,7 @@ namespace MediaFlux.Services
             {
                 provider.AppendQualityArguments(builder, context);
             }
+            EncoderProviderUtilities.AppendOutputFormatFlags(builder, context);
 
             AppendAudioArguments(builder, request);
             if (request.ContainerDecision.Resolved == OutputContainer.Mp4)
@@ -248,6 +255,24 @@ namespace MediaFlux.Services
             else
             {
                 builder.Append("-c:a copy ");
+            }
+        }
+
+        private static void AppendObsoleteVideoStatisticsCleanup(StringBuilder builder)
+        {
+            // Matroska muxers often carry these values as per-stream tags. They
+            // describe the old encoded video and are no longer authoritative once
+            // the video stream is transcoded; preserve all other metadata.
+            foreach (string key in new[]
+                     {
+                         "BPS", "BPS-eng", "NUMBER_OF_BYTES",
+                         "NUMBER_OF_BYTES-eng", "NUMBER_OF_FRAMES",
+                         "NUMBER_OF_FRAMES-eng", "DURATION", "ENCODER",
+                         "_STATISTICS_TAGS", "_STATISTICS_WRITING_APP",
+                         "_STATISTICS_WRITING_DATE_UTC"
+                     })
+            {
+                builder.Append($"-metadata:s:v:0 {key}= ");
             }
         }
 

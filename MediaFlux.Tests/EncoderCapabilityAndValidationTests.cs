@@ -49,6 +49,21 @@ public sealed class EncoderCapabilityAndValidationTests
     }
 
     [Fact]
+    public void EncoderPixelFormatPreflightRecognizesSupportedFormats()
+    {
+        const string help = """
+            Encoder hevc_nvenc [NVIDIA NVENC hevc encoder]:
+            Supported pixel formats: yuv420p nv12 p010le yuv444p
+            """;
+
+        IReadOnlySet<string> formats =
+            FfmpegEncoderCapabilityService.ParseEncoderPixelFormats(help);
+
+        Assert.Contains("p010le", formats);
+        Assert.Contains("nv12", formats);
+    }
+
+    [Fact]
     public void Libx265NormalizationRemovesGpuOnlyState()
     {
         ResolvedVideoEncoder encoder = EncoderRegistry.Default.Resolve(
@@ -75,25 +90,18 @@ public sealed class EncoderCapabilityAndValidationTests
     }
 
     [Fact]
-    public void UnsupportedTenBitRequestIsNormalizedOff()
+    public void UnsupportedTenBitRequestFailsBeforeEncoding()
     {
         ResolvedVideoEncoder encoder = EncoderRegistry.Default.Resolve(
             VideoEncoderIds.Libx264,
             VideoCodecFamily.H264);
 
-        ValidatedEncoderSettings actual =
+        NotSupportedException error = Assert.Throws<NotSupportedException>(() =>
             EncodingRequestValidator.ValidateAndNormalize(
-                EncoderRegistry.Default,
-                encoder.Selection,
-                useGpu: false,
-                targetMb: null,
-                preset: "slow",
-                qualityValue: 23,
-                tenBit: true,
-                audioChannels: null,
-                concurrentEncoderSessions: false);
+                EncoderRegistry.Default, encoder.Selection, false, null, "slow", 23,
+                tenBit: true, audioChannels: null, concurrentEncoderSessions: false));
 
-        Assert.False(actual.TenBit);
+        Assert.Contains("Requested: H264 10-bit", error.Message);
     }
 
     [Fact]
