@@ -24,6 +24,23 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void RestorationChainIsPrependedBeforeExistingScaleAndFormat()
+    {
+        var request = CreateRequest("libx265", useGpu: false,
+            scaleMode: EncodingService.ScaleMode.To1080p,
+            restoration: new VideoRestorationSettings
+            {
+                Preset = VideoRestorationPreset.Custom,
+                Denoise = VideoRestorationStrength.Light,
+                Sharpen = VideoRestorationStrength.Light
+            });
+
+        string arguments = CreateBuilder().Build(request);
+
+        Assert.Contains("-vf hqdn3d=1:1:2:2,unsharp=5:5:0.3:5:5:0,scale=-2:1080:flags=lanczos,format=yuv420p ", arguments);
+    }
+
+    [Fact]
     public void ConcurrentNvencCommandUsesExistingReducedTuning()
     {
         FfmpegCommandRequest request = CreateRequest(
@@ -606,7 +623,8 @@ public sealed class FfmpegCommandBuilderTests
             EncodingService.ScaleMode.None,
         bool nvencHighBitDepthOutputSupported = false,
         string sourcePixelFormat = "",
-        OutputContainer outputContainer = OutputContainer.Mp4)
+        OutputContainer outputContainer = OutputContainer.Mp4,
+        VideoRestorationSettings? restoration = null)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -629,7 +647,8 @@ public sealed class FfmpegCommandBuilderTests
              scaleMode,
              nvencHighBitDepthOutputSupported,
              sourcePixelFormat,
-             outputContainer);
+             outputContainer,
+             restoration);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -651,7 +670,8 @@ public sealed class FfmpegCommandBuilderTests
             EncodingService.ScaleMode.None,
         bool nvencHighBitDepthOutputSupported = false,
         string sourcePixelFormat = "",
-        OutputContainer outputContainer = OutputContainer.Mp4)
+        OutputContainer outputContainer = OutputContainer.Mp4,
+        VideoRestorationSettings? restoration = null)
     {
 
         return new FfmpegCommandRequest
@@ -672,6 +692,7 @@ public sealed class FfmpegCommandBuilderTests
             UseGpu = useGpu,
             TargetMb = targetMb,
             ScaleMode = scaleMode,
+            Restoration = restoration ?? new VideoRestorationSettings(),
             EncoderPreset = preset,
             QualityValue = qualityValue,
             TenBit = tenBit,

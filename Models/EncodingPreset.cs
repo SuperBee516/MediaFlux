@@ -28,5 +28,6 @@ namespace MediaFlux.Models
         public bool EnableCodecSuffix { get; set; }
         public string OutputSuffix { get; set; } = "";
         public string OutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
+        public VideoRestorationSettings Restoration { get; set; } = new();
     }
 }

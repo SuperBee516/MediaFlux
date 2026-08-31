@@ -61,10 +61,11 @@ namespace MediaFlux.Services
                 _ => string.Empty
             };
             bool sourceIsTenBit = IsTenBitPixelFormat(request.SourcePixelFormat);
+            string restorationFilterChain = VideoRestorationPipeline.BuildFilterChain(request.Restoration, request.ScaleMode);
             bool requiresVideoFilter =
                 !string.IsNullOrEmpty(scaleExpression) ||
                 string.IsNullOrWhiteSpace(request.SourcePixelFormat) ||
-                sourceIsTenBit != wantsTenBit;
+                sourceIsTenBit != wantsTenBit || !string.IsNullOrEmpty(restorationFilterChain);
 
             var context = new EncoderArgumentContext
             {
@@ -74,6 +75,7 @@ namespace MediaFlux.Services
                 TenBitPixelFormat = wantsTenBit ? outputPixelFormat : null,
                 OutputPixelFormat = outputPixelFormat,
                 ScaleExpression = scaleExpression,
+                RestorationFilterChain = restorationFilterChain,
                 Preset = validated.Preset,
                 QualityValue = validated.QualityValue,
                 ConcurrentEncoderSessions =

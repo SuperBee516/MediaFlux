@@ -327,7 +327,8 @@ namespace MediaFlux.Services
                 request.ContainerCompatibilityConfirmed,
                 request.ContainerDecisionCallback,
                 request.SampleStart,
-                request.SampleDuration);
+                request.SampleDuration,
+                request.Restoration);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -484,7 +485,8 @@ namespace MediaFlux.Services
             bool containerCompatibilityConfirmed = false,
             Action<OutputContainerDecision>? containerDecisionCallback = null,
             TimeSpan? sampleStart = null,
-            TimeSpan? sampleDuration = null)
+            TimeSpan? sampleDuration = null,
+            VideoRestorationSettings? restoration = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -513,7 +515,8 @@ namespace MediaFlux.Services
                 containerCompatibilityConfirmed,
                 containerDecisionCallback,
                 sampleStart,
-                sampleDuration);
+                sampleDuration,
+                restoration);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -543,9 +546,11 @@ namespace MediaFlux.Services
             bool containerCompatibilityConfirmed = false,
             Action<OutputContainerDecision>? containerDecisionCallback = null,
             TimeSpan? sampleStart = null,
-            TimeSpan? sampleDuration = null)
+            TimeSpan? sampleDuration = null,
+            VideoRestorationSettings? restoration = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            VideoRestorationPipeline.Validate(restoration ?? new VideoRestorationSettings(), scaleMode);
 
             ArgumentNullException.ThrowIfNull(inputSource);
             string input = inputSource.InputPath;
@@ -678,7 +683,12 @@ namespace MediaFlux.Services
                 encoderSelection,
                 sampleStart,
                 sampleDuration,
-                sourcePixelFormat);
+                sourcePixelFormat,
+                restoration: restoration);
+
+            string restorationChain = VideoRestorationPipeline.BuildFilterChain(restoration, scaleMode);
+            if (!string.IsNullOrWhiteSpace(restorationChain))
+                _log?.Invoke($"[EncodingService] Video restoration: {(restoration ?? new VideoRestorationSettings()).Preset}; filters: {restorationChain}");
 
             string pipelineDiagnostic = DescribeVideoPipeline(
                 inputSource,
@@ -724,7 +734,7 @@ namespace MediaFlux.Services
                     mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
                     containerDecision, forceMp4CompatibleAudio, totalDuration,
                     qualityValue, encoderSelection, sampleStart, sampleDuration,
-                    sourcePixelFormat, preferNvencGpuResidentFrames: false);
+                    sourcePixelFormat, preferNvencGpuResidentFrames: false, restoration: restoration);
                 pipelineDiagnostic = DescribeVideoPipeline(
                     inputSource, videoCodec, useGpu, tenBit, ffArgs);
                 _log?.Invoke(
@@ -1126,7 +1136,8 @@ namespace MediaFlux.Services
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
             string? sourcePixelFormat = null,
-            bool preferNvencGpuResidentFrames = true)
+            bool preferNvencGpuResidentFrames = true,
+            VideoRestorationSettings? restoration = null)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -1174,6 +1185,7 @@ namespace MediaFlux.Services
                 UseGpu = useGpu,
                 TargetMb = targetMb,
                 ScaleMode = scaleMode,
+                Restoration = restoration?.Clone() ?? new VideoRestorationSettings(),
                 EncoderPreset = encoderPreset,
                 QualityValue = qualityValue,
                 TenBit = tenBit,

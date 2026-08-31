@@ -16,6 +16,7 @@ namespace MediaFlux.Services
         public double? TargetMb { get; init; }
         public EncodingService.ScaleMode ScaleMode { get; init; } =
             EncodingService.ScaleMode.None;
+        public VideoRestorationSettings Restoration { get; init; } = new();
         public string? EncoderPreset { get; init; }
         public int? QualityValue { get; init; }
         public bool TenBit { get; init; }

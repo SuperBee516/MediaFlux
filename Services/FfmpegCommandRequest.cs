@@ -10,6 +10,7 @@ namespace MediaFlux.Services
         public required bool UseGpu { get; init; }
         public required double? TargetMb { get; init; }
         public required EncodingService.ScaleMode ScaleMode { get; init; }
+        public VideoRestorationSettings Restoration { get; init; } = new();
         public required string? EncoderPreset { get; init; }
         public required int? QualityValue { get; init; }
         public required bool TenBit { get; init; }

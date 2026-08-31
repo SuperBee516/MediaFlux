@@ -144,7 +144,8 @@ namespace MediaFlux
                 EnableOutputSuffix = _config.EnableOutputSuffix,
                 EnableCodecSuffix = _config.EnableCodecSuffix,
                 OutputSuffix = _config.OutputSuffix,
-                OutputContainer = GetSelectedOutputContainer().ToString()
+                OutputContainer = GetSelectedOutputContainer().ToString(),
+                Restoration = _config.VideoRestoration.Clone()
             };
         }
 
@@ -196,6 +197,7 @@ namespace MediaFlux
                 _config.EnableOutputSuffix = preset.EnableOutputSuffix;
                 _config.EnableCodecSuffix = preset.EnableCodecSuffix;
                 _config.OutputSuffix = preset.OutputSuffix ?? "";
+                _config.VideoRestoration = preset.Restoration?.Clone() ?? new VideoRestorationSettings();
                 SelectOutputContainer(preset.OutputContainer);
                 _config.LastOutputContainer = GetSelectedOutputContainer().ToString();
                 _config.LastCompressionProfile = comboCompressionProfile.Text;

@@ -2382,6 +2382,7 @@ namespace MediaFlux
 
             tlOptions.SizeChanged += (_, __) => UpdateWatchStatusWrapWidth();
             UpdateWatchStatusWrapWidth();
+            AddVideoRestorationControls(tlOptions);
             SelectOutputContainer(_config.LastOutputContainer);
             comboOutputContainer.SelectedIndexChanged += (_, __) =>
             {

@@ -99,7 +99,8 @@ public partial class MainForm
         TenBit = chkTenBit?.Checked == true, AudioChannels = comboAudioChannels?.Text ?? "", VideoFormat = comboVideoFormat.Text,
         AutoTargetSize = chkAutoTargetSize.Checked, TargetSize = txtTargetSize.Text, Resolution = comboResolution?.Text ?? "",
         DeleteSourceAfterCompression = chkDeleteSource.Checked, EnableOutputSuffix = _config.EnableOutputSuffix,
-        EnableCodecSuffix = _config.EnableCodecSuffix, OutputSuffix = _config.OutputSuffix
+        EnableCodecSuffix = _config.EnableCodecSuffix, OutputSuffix = _config.OutputSuffix,
+        Restoration = _config.VideoRestoration.Clone()
     };
 
     private void RefreshJobEstimates(EncodeJob job)
@@ -177,6 +178,7 @@ public partial class MainForm
         _config.EnableOutputSuffix = settings.EnableOutputSuffix;
         _config.EnableCodecSuffix = settings.EnableCodecSuffix;
         _config.OutputSuffix = settings.OutputSuffix;
+        _config.VideoRestoration = settings.Restoration?.Clone() ?? new VideoRestorationSettings();
         UpdateEncoderUiState();
     }
 

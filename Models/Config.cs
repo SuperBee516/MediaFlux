@@ -133,6 +133,7 @@ namespace MediaFlux.Models
         public string LastEncoderPreset { get; set; } = "p5";
         public string LastOutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
         public int LastQualityValue { get; set; } = 22;
+        public VideoRestorationSettings VideoRestoration { get; set; } = new();
 
         // Persist the main window's last usable size and position.
         public int MainWindowX { get; set; } = 0;
@@ -275,6 +276,7 @@ namespace MediaFlux.Models
             }
 
             config.LastQualityValue = Math.Clamp(config.LastQualityValue, 12, 35);
+            config.VideoRestoration ??= new VideoRestorationSettings();
 
             return config;
         }

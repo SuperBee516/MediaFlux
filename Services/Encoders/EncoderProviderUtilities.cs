@@ -9,19 +9,13 @@ namespace MediaFlux.Services.Encoders
             StringBuilder builder,
             EncoderArgumentContext context)
         {
-            if (!context.RequiresVideoFilter)
+            if (!context.RequiresVideoFilter && string.IsNullOrEmpty(context.RestorationFilterChain))
                 return;
-
-            if (!string.IsNullOrEmpty(context.ScaleExpression))
-            {
-                builder.Append(
-                    $"-vf scale={context.ScaleExpression}:flags=lanczos," +
-                    $"format={context.OutputPixelFormat} ");
-            }
-            else
-            {
-                builder.Append($"-vf format={context.OutputPixelFormat} ");
-            }
+            var filters = new List<string>();
+            if (!string.IsNullOrEmpty(context.RestorationFilterChain)) filters.Add(context.RestorationFilterChain);
+            if (!string.IsNullOrEmpty(context.ScaleExpression)) filters.Add($"scale={context.ScaleExpression}:flags=lanczos");
+            filters.Add($"format={context.OutputPixelFormat}");
+            builder.Append($"-vf {string.Join(',', filters)} ");
         }
 
         public static void AppendCodecAndTenBitFlags(

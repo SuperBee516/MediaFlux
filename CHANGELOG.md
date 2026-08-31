@@ -7,6 +7,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### 🎞️ Introducing Video Restoration
+
+MediaFlux now includes the foundation of a new Video Restoration system designed
+to improve older, lower-quality, and archival video during encoding—particularly
+vintage animation, DVD sources, VHS/TV captures, and similar material.
+
+Phase 1 introduces:
+
+- Video Restoration integration with the normal encoding pipeline
+- Vintage Animation – Light and Vintage Animation – Restore presets
+- DVD Animation Restore and VHS / TV Capture Restore presets
+- Custom restoration controls for denoise, artifact cleanup, debanding, sharpening,
+  deinterlace, color adjustment, and optional aspect-preserving resize
+- Restoration support for saved jobs and scheduled encoding
+- Restoration logging and validation
+
+Restoration remains disabled by default, so existing encoding behavior is unchanged
+unless explicitly enabled. This is the foundation for future MediaFlux restoration
+capabilities.
+
 ### Safer Encoding
 
 - Added transactional encoding: output is written to a staged file, validated with

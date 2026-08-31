@@ -49,6 +49,12 @@ public sealed class EncodeJobSettings
     public bool EnableOutputSuffix { get; set; }
     public bool EnableCodecSuffix { get; set; }
     public string OutputSuffix { get; set; } = "";
+    public VideoRestorationSettings Restoration { get; set; } = new();
 
-    public EncodeJobSettings Clone() => (EncodeJobSettings)MemberwiseClone();
+    public EncodeJobSettings Clone()
+    {
+        var clone = (EncodeJobSettings)MemberwiseClone();
+        clone.Restoration = Restoration?.Clone() ?? new VideoRestorationSettings();
+        return clone;
+    }
 }

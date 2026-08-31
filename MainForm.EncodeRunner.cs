@@ -740,6 +740,7 @@ namespace MediaFlux
                     UseGpu = useGpu,
                     TargetMb = targetMb,
                     ScaleMode = scaleMode,
+                    Restoration = _config.VideoRestoration.Clone(),
                     EncoderPreset = encoderPreset,
                     QualityValue =
                         estimateQuality,
