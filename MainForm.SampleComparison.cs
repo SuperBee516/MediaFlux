@@ -206,6 +206,7 @@ namespace MediaFlux
                 AudioChannels = audioChannels,
                 AdditionalMappedBitrateKbps =
                     meta?.EstimatedPlannedMappedAncillaryBitrateKbps ?? 0,
+                Restoration = _config.VideoRestoration.Clone(),
                 ClipSeconds = 25
             };
         }

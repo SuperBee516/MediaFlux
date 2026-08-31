@@ -23,6 +23,40 @@ Phase 1 introduces:
 - Restoration support for saved jobs and scheduled encoding
 - Restoration logging and validation
 
+## 🎞️ Video Restoration Phase 2
+
+MediaFlux Video Restoration is now more intelligent and source-aware.
+
+### What's New
+
+- Added Analyze / Recommend for Video Restoration
+- Added bounded source sampling for picture-condition analysis
+- Added conservative Noise and Banding classification
+- Added restoration recommendations with clear explanations
+- Animation Encode Hint now contributes to restoration recommendations
+- Added FFmpeg restoration filter capability detection
+
+### Improvements
+
+- Restoration recommendations now account for detected source characteristics
+- Compare uses the same restoration configuration and validation path as normal encoding
+- Normal, scheduled, and saved-job encoding now validate required FFmpeg restoration filters before launching FFmpeg
+- FFmpeg capability results are cached to avoid unnecessary repeated checks
+- Update window now presents richer, more readable release notes
+
+### Safety / Behavior
+
+- Restoration remains opt-in and is never automatically enabled
+- Explicit user restoration settings always take precedence
+- Uncertain analysis results are reported as Unknown rather than guessed
+- Telecine/IVTC decisions remain conservative and are not automatically forced
+
+### Current Limitations
+
+- Blocking detection remains conservative; MPEG-2 SD material may infer Moderate blocking while other uncertain cases remain Unknown
+- Noise/banding analysis uses lightweight FFmpeg signal statistics rather than dedicated artifact-detection models
+- AI restoration, VapourSynth, and Original-vs-Restored preview comparison are not included yet
+
 Restoration remains disabled by default, so existing encoding behavior is unchanged
 unless explicitly enabled. This is the foundation for future MediaFlux restoration
 capabilities.

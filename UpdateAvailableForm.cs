@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Windows.Forms;
+using MediaFlux.Services;
 
 namespace MediaFlux
 {
@@ -9,11 +10,12 @@ namespace MediaFlux
         {
             Text = "MediaFlux Update Available";
             StartPosition = FormStartPosition.CenterParent;
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false;
+            FormBorderStyle = FormBorderStyle.Sizable;
+            MaximizeBox = true;
             MinimizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(620, 440);
+            MinimumSize = new Size(620, 440);
+            ClientSize = new Size(700, 520);
 
             var heading = new Label
             {
@@ -41,21 +43,21 @@ namespace MediaFlux
             var notes = new RichTextBox
             {
                 Location = new Point(18, 100),
-                Size = new Size(584, 275),
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+                Size = new Size(664, 350),
                 ReadOnly = true,
                 BackColor = SystemColors.Window,
                 BorderStyle = BorderStyle.FixedSingle,
                 DetectUrls = true,
-                Text = string.IsNullOrWhiteSpace(releaseNotes)
-                    ? "No release notes were provided for this version."
-                    : releaseNotes.Trim()
+                Text = ReleaseNotesFormatter.Format(releaseNotes)
             };
 
             var install = new Button
             {
                 Text = "Download and Install",
                 DialogResult = DialogResult.OK,
-                Location = new Point(422, 395),
+                Anchor = AnchorStyles.Bottom | AnchorStyles.Right,
+                Location = new Point(502, 460),
                 Size = new Size(180, 30)
             };
 
@@ -63,7 +65,8 @@ namespace MediaFlux
             {
                 Text = "Later",
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(332, 395),
+                Anchor = AnchorStyles.Bottom | AnchorStyles.Right,
+                Location = new Point(412, 460),
                 Size = new Size(80, 30)
             };
 

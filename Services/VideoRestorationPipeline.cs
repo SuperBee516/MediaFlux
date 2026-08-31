@@ -6,6 +6,20 @@ namespace MediaFlux.Services;
 /// <summary>Builds the software FFmpeg restoration stages before the normal encode conversion.</summary>
 public static class VideoRestorationPipeline
 {
+    private static ISet<string>? _availableFilters;
+    public static void SetAvailableFilters(IEnumerable<string> filters) => _availableFilters = new HashSet<string>(filters, StringComparer.OrdinalIgnoreCase);
+    public static void ClearAvailableFilters() => _availableFilters = null;
+    public static void ValidateAvailable(VideoRestorationSettings? settings)
+    {
+        if (_availableFilters == null || settings is null || settings.Preset == VideoRestorationPreset.Off) return;
+        string[] required = RequiredFilters(settings).Where(filter => !_availableFilters.Contains(filter)).ToArray();
+        if (required.Length > 0) throw new NotSupportedException($"The configured FFmpeg build does not provide required restoration filter(s): {string.Join(", ", required)}.");
+    }
+    public static IReadOnlyList<string> RequiredFilters(VideoRestorationSettings settings)
+    {
+        var s = Effective(settings); var filters = new List<string>();
+        if (s.Deinterlace != VideoRestorationDeinterlace.Off) filters.Add("yadif"); if (s.Denoise != VideoRestorationStrength.Off) filters.Add("hqdn3d"); if (s.Deblock != VideoRestorationStrength.Off) filters.Add("deblock"); if (s.Deband != VideoRestorationStrength.Off) filters.Add("deband"); if (s.Sharpen != VideoRestorationStrength.Off) filters.Add("unsharp"); if (s.Brightness != 0 || s.Contrast != 1 || s.Saturation != 1) filters.Add("eq"); return filters;
+    }
     public static VideoRestorationSettings Effective(VideoRestorationSettings? settings)
     {
         var effective = settings?.Clone() ?? new VideoRestorationSettings();
@@ -26,13 +40,13 @@ public static class VideoRestorationPipeline
         if (s.Preset == VideoRestorationPreset.Off) return "";
         Validate(s, encodeScale);
         var filters = new List<string>();
-        if (s.Deinterlace != VideoRestorationDeinterlace.Off) filters.Add("yadif=mode=send_frame:parity=auto:deint=interlaced");
-        AddStrength(filters, s.Denoise, new[] { "hqdn3d=1:1:2:2", "hqdn3d=2:2:4:4", "hqdn3d=3:3:6:6" });
-        AddStrength(filters, s.Deblock, new[] { "deblock=filter=weak:block=4", "deblock=filter=medium:block=4", "deblock=filter=strong:block=4" });
-        if (s.Brightness != 0 || s.Contrast != 1 || s.Saturation != 1) filters.Add($"eq=brightness={Number(s.Brightness)}:contrast={Number(s.Contrast)}:saturation={Number(s.Saturation)}");
-        AddStrength(filters, s.Deband, new[] { "deband=1thr=0.02:2thr=0.02:range=8", "deband=1thr=0.04:2thr=0.04:range=12", "deband=1thr=0.06:2thr=0.06:range=16" });
+        if (s.Deinterlace != VideoRestorationDeinterlace.Off) Add(filters, "yadif", "yadif=mode=send_frame:parity=auto:deint=interlaced");
+        AddStrength(filters, s.Denoise, "hqdn3d", new[] { "hqdn3d=1:1:2:2", "hqdn3d=2:2:4:4", "hqdn3d=3:3:6:6" });
+        AddStrength(filters, s.Deblock, "deblock", new[] { "deblock=filter=weak:block=4", "deblock=filter=medium:block=4", "deblock=filter=strong:block=4" });
+        if (s.Brightness != 0 || s.Contrast != 1 || s.Saturation != 1) Add(filters, "eq", $"eq=brightness={Number(s.Brightness)}:contrast={Number(s.Contrast)}:saturation={Number(s.Saturation)}");
+        AddStrength(filters, s.Deband, "deband", new[] { "deband=1thr=0.02:2thr=0.02:range=8", "deband=1thr=0.04:2thr=0.04:range=12", "deband=1thr=0.06:2thr=0.06:range=16" });
         if (encodeScale == EncodingService.ScaleMode.None) AddResize(filters, s);
-        AddStrength(filters, s.Sharpen, new[] { "unsharp=5:5:0.3:5:5:0", "unsharp=5:5:0.6:5:5:0", "unsharp=5:5:0.9:5:5:0" });
+        AddStrength(filters, s.Sharpen, "unsharp", new[] { "unsharp=5:5:0.3:5:5:0", "unsharp=5:5:0.6:5:5:0", "unsharp=5:5:0.9:5:5:0" });
         return string.Join(',', filters);
     }
 
@@ -43,7 +57,8 @@ public static class VideoRestorationPipeline
         if (settings.Resize != VideoRestorationResize.Original && encodeScale != EncodingService.ScaleMode.None) throw new ArgumentException("Choose either restoration resize or the normal encode resolution, not both.");
     }
 
-    private static void AddStrength(List<string> filters, VideoRestorationStrength strength, string[] values) { if (strength != VideoRestorationStrength.Off) filters.Add(values[(int)strength - 1]); }
+    private static void AddStrength(List<string> filters, VideoRestorationStrength strength, string filter, string[] values) { if (strength != VideoRestorationStrength.Off) Add(filters, filter, values[(int)strength - 1]); }
+    private static void Add(List<string> filters, string filter, string expression) { if (_availableFilters == null || _availableFilters.Contains(filter)) filters.Add(expression); }
     private static void AddResize(List<string> filters, VideoRestorationSettings s)
     {
         string scale = s.Resize switch { VideoRestorationResize.To720p => "-2:720", VideoRestorationResize.To1080p => "-2:1080", VideoRestorationResize.Custom when s.PreserveAspectRatio => $"{s.CustomWidth}:{s.CustomHeight}:force_original_aspect_ratio=decrease", VideoRestorationResize.Custom => $"{s.CustomWidth}:{s.CustomHeight}", _ => "" };

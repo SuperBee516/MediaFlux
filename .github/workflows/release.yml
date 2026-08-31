@@ -54,10 +54,10 @@ jobs:
 
           "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          # Keep public releases on three-part versions while ensuring Velopack
-          # receives a strictly newer package version than the prior channel.
+          # The public release, application, updater, and package all use one
+          # exact validated version.
           if ($version -match '^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$') {
-            $packageVersion = "$($matches[1]).$($matches[2]).$([int]$matches[3] + 1)"
+            $packageVersion = $version
           }
           else {
             $packageVersion = $version
@@ -149,6 +149,12 @@ jobs:
           $changes = @(git log $range --pretty=format:'- %s (`%h`)')
           if ($changes.Count -eq 0) {
             $changes = @('- Maintenance and reliability improvements.')
+          }
+
+          $changelog = Get-Content .\CHANGELOG.md -Raw
+          $featureNotes = [regex]::Match($changelog, '(?ms)^## 🎞️ Video Restoration Phase 2\s*(.*?)(?=^## |\z)').Groups[1].Value.Trim()
+          if ($featureNotes) {
+            $changes = @($featureNotes, '', '### Commit summary', '') + $changes
           }
 
           @(

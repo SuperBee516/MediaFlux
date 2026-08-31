@@ -551,6 +551,19 @@ namespace MediaFlux.Services
         {
             cancellationToken.ThrowIfCancellationRequested();
             VideoRestorationPipeline.Validate(restoration ?? new VideoRestorationSettings(), scaleMode);
+            if (restoration?.Preset != VideoRestorationPreset.Off)
+            {
+                try
+                {
+                    FfmpegRestorationCapabilities capabilities = new FfmpegRestorationCapabilityService().GetAsync(_ffmpegPath, cancellationToken).GetAwaiter().GetResult();
+                    VideoRestorationPipeline.SetAvailableFilters(capabilities.Filters);
+                    VideoRestorationPipeline.ValidateAvailable(restoration);
+                    _log?.Invoke($"[EncodingService] Restoration filter inventory loaded for FFmpeg {capabilities.Version}.");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (NotSupportedException) { throw; }
+                catch (Exception ex) { throw new InvalidOperationException($"MediaFlux could not validate restoration filters before encoding: {ex.Message}", ex); }
+            }
 
             ArgumentNullException.ThrowIfNull(inputSource);
             string input = inputSource.InputPath;

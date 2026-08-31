@@ -19,6 +19,7 @@ namespace MediaFlux.Services
         public int? AudioChannels { get; init; }
         public double AdditionalMappedBitrateKbps { get; init; }
         public int ClipSeconds { get; init; } = 25;
+        public VideoRestorationSettings Restoration { get; init; } = new();
     }
 
     public sealed class SampleComparisonClip
@@ -318,10 +319,12 @@ namespace MediaFlux.Services
                         QualityValue = settings.QualityValue,
                         TenBit = settings.TenBit,
                         AudioChannels = settings.AudioChannels,
+                        Restoration = settings.Restoration.Clone(),
                         CancellationToken = cancellationToken
                     };
                     var encoded = await encoder.EncodeWithResultAsync(
                         encodeRequest).ConfigureAwait(false);
+                    _log?.Invoke($"[SampleComparison] Restoration {settings.Restoration.Preset}; filters: {VideoRestorationPipeline.BuildFilterChain(settings.Restoration, settings.ScaleMode)}");
                     encodeStopwatch.Stop();
 
                     string comparisonPath = string.Empty;
