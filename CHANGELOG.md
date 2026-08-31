@@ -7,6 +7,78 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## 🎞️ Video Restoration Phase 3
+
+MediaFlux Video Restoration now includes a dedicated visual comparison workflow,
+making it possible to inspect restoration results before committing to a full encode.
+
+### ✨ What's New
+
+- Added **Preview Restoration...** to Video Restoration controls
+- Added dedicated **Original | Restored** comparison window
+- Added Side-by-Side, Original-only, and Restored-only viewing modes
+- Added representative sample navigation across the source
+- Added random sample selection
+- Added synchronized timestamp-based Original/Restored comparisons
+- Added five-second motion previews for evaluating restoration during playback
+- Added restoration-analysis information directly to the preview workflow
+
+### 🔍 Restoration Comparison
+
+Users can now preview:
+
+- Restoration Off
+- Current restoration settings
+- Analyze / Recommend result
+
+Recommended restoration can be previewed without changing the actual encode configuration.
+
+**Apply to Encode Settings** is the explicit action that transfers previewed settings to the
+encode configuration.
+
+### 🧠 Analyze / Recommend Integration
+
+- Existing Phase 2 analysis results are shown in the preview
+- Analyze / Recommend can be run directly from the preview workflow
+- Recommendations can be visually evaluated before being applied
+- Restoration remains fully user-controlled
+
+### 🎬 Preview Accuracy
+
+- Original and Restored frames use the same source timestamp
+- Restored previews use the central MediaFlux restoration pipeline
+- Preview uses the same restoration filter ordering and capability validation as normal encoding
+- Restoration resizing and normal encode scaling follow the same effective ordering as the real encoder
+- Resolution changes are clearly indicated
+- Effective preview filter chains are logged for diagnostics
+
+### ⚡ Performance & Caching
+
+- Still and motion previews are cached to avoid unnecessary FFmpeg regeneration
+- Original frames can be reused when only restoration settings change
+- Identical preview requests reuse cached results
+- Preview cache is bounded to prevent uncontrolled temporary-file growth
+- Existing FFmpeg capability inventory is reused
+
+### 🛡️ Safety & Behavior
+
+- Previewing restoration does not silently alter encode settings
+- Analyze / Recommend does not automatically enable restoration
+- Only **Apply to Encode Settings** changes the active restoration configuration
+- Preview generation supports cancellation
+- Temporary preview data is managed automatically
+- Restoration capability validation remains centralized
+
+### 📌 Current Limitations
+
+- Interactive wipe/divider comparison is not included yet
+- Motion comparison uses MediaFlux's existing external-player workflow
+- AI restoration/upscaling and VapourSynth are not included yet
+
+### 🔧 Additional Fixes / Improvements
+
+- Added bounded, cache-aware preview generation without changing the normal encoding behavior.
+
 ### 🎞️ Introducing Video Restoration
 
 MediaFlux now includes the foundation of a new Video Restoration system designed
