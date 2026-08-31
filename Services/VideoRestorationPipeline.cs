@@ -26,10 +26,10 @@ public static class VideoRestorationPipeline
         if (effective.Preset == VideoRestorationPreset.Off || effective.Preset == VideoRestorationPreset.Custom) return effective;
         return effective.Preset switch
         {
-            VideoRestorationPreset.VintageAnimationLight => new() { Preset = effective.Preset, Denoise = VideoRestorationStrength.Light, Deband = VideoRestorationStrength.Light, Sharpen = VideoRestorationStrength.Light },
-            VideoRestorationPreset.VintageAnimationRestore => new() { Preset = effective.Preset, Denoise = VideoRestorationStrength.Medium, Deblock = VideoRestorationStrength.Light, Deband = VideoRestorationStrength.Medium, Sharpen = VideoRestorationStrength.Medium },
-            VideoRestorationPreset.DvdAnimationRestore => new() { Preset = effective.Preset, Denoise = VideoRestorationStrength.Light, Deblock = VideoRestorationStrength.Medium, Deband = VideoRestorationStrength.Medium, Sharpen = VideoRestorationStrength.Medium, Deinterlace = effective.Deinterlace },
-            VideoRestorationPreset.VhsTvCaptureRestore => new() { Preset = effective.Preset, Denoise = VideoRestorationStrength.Strong, Deblock = VideoRestorationStrength.Light, Deband = VideoRestorationStrength.Light, Sharpen = VideoRestorationStrength.Light, Deinterlace = effective.Deinterlace },
+            VideoRestorationPreset.VintageAnimationLight => WithAi(effective, new() { Preset = effective.Preset, Denoise = VideoRestorationStrength.Light, Deband = VideoRestorationStrength.Light, Sharpen = VideoRestorationStrength.Light }),
+            VideoRestorationPreset.VintageAnimationRestore => WithAi(effective, new() { Preset = effective.Preset, Denoise = VideoRestorationStrength.Medium, Deblock = VideoRestorationStrength.Light, Deband = VideoRestorationStrength.Medium, Sharpen = VideoRestorationStrength.Medium }),
+            VideoRestorationPreset.DvdAnimationRestore => WithAi(effective, new() { Preset = effective.Preset, Denoise = VideoRestorationStrength.Light, Deblock = VideoRestorationStrength.Medium, Deband = VideoRestorationStrength.Medium, Sharpen = VideoRestorationStrength.Medium, Deinterlace = effective.Deinterlace }),
+            VideoRestorationPreset.VhsTvCaptureRestore => WithAi(effective, new() { Preset = effective.Preset, Denoise = VideoRestorationStrength.Strong, Deblock = VideoRestorationStrength.Light, Deband = VideoRestorationStrength.Light, Sharpen = VideoRestorationStrength.Light, Deinterlace = effective.Deinterlace }),
             _ => effective
         };
     }
@@ -50,6 +50,31 @@ public static class VideoRestorationPipeline
         return string.Join(',', filters);
     }
 
+    /// <summary>
+    /// Produces ordered FFmpeg stages around an optional frame-based AI operation.  Keeping
+    /// this plan here prevents preview and encode code from independently reordering filters.
+    /// Destructive sharpening is always held for the finishing stage.
+    /// </summary>
+    public static VideoRestorationPipelinePlan BuildPlan(VideoRestorationSettings? settings, EncodingService.ScaleMode encodeScale)
+    {
+        var s = Effective(settings);
+        Validate(s, encodeScale);
+        bool aiEnabled = s.AiMode != AiRestorationMode.Off;
+        if (!aiEnabled)
+            return new VideoRestorationPipelinePlan(BuildFilterChain(s, encodeScale), "", "", false);
+
+        var pre = new List<string>();
+        if (s.Deinterlace != VideoRestorationDeinterlace.Off) Add(pre, "yadif", "yadif=mode=send_frame:parity=auto:deint=interlaced");
+        AddStrength(pre, s.Denoise, "hqdn3d", new[] { "hqdn3d=1:1:2:2", "hqdn3d=2:2:4:4", "hqdn3d=3:3:6:6" });
+        AddStrength(pre, s.Deblock, "deblock", new[] { "deblock=filter=weak:block=4", "deblock=filter=medium:block=4", "deblock=filter=strong:block=4" });
+        if (s.Brightness != 0 || s.Contrast != 1 || s.Saturation != 1) Add(pre, "eq", $"eq=brightness={Number(s.Brightness)}:contrast={Number(s.Contrast)}:saturation={Number(s.Saturation)}");
+        var post = new List<string>();
+        AddStrength(post, s.Deband, "deband", new[] { "deband=1thr=0.02:2thr=0.02:range=8", "deband=1thr=0.04:2thr=0.04:range=12", "deband=1thr=0.06:2thr=0.06:range=16" });
+        if (encodeScale == EncodingService.ScaleMode.None) AddResize(post, s);
+        AddStrength(post, s.Sharpen, "unsharp", new[] { "unsharp=5:5:0.3:5:5:0", "unsharp=5:5:0.6:5:5:0", "unsharp=5:5:0.9:5:5:0" });
+        return new VideoRestorationPipelinePlan("", string.Join(',', pre), string.Join(',', post), true);
+    }
+
     public static void Validate(VideoRestorationSettings settings, EncodingService.ScaleMode encodeScale)
     {
         if (settings.Brightness is < -1 or > 1 || settings.Contrast is < 0.5m or > 2 || settings.Saturation is < 0 or > 2) throw new ArgumentException("Restoration color values are outside safe ranges.");
@@ -65,4 +90,17 @@ public static class VideoRestorationPipeline
         if (!string.IsNullOrEmpty(scale)) filters.Add($"scale={scale}:flags=lanczos");
     }
     private static string Number(decimal value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+    private static VideoRestorationSettings WithAi(VideoRestorationSettings source, VideoRestorationSettings preset)
+    {
+        preset.AiMode = source.AiMode; preset.AiModelId = source.AiModelId; preset.AiScale = source.AiScale; preset.AiDevice = source.AiDevice; preset.AiBackendPath = source.AiBackendPath; preset.AiModelsDirectory = source.AiModelsDirectory;
+        return preset;
+    }
+}
+
+public sealed record VideoRestorationPipelinePlan(string ConventionalFilterChain, string PreAiFilterChain, string PostAiFilterChain, bool UsesAi)
+{
+    public string DescribeStages() => UsesAi
+        ? $"pre-cleanup={Display(PreAiFilterChain)} -> AI -> finishing={Display(PostAiFilterChain)}"
+        : $"FFmpeg={Display(ConventionalFilterChain)}";
+    private static string Display(string filters) => string.IsNullOrWhiteSpace(filters) ? "none" : filters;
 }

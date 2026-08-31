@@ -61,7 +61,7 @@ namespace MediaFlux.Services
                 _ => string.Empty
             };
             bool sourceIsTenBit = IsTenBitPixelFormat(request.SourcePixelFormat);
-            string restorationFilterChain = VideoRestorationPipeline.BuildFilterChain(request.Restoration, request.ScaleMode);
+            string restorationFilterChain = request.RestorationFilterOverride ?? VideoRestorationPipeline.BuildFilterChain(request.Restoration, request.ScaleMode);
             bool requiresVideoFilter =
                 !string.IsNullOrEmpty(scaleExpression) ||
                 string.IsNullOrWhiteSpace(request.SourcePixelFormat) ||
@@ -114,18 +114,22 @@ namespace MediaFlux.Services
 
             if (request.SampleStart is { } sampleStart && sampleStart > TimeSpan.Zero)
                 builder.Append($"-ss {Seconds(sampleStart.TotalSeconds)} ");
-            AppendInput(builder, request.Input);
+            if (request.SplitSource is { } split)
+            {
+                AppendInputPath(builder, split.VideoPath);
+                AppendInput(builder, split.AncillarySource);
+            }
+            else AppendInput(builder, request.Input);
             bool copyDataStreams = request.CopyDataStreams &&
                 OutputContainerPolicy.SupportsGenericDataStreams(
                     request.ContainerDecision.Resolved);
-            AppendStreamMapping(
-                builder,
-                request.Input,
-                request.MapMode,
-                request.CopySubtitles,
-                copyDataStreams,
-                request.CopyAttachments);
-            builder.Append("-map_metadata 0 -map_chapters 0 ");
+            if (request.SplitSource is { } splitMapping)
+            {
+                builder.Append("-map 0:v:0 ");
+                AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, request.CopySubtitles, copyDataStreams, request.CopyAttachments, 1, includeVideo: false);
+                builder.Append("-map_metadata 1 -map_chapters 1 ");
+            }
+            else { AppendStreamMapping(builder, request.Input, request.MapMode, request.CopySubtitles, copyDataStreams, request.CopyAttachments); builder.Append("-map_metadata 0 -map_chapters 0 "); }
             AppendObsoleteVideoStatisticsCleanup(builder);
             if (request.SampleDuration is { } sampleDuration && sampleDuration > TimeSpan.Zero)
                 builder.Append($"-t {Seconds(sampleDuration.TotalSeconds)} ");
@@ -298,6 +302,7 @@ namespace MediaFlux.Services
             builder.Append(input.InputPath);
             builder.Append("\" ");
         }
+        private static void AppendInputPath(StringBuilder builder, string path) => builder.Append("-i \"").Append(path).Append("\" ");
 
         private static string Seconds(double value) =>
             Math.Max(0, value).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
@@ -308,51 +313,51 @@ namespace MediaFlux.Services
             EncodingService.StreamMapMode mapMode,
             bool copySubtitles,
             bool copyDataStreams,
-            bool copyAttachments)
+            bool copyAttachments, int inputIndex = 0, bool includeVideo = true)
         {
             if (input.HasExplicitStreamSelection)
             {
-                foreach (int streamIndex in input.VideoStreamIndexes)
-                    builder.Append($"-map 0:{streamIndex} ");
+                if (includeVideo) foreach (int streamIndex in input.VideoStreamIndexes)
+                    builder.Append($"-map {inputIndex}:{streamIndex} ");
                 foreach (int streamIndex in input.AudioStreamIndexes)
-                    builder.Append($"-map 0:{streamIndex} ");
+                    builder.Append($"-map {inputIndex}:{streamIndex} ");
                 if (copySubtitles)
                 {
                     foreach (int streamIndex in input.SubtitleStreamIndexes)
-                        builder.Append($"-map 0:{streamIndex} ");
+                        builder.Append($"-map {inputIndex}:{streamIndex} ");
                 }
 
                 if (!copyDataStreams)
                     builder.Append("-dn ");
                 if (copyAttachments)
-                    builder.Append("-map 0:t? ");
+                    builder.Append($"-map {inputIndex}:t? ");
                 return;
             }
 
-            builder.Append("-map 0:v:0 ");
+            if (includeVideo) builder.Append($"-map {inputIndex}:v:0 ");
             if (mapMode == EncodingService.StreamMapMode.KeepAll)
             {
-                builder.Append("-map 0:a? ");
+                builder.Append($"-map {inputIndex}:a? ");
                 if (copySubtitles)
-                    builder.Append("-map 0:s? ");
+                    builder.Append($"-map {inputIndex}:s? ");
                 if (copyDataStreams)
-                    builder.Append("-map 0:d? ");
+                    builder.Append($"-map {inputIndex}:d? ");
                 else
                     builder.Append("-dn ");
                 if (copyAttachments)
-                    builder.Append("-map 0:t? ");
+                    builder.Append($"-map {inputIndex}:t? ");
             }
             else
             {
-                builder.Append("-map 0:a:0? ");
+                builder.Append($"-map {inputIndex}:a:0? ");
                 if (copySubtitles)
-                    builder.Append("-map 0:s? ");
+                    builder.Append($"-map {inputIndex}:s? ");
                 if (copyDataStreams)
-                    builder.Append("-map 0:d? ");
+                    builder.Append($"-map {inputIndex}:d? ");
                 else
                     builder.Append("-dn ");
                 if (copyAttachments)
-                    builder.Append("-map 0:t? ");
+                    builder.Append($"-map {inputIndex}:t? ");
             }
         }
 

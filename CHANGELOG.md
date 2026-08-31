@@ -7,6 +7,32 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## 🤖 Video Restoration Phase 4A — AI Restoration
+
+MediaFlux now includes optional GPU-accelerated AI restoration for low-resolution and degraded video, with particular support for vintage animation.
+
+### What's New
+
+- Added optional NCNN/Vulkan AI restoration with Animation and General model modes
+- Added backend, model, Vulkan device, scale, and capability validation
+- Added AI scale controls independent of final output resolution
+- Added bounded deterministic frame processing and validated FFV1/MKV intermediates
+- Added AI still-frame and five-second motion preview processing
+- Added split-source encoding support so AI video can retain original ancillary streams
+
+### Safety and Reliability
+
+- AI restoration remains Off by default and never silently falls back to conventional encoding
+- Pre-AI, AI, post-AI, and final scaling stages are centrally planned
+- Frame sets, timing, resolution, intermediate files, and final previews are validated before promotion
+- Temporary AI artifacts are cleaned after processing, failure, or cancellation
+- VFR or ambiguous timing sources are rejected rather than guessed
+
+### Current Limitations
+
+- AI intermediate processing currently requires a sufficiently deterministic constant frame rate
+- No Python runtime, automatic model downloads, VapourSynth, or temporal/interpolation models are included
+
 ## 🎞️ Video Restoration Phase 3
 
 MediaFlux Video Restoration now includes a dedicated visual comparison workflow,

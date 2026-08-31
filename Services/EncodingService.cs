@@ -606,6 +606,19 @@ namespace MediaFlux.Services
             if (!sourceProbe.Success)
                 throw new InvalidOperationException(
                     $"FFprobe could not inspect the source before container selection: {sourceProbe.ErrorMessage}");
+            AiIntermediateVideoResult? aiIntermediate = null;
+            VideoRestorationPipelinePlan? aiPlan = null;
+            if (restoration is { AiMode: not AiRestorationMode.Off } aiSettings)
+            {
+                MediaProbeStreamInfo? video = sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+                if (video?.FrameRate is not > 0) throw new AiRestorationValidationException("AI restoration requires a source with a known constant frame rate.");
+                var backend = new AiRestorationBackendService(Path.GetDirectoryName(_ffmpegPath) ?? AppDomain.CurrentDomain.BaseDirectory, log: _log);
+                aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode);
+                callback("[MediaFlux] Preparing AI restoration.");
+                var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend);
+                aiIntermediate = await intermediate.CreateAsync(new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration), new Progress<AiIntermediateProgress>(p => callback($"[MediaFlux] {p.Message}")), cancellationToken).ConfigureAwait(false);
+                _log?.Invoke($"[EncodingService] AI intermediate ready: {aiIntermediate.Path}; {aiPlan.DescribeStages()}.");
+            }
 
             OutputContainerDecision containerDecision = OutputContainerPolicy.Decide(
                 outputContainer,
@@ -705,9 +718,9 @@ namespace MediaFlux.Services
                 sampleStart,
                 sampleDuration,
                 sourcePixelFormat,
-                restoration: restoration);
+                restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain);
 
-            string restorationChain = VideoRestorationPipeline.BuildFilterChain(restoration, scaleMode);
+            string restorationChain = aiPlan?.PostAiFilterChain ?? VideoRestorationPipeline.BuildFilterChain(restoration, scaleMode);
             if (!string.IsNullOrWhiteSpace(restorationChain))
                 _log?.Invoke($"[EncodingService] Video restoration: {(restoration ?? new VideoRestorationSettings()).Preset}; filters: {restorationChain}");
 
@@ -755,7 +768,7 @@ namespace MediaFlux.Services
                     mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
                     containerDecision, forceMp4CompatibleAudio, totalDuration,
                     qualityValue, encoderSelection, sampleStart, sampleDuration,
-                    sourcePixelFormat, preferNvencGpuResidentFrames: false, restoration: restoration);
+                    sourcePixelFormat, preferNvencGpuResidentFrames: false, restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain);
                 pipelineDiagnostic = DescribeVideoPipeline(
                     inputSource, videoCodec, useGpu, tenBit, ffArgs);
                 _log?.Invoke(
@@ -814,6 +827,7 @@ namespace MediaFlux.Services
 
             _log?.Invoke(
                 $"[EncodingService] Validated and finalized '{finalization.FinalOutputPath}'.");
+            aiIntermediate?.Dispose();
             return new EncodeResult(
                 true,
                 finalization.FinalOutputPath,
@@ -1158,7 +1172,9 @@ namespace MediaFlux.Services
             TimeSpan? sampleDuration = null,
             string? sourcePixelFormat = null,
             bool preferNvencGpuResidentFrames = true,
-            VideoRestorationSettings? restoration = null)
+            VideoRestorationSettings? restoration = null,
+            SplitSourceInput? splitSource = null,
+            string? restorationFilterOverride = null)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -1234,6 +1250,8 @@ namespace MediaFlux.Services
                 PreferNvencGpuResidentFrames =
                     preferNvencGpuResidentFrames,
                 SourcePixelFormat = sourcePixelFormat ?? ""
+                ,SplitSource = splitSource
+                ,RestorationFilterOverride = restorationFilterOverride
             };
 
             var builder = new FfmpegCommandBuilder(

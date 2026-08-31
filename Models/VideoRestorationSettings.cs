@@ -4,6 +4,9 @@ public enum VideoRestorationPreset { Off, VintageAnimationLight, VintageAnimatio
 public enum VideoRestorationStrength { Off, Light, Medium, Strong }
 public enum VideoRestorationDeinterlace { Off, AutoSafe, Yadif }
 public enum VideoRestorationResize { Original, To720p, To1080p, Custom }
+/// <summary>Optional frame-based AI stage. Off preserves the Phase 1-3 FFmpeg-only path.</summary>
+public enum AiRestorationMode { Off, Animation, General }
+public enum AiRestorationScale { X1 = 1, X2 = 2, X4 = 4 }
 
 /// <summary>Persisted, encoder-independent description of the optional restoration pass.</summary>
 public sealed class VideoRestorationSettings
@@ -21,6 +24,16 @@ public sealed class VideoRestorationSettings
     public int CustomWidth { get; set; }
     public int CustomHeight { get; set; }
     public bool PreserveAspectRatio { get; set; } = true;
+
+    // These values deliberately live beside the normal restoration settings so cloned
+    // presets, saved jobs and scheduled jobs retain the user's explicit AI choice.
+    // Older JSON simply uses the safe Off/default values below.
+    public AiRestorationMode AiMode { get; set; } = AiRestorationMode.Off;
+    public string AiModelId { get; set; } = "";
+    public AiRestorationScale AiScale { get; set; } = AiRestorationScale.X2;
+    public string AiDevice { get; set; } = "Auto";
+    public string AiBackendPath { get; set; } = "";
+    public string AiModelsDirectory { get; set; } = "";
 
     public VideoRestorationSettings Clone() => (VideoRestorationSettings)MemberwiseClone();
 }

@@ -2,6 +2,9 @@ using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
+    /// <summary>Maps replacement video separately from the original ancillary streams.</summary>
+    internal sealed record SplitSourceInput(string VideoPath, EncodingInputSource AncillarySource);
+
     internal sealed class FfmpegCommandRequest
     {
         public required EncodingInputSource Input { get; init; }
@@ -36,5 +39,7 @@ namespace MediaFlux.Services
         public string SourcePixelFormat { get; init; } = "";
         public TimeSpan? SampleStart { get; init; }
         public TimeSpan? SampleDuration { get; init; }
+        public SplitSourceInput? SplitSource { get; init; }
+        public string? RestorationFilterOverride { get; init; }
     }
 }

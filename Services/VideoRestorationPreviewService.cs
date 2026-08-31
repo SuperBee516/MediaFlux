@@ -31,6 +31,7 @@ public sealed class VideoRestorationPreviewService
     private readonly string _ffprobePath;
     private readonly IMediaToolProcessRunner _runner;
     private readonly FfmpegRestorationCapabilityService _capabilities;
+    private readonly AiRestorationBackendService _aiBackend;
     private readonly string _cacheDirectory;
     private readonly Action<string>? _log;
 
@@ -41,7 +42,7 @@ public sealed class VideoRestorationPreviewService
         : this(tools.FfmpegPath, tools.FfprobePath, runner, capabilities ?? new FfmpegRestorationCapabilityService(runner, log), cacheDirectory, log) { }
 
     internal VideoRestorationPreviewService(string ffmpegPath, string ffprobePath, IMediaToolProcessRunner runner, FfmpegRestorationCapabilityService capabilities, string cacheDirectory, Action<string>? log = null)
-    { _ffmpegPath = ffmpegPath; _ffprobePath = ffprobePath; _runner = runner; _capabilities = capabilities; _cacheDirectory = cacheDirectory; _log = log; }
+    { _ffmpegPath = ffmpegPath; _ffprobePath = ffprobePath; _runner = runner; _capabilities = capabilities; _cacheDirectory = cacheDirectory; _log = log; _aiBackend = new AiRestorationBackendService(AppDomain.CurrentDomain.BaseDirectory, runner, log); }
 
     public static IReadOnlyList<TimeSpan> BuildRepresentativePositions(TimeSpan duration)
     {
@@ -53,13 +54,21 @@ public sealed class VideoRestorationPreviewService
     public async Task<VideoRestorationStillPreview> GenerateStillAsync(VideoRestorationPreviewRequest request, CancellationToken cancellationToken = default)
     {
         ValidateRequest(request); string filterChain = await PreparePipelineAsync(request.Settings, request.EncodeScale, cancellationToken).ConfigureAwait(false);
+        VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(request.Settings, request.EncodeScale);
+        string cacheSettings = filterChain;
+        if (plan.UsesAi)
+        {
+            AiRestorationCapabilities ai = await _aiBackend.GetCapabilitiesAsync(request.Settings, cancellationToken).ConfigureAwait(false);
+            cacheSettings = $"{plan.DescribeStages()}|{ai.Identity}|{request.Settings.AiModelId}|{request.Settings.AiScale}|{request.Settings.AiDevice}";
+        }
         PrepareCache(); TimeSpan position = ClampPosition(request.Position, request.SourceDuration);
         string original = Path.Combine(_cacheDirectory, "original-" + BuildCacheKey(request, string.Empty) + ".png");
-        string restored = Path.Combine(_cacheDirectory, "restored-" + BuildCacheKey(request, filterChain) + ".png");
+        string restored = Path.Combine(_cacheDirectory, "restored-" + BuildCacheKey(request, cacheSettings) + ".png");
         await EnsureStillAsync(original, BuildStillArguments(request.SourcePath, position, string.Empty, "{output}"), cancellationToken).ConfigureAwait(false);
-        await EnsureStillAsync(restored, BuildStillArguments(request.SourcePath, position, filterChain, "{output}"), cancellationToken).ConfigureAwait(false);
+        if (!plan.UsesAi) await EnsureStillAsync(restored, BuildStillArguments(request.SourcePath, position, filterChain, "{output}"), cancellationToken).ConfigureAwait(false);
+        else await EnsureAiStillAsync(restored, request, position, plan, cancellationToken).ConfigureAwait(false);
         _log?.Invoke($"[RestorationPreview] still ready; timestamp={position.TotalSeconds:0.###}; filters={(string.IsNullOrWhiteSpace(filterChain) ? "Off" : filterChain)}.");
-        return new VideoRestorationStillPreview(LoadBitmap(original), LoadBitmap(restored), position, filterChain, request.Settings.Resize != VideoRestorationResize.Original);
+        return new VideoRestorationStillPreview(LoadBitmap(original), LoadBitmap(restored), position, plan.UsesAi ? plan.DescribeStages() : filterChain, request.Settings.Resize != VideoRestorationResize.Original || request.Settings.AiScale != AiRestorationScale.X1);
     }
 
     public async Task<VideoRestorationMotionPreview> GenerateMotionAsync(VideoRestorationPreviewRequest request, TimeSpan? requestedDuration = null, CancellationToken cancellationToken = default)
@@ -67,13 +76,39 @@ public sealed class VideoRestorationPreviewService
         ValidateRequest(request); string filterChain = await PreparePipelineAsync(request.Settings, request.EncodeScale, cancellationToken).ConfigureAwait(false);
         PrepareCache(); TimeSpan duration = TimeSpan.FromSeconds(Math.Min(Math.Max(1, (requestedDuration ?? TimeSpan.FromSeconds(5)).TotalSeconds), Math.Max(1, request.SourceDuration.TotalSeconds)));
         TimeSpan start = TimeSpan.FromSeconds(Math.Clamp(request.Position.TotalSeconds - duration.TotalSeconds / 2, 0, Math.Max(0, request.SourceDuration.TotalSeconds - duration.TotalSeconds)));
-        string key = BuildCacheKey(request with { Position = start }, filterChain + "|clip|" + duration.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture));
+        string aiIdentity = request.Settings.AiMode == AiRestorationMode.Off ? "" : (await _aiBackend.GetCapabilitiesAsync(request.Settings, cancellationToken).ConfigureAwait(false)).Identity + "|" + request.Settings.AiModelId + "|" + request.Settings.AiScale;
+        string key = BuildCacheKey(request with { Position = start }, filterChain + "|" + aiIdentity + "|clip|" + duration.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture));
         string original = Path.Combine(_cacheDirectory, "motion-original-" + key + ".mp4"), restored = Path.Combine(_cacheDirectory, "motion-restored-" + key + ".mp4"), comparison = Path.Combine(_cacheDirectory, "motion-comparison-" + key + ".mp4");
         await EnsureMotionAsync(original, output => BuildAccurateFrameArguments(request.SourcePath, start, duration, string.Empty, output, image: false), cancellationToken).ConfigureAwait(false);
-        await EnsureMotionAsync(restored, output => BuildAccurateFrameArguments(request.SourcePath, start, duration, filterChain, output, image: false), cancellationToken).ConfigureAwait(false);
+        if (request.Settings.AiMode == AiRestorationMode.Off) await EnsureMotionAsync(restored, output => BuildAccurateFrameArguments(request.SourcePath, start, duration, filterChain, output, image: false), cancellationToken).ConfigureAwait(false);
+        else await EnsureAiMotionAsync(restored, request, start, duration, cancellationToken).ConfigureAwait(false);
         await EnsureMotionAsync(comparison, output => BuildComparisonArguments(original, restored, output), cancellationToken).ConfigureAwait(false);
         _log?.Invoke($"[RestorationPreview] motion ready; start={start.TotalSeconds:0.###}; duration={duration.TotalSeconds:0.###}; filters={(string.IsNullOrWhiteSpace(filterChain) ? "Off" : filterChain)}.");
         return new VideoRestorationMotionPreview(start, duration, original, restored, comparison);
+    }
+
+    private async Task EnsureAiMotionAsync(string final, VideoRestorationPreviewRequest request, TimeSpan start, TimeSpan duration, CancellationToken token)
+    {
+        await WithCacheLockAsync(final, async () =>
+        {
+            if (await IsValidMotionAsync(final, token).ConfigureAwait(false)) return;
+            string staging = StagingPath(final); AiIntermediateVideoResult? intermediate = null;
+            try
+            {
+                var probe = await new FfprobeService(_ffprobePath, _runner).ProbeAsync(request.SourcePath, token).ConfigureAwait(false);
+                double? fps = probe.Streams.FirstOrDefault(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase))?.FrameRate;
+                if (!probe.Success || fps is not > 0) throw new AiRestorationValidationException("AI motion preview requires a source with a known constant frame rate.");
+                VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(request.Settings, request.EncodeScale);
+                var service = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, _cacheDirectory, _aiBackend, _runner);
+                intermediate = await service.CreateAsync(new AiIntermediateVideoRequest(request.SourcePath, fps.Value, request.SourceDuration, request.Settings, plan, start, duration), null, token).ConfigureAwait(false);
+                string post = BuildPostAiPreviewFilterChain(plan.PostAiFilterChain, request.EncodeScale);
+                await RunFfmpegAsync(BuildAccurateFrameArguments(intermediate.Path, TimeSpan.Zero, duration, post, staging, image: false), "generating AI motion preview", token).ConfigureAwait(false);
+                if (!await IsValidMotionAsync(staging, token).ConfigureAwait(false)) throw new InvalidOperationException("AI restoration did not produce a valid MP4 preview.");
+                Promote(staging, final);
+            }
+            catch { Invalidate(staging); Invalidate(final); throw; }
+            finally { intermediate?.Dispose(); }
+        }, token).ConfigureAwait(false);
     }
 
     internal static string BuildCacheKey(VideoRestorationPreviewRequest request, string effectiveChain)
@@ -122,17 +157,43 @@ public sealed class VideoRestorationPreviewService
 
     private async Task<string> PreparePipelineAsync(VideoRestorationSettings settings, EncodingService.ScaleMode scaleMode, CancellationToken token)
     {
-        VideoRestorationPipeline.Validate(settings, scaleMode); if (settings.Preset == VideoRestorationPreset.Off) return BuildEffectivePreviewFilterChain(settings, scaleMode);
+        VideoRestorationPipeline.Validate(settings, scaleMode); if (settings.Preset == VideoRestorationPreset.Off && settings.AiMode == AiRestorationMode.Off) return BuildEffectivePreviewFilterChain(settings, scaleMode);
         FfmpegRestorationCapabilities inventory = await _capabilities.GetAsync(_ffmpegPath, token).ConfigureAwait(false);
         if (inventory.State == FfmpegFilterInventoryState.Available) { VideoRestorationPipeline.SetAvailableFilters(inventory.Filters); VideoRestorationPipeline.ValidateAvailable(settings); }
         else { VideoRestorationPipeline.ClearAvailableFilters(); _log?.Invoke("[RestorationPreview] FFmpeg restoration inventory is Unknown; FFmpeg will report a filter failure if needed."); }
-        return BuildEffectivePreviewFilterChain(settings, scaleMode);
+        if (settings.AiMode != AiRestorationMode.Off) await _aiBackend.ValidateSelectionAsync(settings, token).ConfigureAwait(false);
+        return settings.AiMode == AiRestorationMode.Off ? BuildEffectivePreviewFilterChain(settings, scaleMode) : VideoRestorationPipeline.BuildPlan(settings, scaleMode).DescribeStages();
+    }
+
+    private async Task EnsureAiStillAsync(string final, VideoRestorationPreviewRequest request, TimeSpan position, VideoRestorationPipelinePlan plan, CancellationToken token)
+    {
+        await WithCacheLockAsync(final, async () =>
+        {
+            if (IsValidStill(final)) return;
+            string staging = StagingPath(final), pre = final + ".pre.png", ai = final + ".ai.png";
+            try
+            {
+                await EnsureStillAsync(pre, BuildStillArguments(request.SourcePath, position, plan.PreAiFilterChain, "{output}"), token).ConfigureAwait(false);
+                await _aiBackend.ProcessFrameAsync(request.Settings, pre, ai, token).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(plan.PostAiFilterChain)) File.Copy(ai, staging, true);
+                else await RunFfmpegAsync(BuildImageArguments(ai, plan.PostAiFilterChain, staging), "finishing AI preview frame", token).ConfigureAwait(false);
+                if (!IsValidStill(staging)) throw new InvalidOperationException("AI restoration produced an unreadable preview image.");
+                Promote(staging, final);
+            }
+            catch { Invalidate(staging); Invalidate(final); throw; }
+            finally { Invalidate(pre); Invalidate(ai); }
+        }, token).ConfigureAwait(false);
     }
 
     internal static string BuildEffectivePreviewFilterChain(VideoRestorationSettings settings, EncodingService.ScaleMode scaleMode)
     {
         string restoration = VideoRestorationPipeline.BuildFilterChain(settings, scaleMode); string scale = scaleMode switch { EncodingService.ScaleMode.To720p => "-2:720", EncodingService.ScaleMode.To1080p => "-2:1080", EncodingService.ScaleMode.To1440p => "-2:1440", EncodingService.ScaleMode.To4K => "-2:2160", _ => string.Empty };
         return string.IsNullOrWhiteSpace(scale) ? restoration : string.IsNullOrWhiteSpace(restoration) ? $"scale={scale}:flags=lanczos" : $"{restoration},scale={scale}:flags=lanczos";
+    }
+    private static string BuildPostAiPreviewFilterChain(string post, EncodingService.ScaleMode scaleMode)
+    {
+        string scale = scaleMode switch { EncodingService.ScaleMode.To720p => "-2:720", EncodingService.ScaleMode.To1080p => "-2:1080", EncodingService.ScaleMode.To1440p => "-2:1440", EncodingService.ScaleMode.To4K => "-2:2160", _ => "" };
+        return string.IsNullOrWhiteSpace(scale) ? post : string.IsNullOrWhiteSpace(post) ? $"scale={scale}:flags=lanczos" : $"{post},scale={scale}:flags=lanczos";
     }
 
     private async Task RunFfmpegAsync(IReadOnlyList<string> arguments, string operation, CancellationToken token)
@@ -149,6 +210,12 @@ public sealed class VideoRestorationPreviewService
         if (!string.IsNullOrWhiteSpace(filterChain)) { args.Add("-vf"); args.Add(filterChain); }
         if (image) args.AddRange(new[] { "-frames:v", "1", "-c:v", "png" }); else args.AddRange(new[] { "-map", "0:v:0", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-pix_fmt", "yuv420p", "-movflags", "+faststart" });
         args.Add(output); return args;
+    }
+    private static IReadOnlyList<string> BuildImageArguments(string source, string filterChain, string output)
+    {
+        var args = new List<string> { "-y", "-i", source };
+        if (!string.IsNullOrWhiteSpace(filterChain)) { args.Add("-vf"); args.Add(filterChain); }
+        args.AddRange(new[] { "-frames:v", "1", output }); return args;
     }
     private static IReadOnlyList<string> BuildComparisonArguments(string original, string restored, string output) => new[] { "-hide_banner", "-nostats", "-loglevel", "error", "-y", "-i", original, "-i", restored, "-filter_complex", "[0:v][1:v]scale2ref=w=oh*mdar:h=ih[original][restored];[original][restored]hstack=inputs=2[v]", "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-an", "-movflags", "+faststart", output };
     private static IReadOnlyList<string> ReplaceOutput(IReadOnlyList<string> arguments, string output) { var copy = arguments.ToList(); copy[^1] = output; return copy; }
