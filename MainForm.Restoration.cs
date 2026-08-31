@@ -28,8 +28,9 @@ public partial class MainForm
                 var tools = FfmpegToolResolver.Resolve(AppPaths.InstallDirectory, _config.FfmpegPath, _config.FfprobePath);
                 if (tools.HasFfmpeg)
                 {
-                    FfmpegRestorationCapabilities capabilities = await new FfmpegRestorationCapabilityService().GetAsync(tools.FfmpegPath);
-                    VideoRestorationPipeline.SetAvailableFilters(capabilities.Filters);
+                    FfmpegRestorationCapabilities capabilities = await new FfmpegRestorationCapabilityService(log: message => ErrorLogService.Append(AppPaths.UserDataDirectory, message)).GetAsync(tools.FfmpegPath);
+                    if (capabilities.State == FfmpegFilterInventoryState.Available)
+                        VideoRestorationPipeline.SetAvailableFilters(capabilities.Filters);
                 }
                 var service = new Services.VideoRestorationAnalysisService(AppPaths.InstallDirectory, _config.FfprobePath, _config.FfmpegPath, message => ErrorLogService.Append(AppPaths.UserDataDirectory, message));
                 DataGridViewRow? selectedRow = dgvEncodeQueue.CurrentRow;

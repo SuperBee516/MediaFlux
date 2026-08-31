@@ -25,7 +25,7 @@ Phase 1 introduces:
 
 ## 🎞️ Video Restoration Phase 2
 
-MediaFlux Video Restoration is now more intelligent and source-aware.
+MediaFlux Video Restoration is now more intelligent, source-aware, and safer when evaluating restoration capabilities.
 
 ### What's New
 
@@ -35,6 +35,7 @@ MediaFlux Video Restoration is now more intelligent and source-aware.
 - Added restoration recommendations with clear explanations
 - Animation Encode Hint now contributes to restoration recommendations
 - Added FFmpeg restoration filter capability detection
+- Added safer restoration preflight validation before encoding
 
 ### Improvements
 
@@ -44,12 +45,22 @@ MediaFlux Video Restoration is now more intelligent and source-aware.
 - FFmpeg capability results are cached to avoid unnecessary repeated checks
 - Update window now presents richer, more readable release notes
 
+### Fixes
+
+- Fixed FFmpeg restoration capability detection incorrectly reporting built-in filters as unavailable
+- Corrected parsing of real FFmpeg `-filters` output, including flags such as `TS` and `T.`
+- Fixed empty/malformed filter inventories being cached as authoritative
+- Prevented inventory failures from being misreported as missing restoration filters
+- Confirmed parser support for hqdn3d, deblock, deband, and unsharp
+
 ### Safety / Behavior
 
 - Restoration remains opt-in and is never automatically enabled
 - Explicit user restoration settings always take precedence
 - Uncertain analysis results are reported as Unknown rather than guessed
 - Telecine/IVTC decisions remain conservative and are not automatically forced
+- Known-missing filters fail cleanly before FFmpeg is launched
+- Failed or uncertain capability detection is reported as `Unknown`, not falsely as unavailable
 
 ### Current Limitations
 

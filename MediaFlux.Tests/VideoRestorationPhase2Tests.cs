@@ -72,4 +72,27 @@ public sealed class VideoRestorationPhase2Tests
         Assert.Throws<NotSupportedException>(() => VideoRestorationPipeline.ValidateAvailable(new VideoRestorationSettings { Preset = VideoRestorationPreset.Custom, Deband = VideoRestorationStrength.Light }));
         VideoRestorationPipeline.ClearAvailableFilters();
     }
+
+    [Fact]
+    public void FilterInventoryParsesRealisticFfmpegRowsFromEitherStream()
+    {
+        string stdout = " TS deband V->V Debands video.\n T. deblock V->V Deblock video.";
+        string stderr = " TS hqdn3d V->V Apply a High Quality 3D Denoiser.\n TS unsharp V->V Sharpen or blur the input video.";
+        HashSet<string> filters = FfmpegRestorationCapabilityService.ParseFilters(stdout, stderr);
+        Assert.Contains("deband", filters); Assert.Contains("deblock", filters); Assert.Contains("hqdn3d", filters); Assert.Contains("unsharp", filters);
+    }
+
+    [Fact]
+    public void UnknownInventoryDoesNotClaimFiltersAreUnavailable()
+    {
+        var inventory = new FfmpegRestorationCapabilities("ffmpeg.exe", "unknown", new HashSet<string>(), FfmpegFilterInventoryState.Unknown, -1, 0);
+        Assert.Equal(FfmpegFilterAvailability.Unknown, inventory.GetAvailability("hqdn3d"));
+    }
+
+    [Fact]
+    public void CredibleInventoryCanConfirmAbsence()
+    {
+        var inventory = new FfmpegRestorationCapabilities("ffmpeg.exe", "test", new HashSet<string> { "hqdn3d" }, FfmpegFilterInventoryState.Available, 0, 300);
+        Assert.Equal(FfmpegFilterAvailability.Unavailable, inventory.GetAvailability("deband"));
+    }
 }

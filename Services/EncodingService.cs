@@ -555,10 +555,18 @@ namespace MediaFlux.Services
             {
                 try
                 {
-                    FfmpegRestorationCapabilities capabilities = new FfmpegRestorationCapabilityService().GetAsync(_ffmpegPath, cancellationToken).GetAwaiter().GetResult();
-                    VideoRestorationPipeline.SetAvailableFilters(capabilities.Filters);
-                    VideoRestorationPipeline.ValidateAvailable(restoration);
-                    _log?.Invoke($"[EncodingService] Restoration filter inventory loaded for FFmpeg {capabilities.Version}.");
+                    FfmpegRestorationCapabilities capabilities = new FfmpegRestorationCapabilityService(log: _log).GetAsync(_ffmpegPath, cancellationToken).GetAwaiter().GetResult();
+                    if (capabilities.State == FfmpegFilterInventoryState.Available)
+                    {
+                        VideoRestorationPipeline.SetAvailableFilters(capabilities.Filters);
+                        VideoRestorationPipeline.ValidateAvailable(restoration);
+                    }
+                    else
+                    {
+                        VideoRestorationPipeline.ClearAvailableFilters();
+                        _log?.Invoke("[EncodingService] Restoration filter inventory is Unknown; allowing FFmpeg to validate filters rather than falsely reporting them unavailable.");
+                    }
+                    _log?.Invoke($"[EncodingService] Restoration filter inventory: {capabilities.State}; FFmpeg {capabilities.Version}; parsed={capabilities.ParsedFilterCount}.");
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (NotSupportedException) { throw; }
