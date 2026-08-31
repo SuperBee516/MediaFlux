@@ -55,7 +55,7 @@ public sealed class VideoRestorationPreviewTests : IDisposable
         string source = Path.Combine(_root, "source.mkv"); string ffmpeg = Path.Combine(_root, "ffmpeg.exe"); File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool");
         var runner = new PreviewRunner();
         var capabilities = new FfmpegRestorationCapabilityService(runner);
-        var service = new VideoRestorationPreviewService(ffmpeg, runner, capabilities, Path.Combine(_root, "cache"));
+        var service = new VideoRestorationPreviewService(ffmpeg, ffmpeg, runner, capabilities, Path.Combine(_root, "cache"));
         var request = new VideoRestorationPreviewRequest(source, TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(30), new VideoRestorationSettings { Preset = VideoRestorationPreset.VintageAnimationLight });
         using VideoRestorationStillPreview first = await service.GenerateStillAsync(request);
         using VideoRestorationStillPreview second = await service.GenerateStillAsync(request);
@@ -76,6 +76,30 @@ public sealed class VideoRestorationPreviewTests : IDisposable
     }
 
     [Fact]
+    public void PreviewModeSelectionIsExplicitAndRecommendationRequiresAnalysis()
+    {
+        var selection = new VideoRestorationPreviewSelection(new VideoRestorationSettings { Preset = VideoRestorationPreset.VintageAnimationLight });
+        Assert.False(selection.SelectMode(RestorationPreviewSelectionMode.Recommended));
+        Assert.True(selection.SelectMode(RestorationPreviewSelectionMode.NoRestoration));
+        Assert.Equal(VideoRestorationPreset.Off, selection.PreviewSettings.Preset);
+        selection.SetRecommendation(new VideoRestorationRecommendation(new VideoRestorationSettings { Preset = VideoRestorationPreset.VintageAnimationRestore }, 70, "test"));
+        Assert.True(selection.SelectMode(RestorationPreviewSelectionMode.Recommended));
+        Assert.Equal(VideoRestorationPreset.VintageAnimationRestore, selection.PreviewSettings.Preset);
+        Assert.Equal(VideoRestorationPreset.VintageAnimationLight, selection.EncodeSettings.Preset);
+    }
+
+    [Fact]
+    public void NewerPreviewRequestMakesOlderAsynchronousResultObsolete()
+    {
+        var gate = new VideoRestorationPreviewOperationGate();
+        long first = gate.Begin(); long second = gate.Begin();
+        Assert.False(gate.IsCurrent(first));
+        Assert.True(gate.IsCurrent(second));
+        gate.Invalidate();
+        Assert.False(gate.IsCurrent(second));
+    }
+
+    [Fact]
     public void RepresentativePositionsAvoidExtremeFramesAndHandleShortSources()
     {
         IReadOnlyList<TimeSpan> positions = VideoRestorationPreviewService.BuildRepresentativePositions(TimeSpan.FromSeconds(10));
@@ -88,9 +112,42 @@ public sealed class VideoRestorationPreviewTests : IDisposable
     {
         string source = Path.Combine(_root, "source.mkv"); string ffmpeg = Path.Combine(_root, "ffmpeg.exe"); File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool");
         var runner = new PreviewRunner(cancelFrames: true);
-        var service = new VideoRestorationPreviewService(ffmpeg, runner, new FfmpegRestorationCapabilityService(runner), Path.Combine(_root, "cache"));
+        var service = new VideoRestorationPreviewService(ffmpeg, ffmpeg, runner, new FfmpegRestorationCapabilityService(runner), Path.Combine(_root, "cache"));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.GenerateStillAsync(new VideoRestorationPreviewRequest(source, TimeSpan.FromMinutes(1), TimeSpan.FromSeconds(10), new VideoRestorationSettings())));
         Assert.Empty(Directory.Exists(Path.Combine(_root, "cache")) ? Directory.EnumerateFiles(Path.Combine(_root, "cache")) : Array.Empty<string>());
+    }
+
+    [Fact]
+    public async Task MotionPreviewStagesValidatesAndPromotesBeforeExposure()
+    {
+        string source = Path.Combine(_root, "source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"); File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool");
+        var runner = new MotionRunner(); var service = new VideoRestorationPreviewService(ffmpeg, ffmpeg, runner, new FfmpegRestorationCapabilityService(runner), Path.Combine(_root, "cache"));
+        VideoRestorationMotionPreview result = await service.GenerateMotionAsync(new VideoRestorationPreviewRequest(source, TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(30), new VideoRestorationSettings()), TimeSpan.FromSeconds(5));
+        Assert.All(new[] { result.OriginalPath, result.RestoredPath, result.ComparisonPath }, path => Assert.True(File.Exists(path)));
+        Assert.Equal(3, runner.MotionWrites);
+        Assert.All(runner.MotionOutputPaths, path => Assert.Contains(".staging.mp4", path));
+        Assert.Empty(Directory.EnumerateFiles(Path.Combine(_root, "cache"), "*.staging.*"));
+    }
+
+    [Fact]
+    public async Task InvalidCachedMotionPreviewIsRemovedAndRegenerated()
+    {
+        string source = Path.Combine(_root, "source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"); File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool");
+        var runner = new MotionRunner(); var service = new VideoRestorationPreviewService(ffmpeg, ffmpeg, runner, new FfmpegRestorationCapabilityService(runner), Path.Combine(_root, "cache"));
+        var request = new VideoRestorationPreviewRequest(source, TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(30), new VideoRestorationSettings());
+        VideoRestorationMotionPreview first = await service.GenerateMotionAsync(request); File.WriteAllBytes(first.ComparisonPath, Array.Empty<byte>());
+        await service.GenerateMotionAsync(request);
+        Assert.Equal(4, runner.MotionWrites);
+    }
+
+    [Fact]
+    public async Task MotionFailureLeavesNoPartialOutputExposed()
+    {
+        string source = Path.Combine(_root, "source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"); File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool");
+        var runner = new MotionRunner(failMotion: true); var service = new VideoRestorationPreviewService(ffmpeg, ffmpeg, runner, new FfmpegRestorationCapabilityService(runner), Path.Combine(_root, "cache"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.GenerateMotionAsync(new VideoRestorationPreviewRequest(source, TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(30), new VideoRestorationSettings())));
+        Assert.Empty(Directory.Exists(Path.Combine(_root, "cache")) ? Directory.EnumerateFiles(Path.Combine(_root, "cache"), "*.staging.*") : Array.Empty<string>());
+        Assert.Empty(Directory.Exists(Path.Combine(_root, "cache")) ? Directory.EnumerateFiles(Path.Combine(_root, "cache"), "motion-*.mp4") : Array.Empty<string>());
     }
 
     private sealed class PreviewRunner(bool cancelFrames = false) : IMediaToolProcessRunner
@@ -109,6 +166,21 @@ public sealed class VideoRestorationPreviewTests : IDisposable
             FrameCalls++;
             string output = request.Arguments.Last(); Directory.CreateDirectory(Path.GetDirectoryName(output)!);
             File.WriteAllBytes(output, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLxWQAAAABJRU5ErkJggg=="));
+            return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
+        }
+    }
+
+    private sealed class MotionRunner(bool failMotion = false) : IMediaToolProcessRunner
+    {
+        public int MotionWrites { get; private set; }
+        public List<string> MotionOutputPaths { get; } = [];
+        public Task<MediaToolProcessResult> RunAsync(MediaToolProcessRequest request, CancellationToken cancellationToken = default)
+        {
+            if (request.Arguments.Contains("-filters")) return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardError = string.Join("\n", Enumerable.Range(0, 24).Select(i => $" T. filter{i} V->V Test.")) });
+            if (request.Arguments.Contains("-show_entries")) return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardOutput = "codec_type=video\nduration=5.0" });
+            string output = request.Arguments.Last();
+            if (failMotion) return Task.FromResult(new MediaToolProcessResult { ExitCode = 1, StandardError = "synthetic ffmpeg failure" });
+            Directory.CreateDirectory(Path.GetDirectoryName(output)!); File.WriteAllBytes(output, new byte[2048]); MotionWrites++; MotionOutputPaths.Add(output);
             return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
         }
     }

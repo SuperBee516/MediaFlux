@@ -22,6 +22,8 @@ making it possible to inspect restoration results before committing to a full en
 - Added synchronized timestamp-based Original/Restored comparisons
 - Added five-second motion previews for evaluating restoration during playback
 - Added restoration-analysis information directly to the preview workflow
+- Added full-duration video timeline/scrubber with clickable and keyboard-adjustable seeking
+- Added current/total timestamp display and debounced preview refresh during scrubbing
 
 ### 🔍 Restoration Comparison
 
@@ -74,6 +76,17 @@ encode configuration.
 - Interactive wipe/divider comparison is not included yet
 - Motion comparison uses MediaFlux's existing external-player workflow
 - AI restoration/upscaling and VapourSynth are not included yet
+
+### 🛠️ Preview Reliability & Stability
+
+- Added request identities and cancellation gating so stale asynchronous previews cannot replace newer selections
+- Reorganized preview controls into Navigation, Restoration Preview, Analysis, and Actions groups
+- Replaced ambiguous preview actions with an explicit No Restoration / Current Settings / Recommended selector
+- Added concise ready, analyzing, generating, cached, canceled, and failure status feedback
+- Added still-image validation before cache reuse and bounded cleanup of stale staging files
+- Fixed motion preview generation to use unique staging files, await FFmpeg completion, validate output size and video duration with FFprobe, and atomically promote only valid clips
+- Fixed invalid, truncated, canceled, or failed motion previews being exposed to the external player or reused from cache
+- Serialized generation per cache artifact to prevent concurrent operations from competing over the same output path
 
 ### 🔧 Additional Fixes / Improvements
 

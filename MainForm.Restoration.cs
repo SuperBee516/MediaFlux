@@ -77,7 +77,13 @@ public partial class MainForm
         var service = new VideoRestorationPreviewService(AppPaths.InstallDirectory, _config.FfmpegPath, _config.FfprobePath, message => ErrorLogService.Append(AppPaths.UserDataDirectory, message));
         using var form = new VideoRestorationPreviewForm(path, TimeSpan.FromSeconds(duration), GetSelectedScaleMode(), service, selection, _lastRestorationAnalysis, _config.ExternalPlayerPath,
             settings => { _config.VideoRestoration = settings.Clone(); _restorationPreset!.SelectedIndex = (int)settings.Preset; _config.Save(_configPath); UpdateEncodePreview(); },
-            async token => { await AnalyzeRestorationAsync(path, row, token); selection.SetRecommendation(_pendingRestorationRecommendation); return _pendingRestorationRecommendation; });
+            async token =>
+            {
+                VideoRestorationAnalysisResult result = await AnalyzeRestorationAsync(path, row, token);
+                VideoRestorationRecommendation recommendation = _pendingRestorationRecommendation!;
+                selection.SetRecommendation(recommendation);
+                return new VideoRestorationPreviewAnalysisUpdate(result, recommendation);
+            });
         form.ShowDialog(this);
     }
 }

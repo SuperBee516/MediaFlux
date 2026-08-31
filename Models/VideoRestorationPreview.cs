@@ -1,5 +1,18 @@
 namespace MediaFlux.Models;
 
+public enum RestorationPreviewSelectionMode { NoRestoration, CurrentSettings, Recommended }
+
+public sealed record VideoRestorationPreviewAnalysisUpdate(VideoRestorationAnalysisResult Analysis, VideoRestorationRecommendation Recommendation);
+
+/// <summary>Monotonic request identity used to keep obsolete asynchronous preview work from updating the UI.</summary>
+public sealed class VideoRestorationPreviewOperationGate
+{
+    private long _current;
+    public long Begin() => Interlocked.Increment(ref _current);
+    public void Invalidate() => Interlocked.Increment(ref _current);
+    public bool IsCurrent(long request) => request == Interlocked.Read(ref _current);
+}
+
 /// <summary>Selection state used by the restoration preview. It is deliberately separate from persisted encode settings.</summary>
 public sealed class VideoRestorationPreviewSelection
 {
@@ -13,23 +26,43 @@ public sealed class VideoRestorationPreviewSelection
     public VideoRestorationSettings EncodeSettings { get; private set; }
     public VideoRestorationSettings PreviewSettings { get; private set; }
     public VideoRestorationRecommendation? Recommendation { get; private set; }
+    public RestorationPreviewSelectionMode Mode { get; private set; } = RestorationPreviewSelectionMode.CurrentSettings;
     public bool DiffersFromEncode => !Equivalent(EncodeSettings, PreviewSettings);
 
-    public void PreviewOff() => PreviewSettings = new VideoRestorationSettings();
-    public void PreviewCurrent() => PreviewSettings = EncodeSettings.Clone();
+    public void PreviewOff() => SelectMode(RestorationPreviewSelectionMode.NoRestoration);
+    public void PreviewCurrent() => SelectMode(RestorationPreviewSelectionMode.CurrentSettings);
     public bool PreviewRecommendation()
     {
         if (Recommendation == null) return false;
-        PreviewSettings = Recommendation.Settings.Clone();
+        SelectMode(RestorationPreviewSelectionMode.Recommended);
         return true;
     }
 
-    public void SetRecommendation(VideoRestorationRecommendation? recommendation) => Recommendation = recommendation;
+    public bool SelectMode(RestorationPreviewSelectionMode mode)
+    {
+        if (mode == RestorationPreviewSelectionMode.Recommended && Recommendation == null) return false;
+        Mode = mode;
+        PreviewSettings = mode switch
+        {
+            RestorationPreviewSelectionMode.NoRestoration => new VideoRestorationSettings(),
+            RestorationPreviewSelectionMode.Recommended => Recommendation!.Settings.Clone(),
+            _ => EncodeSettings.Clone()
+        };
+        return true;
+    }
+
+    public void SetRecommendation(VideoRestorationRecommendation? recommendation)
+    {
+        Recommendation = recommendation;
+        if (Mode == RestorationPreviewSelectionMode.Recommended && recommendation == null)
+            PreviewCurrent();
+    }
 
     /// <summary>Returns a clone for the caller to persist only after an explicit user action.</summary>
     public VideoRestorationSettings ApplyToEncodeSettings()
     {
         EncodeSettings = PreviewSettings.Clone();
+        Mode = RestorationPreviewSelectionMode.CurrentSettings;
         return EncodeSettings.Clone();
     }
 
