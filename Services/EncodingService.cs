@@ -612,11 +612,17 @@ namespace MediaFlux.Services
             {
                 MediaProbeStreamInfo? video = sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
                 if (video?.FrameRate is not > 0) throw new AiRestorationValidationException("AI restoration requires a source with a known constant frame rate.");
+                SourceTimingAnalysis timing = await new SourceTimingAnalysisService(_ffprobePath, log: _log).AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
+                SourceTimingAnalysisService.EnsureCurrentCfrSupported(timing);
                 var backend = new AiRestorationBackendService(Path.GetDirectoryName(_ffmpegPath) ?? AppDomain.CurrentDomain.BaseDirectory, log: _log);
                 aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode);
                 callback("[MediaFlux] Preparing AI restoration.");
                 var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend);
-                aiIntermediate = await intermediate.CreateAsync(new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration), new Progress<AiIntermediateProgress>(p => callback($"[MediaFlux] {p.Message}")), cancellationToken).ConfigureAwait(false);
+                int expectedFrames = checked((int)Math.Round((sampleDuration ?? TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0)).TotalSeconds * video.FrameRate.Value));
+                AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"));
+                _log?.Invoke($"[EncodingService] AI preflight: source={inputSource.SourcePath}; model={aiSettings.AiModelId}; device={aiSettings.AiDevice}; scale={(int)aiSettings.AiScale}x; expectedFrames={expectedFrames}; {estimate.Describe()}; plan={aiPlan.DescribeStages()}.");
+                AiProductionHardeningService.EnsureSpace(estimate);
+                aiIntermediate = await intermediate.CreateAsync(new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0), new Progress<AiIntermediateProgress>(p => callback($"[MediaFlux] {p.Message}")), cancellationToken).ConfigureAwait(false);
                 _log?.Invoke($"[EncodingService] AI intermediate ready: {aiIntermediate.Path}; {aiPlan.DescribeStages()}.");
             }
 

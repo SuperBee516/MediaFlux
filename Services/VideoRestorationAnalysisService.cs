@@ -10,10 +10,11 @@ public sealed class VideoRestorationAnalysisService
 {
     private readonly IMediaProbeService _probe;
     private readonly string? _ffmpegPath;
+    private readonly string? _ffprobePath;
     private readonly IMediaToolProcessRunner? _runner;
     private readonly ConcurrentDictionary<string, VideoRestorationAnalysisResult> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Action<string>? _log;
-    public VideoRestorationAnalysisService(string appDirectory, string? ffprobePath = null, string? ffmpegPath = null, Action<string>? log = null) : this(new FfprobeService(appDirectory, ffprobePath), log) { _ffmpegPath = FfmpegToolResolver.Resolve(appDirectory, ffmpegPath, ffprobePath).FfmpegPath; _runner = new MediaToolProcessRunner(); }
+    public VideoRestorationAnalysisService(string appDirectory, string? ffprobePath = null, string? ffmpegPath = null, Action<string>? log = null) : this(new FfprobeService(appDirectory, ffprobePath), log) { FfmpegToolPaths tools = FfmpegToolResolver.Resolve(appDirectory, ffmpegPath, ffprobePath); _ffmpegPath = tools.FfmpegPath; _ffprobePath = tools.FfprobePath; _runner = new MediaToolProcessRunner(); }
     internal VideoRestorationAnalysisService(IMediaProbeService probe, Action<string>? log = null) { _probe = probe; _log = log; }
     public async Task<VideoRestorationAnalysisResult> AnalyzeAsync(string sourcePath, bool? animationHint = null, CancellationToken cancellationToken = default)
     {
@@ -27,7 +28,8 @@ public sealed class VideoRestorationAnalysisService
         bool interlaced = video.FieldOrder is not null && !video.FieldOrder.Equals("progressive", StringComparison.OrdinalIgnoreCase) && !video.FieldOrder.Equals("unknown", StringComparison.OrdinalIgnoreCase);
         var evidence = new List<string>(); if (mpeg2) evidence.Add("MPEG-2 source codec"); if (sd) evidence.Add("SD source resolution"); if (interlaced) evidence.Add($"FFprobe field order: {video.FieldOrder}");
         var picture = await SamplePictureConditionsAsync(sourcePath, probe.DurationSeconds ?? 0, cancellationToken).ConfigureAwait(false);
-        var result = new VideoRestorationAnalysisResult { SourcePath = sourcePath, Width = video.Width, Height = video.Height, FrameRate = video.FrameRate, Codec = video.CodecName ?? "Unknown", ScanType = interlaced ? RestorationScanType.InterlacedSuspected : RestorationScanType.Unknown, Noise = picture.Noise, Blocking = picture.Blocking == RestorationEvidenceLevel.Unknown && mpeg2 && sd ? RestorationEvidenceLevel.Moderate : picture.Blocking, Banding = picture.Banding, AnimationHint = animationHint, Confidence = evidence.Count == 0 ? 20 : interlaced ? 70 : picture.Noise == RestorationEvidenceLevel.Unknown ? 40 : 60, Evidence = evidence };
+        SourceTimingAnalysis? timing = _probe is FfprobeService && !string.IsNullOrWhiteSpace(_ffprobePath) ? await new SourceTimingAnalysisService(_ffprobePath, _runner, _log).AnalyzeAsync(sourcePath, cancellationToken).ConfigureAwait(false) : null;
+        var result = new VideoRestorationAnalysisResult { SourcePath = sourcePath, Width = video.Width, Height = video.Height, FrameRate = video.FrameRate, Codec = video.CodecName ?? "Unknown", ScanType = interlaced ? RestorationScanType.InterlacedSuspected : RestorationScanType.Unknown, Noise = picture.Noise, Blocking = picture.Blocking == RestorationEvidenceLevel.Unknown && mpeg2 && sd ? RestorationEvidenceLevel.Moderate : picture.Blocking, Banding = picture.Banding, AnimationHint = animationHint, Confidence = evidence.Count == 0 ? 20 : interlaced ? 70 : picture.Noise == RestorationEvidenceLevel.Unknown ? 40 : 60, Evidence = evidence, Timing = timing };
         _cache[key] = result; _log?.Invoke($"[RestorationAnalysis] {Path.GetFileName(sourcePath)}: {video.Width}x{video.Height} {result.Codec}; scan={result.ScanType}; blocking={result.Blocking}; confidence={result.Confidence}."); return result;
     }
     private static string CacheKey(string path) { var info = new FileInfo(path); return $"{Path.GetFullPath(path)}|{info.Length}|{info.LastWriteTimeUtc.Ticks}"; }

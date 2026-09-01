@@ -1,3 +1,5 @@
+using MediaFlux.Services;
+
 namespace MediaFlux.Models;
 
 public enum RestorationEvidenceLevel { Unknown, Low, Moderate, High }
@@ -18,10 +20,17 @@ public sealed record VideoRestorationAnalysisResult
     public int Confidence { get; init; }
     public IReadOnlyList<string> Evidence { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+    public SourceTimingAnalysis? Timing { get; init; }
 }
 
 public sealed record VideoRestorationRecommendation(
     VideoRestorationSettings Settings,
     int Confidence,
     string Reason,
-    bool RequiresManualConfirmation = false);
+    bool RequiresManualConfirmation = false,
+    TemporalQualityResult? TemporalQuality = null,
+    AiRecommendationOutcome AiOutcome = AiRecommendationOutcome.NotConsidered,
+    bool IsPreviewTested = false);
+
+public enum AiRecommendationOutcome { NotConsidered, ConventionalRecommended, AiWorthPreviewing, AiNotRecommended, CurrentAiSuitable, CurrentAiDiscouraged, InsufficientEvidencePreviewRecommended }
+public sealed record AiRecommendationContext(IReadOnlyList<AiRestorationModel> AvailableModels, IReadOnlyList<AiConfigurationComparisonItem>? ComparisonResults = null, TemporalQualityResult? CurrentTemporalQuality = null, int? TargetHeight = null, SourceTimingAnalysis? Timing = null);

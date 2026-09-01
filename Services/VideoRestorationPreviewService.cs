@@ -19,7 +19,7 @@ public sealed class VideoRestorationStillPreview : IDisposable
     public void Dispose() { Original.Dispose(); Restored.Dispose(); }
 }
 
-public sealed record VideoRestorationMotionPreview(TimeSpan Start, TimeSpan Duration, string OriginalPath, string RestoredPath, string ComparisonPath);
+public sealed record VideoRestorationMotionPreview(TimeSpan Start, TimeSpan Duration, string OriginalPath, string RestoredPath, string ComparisonPath, TemporalQualityResult? TemporalQuality = null);
 
 /// <summary>Creates accurate, validated preview artifacts. Cache files are promoted only after FFmpeg and validation succeed.</summary>
 public sealed class VideoRestorationPreviewService
@@ -53,7 +53,7 @@ public sealed class VideoRestorationPreviewService
 
     public async Task<VideoRestorationStillPreview> GenerateStillAsync(VideoRestorationPreviewRequest request, CancellationToken cancellationToken = default)
     {
-        ValidateRequest(request); string filterChain = await PreparePipelineAsync(request.Settings, request.EncodeScale, cancellationToken).ConfigureAwait(false);
+        ValidateRequest(request); await EnsureAiSourceTimingAsync(request.SourcePath, request.Settings, cancellationToken).ConfigureAwait(false); string filterChain = await PreparePipelineAsync(request.Settings, request.EncodeScale, cancellationToken).ConfigureAwait(false);
         VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(request.Settings, request.EncodeScale);
         string cacheSettings = filterChain;
         if (plan.UsesAi)
@@ -73,7 +73,7 @@ public sealed class VideoRestorationPreviewService
 
     public async Task<VideoRestorationMotionPreview> GenerateMotionAsync(VideoRestorationPreviewRequest request, TimeSpan? requestedDuration = null, CancellationToken cancellationToken = default)
     {
-        ValidateRequest(request); string filterChain = await PreparePipelineAsync(request.Settings, request.EncodeScale, cancellationToken).ConfigureAwait(false);
+        ValidateRequest(request); await EnsureAiSourceTimingAsync(request.SourcePath, request.Settings, cancellationToken).ConfigureAwait(false); string filterChain = await PreparePipelineAsync(request.Settings, request.EncodeScale, cancellationToken).ConfigureAwait(false);
         PrepareCache(); TimeSpan duration = TimeSpan.FromSeconds(Math.Min(Math.Max(1, (requestedDuration ?? TimeSpan.FromSeconds(5)).TotalSeconds), Math.Max(1, request.SourceDuration.TotalSeconds)));
         TimeSpan start = TimeSpan.FromSeconds(Math.Clamp(request.Position.TotalSeconds - duration.TotalSeconds / 2, 0, Math.Max(0, request.SourceDuration.TotalSeconds - duration.TotalSeconds)));
         string aiIdentity = request.Settings.AiMode == AiRestorationMode.Off ? "" : (await _aiBackend.GetCapabilitiesAsync(request.Settings, cancellationToken).ConfigureAwait(false)).Identity + "|" + request.Settings.AiModelId + "|" + request.Settings.AiScale;
@@ -83,8 +83,10 @@ public sealed class VideoRestorationPreviewService
         if (request.Settings.AiMode == AiRestorationMode.Off) await EnsureMotionAsync(restored, output => BuildAccurateFrameArguments(request.SourcePath, start, duration, filterChain, output, image: false), cancellationToken).ConfigureAwait(false);
         else await EnsureAiMotionAsync(restored, request, start, duration, cancellationToken).ConfigureAwait(false);
         await EnsureMotionAsync(comparison, output => BuildComparisonArguments(original, restored, output), cancellationToken).ConfigureAwait(false);
+        TemporalQualityResult? temporal = request.Settings.AiMode == AiRestorationMode.Off ? null : await new TemporalQualityAnalysisService(_ffmpegPath, _runner, _log).AnalyzeMotionAsync(original, restored, cancellationToken).ConfigureAwait(false);
+        if (temporal != null) _log?.Invoke($"[RestorationPreview] temporal sample={start.TotalSeconds:0.###}-{(start + duration).TotalSeconds:0.###}; {temporal.Summary}; {temporal.Reason}");
         _log?.Invoke($"[RestorationPreview] motion ready; start={start.TotalSeconds:0.###}; duration={duration.TotalSeconds:0.###}; filters={(string.IsNullOrWhiteSpace(filterChain) ? "Off" : filterChain)}.");
-        return new VideoRestorationMotionPreview(start, duration, original, restored, comparison);
+        return new VideoRestorationMotionPreview(start, duration, original, restored, comparison, temporal);
     }
 
     private async Task EnsureAiMotionAsync(string final, VideoRestorationPreviewRequest request, TimeSpan start, TimeSpan duration, CancellationToken token)
@@ -163,6 +165,13 @@ public sealed class VideoRestorationPreviewService
         else { VideoRestorationPipeline.ClearAvailableFilters(); _log?.Invoke("[RestorationPreview] FFmpeg restoration inventory is Unknown; FFmpeg will report a filter failure if needed."); }
         if (settings.AiMode != AiRestorationMode.Off) await _aiBackend.ValidateSelectionAsync(settings, token).ConfigureAwait(false);
         return settings.AiMode == AiRestorationMode.Off ? BuildEffectivePreviewFilterChain(settings, scaleMode) : VideoRestorationPipeline.BuildPlan(settings, scaleMode).DescribeStages();
+    }
+
+    private async Task EnsureAiSourceTimingAsync(string sourcePath, VideoRestorationSettings settings, CancellationToken token)
+    {
+        if (settings.AiMode == AiRestorationMode.Off) return;
+        SourceTimingAnalysis timing = await new SourceTimingAnalysisService(_ffprobePath, _runner, _log).AnalyzeAsync(sourcePath, token).ConfigureAwait(false);
+        SourceTimingAnalysisService.EnsureCurrentCfrSupported(timing);
     }
 
     private async Task EnsureAiStillAsync(string final, VideoRestorationPreviewRequest request, TimeSpan position, VideoRestorationPipelinePlan plan, CancellationToken token)

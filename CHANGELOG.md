@@ -7,6 +7,37 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## 🎞️ Video Restoration Phase 4B — AI Quality & Reliability
+
+MediaFlux Video Restoration now provides more source-aware AI preview guidance,
+stronger reliability safeguards, and safer CFR-only AI processing.
+
+### What's New
+
+- Added temporal stability analysis for AI motion previews
+- Added curated AI configuration comparison with bounded session results
+- Added AI-aware restoration recommendations and explainable confidence changes
+- Improved source picture-condition and compression-artifact analysis
+- Added long AI-job temp-space checks, cleanup, cancellation handling, and diagnostics
+- Added multi-window source timing characterization and AI eligibility safeguards
+- Added CFR-safe AI full encoding plus still and five-second motion previews
+- Preserved original audio, subtitles, metadata, chapters, and ancillary streams through split-source encoding
+- Added saved-job and scheduled-job support for AI restoration through the shared encode path
+
+### Safety / Behavior
+
+- Conventional restoration and AI Off remain fully supported
+- AI restoration remains opt-in and never silently falls back to non-AI processing
+- AI restoration currently requires verified CFR video
+- VFR, irregular, or unverifiable timing is safely rejected for AI restoration while conventional restoration and normal encoding remain available
+- Explicit restoration settings remain user-controlled; analysis and recommendations never silently enable AI
+
+### Current Limitations
+
+- VFR AI restoration is not supported; no VFR capability is exposed in the application
+- Temporal analysis is bounded and heuristic rather than a temporal ML model
+- AI restoration requires a locally available, validated backend/model/device
+
 ## 🤖 Video Restoration Phase 4A — AI Restoration
 
 MediaFlux now includes optional GPU-accelerated AI restoration for low-resolution and degraded video, with particular support for vintage animation.

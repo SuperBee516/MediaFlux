@@ -50,6 +50,11 @@ public sealed class VideoRestorationPreviewSelection
         };
         return true;
     }
+    public void UsePreviewSettings(VideoRestorationSettings settings)
+    {
+        PreviewSettings = settings.Clone();
+        Mode = RestorationPreviewSelectionMode.CurrentSettings;
+    }
 
     public void SetRecommendation(VideoRestorationRecommendation? recommendation)
     {
@@ -71,5 +76,6 @@ public sealed class VideoRestorationPreviewSelection
         left.Deband == right.Deband && left.Sharpen == right.Sharpen && left.Deinterlace == right.Deinterlace &&
         left.Brightness == right.Brightness && left.Contrast == right.Contrast && left.Saturation == right.Saturation &&
         left.Resize == right.Resize && left.CustomWidth == right.CustomWidth && left.CustomHeight == right.CustomHeight &&
-        left.PreserveAspectRatio == right.PreserveAspectRatio;
+        left.PreserveAspectRatio == right.PreserveAspectRatio && left.AiMode == right.AiMode && left.AiModelId == right.AiModelId &&
+        left.AiScale == right.AiScale && left.AiDevice == right.AiDevice && left.AiBackendPath == right.AiBackendPath && left.AiModelsDirectory == right.AiModelsDirectory;
 }

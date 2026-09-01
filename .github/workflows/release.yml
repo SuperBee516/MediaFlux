@@ -152,7 +152,7 @@ jobs:
           }
 
           $changelog = Get-Content .\CHANGELOG.md -Raw
-          $featureNotes = [regex]::Match($changelog, '(?ms)^## 🎞️ Video Restoration Phase 3\s*(.*?)(?=^## |\z)').Groups[1].Value.Trim()
+          $featureNotes = [regex]::Match($changelog, '(?ms)^## 🎞️ Video Restoration Phase 4B[^\r\n]*\s*(.*?)(?=^## |\z)').Groups[1].Value.Trim()
           if ($featureNotes) {
             $changes = @($featureNotes, '', '### Commit summary', '') + $changes
           }
