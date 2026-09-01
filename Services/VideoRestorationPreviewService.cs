@@ -100,11 +100,12 @@ public sealed class VideoRestorationPreviewService
             try
             {
                 var probe = await new FfprobeService(_ffprobePath, _runner).ProbeAsync(request.SourcePath, token).ConfigureAwait(false);
-                double? fps = probe.Streams.FirstOrDefault(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase))?.FrameRate;
+                MediaProbeStreamInfo? sourceVideo = probe.Streams.FirstOrDefault(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+                double? fps = sourceVideo?.FrameRate;
                 if (!probe.Success || fps is not > 0) throw new AiRestorationValidationException("AI motion preview requires a source with a known constant frame rate.");
                 VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(request.Settings, request.EncodeScale);
                 var service = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, _cacheDirectory, _aiBackend, _runner, _log);
-                intermediate = await service.CreateAsync(new AiIntermediateVideoRequest(request.SourcePath, fps.Value, request.SourceDuration, request.Settings, plan, start, duration), null, token).ConfigureAwait(false);
+                intermediate = await service.CreateAsync(new AiIntermediateVideoRequest(request.SourcePath, fps.Value, request.SourceDuration, request.Settings, plan, start, duration, sourceVideo?.Width ?? 0, sourceVideo?.Height ?? 0, IsMotionPreview: true), null, token).ConfigureAwait(false);
                 string post = BuildPostAiPreviewFilterChain(plan.PostAiFilterChain, request.EncodeScale);
                 await RunFfmpegAsync(BuildAccurateFrameArguments(intermediate.Path, TimeSpan.Zero, duration, post, staging, image: false), "generating AI motion preview", token).ConfigureAwait(false);
                 if (!await IsValidMotionAsync(staging, token).ConfigureAwait(false)) throw new InvalidOperationException("AI restoration did not produce a valid MP4 preview.");

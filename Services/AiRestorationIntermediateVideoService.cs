@@ -7,7 +7,7 @@ namespace MediaFlux.Services;
 
 public enum AiIntermediateStage { ExtractingFrames, AiProcessing, Reassembling, Validating }
 public sealed record AiIntermediateProgress(AiIntermediateStage Stage, int Current, int Total, string Message);
-public sealed record AiIntermediateVideoRequest(string SourcePath, double FrameRate, TimeSpan SourceDuration, VideoRestorationSettings Settings, VideoRestorationPipelinePlan Plan, TimeSpan? Start = null, TimeSpan? Duration = null, int SourceWidth = 0, int SourceHeight = 0);
+public sealed record AiIntermediateVideoRequest(string SourcePath, double FrameRate, TimeSpan SourceDuration, VideoRestorationSettings Settings, VideoRestorationPipelinePlan Plan, TimeSpan? Start = null, TimeSpan? Duration = null, int SourceWidth = 0, int SourceHeight = 0, bool IsMotionPreview = false);
 public sealed record AiIntermediateVideoResult(string Path, TimeSpan Duration, int FrameCount, int Width, int Height, double FrameRate, string? StagingDirectory = null) : IDisposable
 { public void Dispose() { try { if (!string.IsNullOrWhiteSpace(StagingDirectory) && System.IO.Path.GetFileName(StagingDirectory).StartsWith("ai-intermediate-", StringComparison.OrdinalIgnoreCase) && Directory.Exists(StagingDirectory)) Directory.Delete(StagingDirectory, true); else if (File.Exists(Path)) File.Delete(Path); } catch { } } }
 internal sealed record AiIntermediateChunkMetadata(string Path, string Codec, int Width, int Height, string PixelFormat, string TimeBase, string FrameRate, int FrameCount, double Duration);
@@ -57,6 +57,7 @@ public sealed class AiRestorationIntermediateVideoService
             _log?.Invoke(FormatPlannerDecision(plannerDecision, session.Capabilities.Identity));
             AiProductionHardeningService.EnsureSpace(estimate); using (File.Create(Path.Combine(root, ".mediaflux-ai-staging"))) { }
             var chunks = new List<AiIntermediateChunkMetadata>();
+            NcnnRuntimeSelection runtimeSelection = new(NcnnRuntimeConfiguration.SafeDefault, NcnnRuntimeConfigurationSource.SafeDefault);
             int chunkTotal = (total + chunkPlan.FrameCount - 1) / chunkPlan.FrameCount;
             for (int offset = 0, chunkIndex = 0; offset < total; offset += chunkPlan.FrameCount, chunkIndex++)
             {
@@ -78,6 +79,17 @@ public sealed class AiRestorationIntermediateVideoService
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
                 { ValidateFrameSet(input, extracted); scope?.Complete(); }
                 validationElapsed += Stopwatch.GetElapsedTime(stageStartedAt);
+                if (chunkIndex == 0)
+                {
+                    string? capturedGpuIdentity = _timing?.GpuIdentity;
+                    string gpuIdentity = capturedGpuIdentity ?? HardwarePerformanceService.DetectGpuIdentity();
+                    bool canTune = !request.IsMotionPreview && !string.IsNullOrWhiteSpace(capturedGpuIdentity) && !capturedGpuIdentity.Equals("Unavailable", StringComparison.OrdinalIgnoreCase) && _timing?.DedicatedGpuVramBytes is > 0;
+                    runtimeSelection = await new NcnnPerformanceAutoTuner(_backend, log: _log).SelectAsync(
+                        session, request.Settings, input, Path.Combine(root, "ncnn-tuning"), request.SourceWidth, request.SourceHeight,
+                        gpuIdentity, _timing?.DedicatedGpuVramBytes, canTune, token).ConfigureAwait(false);
+                    _timing?.SetNcnnRuntimeSelection(runtimeSelection);
+                    _log?.Invoke($"NCNN Performance Configuration{Environment.NewLine}GPU: {gpuIdentity}; Model: {session.Model.BackendModelName}; Scale: {(int)request.Settings.AiScale}x; Resolution: {request.SourceWidth}x{request.SourceHeight}; Threads: {runtimeSelection.Configuration.ThreadsDisplay}; Tile: {runtimeSelection.Configuration.TileDisplay}; Source: {Describe(runtimeSelection.Source)}.");
+                }
                 string[] processed = ExpectedFrames(output, count);
                 progress?.Report(new(AiIntermediateStage.AiProcessing, offset, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})"));
                 stageStartedAt = Stopwatch.GetTimestamp();
@@ -89,7 +101,8 @@ public sealed class AiRestorationIntermediateVideoService
                     output,
                     processed,
                     completed => progress?.Report(new(AiIntermediateStage.AiProcessing, offset + completed, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})")),
-                    token).ConfigureAwait(false); scope?.Complete(); }
+                    token,
+                    runtimeSelection.Configuration).ConfigureAwait(false); scope?.Complete(); }
                 TimeSpan inferenceElapsed = Stopwatch.GetElapsedTime(stageStartedAt);
                 stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
@@ -221,6 +234,12 @@ public sealed class AiRestorationIntermediateVideoService
         return result.StandardOutput.Split('\n').Select(line => line.Trim()).Select(line => line.Split('=', 2)).Where(parts => parts.Length == 2 && !string.IsNullOrWhiteSpace(parts[0])).GroupBy(parts => parts[0], StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.Last()[1].Trim(), StringComparer.OrdinalIgnoreCase);
     }
     private static string Describe(AiIntermediateChunkMetadata chunk) => $"codec={chunk.Codec}, {chunk.Width}x{chunk.Height}, pix_fmt={chunk.PixelFormat}, time_base={chunk.TimeBase}, fps={chunk.FrameRate}";
+    private static string Describe(NcnnRuntimeConfigurationSource source) => source switch
+    {
+        NcnnRuntimeConfigurationSource.AutoTuned => "Auto-tuned",
+        NcnnRuntimeConfigurationSource.Cached => "Cached",
+        _ => "Safe default"
+    };
     private static string FormatPlannerDecision(AiChunkPlannerDecision decision, string backend) =>
         "[AI Chunk Planner]" + Environment.NewLine +
         $"Resolution: {decision.SourceWidth}x{decision.SourceHeight}; AI Scale: {(int)decision.AiScale}x; Estimated Bytes per Frame: {FormatBytes(decision.EstimatedBytesPerFrame)}" + Environment.NewLine +

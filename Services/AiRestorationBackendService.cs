@@ -164,23 +164,27 @@ public sealed class AiRestorationBackendService
     public static void InvalidateCache() { Cache.Clear(); ResolutionLog.Clear(); }
 
     /// <summary>Builds safe argument tokens for one deterministic frame operation.</summary>
-    public IReadOnlyList<string> BuildFrameArguments(AiRestorationCapabilities capabilities, AiRestorationModel model, VideoRestorationSettings settings, string input, string output)
+    public IReadOnlyList<string> BuildFrameArguments(AiRestorationCapabilities capabilities, AiRestorationModel model, VideoRestorationSettings settings, string input, string output, NcnnRuntimeConfiguration? runtimeConfiguration = null)
     {
         if (!Path.IsPathFullyQualified(input) || !Path.IsPathFullyQualified(output))
             throw new AiRestorationValidationException("AI restoration requires absolute staging paths.");
         if (!File.Exists(input)) throw new FileNotFoundException("AI restoration input frame is missing.", input);
-        return new[] { "-i", input, "-o", output, "-m", model.ModelsDirectory, "-n", model.BackendModelName, "-s", ((int)settings.AiScale).ToString(), "-g", settings.AiDevice.Equals("Auto", StringComparison.OrdinalIgnoreCase) ? "auto" : settings.AiDevice };
+        var arguments = new List<string> { "-i", input, "-o", output, "-m", model.ModelsDirectory, "-n", model.BackendModelName, "-s", ((int)settings.AiScale).ToString(), "-g", settings.AiDevice.Equals("Auto", StringComparison.OrdinalIgnoreCase) ? "auto" : settings.AiDevice };
+        AppendRuntimeArguments(arguments, runtimeConfiguration);
+        return arguments;
     }
 
     /// <summary>Builds one NCNN directory-mode operation for an owned chunk of PNG frames.</summary>
-    public IReadOnlyList<string> BuildDirectoryArguments(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory)
+    public IReadOnlyList<string> BuildDirectoryArguments(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory, NcnnRuntimeConfiguration? runtimeConfiguration = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         if (!Path.IsPathFullyQualified(inputDirectory) || !Path.IsPathFullyQualified(outputDirectory))
             throw new AiRestorationValidationException("AI restoration requires absolute staging directories.");
         if (!Directory.Exists(inputDirectory))
             throw new DirectoryNotFoundException("AI restoration input-frame directory is missing.");
-        return new[] { "-i", inputDirectory, "-o", outputDirectory, "-m", session.Model.ModelsDirectory, "-n", session.Model.BackendModelName, "-s", ((int)settings.AiScale).ToString(), "-g", settings.AiDevice.Equals("Auto", StringComparison.OrdinalIgnoreCase) ? "auto" : settings.AiDevice, "-f", "png" };
+        var arguments = new List<string> { "-i", inputDirectory, "-o", outputDirectory, "-m", session.Model.ModelsDirectory, "-n", session.Model.BackendModelName, "-s", ((int)settings.AiScale).ToString(), "-g", settings.AiDevice.Equals("Auto", StringComparison.OrdinalIgnoreCase) ? "auto" : settings.AiDevice, "-f", "png" };
+        AppendRuntimeArguments(arguments, runtimeConfiguration);
+        return arguments;
     }
 
     public async Task ProcessFrameAsync(VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default)
@@ -200,7 +204,7 @@ public sealed class AiRestorationBackendService
         return new AiRestorationSession(capabilities, model);
     }
 
-    public async Task ProcessFrameAsync(AiRestorationSession session, VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default)
+    public async Task ProcessFrameAsync(AiRestorationSession session, VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         try
@@ -209,7 +213,7 @@ public sealed class AiRestorationBackendService
             MediaToolProcessResult result = await _runner.RunAsync(new MediaToolProcessRequest
             {
                 FileName = session.Capabilities.ExecutablePath,
-                Arguments = BuildFrameArguments(session.Capabilities, session.Model, settings, input, stagingOutput),
+                Arguments = BuildFrameArguments(session.Capabilities, session.Model, settings, input, stagingOutput, runtimeConfiguration),
                 Timeout = TimeSpan.FromMinutes(2)
             }, cancellationToken).ConfigureAwait(false);
             if (result.TimedOut) throw new AiRestorationValidationException("AI restoration timed out while processing a frame.");
@@ -231,7 +235,9 @@ public sealed class AiRestorationBackendService
         string outputDirectory,
         IReadOnlyList<string> expectedOutputFrames,
         Action<int>? completedFrames,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        NcnnRuntimeConfiguration? runtimeConfiguration = null,
+        TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         if (expectedOutputFrames.Count == 0)
@@ -241,7 +247,7 @@ public sealed class AiRestorationBackendService
 
         Directory.CreateDirectory(outputDirectory);
         CleanupOwnedOutputs(outputDirectory);
-        IReadOnlyList<string> arguments = BuildDirectoryArguments(session, settings, inputDirectory, outputDirectory);
+        IReadOnlyList<string> arguments = BuildDirectoryArguments(session, settings, inputDirectory, outputDirectory, runtimeConfiguration);
         var stopwatch = Stopwatch.StartNew();
         _log?.Invoke($"[AI Restoration] chunk start; inputFrames={Directory.EnumerateFiles(inputDirectory, "*.png").Count()}; expectedOutputFrames={expectedOutputFrames.Count}; model={session.Model.BackendModelName}; scale={(int)settings.AiScale}x; device={settings.AiDevice}.");
         Task<MediaToolProcessResult>? operation = null;
@@ -251,7 +257,7 @@ public sealed class AiRestorationBackendService
             {
                 FileName = session.Capabilities.ExecutablePath,
                 Arguments = arguments,
-                Timeout = TimeSpan.FromMinutes(30),
+                Timeout = timeout ?? TimeSpan.FromMinutes(30),
                 SendQuitOnCancellation = true
             }, cancellationToken);
 
@@ -317,6 +323,23 @@ public sealed class AiRestorationBackendService
 
     internal static string BuildDirectoryFailureDiagnostic(string executable, IReadOnlyList<string> arguments, MediaToolProcessResult result, TimeSpan elapsed) =>
         $"AI restoration batch failed. executable={SanitizeDiagnostic(executable)}; arguments={string.Join(" ", arguments)}; elapsed={elapsed:g}; exitCode={result.ExitCode}; timedOut={result.TimedOut}; stderr={SanitizeDiagnostic(result.StandardError)}";
+
+    private static void AppendRuntimeArguments(List<string> arguments, NcnnRuntimeConfiguration? runtimeConfiguration)
+    {
+        NcnnRuntimeConfiguration configuration = runtimeConfiguration ?? NcnnRuntimeConfiguration.SafeDefault;
+        configuration.Validate();
+        configuration.Threads?.Validate();
+        if (configuration.Threads is NcnnThreadConfiguration threads)
+        {
+            arguments.Add("-j");
+            arguments.Add(threads.ToString());
+        }
+        if (configuration.TileSize is int tile)
+        {
+            arguments.Add("-t");
+            arguments.Add(tile.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+    }
 
     private static void CleanupOwnedOutputs(string outputDirectory)
     {

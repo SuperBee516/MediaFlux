@@ -30,6 +30,7 @@ public sealed class HardwarePerformanceService : IDisposable
     }
 
     public static long? DetectDedicatedGpuVramBytes() => DiscoverNvidiaGpu().Vram;
+    public static string DetectGpuIdentity() => DiscoverNvidiaGpu().Name;
 
     public HardwareUsageSample Sample()
     {

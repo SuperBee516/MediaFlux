@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.83] - 2026-09-01
+
+### AI Restoration Performance Auto-Tuning
+
+- Added automatic performance tuning for the Real-ESRGAN NCNN/Vulkan backend.
+- Added optimized NCNN load/process/save thread configuration (`-j`).
+- Added automatic tile-size (`-t`) performance tuning.
+- Uses a bounded staged benchmark to select the fastest stable configuration.
+- Rejects candidates that fail frame, dimension, resource, or existing output validation.
+- Caches successful tuning results by GPU, backend, model, AI scale, and resolution class.
+- Reuses compatible cached configurations on future AI jobs.
+- Corrupt, incompatible, or future-version tuning cache data safely falls back.
+- Preserves existing safe NCNN behavior whenever tuning cannot be used.
+- Motion previews can reuse compatible cached tuning without expensive repeated benchmarking.
+- Added tuning diagnostics including baseline FPS, selected FPS, peak VRAM, and measured improvement.
+- No restoration-quality, model, scale, TTA, or output-validation behavior was reduced or changed.
+
 ## [0.1.82] - 2026-09-01
 
 ### AI Restoration Performance Diagnostics

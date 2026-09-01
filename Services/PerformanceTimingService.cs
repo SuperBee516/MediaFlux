@@ -16,6 +16,7 @@ public sealed class PerformanceTimingService
     private TimeSpan _slowestAiChunk;
     private readonly List<AiChunkPerformanceMetrics> _aiChunkMetrics = new();
     private AiChunkPlannerDecision? _aiPlannerDecision;
+    private NcnnRuntimeSelection? _ncnnRuntimeSelection;
     private HardwareSnapshot? _hardware;
     private int _hardwareSamples;
     private double _gpuTotal, _cpuTotal, _readTotal, _writeTotal;
@@ -64,6 +65,17 @@ public sealed class PerformanceTimingService
     public long? DedicatedGpuVramBytes
     {
         get { lock (_gate) return _hardware?.DedicatedVramBytes; }
+    }
+
+    public string? GpuIdentity
+    {
+        get { lock (_gate) return _hardware?.Gpu; }
+    }
+
+    public void SetNcnnRuntimeSelection(NcnnRuntimeSelection selection)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        lock (_gate) _ncnnRuntimeSelection = selection;
     }
 
     public void SetAiBackend(string backend, string executablePath)
@@ -116,6 +128,7 @@ public sealed class PerformanceTimingService
             AppendAiThroughput(builder);
             AppendAiChunkPlannerSummary(builder);
             AppendAiPlannerCalibrationSummary(builder);
+            AppendNcnnRuntimeSummary(builder);
             AppendHardwareSummary(builder);
             AppendLargestTimeConsumers(builder);
         }
@@ -238,6 +251,23 @@ public sealed class PerformanceTimingService
         if (storageConservative) builder.AppendLine($"Storage conservative: estimated chunk storage {Bytes(_aiPlannerDecision.EstimatedTemporaryStoragePerChunk)} exceeded measured {Bytes(averageMeasuredStorage)}.");
         if (extractionPercent >= 25) builder.AppendLine($"CPU bottleneck: extraction consumed {extractionPercent:0.#}% of total AI time.");
         if (inferencePercent >= 50) builder.AppendLine($"AI inference bottleneck: inference consumed {inferencePercent:0.#}% of total AI time.");
+    }
+
+    private void AppendNcnnRuntimeSummary(StringBuilder builder)
+    {
+        if (_ncnnRuntimeSelection is not NcnnRuntimeSelection selection) return;
+        builder.AppendLine().AppendLine("NCNN Performance Configuration")
+            .Append("Threads: ").AppendLine(selection.Configuration.ThreadsDisplay)
+            .Append("Tile: ").AppendLine(selection.Configuration.TileDisplay)
+            .Append("Source: ").AppendLine(selection.Source switch
+            {
+                NcnnRuntimeConfigurationSource.AutoTuned => "Auto-tuned",
+                NcnnRuntimeConfigurationSource.Cached => "Cached",
+                _ => "Safe default"
+            });
+        if (selection.BaselineFramesPerSecond is double baseline) builder.Append("Baseline FPS: ").AppendLine(baseline.ToString("0.##"));
+        if (selection.SelectedFramesPerSecond is double selected) builder.Append("Selected FPS: ").AppendLine(selected.ToString("0.##"));
+        if (selection.ImprovementPercent is double improvement) builder.Append("Improvement: ").Append(improvement.ToString("0.#")).AppendLine("%");
     }
 
     private static void Add(double? value, ref double total, ref int count, ref double? peak)
