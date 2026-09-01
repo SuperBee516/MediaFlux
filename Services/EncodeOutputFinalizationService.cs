@@ -75,10 +75,15 @@ namespace MediaFlux.Services
         {
             ArgumentNullException.ThrowIfNull(request);
             statusCallback?.Invoke("Verifying output");
-            EncodeOutputValidationResult staged =
+            EncodeOutputValidationResult staged;
+            using (PerformanceTimingService.PerformanceScope? scope = request.PerformanceTiming?.Measure(PerformanceTimingStage.OutputValidation))
+            {
+            staged =
                 await _validationService.ValidateStagedAsync(
                     request,
                     cancellationToken).ConfigureAwait(false);
+            scope?.Complete();
+            }
             if (!staged.Success || staged.Evidence == null)
             {
                 return Failed(
@@ -107,10 +112,14 @@ namespace MediaFlux.Services
             EncodeOutputValidationResult promoted;
             try
             {
+                using (PerformanceTimingService.PerformanceScope? scope = request.PerformanceTiming?.Measure(PerformanceTimingStage.OutputValidation))
+                {
                 promoted = await _validationService.ValidatePromotedAsync(
                     request,
                     staged.Evidence,
                     cancellationToken).ConfigureAwait(false);
+                scope?.Complete();
+                }
             }
             catch (OperationCanceledException)
             {

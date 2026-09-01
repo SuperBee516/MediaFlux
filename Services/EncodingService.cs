@@ -553,6 +553,9 @@ namespace MediaFlux.Services
             VideoRestorationSettings? restoration = null,
             Action<AiIntermediateProgress>? aiProgressCallback = null)
         {
+            var performance = new PerformanceTimingService();
+            try
+            {
             cancellationToken.ThrowIfCancellationRequested();
             VideoRestorationPipeline.Validate(restoration ?? new VideoRestorationSettings(), scaleMode);
             if (restoration?.Preset != VideoRestorationPreset.Off)
@@ -593,6 +596,11 @@ namespace MediaFlux.Services
                 : outputFolder;
 
             Directory.CreateDirectory(outFolder);
+            performance.SetHardwareSnapshot(HardwarePerformanceService.Capture(
+                inputSource.SourcePath,
+                Path.Combine(AppPaths.DataDirectory, "ai-intermediates"),
+                outFolder,
+                _ffmpegPath));
 
             string name = string.IsNullOrWhiteSpace(inputSource.OutputBaseName)
                 ? Path.GetFileNameWithoutExtension(input)
@@ -602,11 +610,16 @@ namespace MediaFlux.Services
             string sourceProbePath = inputSource.Kind == EncodingInputKind.File
                 ? inputSource.SourcePath
                 : inputSource.SourceFiles.FirstOrDefault() ?? inputSource.SourcePath;
-            MediaProbeResult sourceProbe = await new FfprobeService(
+            MediaProbeResult sourceProbe;
+            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.SourceAnalysis))
+            {
+            sourceProbe = await new FfprobeService(
                     _ffprobePath,
                     new MediaToolProcessRunner())
                 .ProbeAsync(sourceProbePath, cancellationToken)
                 .ConfigureAwait(false);
+            scope.Complete();
+            }
             if (!sourceProbe.Success)
                 throw new InvalidOperationException(
                     $"FFprobe could not inspect the source before container selection: {sourceProbe.ErrorMessage}");
@@ -622,14 +635,19 @@ namespace MediaFlux.Services
                 MediaProbeStreamInfo? video = sourceVideo;
                 if (video?.FrameRate is not > 0 || video.Width is not > 0 || video.Height is not > 0)
                     throw new AiRestorationValidationException("AI restoration requires a source with a known constant frame rate and resolution.");
-                SourceTimingAnalysis timing = await new SourceTimingAnalysisService(_ffprobePath, log: _log).AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
+                SourceTimingAnalysis timing;
+                using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.SourceAnalysis))
+                {
+                    timing = await new SourceTimingAnalysisService(_ffprobePath, log: _log).AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
+                    scope.Complete();
+                }
                 SourceTimingAnalysisService.EnsureCurrentCfrSupported(timing);
                 var backend = new AiRestorationBackendService(Path.GetDirectoryName(_ffmpegPath) ?? AppDomain.CurrentDomain.BaseDirectory, log: _log);
                 finalOutputResolution ??= VideoRestorationPipeline.ResolveFinalOutputResolution(video.Width.Value, video.Height.Value, aiSettings, scaleMode);
                 bool restoreOriginalAfterAi = scaleMode == ScaleMode.None && VideoRestorationPipeline.Effective(aiSettings).Resize == VideoRestorationResize.Original;
                 aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode, restoreOriginalAfterAi ? finalOutputResolution.ScaleFilter : null);
                 callback("[MediaFlux] Preparing AI restoration.");
-                var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend, log: _log);
+                var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend, log: _log, timing: performance);
                 int expectedFrames = checked((int)Math.Round((sampleDuration ?? TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0)).TotalSeconds * video.FrameRate.Value));
                 AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"));
                 _log?.Invoke($"[EncodingService] AI preflight: source={inputSource.SourcePath}; model={aiSettings.AiModelId}; device={aiSettings.AiDevice}; scale={(int)aiSettings.AiScale}x; expectedFrames={expectedFrames}; {estimate.Describe()}; plan={aiPlan.DescribeStages()}.");
@@ -717,7 +735,10 @@ namespace MediaFlux.Services
 
             string sourcePixelFormat = sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals(
                 "video", StringComparison.OrdinalIgnoreCase))?.PixelFormat ?? "";
-            string ffArgs = BuildFfmpegArgs(
+            string ffArgs;
+            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+            {
+            ffArgs = BuildFfmpegArgs(
                 inputSource,
                 output,
                 videoCodec,
@@ -741,6 +762,8 @@ namespace MediaFlux.Services
                 sampleDuration,
                 sourcePixelFormat,
                 restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain);
+            scope.Complete();
+            }
 
             string restorationChain = aiPlan?.PostAiFilterChain ?? VideoRestorationPipeline.BuildFilterChain(restoration, scaleMode);
             if (!string.IsNullOrWhiteSpace(restorationChain))
@@ -768,6 +791,7 @@ namespace MediaFlux.Services
                 $"using '{input}' -> staged '{output}' (final '{finalOutput}')");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
 
+            using PerformanceTimingService.PerformanceScope encodeScope = performance.Measure(PerformanceTimingStage.FinalEncode);
             FfmpegProcessResult runResult = await RunFfmpegAsync(
                 ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
 
@@ -782,6 +806,8 @@ namespace MediaFlux.Services
                     SummarizeFfmpegFailure(runResult.StandardError));
                 callback("[MediaFlux] GPU frame pipeline was incompatible; retrying with software-frame conversion.");
 
+                using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                {
                 ffArgs = BuildFfmpegArgs(
                     inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
                     encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
@@ -789,6 +815,8 @@ namespace MediaFlux.Services
                     containerDecision, forceMp4CompatibleAudio, totalDuration,
                     qualityValue, encoderSelection, sampleStart, sampleDuration,
                     sourcePixelFormat, preferNvencGpuResidentFrames: false, restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain);
+                scope.Complete();
+                }
                 pipelineDiagnostic = DescribeVideoPipeline(
                     inputSource, videoCodec, useGpu, tenBit, ffArgs);
                 _log?.Invoke(
@@ -814,10 +842,15 @@ namespace MediaFlux.Services
                 _log?.Invoke($"[EncodingService] ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
                 throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
             }
+            encodeScope.Complete();
+            encodeScope.Dispose();
 
             _log?.Invoke(
                 "[EncodingService] ffmpeg completed successfully; validating staged output.");
-            EncodeFinalizationResult finalization =
+            EncodeFinalizationResult finalization;
+            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.Finalization))
+            {
+            finalization =
                 await _finalizationService.FinalizeAsync(
                     new EncodeOutputValidationRequest
                     {
@@ -836,10 +869,13 @@ namespace MediaFlux.Services
                         SourceProbe = sourceProbe,
                         ExpectedDurationSeconds = sampleDuration?.TotalSeconds,
                         ExpectedVideoWidth = finalOutputResolution?.Width,
-                        ExpectedVideoHeight = finalOutputResolution?.Height
+                        ExpectedVideoHeight = finalOutputResolution?.Height,
+                        PerformanceTiming = performance
                     },
                     finalizationStatusCallback,
                     cancellationToken).ConfigureAwait(false);
+            if (finalization.Success) scope.Complete();
+            }
             if (!finalization.Success)
             {
                 _log?.Invoke(
@@ -849,7 +885,9 @@ namespace MediaFlux.Services
 
             _log?.Invoke(
                 $"[EncodingService] Validated and finalized '{finalization.FinalOutputPath}'.");
-            aiIntermediate?.Dispose();
+            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.TemporaryFileCleanup))
+            { if (aiIntermediate is not null) { aiIntermediate.Dispose(); scope.Complete(); } }
+            performance.LogSummary(_log);
             return new EncodeResult(
                 true,
                 finalization.FinalOutputPath,
@@ -861,8 +899,14 @@ namespace MediaFlux.Services
                 requestedOutputContainer: containerDecision.Requested,
                 resolvedOutputContainer: containerDecision.Resolved,
                 containerDecisionReason: containerDecision.Reason,
-                finalOutputLastWriteUtcTicks:
+                    finalOutputLastWriteUtcTicks:
                     finalization.FinalOutputLastWriteUtcTicks);
+            }
+            catch
+            {
+                performance.LogSummary(_log);
+                throw;
+            }
         }
 
         private static string DescribeUnsupportedDataStream(MediaProbeStreamInfo stream)

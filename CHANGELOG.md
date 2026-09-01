@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.79] - 2026-09-01
+
+### Performance Instrumentation (Phase 5.1)
+
+Added internal performance diagnostics to aid future optimization.
+
+- Stage timing throughout the encode pipeline.
+- AI throughput metrics: total frames, total chunks, average AI FPS, average chunk duration, and fastest/slowest chunk.
+- Largest Time Consumers summary showing where encode time is spent.
+- Hardware correlation for CPU, GPU, VRAM, RAM, storage, Windows version, FFmpeg version, and AI backend/version.
+- AI jobs include lightweight hardware sampling for GPU, CPU, VRAM, and disk throughput.
+- Diagnostics are appended to the existing MediaFlux Performance Summary.
+- No changes to encoding behavior, AI restoration algorithms, previews, scheduling, or output quality.
+
 ## [0.1.78] - 2026-09-01
 
 ### AI Final-Resolution Fix

@@ -34,6 +34,7 @@ namespace MediaFlux.Models
         public double? ExpectedDurationSeconds { get; init; }
         public int? ExpectedVideoWidth { get; init; }
         public int? ExpectedVideoHeight { get; init; }
+        public PerformanceTimingService? PerformanceTiming { get; init; }
     }
 
     public sealed class EncodeOutputValidationEvidence

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using MediaFlux.Models;
 
 namespace MediaFlux.Services;
@@ -18,16 +19,22 @@ public sealed class AiRestorationIntermediateVideoService
     private readonly IMediaToolProcessRunner _runner;
     private readonly AiRestorationBackendService _backend;
     private readonly Action<string>? _log;
+    private readonly PerformanceTimingService? _timing;
 
-    public AiRestorationIntermediateVideoService(string ffmpegPath, string ffprobePath, string stagingRoot, AiRestorationBackendService backend, IMediaToolProcessRunner? runner = null, Action<string>? log = null)
-    { _ffmpegPath = ffmpegPath; _ffprobePath = ffprobePath; _stagingRoot = stagingRoot; _backend = backend; _runner = runner ?? new MediaToolProcessRunner(); _log = log; }
+    public AiRestorationIntermediateVideoService(string ffmpegPath, string ffprobePath, string stagingRoot, AiRestorationBackendService backend, IMediaToolProcessRunner? runner = null, Action<string>? log = null, PerformanceTimingService? timing = null)
+    { _ffmpegPath = ffmpegPath; _ffprobePath = ffprobePath; _stagingRoot = stagingRoot; _backend = backend; _runner = runner ?? new MediaToolProcessRunner(); _log = log; _timing = timing; }
 
     public async Task<AiIntermediateVideoResult> CreateAsync(AiIntermediateVideoRequest request, IProgress<AiIntermediateProgress>? progress = null, CancellationToken token = default)
     {
         if (!File.Exists(request.SourcePath)) throw new FileNotFoundException("AI intermediate source is unavailable.", request.SourcePath);
         if (request.FrameRate is < 1 or > 240 || double.IsNaN(request.FrameRate)) throw new AiRestorationValidationException("AI intermediate processing requires a known constant frame rate between 1 and 240 fps; VFR sources are not supported yet.");
         if (!request.Plan.UsesAi) throw new AiRestorationValidationException("AI intermediate processing requires AI restoration to be enabled.");
-            AiRestorationSession session = await _backend.CreateSessionAsync(request.Settings, token).ConfigureAwait(false);
+        AiRestorationSession session;
+        using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiPreparation))
+        { session = await _backend.CreateSessionAsync(request.Settings, token).ConfigureAwait(false); scope?.Complete(); }
+        _timing?.SetAiBackend(session.Capabilities.BackendId, session.Capabilities.ExecutablePath);
+        using HardwarePerformanceSampler? hardwareSampler = _timing is null ? null : new HardwarePerformanceSampler(_timing);
+        hardwareSampler?.SampleNow();
         Directory.CreateDirectory(_stagingRoot); AiProductionHardeningService.CleanupOrphans(_stagingRoot); string root = Path.Combine(_stagingRoot, "ai-intermediate-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root); AiProductionHardeningService.Register(root);
         try
         {
@@ -40,27 +47,36 @@ public sealed class AiRestorationIntermediateVideoService
             int chunkTotal = (total + AiRestorationFrameProcessor.MaximumFramesPerChunk - 1) / AiRestorationFrameProcessor.MaximumFramesPerChunk;
             for (int offset = 0, chunkIndex = 0; offset < total; offset += AiRestorationFrameProcessor.MaximumFramesPerChunk, chunkIndex++)
             {
+                long chunkStartedAt = Stopwatch.GetTimestamp();
                 int count = Math.Min(AiRestorationFrameProcessor.MaximumFramesPerChunk, total - offset);
                 AiProductionHardeningService.EnsureSpace(AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, count, request.Settings.AiScale, _stagingRoot), runtime: true);
                 string chunk = Path.Combine(root, $"chunk-{chunkIndex:D5}"), input = Path.Combine(chunk, "input"), output = Path.Combine(chunk, "output"); Directory.CreateDirectory(input); Directory.CreateDirectory(output);
                 progress?.Report(new(AiIntermediateStage.ExtractingFrames, offset, total, $"Extracting AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
-                await RunAsync(BuildExtractArguments(request, offset, count, input), "extract AI frames", chunks, token).ConfigureAwait(false);
-                string[] extracted = ExpectedFrames(input, count); ValidateFrameSet(input, extracted);
+                using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiExtraction))
+                { await RunAsync(BuildExtractArguments(request, offset, count, input), "extract AI frames", chunks, token).ConfigureAwait(false); scope?.Complete(); }
+                string[] extracted = ExpectedFrames(input, count);
+                using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
+                { ValidateFrameSet(input, extracted); scope?.Complete(); }
                 string[] processed = ExpectedFrames(output, count);
                 progress?.Report(new(AiIntermediateStage.AiProcessing, offset, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})"));
-                await _backend.ProcessDirectoryAsync(
+                using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiProcessing))
+                { await _backend.ProcessDirectoryAsync(
                     session,
                     request.Settings,
                     input,
                     output,
                     processed,
                     completed => progress?.Report(new(AiIntermediateStage.AiProcessing, offset + completed, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})")),
-                    token).ConfigureAwait(false);
-                ValidateRestoredFrameSet(extracted, processed, request.Settings.AiScale);
+                    token).ConfigureAwait(false); scope?.Complete(); }
+                using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
+                { ValidateRestoredFrameSet(extracted, processed, request.Settings.AiScale); scope?.Complete(); }
                 string chunkVideo = Path.Combine(root, $"chunk-{chunkIndex:D5}.mkv");
                 progress?.Report(new(AiIntermediateStage.Reassembling, offset + count, total, $"Reassembling AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
-                await RunAsync(BuildReassemblyArguments(processed[0], request.FrameRate, chunkVideo), "reassemble AI chunk", chunks, token).ConfigureAwait(false);
-                chunks.Add(await ProbeChunkAsync(chunkVideo, count, request.FrameRate, token).ConfigureAwait(false));
+                using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiReassembly))
+                { await RunAsync(BuildReassemblyArguments(processed[0], request.FrameRate, chunkVideo), "reassemble AI chunk", chunks, token).ConfigureAwait(false); scope?.Complete(); }
+                using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
+                { chunks.Add(await ProbeChunkAsync(chunkVideo, count, request.FrameRate, token).ConfigureAwait(false)); scope?.Complete(); }
+                _timing?.RecordAiChunk(count, Stopwatch.GetElapsedTime(chunkStartedAt));
                 Directory.Delete(chunk, true);
             }
 
@@ -73,16 +89,20 @@ public sealed class AiRestorationIntermediateVideoService
             }
             else
             {
+                using PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiIntermediateJoin);
                 ValidateChunkCompatibility(chunks);
                 string list = Path.Combine(root, "chunks.ffconcat");
                 await File.WriteAllLinesAsync(list, BuildConcatListLines(chunks.Select(chunk => chunk.Path)), token).ConfigureAwait(false);
                 await RunAsync(new[] { "-y", "-f", "concat", "-safe", "0", "-i", list, "-map", "0:v:0", "-c:v", "copy", staging }, "join AI chunks", chunks, token).ConfigureAwait(false);
+                scope?.Complete();
             }
             progress?.Report(new(AiIntermediateStage.Validating, total, total, "Validating AI intermediate video"));
-            AiIntermediateVideoResult result = await ValidateAsync(staging, duration, total, request.FrameRate, request.Settings.AiScale, token).ConfigureAwait(false);
+            AiIntermediateVideoResult result;
+            using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
+            { result = await ValidateAsync(staging, duration, total, request.FrameRate, request.Settings.AiScale, token).ConfigureAwait(false); scope?.Complete(); }
             File.Move(staging, final, true); return result with { Path = final, StagingDirectory = root };
         }
-        catch { try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { } throw; }
+        catch { try { using PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.TemporaryFileCleanup); if (Directory.Exists(root)) Directory.Delete(root, true); scope?.Complete(); } catch { } throw; }
         finally { AiProductionHardeningService.Unregister(root); }
     }
 
