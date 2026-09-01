@@ -38,6 +38,7 @@ public sealed class VideoRestorationSettings
     public string AiDevice { get; set; } = "Auto";
     public string AiBackendPath { get; set; } = "";
     public string AiModelsDirectory { get; set; } = "";
+    public Services.AiBackendSelection AiBackendSelection { get; set; } = Services.AiBackendSelection.Auto;
 
     public VideoRestorationSettings Clone()
     {

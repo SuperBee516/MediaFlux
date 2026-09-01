@@ -643,7 +643,8 @@ namespace MediaFlux.Services
                     scope.Complete();
                 }
                 SourceTimingAnalysisService.EnsureCurrentCfrSupported(timing);
-                var backend = new AiRestorationBackendService(Path.GetDirectoryName(_ffmpegPath) ?? AppDomain.CurrentDomain.BaseDirectory, log: _log);
+                IAiRestorationBackend backend = await new AiBackendManager(Path.GetDirectoryName(_ffmpegPath) ?? AppDomain.CurrentDomain.BaseDirectory, log: _log)
+                    .SelectAsync(aiSettings, cancellationToken).ConfigureAwait(false);
                 finalOutputResolution ??= VideoRestorationPipeline.ResolveFinalOutputResolution(video.Width.Value, video.Height.Value, aiSettings, scaleMode);
                 bool restoreOriginalAfterAi = scaleMode == ScaleMode.None && VideoRestorationPipeline.Effective(aiSettings).Resize == VideoRestorationResize.Original;
                 aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode, restoreOriginalAfterAi ? finalOutputResolution.ScaleFilter : null);

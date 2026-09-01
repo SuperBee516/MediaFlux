@@ -132,7 +132,7 @@ public static class VideoRestorationPipeline
     private static string Number(decimal value) => value.ToString("0.###", CultureInfo.InvariantCulture);
     private static VideoRestorationSettings WithAi(VideoRestorationSettings source, VideoRestorationSettings preset)
     {
-        preset.AiMode = source.AiMode; preset.AiModelId = source.AiModelId; preset.AiScale = source.AiScale; preset.AiDevice = source.AiDevice; preset.AiBackendPath = source.AiBackendPath; preset.AiModelsDirectory = source.AiModelsDirectory;
+        preset.AiMode = source.AiMode; preset.AiModelId = source.AiModelId; preset.AiScale = source.AiScale; preset.AiDevice = source.AiDevice; preset.AiBackendPath = source.AiBackendPath; preset.AiModelsDirectory = source.AiModelsDirectory; preset.AiBackendSelection = source.AiBackendSelection;
         return preset;
     }
 }

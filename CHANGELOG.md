@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.84] - 2026-09-01
+
+### AI Provider and Restoration Infrastructure
+
+- Added the versioned, backend-neutral AI Provider SDK and ProviderManager lifecycle/capability negotiation.
+- Added immutable provider contracts for identity, capabilities, models, images, requests, results, diagnostics, errors, progress, cancellation, and ownership.
+- Added managed native provider bridge scaffolding and the versioned C++ stub provider project implementing the documented ABI.
+- Migrated NCNN behind the Provider SDK without changing NCNN inference behavior.
+- Added TensorRT runtime, engine, and ONNX model discovery/validation infrastructure; TensorRT inference is not implemented yet.
+- Added bounded AI backend benchmarking, resource metrics, comparison, recommendations, and versioned JSON history.
+- Improved performance instrumentation and immediate per-chunk diagnostic flushing on cancellation.
+- Added AI restoration stability improvements around model resolution, intermediate validation, staged cleanup, and diagnostics.
+- Preserved existing planner, previews, recommendations, quality, scheduling, encoding, and NCNN behavior.
+
 ## [0.1.83] - 2026-09-01
 
 ### AI Restoration Performance Auto-Tuning

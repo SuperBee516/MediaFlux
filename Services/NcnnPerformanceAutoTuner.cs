@@ -10,11 +10,11 @@ public sealed class NcnnPerformanceAutoTuner
     private const int SampleFrameBudget = 4;
     private static readonly TimeSpan CandidateTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan TotalBudget = TimeSpan.FromSeconds(90);
-    private readonly AiRestorationBackendService _backend;
+    private readonly IAiRestorationBackend _backend;
     private readonly NcnnPerformanceTuningCacheService _cache;
     private readonly Action<string>? _log;
 
-    public NcnnPerformanceAutoTuner(AiRestorationBackendService backend, NcnnPerformanceTuningCacheService? cache = null, Action<string>? log = null)
+    public NcnnPerformanceAutoTuner(IAiRestorationBackend backend, NcnnPerformanceTuningCacheService? cache = null, Action<string>? log = null)
     { _backend = backend; _cache = cache ?? new NcnnPerformanceTuningCacheService(); _log = log; }
 
     public async Task<NcnnRuntimeSelection> SelectAsync(

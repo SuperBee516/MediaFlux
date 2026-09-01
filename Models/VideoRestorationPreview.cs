@@ -77,7 +77,7 @@ public sealed class VideoRestorationPreviewSelection
         left.Brightness == right.Brightness && left.Contrast == right.Contrast && left.Saturation == right.Saturation &&
         left.Resize == right.Resize && left.CustomWidth == right.CustomWidth && left.CustomHeight == right.CustomHeight &&
         left.PreserveAspectRatio == right.PreserveAspectRatio && left.AiMode == right.AiMode && left.AiModelId == right.AiModelId &&
-        left.AiScale == right.AiScale && left.AiDevice == right.AiDevice && left.AiBackendPath == right.AiBackendPath && left.AiModelsDirectory == right.AiModelsDirectory;
+        left.AiScale == right.AiScale && left.AiDevice == right.AiDevice && left.AiBackendPath == right.AiBackendPath && left.AiModelsDirectory == right.AiModelsDirectory && left.AiBackendSelection == right.AiBackendSelection;
 
     private VideoRestorationSettings RecommendedSettings()
     {

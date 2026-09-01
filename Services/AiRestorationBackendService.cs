@@ -48,33 +48,33 @@ public sealed class AiRestorationValidationException : InvalidOperationException
 /// It intentionally has no downloader and does not turn an unavailable optional component
 /// into a failure for ordinary FFmpeg restoration.
 /// </summary>
-public sealed class AiRestorationBackendService
+public sealed class AiRestorationBackendService : IAiRestorationBackend
 {
     private static readonly ConcurrentDictionary<string, AiRestorationCapabilities> Cache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, byte> ResolutionLog = new(StringComparer.OrdinalIgnoreCase);
     private readonly IMediaToolProcessRunner _runner;
     private readonly string _applicationDirectory;
     private readonly Action<string>? _log;
-
-    private sealed record ModelVariant(AiRestorationScale Scale, string ResolvedModelName);
-    private sealed record ModelDefinition(string Id, string DisplayName, AiRestorationMode Category, IReadOnlyList<ModelVariant> Variants);
-    private static readonly ModelDefinition[] KnownModels =
-    {
-        new("realesr-animevideov3", "Real-ESRGAN AnimeVideo v3", AiRestorationMode.Animation, new[]
-        {
-            new ModelVariant(AiRestorationScale.X2, "realesr-animevideov3-x2"),
-            new ModelVariant(AiRestorationScale.X3, "realesr-animevideov3-x3"),
-            new ModelVariant(AiRestorationScale.X4, "realesr-animevideov3-x4")
-        }),
-        new("realesrgan-x4plus-anime", "Real-ESRGAN x4plus Anime", AiRestorationMode.Animation, new[] { new ModelVariant(AiRestorationScale.X4, "realesrgan-x4plus-anime") }),
-        new("realesrgan-x4plus", "Real-ESRGAN x4plus", AiRestorationMode.General, new[] { new ModelVariant(AiRestorationScale.X4, "realesrgan-x4plus") })
-    };
+    private readonly AiModelManager _models;
 
     public AiRestorationBackendService(string applicationDirectory, IMediaToolProcessRunner? runner = null, Action<string>? log = null)
     {
         _applicationDirectory = string.IsNullOrWhiteSpace(applicationDirectory) ? AppDomain.CurrentDomain.BaseDirectory : applicationDirectory;
         _runner = runner ?? new MediaToolProcessRunner();
         _log = log;
+        _models = new AiModelManager(log: log);
+    }
+
+    public string Id => "ncnn-vulkan";
+    public string DisplayName => "NCNN Vulkan";
+    public async Task<AiBackendMetadata> GetMetadataAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default)
+    {
+        AiRestorationCapabilities capabilities = await GetCapabilitiesAsync(settings, cancellationToken).ConfigureAwait(false);
+        string version;
+        try { version = File.Exists(capabilities.ExecutablePath) ? FileVersionInfo.GetVersionInfo(capabilities.ExecutablePath).FileVersion ?? "Unknown" : "Unavailable"; } catch { version = "Unknown"; }
+        bool ready = capabilities.IsAvailable && capabilities.VulkanAvailable && capabilities.Models.Count > 0;
+        string? reason = capabilities.Error ?? (!capabilities.VulkanAvailable ? "Vulkan device unavailable." : capabilities.Models.Count == 0 ? "No complete supported AI models were found." : null);
+        return new(Id, DisplayName, version, capabilities.IsAvailable, ready, reason, true, true, true, true, capabilities.VulkanAvailable, new[] { $"Vulkan: {(capabilities.VulkanAvailable ? "Detected" : "Unavailable")}", $"Models: {capabilities.Models.Count}" });
     }
 
     public async Task<AiRestorationCapabilities> GetCapabilitiesAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default)
@@ -107,7 +107,8 @@ public sealed class AiRestorationBackendService
             if (result.TimedOut || (result.ExitCode != 0 && string.IsNullOrWhiteSpace(output)))
                 return AiRestorationCapabilities.Unavailable(executable, "AI backend unavailable: MediaFlux could not query the configured executable.");
 
-            IReadOnlyList<AiRestorationModel> discovered = DiscoverModels(models);
+            AiModelDiscoverySummary modelSummary = await _models.DiscoverNcnnAsync(models, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<AiRestorationModel> discovered = modelSummary.Available.Select(model => model.ToNcnnRestorationModel()).ToArray();
             bool vulkan = output.Contains("vulkan", StringComparison.OrdinalIgnoreCase) ||
                           Path.GetFileName(executable).Contains("vulkan", StringComparison.OrdinalIgnoreCase);
             // Most NCNN command-line builds only enumerate devices during processing. Auto is
@@ -371,19 +372,6 @@ public sealed class AiRestorationBackendService
     private static string ResolveModelsDirectory(string executable, string configured) =>
         !string.IsNullOrWhiteSpace(configured) ? Path.GetFullPath(Environment.ExpandEnvironmentVariables(configured.Trim())) :
         Path.Combine(Path.GetDirectoryName(executable) ?? AppDomain.CurrentDomain.BaseDirectory, "models");
-
-    private static IReadOnlyList<AiRestorationModel> DiscoverModels(string modelsDirectory)
-    {
-        if (!Directory.Exists(modelsDirectory)) return Array.Empty<AiRestorationModel>();
-        return KnownModels.SelectMany(definition => definition.Variants.Select(variant =>
-        {
-            string param = Path.Combine(modelsDirectory, variant.ResolvedModelName + ".param");
-            string bin = Path.Combine(modelsDirectory, variant.ResolvedModelName + ".bin");
-            return File.Exists(param) && new FileInfo(param).Length > 0 && File.Exists(bin) && new FileInfo(bin).Length > 0
-                ? new AiRestorationModel(definition.Id, definition.DisplayName, definition.Category, new[] { variant.Scale }, modelsDirectory, param, bin, "ncnn-vulkan", variant.ResolvedModelName)
-                : null;
-        })).Where(model => model is not null).Cast<AiRestorationModel>().ToArray();
-    }
 
     /// <summary>Accept older persisted AnimeVideo IDs while resolving exactly one scale suffix.</summary>
     internal static string NormalizeLogicalModelId(string? configuredId)

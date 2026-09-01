@@ -17,12 +17,12 @@ public sealed class AiRestorationIntermediateVideoService
 {
     private readonly string _ffmpegPath, _ffprobePath, _stagingRoot;
     private readonly IMediaToolProcessRunner _runner;
-    private readonly AiRestorationBackendService _backend;
+    private readonly IAiRestorationBackend _backend;
     private readonly Action<string>? _log;
     private readonly PerformanceTimingService? _timing;
     private readonly Func<long?> _dedicatedGpuVramProvider;
 
-    public AiRestorationIntermediateVideoService(string ffmpegPath, string ffprobePath, string stagingRoot, AiRestorationBackendService backend, IMediaToolProcessRunner? runner = null, Action<string>? log = null, PerformanceTimingService? timing = null, Func<long?>? dedicatedGpuVramProvider = null)
+    public AiRestorationIntermediateVideoService(string ffmpegPath, string ffprobePath, string stagingRoot, IAiRestorationBackend backend, IMediaToolProcessRunner? runner = null, Action<string>? log = null, PerformanceTimingService? timing = null, Func<long?>? dedicatedGpuVramProvider = null)
     { _ffmpegPath = ffmpegPath; _ffprobePath = ffprobePath; _stagingRoot = stagingRoot; _backend = backend; _runner = runner ?? new MediaToolProcessRunner(); _log = log; _timing = timing; _dedicatedGpuVramProvider = dedicatedGpuVramProvider ?? HardwarePerformanceService.DetectDedicatedGpuVramBytes; }
 
     public async Task<AiIntermediateVideoResult> CreateAsync(AiIntermediateVideoRequest request, IProgress<AiIntermediateProgress>? progress = null, CancellationToken token = default)
@@ -124,6 +124,9 @@ public sealed class AiRestorationIntermediateVideoService
                 AiChunkPerformanceMetrics metrics = new(chunkIndex + 1, count, extractionElapsed, inferenceElapsed, validationElapsed, reassemblyElapsed, totalElapsed, chunkHardware.Snapshot(), measuredTemporaryStorage);
                 _timing?.RecordAiChunk(metrics);
                 _log?.Invoke(FormatChunkMetrics(metrics));
+                // Flush completed-chunk, planner, and calibration diagnostics before starting
+                // another owned chunk. Cancellation after this point must not hide completed work.
+                _timing?.LogSummary(_log);
                 Volatile.Write(ref activeChunkHardware, null);
                 Directory.Delete(chunk, true);
             }

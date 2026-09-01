@@ -13,7 +13,8 @@ public static class BuiltInRestorationPresetService
             Preset = VideoRestorationPreset.Custom,
             AiDevice = string.IsNullOrWhiteSpace(current?.AiDevice) ? "Auto" : current.AiDevice,
             AiBackendPath = current?.AiBackendPath ?? "",
-            AiModelsDirectory = current?.AiModelsDirectory ?? ""
+            AiModelsDirectory = current?.AiModelsDirectory ?? "",
+            AiBackendSelection = current?.AiBackendSelection ?? AiBackendSelection.Auto
         };
 
         switch (preset)
