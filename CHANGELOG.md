@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.75] - 2026-08-31
+
+### AI Intermediate Finalization Fixes
+
+- Fixed AI motion-preview and full-encode intermediate finalization.
+- Single-chunk AI previews now safely bypass unnecessary concat processing.
+- Fixed Matroska staging filename and extension handling.
+- Multi-chunk intermediates validate codec, resolution, pixel format, time base, and frame rate before joining.
+- Improved FFmpeg diagnostics for AI intermediate failures, including command context, exit status, stderr, and chunk metadata.
+
 ## 🎞️ Video Restoration Phase 4B — AI Quality & Reliability
 
 MediaFlux Video Restoration now provides more source-aware AI preview guidance,

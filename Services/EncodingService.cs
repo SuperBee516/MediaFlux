@@ -617,7 +617,7 @@ namespace MediaFlux.Services
                 var backend = new AiRestorationBackendService(Path.GetDirectoryName(_ffmpegPath) ?? AppDomain.CurrentDomain.BaseDirectory, log: _log);
                 aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode);
                 callback("[MediaFlux] Preparing AI restoration.");
-                var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend);
+                var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend, log: _log);
                 int expectedFrames = checked((int)Math.Round((sampleDuration ?? TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0)).TotalSeconds * video.FrameRate.Value));
                 AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"));
                 _log?.Invoke($"[EncodingService] AI preflight: source={inputSource.SourcePath}; model={aiSettings.AiModelId}; device={aiSettings.AiDevice}; scale={(int)aiSettings.AiScale}x; expectedFrames={expectedFrames}; {estimate.Describe()}; plan={aiPlan.DescribeStages()}.");

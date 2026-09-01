@@ -96,6 +96,48 @@ public sealed class AiRestorationTests : IDisposable
         Assert.Throws<AiRestorationValidationException>(() => AiRestorationIntermediateVideoService.ValidateFrameSet(directory, expected));
     }
 
+    [Fact]
+    public void SingleValidatedChunkBypassesConcatAndMultipleChunksRequireIt()
+    {
+        Assert.False(AiRestorationIntermediateVideoService.ShouldJoinChunks(1));
+        Assert.True(AiRestorationIntermediateVideoService.ShouldJoinChunks(2));
+    }
+
+    [Fact]
+    public void CompatibleChunksCanJoinAndConcatPathsAreEscaped()
+    {
+        var chunks = new[]
+        {
+            Chunk("C:\\AI O'Brien\\chunk-00000.mkv"),
+            Chunk("C:\\AI O'Brien\\chunk-00001.mkv")
+        };
+        AiRestorationIntermediateVideoService.ValidateChunkCompatibility(chunks);
+        string line = Assert.Single(AiRestorationIntermediateVideoService.BuildConcatListLines(new[] { chunks[0].Path }));
+        Assert.Equal("file 'C:\\AI O'\\''Brien\\chunk-00000.mkv'", line);
+    }
+
+    [Fact]
+    public void IncompatibleChunksFailBeforeConcatWouldAlterTiming()
+    {
+        var chunks = new[] { Chunk("first.mkv"), Chunk("second.mkv") with { TimeBase = "1/1000" } };
+        AiRestorationValidationException exception = Assert.Throws<AiRestorationValidationException>(() => AiRestorationIntermediateVideoService.ValidateChunkCompatibility(chunks));
+        Assert.Contains("incompatible", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("time_base", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void IntermediateProcessFailureContainsFfmpegDiagnostics()
+    {
+        string diagnostic = AiRestorationIntermediateVideoService.BuildFailureDiagnostic("join AI chunks", "C:\\tools\\ffmpeg.exe", new[] { "-f", "concat", "list.ffconcat" }, new MediaToolProcessResult { ExitCode = 7, StandardError = "concat failed\ninvalid data" }, new[] { Chunk("chunk-00000.mkv"), Chunk("chunk-00001.mkv") });
+        Assert.Contains("executable=C:\\tools\\ffmpeg.exe", diagnostic);
+        Assert.Contains("exitCode=7", diagnostic);
+        Assert.Contains("chunks=2", diagnostic);
+        Assert.Contains("concat failed invalid data", diagnostic);
+        Assert.Contains("chunk-00000.mkv", diagnostic);
+    }
+
+    private static AiIntermediateChunkMetadata Chunk(string path) => new(path, "ffv1", 640, 480, "yuv420p", "1/30", "30/1", 180, 6);
+
     private sealed class AiRunner : IMediaToolProcessRunner
     {
         public int Calls { get; private set; }
