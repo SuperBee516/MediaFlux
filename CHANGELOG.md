@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.77] - 2026-09-01
+
+### AI Batch Processing Optimization
+
+- Major AI restoration performance optimization.
+- Replaced per-frame Real-ESRGAN process launches with one directory-mode batch invocation per 180-frame chunk.
+- Reduces backend process launches by roughly 180× for full-video AI restoration.
+- Five-second AI motion previews use the same batch-processing path.
+- Added exact batch output filename/count/dimension validation.
+- Preserved live AI progress, monotonic overall progress, and conservative ETA calculation.
+- Improved per-chunk diagnostics including elapsed time, effective FPS, model/scale/device, exit/timeout/stderr.
+- Improved cancellation and cleanup of partial AI batch outputs.
+- Conventional encoding behavior unchanged.
+- VFR AI support remains unsupported.
+
 ## [0.1.76] - 2026-08-31
 
 ### AI Encode-Stage Stabilization
@@ -48,6 +63,12 @@ stronger reliability safeguards, and safer CFR-only AI processing.
 - Added visible AI extraction, restoration, reassembly, and validation stages
 - Final FFmpeg encode correctly transitions status back to Encoding
 - Optimized AI operations by resolving backend/model validation once and reusing it throughout processing
+- Replaced per-frame Real-ESRGAN process launches with one directory-mode batch invocation per 180-frame chunk
+- Reduced backend process launches by roughly 180× for full-video AI restoration
+- Five-second AI motion previews use the same batch-processing path
+- Added exact batch output filename/count/dimension validation
+- Preserved live AI progress, monotonic overall progress, and conservative ETA calculation
+- Improved per-chunk diagnostics, cancellation, and cleanup of partial AI batch outputs
 - Preserved original audio, subtitles, metadata, chapters, and ancillary streams through split-source encoding
 - Added saved-job and scheduled-job support for AI restoration through the shared encode path
 

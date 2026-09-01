@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Buffers.Binary;
 using MediaFlux.Models;
 
 namespace MediaFlux.Services;
@@ -16,7 +17,6 @@ public sealed class AiRestorationIntermediateVideoService
     private readonly string _ffmpegPath, _ffprobePath, _stagingRoot;
     private readonly IMediaToolProcessRunner _runner;
     private readonly AiRestorationBackendService _backend;
-    private readonly AiRestorationFrameProcessor _frames = new();
     private readonly Action<string>? _log;
 
     public AiRestorationIntermediateVideoService(string ffmpegPath, string ffprobePath, string stagingRoot, AiRestorationBackendService backend, IMediaToolProcessRunner? runner = null, Action<string>? log = null)
@@ -37,24 +37,28 @@ public sealed class AiRestorationIntermediateVideoService
             if (total <= 0) throw new AiRestorationValidationException("AI intermediate processing could not determine an expected frame count.");
             AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot); AiProductionHardeningService.EnsureSpace(estimate); using (File.Create(Path.Combine(root, ".mediaflux-ai-staging"))) { }
             var chunks = new List<AiIntermediateChunkMetadata>();
+            int chunkTotal = (total + AiRestorationFrameProcessor.MaximumFramesPerChunk - 1) / AiRestorationFrameProcessor.MaximumFramesPerChunk;
             for (int offset = 0, chunkIndex = 0; offset < total; offset += AiRestorationFrameProcessor.MaximumFramesPerChunk, chunkIndex++)
             {
                 int count = Math.Min(AiRestorationFrameProcessor.MaximumFramesPerChunk, total - offset);
                 AiProductionHardeningService.EnsureSpace(AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, count, request.Settings.AiScale, _stagingRoot), runtime: true);
                 string chunk = Path.Combine(root, $"chunk-{chunkIndex:D5}"), input = Path.Combine(chunk, "input"), output = Path.Combine(chunk, "output"); Directory.CreateDirectory(input); Directory.CreateDirectory(output);
-                progress?.Report(new(AiIntermediateStage.ExtractingFrames, offset, total, $"Extracting AI frames (chunk {chunkIndex + 1})"));
+                progress?.Report(new(AiIntermediateStage.ExtractingFrames, offset, total, $"Extracting AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
                 await RunAsync(BuildExtractArguments(request, offset, count, input), "extract AI frames", chunks, token).ConfigureAwait(false);
                 string[] extracted = ExpectedFrames(input, count); ValidateFrameSet(input, extracted);
-                progress?.Report(new(AiIntermediateStage.AiProcessing, offset, total, $"AI restoring frames (chunk {chunkIndex + 1})"));
-                await _frames.ProcessChunkAsync(
-                    extracted,
+                string[] processed = ExpectedFrames(output, count);
+                progress?.Report(new(AiIntermediateStage.AiProcessing, offset, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})"));
+                await _backend.ProcessDirectoryAsync(
+                    session,
+                    request.Settings,
+                    input,
                     output,
-                    (source, destination, ct) => _backend.ProcessFrameAsync(session, request.Settings, source, destination, ct),
-                    (completed, _) => progress?.Report(new(AiIntermediateStage.AiProcessing, offset + completed, total, $"AI restoring frames (chunk {chunkIndex + 1})")),
+                    processed,
+                    completed => progress?.Report(new(AiIntermediateStage.AiProcessing, offset + completed, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})")),
                     token).ConfigureAwait(false);
-                string[] processed = ExpectedFrames(output, count); ValidateFrameSet(output, processed);
+                ValidateRestoredFrameSet(extracted, processed, request.Settings.AiScale);
                 string chunkVideo = Path.Combine(root, $"chunk-{chunkIndex:D5}.mkv");
-                progress?.Report(new(AiIntermediateStage.Reassembling, offset + count, total, $"Reassembling AI frames (chunk {chunkIndex + 1})"));
+                progress?.Report(new(AiIntermediateStage.Reassembling, offset + count, total, $"Reassembling AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
                 await RunAsync(BuildReassemblyArguments(processed[0], request.FrameRate, chunkVideo), "reassemble AI chunk", chunks, token).ConfigureAwait(false);
                 chunks.Add(await ProbeChunkAsync(chunkVideo, count, request.FrameRate, token).ConfigureAwait(false));
                 Directory.Delete(chunk, true);
@@ -84,7 +88,38 @@ public sealed class AiRestorationIntermediateVideoService
 
     internal static string[] ExpectedFrames(string directory, int count) => Enumerable.Range(0, count).Select(index => Path.Combine(directory, $"frame-{index:D8}.png")).ToArray();
     internal static void ValidateFrameSet(string directory, IReadOnlyList<string> expected)
-    { var actual = Directory.EnumerateFiles(directory, "frame-*.png").OrderBy(path => path, StringComparer.Ordinal).ToArray(); if (!actual.SequenceEqual(expected, StringComparer.Ordinal) || actual.Any(path => new FileInfo(path).Length < 64)) throw new AiRestorationValidationException("AI frame set is missing, incomplete, or contains unexpected frames."); }
+    {
+        string[] actual = Directory.EnumerateFiles(directory, "*.png").OrderBy(path => path, StringComparer.Ordinal).ToArray();
+        if (!actual.SequenceEqual(expected, StringComparer.Ordinal) || actual.Any(path => new FileInfo(path).Length < 64))
+            throw new AiRestorationValidationException("AI frame set is missing, incomplete, or contains unexpected frames.");
+    }
+    internal static void ValidateRestoredFrameSet(IReadOnlyList<string> inputs, IReadOnlyList<string> outputs, AiRestorationScale scale)
+    {
+        if (inputs.Count != outputs.Count || inputs.Count == 0)
+            throw new AiRestorationValidationException("AI restored-frame validation requires matching non-empty input and output frame sets.");
+        ValidateFrameSet(Path.GetDirectoryName(outputs[0])!, outputs);
+        for (int index = 0; index < inputs.Count; index++)
+        {
+            (int inputWidth, int inputHeight) = ReadPngDimensions(inputs[index]);
+            (int outputWidth, int outputHeight) = ReadPngDimensions(outputs[index]);
+            int expectedWidth = checked(inputWidth * (int)scale), expectedHeight = checked(inputHeight * (int)scale);
+            if (outputWidth != expectedWidth || outputHeight != expectedHeight)
+                throw new AiRestorationValidationException($"AI restored frame '{Path.GetFileName(outputs[index])}' has invalid dimensions {outputWidth}x{outputHeight}; expected {expectedWidth}x{expectedHeight}.");
+        }
+    }
+    private static (int Width, int Height) ReadPngDimensions(string path)
+    {
+        byte[] header = new byte[24];
+        using var stream = File.OpenRead(path);
+        if (stream.Read(header, 0, header.Length) != header.Length ||
+            header[0] != 137 || header[1] != 80 || header[2] != 78 || header[3] != 71 ||
+            header[4] != 13 || header[5] != 10 || header[6] != 26 || header[7] != 10 ||
+            header[12] != 73 || header[13] != 72 || header[14] != 68 || header[15] != 82)
+            throw new AiRestorationValidationException($"AI restored frame '{Path.GetFileName(path)}' is not a readable PNG.");
+        int width = BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(16, 4)), height = BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(20, 4));
+        if (width <= 0 || height <= 0) throw new AiRestorationValidationException($"AI restored frame '{Path.GetFileName(path)}' has invalid PNG dimensions.");
+        return (width, height);
+    }
     private static IReadOnlyList<string> BuildExtractArguments(AiIntermediateVideoRequest r, int offset, int count, string dir)
     { double seconds = (r.Start ?? TimeSpan.Zero).TotalSeconds + offset / r.FrameRate; return new[] { "-y", "-ss", seconds.ToString("0.######", CultureInfo.InvariantCulture), "-i", r.SourcePath, "-frames:v", count.ToString(), "-vf", string.IsNullOrWhiteSpace(r.Plan.PreAiFilterChain) ? "fps=" + r.FrameRate.ToString("0.######", CultureInfo.InvariantCulture) : r.Plan.PreAiFilterChain + ",fps=" + r.FrameRate.ToString("0.######", CultureInfo.InvariantCulture), "-start_number", "0", Path.Combine(dir, "frame-%08d.png") }; }
     private static IReadOnlyList<string> BuildReassemblyArguments(string first, double fps, string output) => new[] { "-y", "-framerate", fps.ToString("0.######", CultureInfo.InvariantCulture), "-start_number", "0", "-i", Path.Combine(Path.GetDirectoryName(first)!, "frame-%08d.png"), "-map", "0:v:0", "-c:v", "ffv1", "-level", "3", output };

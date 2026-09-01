@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using MediaFlux.Models;
@@ -171,6 +172,17 @@ public sealed class AiRestorationBackendService
         return new[] { "-i", input, "-o", output, "-m", model.ModelsDirectory, "-n", model.BackendModelName, "-s", ((int)settings.AiScale).ToString(), "-g", settings.AiDevice.Equals("Auto", StringComparison.OrdinalIgnoreCase) ? "auto" : settings.AiDevice };
     }
 
+    /// <summary>Builds one NCNN directory-mode operation for an owned chunk of PNG frames.</summary>
+    public IReadOnlyList<string> BuildDirectoryArguments(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        if (!Path.IsPathFullyQualified(inputDirectory) || !Path.IsPathFullyQualified(outputDirectory))
+            throw new AiRestorationValidationException("AI restoration requires absolute staging directories.");
+        if (!Directory.Exists(inputDirectory))
+            throw new DirectoryNotFoundException("AI restoration input-frame directory is missing.");
+        return new[] { "-i", inputDirectory, "-o", outputDirectory, "-m", session.Model.ModelsDirectory, "-n", session.Model.BackendModelName, "-s", ((int)settings.AiScale).ToString(), "-g", settings.AiDevice.Equals("Auto", StringComparison.OrdinalIgnoreCase) ? "auto" : settings.AiDevice, "-f", "png" };
+    }
+
     public async Task ProcessFrameAsync(VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default)
     {
         AiRestorationSession session = await CreateSessionAsync(settings, cancellationToken).ConfigureAwait(false);
@@ -206,6 +218,120 @@ public sealed class AiRestorationBackendService
                 throw new AiRestorationValidationException("AI restoration produced an incomplete frame.");
         }
         catch { try { if (File.Exists(stagingOutput)) File.Delete(stagingOutput); } catch { } throw; }
+    }
+
+    /// <summary>
+    /// Runs NCNN once for a bounded directory chunk. Progress is derived from complete
+    /// expected outputs while the process runs; output identity is validated by the caller.
+    /// </summary>
+    public async Task ProcessDirectoryAsync(
+        AiRestorationSession session,
+        VideoRestorationSettings settings,
+        string inputDirectory,
+        string outputDirectory,
+        IReadOnlyList<string> expectedOutputFrames,
+        Action<int>? completedFrames,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        if (expectedOutputFrames.Count == 0)
+            throw new ArgumentException("AI restoration needs at least one expected output frame.", nameof(expectedOutputFrames));
+        if (expectedOutputFrames.Any(path => !Path.IsPathFullyQualified(path) || !Path.GetDirectoryName(path)!.Equals(outputDirectory, StringComparison.OrdinalIgnoreCase)))
+            throw new AiRestorationValidationException("AI restoration output-frame paths must belong to the owned output directory.");
+
+        Directory.CreateDirectory(outputDirectory);
+        CleanupOwnedOutputs(outputDirectory);
+        IReadOnlyList<string> arguments = BuildDirectoryArguments(session, settings, inputDirectory, outputDirectory);
+        var stopwatch = Stopwatch.StartNew();
+        _log?.Invoke($"[AI Restoration] chunk start; inputFrames={Directory.EnumerateFiles(inputDirectory, "*.png").Count()}; expectedOutputFrames={expectedOutputFrames.Count}; model={session.Model.BackendModelName}; scale={(int)settings.AiScale}x; device={settings.AiDevice}.");
+        Task<MediaToolProcessResult>? operation = null;
+        try
+        {
+            operation = _runner.RunAsync(new MediaToolProcessRequest
+            {
+                FileName = session.Capabilities.ExecutablePath,
+                Arguments = arguments,
+                Timeout = TimeSpan.FromMinutes(30),
+                SendQuitOnCancellation = true
+            }, cancellationToken);
+
+            int lastReported = -1;
+            TimeSpan lastReportAt = TimeSpan.Zero;
+            while (!operation.IsCompleted)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int complete = CountCompleteOutputs(expectedOutputFrames);
+                if (complete != lastReported && (complete == expectedOutputFrames.Count || stopwatch.Elapsed - lastReportAt >= TimeSpan.FromMilliseconds(500)))
+                {
+                    completedFrames?.Invoke(complete);
+                    lastReported = complete;
+                    lastReportAt = stopwatch.Elapsed;
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
+            }
+
+            MediaToolProcessResult result = await operation.ConfigureAwait(false);
+            if (result.TimedOut || result.ExitCode != 0)
+                throw new AiRestorationValidationException(BuildDirectoryFailureDiagnostic(session.Capabilities.ExecutablePath, arguments, result, stopwatch.Elapsed));
+
+            int finalComplete = CountCompleteOutputs(expectedOutputFrames);
+            if (finalComplete != lastReported)
+                completedFrames?.Invoke(finalComplete);
+            double fps = stopwatch.Elapsed.TotalSeconds > 0 ? finalComplete / stopwatch.Elapsed.TotalSeconds : 0;
+            _log?.Invoke($"[AI Restoration] chunk complete; inputFrames={Directory.EnumerateFiles(inputDirectory, "*.png").Count()}; outputFrames={finalComplete}; elapsed={stopwatch.Elapsed:g}; fps={fps:0.###}; model={session.Model.BackendModelName}; scale={(int)settings.AiScale}x; device={settings.AiDevice}.");
+        }
+        catch (OperationCanceledException)
+        {
+            if (operation != null)
+            {
+                try { await operation.ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+            }
+            CleanupOwnedOutputs(outputDirectory);
+            throw;
+        }
+        catch
+        {
+            CleanupOwnedOutputs(outputDirectory);
+            throw;
+        }
+    }
+
+    internal static int CountCompleteOutputs(IReadOnlyList<string> expectedOutputFrames) =>
+        expectedOutputFrames.Count(IsReadablePng);
+
+    private static bool IsReadablePng(string path)
+    {
+        try
+        {
+            if (!File.Exists(path) || new FileInfo(path).Length < 64) return false;
+            byte[] header = new byte[24];
+            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            return stream.Read(header, 0, header.Length) == header.Length &&
+                   header[0] == 137 && header[1] == 80 && header[2] == 78 && header[3] == 71 &&
+                   header[12] == 73 && header[13] == 72 && header[14] == 68 && header[15] == 82 &&
+                   header[16..24].Any(value => value != 0);
+        }
+        catch { return false; }
+    }
+
+    internal static string BuildDirectoryFailureDiagnostic(string executable, IReadOnlyList<string> arguments, MediaToolProcessResult result, TimeSpan elapsed) =>
+        $"AI restoration batch failed. executable={SanitizeDiagnostic(executable)}; arguments={string.Join(" ", arguments)}; elapsed={elapsed:g}; exitCode={result.ExitCode}; timedOut={result.TimedOut}; stderr={SanitizeDiagnostic(result.StandardError)}";
+
+    private static void CleanupOwnedOutputs(string outputDirectory)
+    {
+        try
+        {
+            foreach (string path in Directory.EnumerateFiles(outputDirectory))
+                File.Delete(path);
+        }
+        catch { }
+    }
+
+    private static string SanitizeDiagnostic(string? value)
+    {
+        string sanitized = string.IsNullOrWhiteSpace(value) ? "<none>" : value.Replace("\r", " ").Replace("\n", " ").Trim();
+        return sanitized[..Math.Min(sanitized.Length, 4096)];
     }
 
     private string ResolveExecutable(string configured)

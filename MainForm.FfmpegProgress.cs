@@ -340,13 +340,9 @@ namespace MediaFlux
                     if (!state.ProcessingStopwatch.IsRunning)
                         state.ProcessingStopwatch.Start();
                     state.LastCompleted = Math.Max(state.LastCompleted, progress.Current);
-                    if (state.LastCompleted >= 2 && state.ProcessingStopwatch.Elapsed.TotalSeconds > 0)
-                    {
-                        double framesPerSecond = state.LastCompleted / state.ProcessingStopwatch.Elapsed.TotalSeconds;
-                        eta = framesPerSecond > 0
-                            ? TimeSpan.FromSeconds((progress.Total - state.LastCompleted) / framesPerSecond).ToString(@"hh\:mm\:ss")
-                            : "Calculating...";
-                    }
+                    TimeSpan? remaining = AiRestorationProgressEstimator.EstimateRemaining(state.LastCompleted, progress.Total, state.ProcessingStopwatch.Elapsed);
+                    if (remaining.HasValue)
+                        eta = remaining.Value.ToString(@"hh\:mm\:ss");
                 }
 
                 SetEncodeRowState(
