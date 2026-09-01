@@ -34,6 +34,9 @@ public sealed record AiRestorationCapabilities(
         new(false, "ncnn-vulkan", executablePath, "", false, Array.Empty<string>(), Array.Empty<AiRestorationModel>(), error);
 }
 
+/// <summary>Validated immutable backend state reused for every frame in one AI operation.</summary>
+public sealed record AiRestorationSession(AiRestorationCapabilities Capabilities, AiRestorationModel Model);
+
 public sealed class AiRestorationValidationException : InvalidOperationException
 {
     public AiRestorationValidationException(string message) : base(message) { }
@@ -128,6 +131,11 @@ public sealed class AiRestorationBackendService
         if (settings.AiMode == AiRestorationMode.Off)
             throw new AiRestorationValidationException("AI restoration is not enabled.");
         AiRestorationCapabilities capabilities = await GetCapabilitiesAsync(settings, cancellationToken).ConfigureAwait(false);
+        return ValidateSelection(settings, capabilities);
+    }
+
+    private AiRestorationModel ValidateSelection(VideoRestorationSettings settings, AiRestorationCapabilities capabilities)
+    {
         if (!capabilities.IsAvailable)
             throw new AiRestorationValidationException(capabilities.Error ?? "AI backend unavailable.");
         if (!capabilities.VulkanAvailable)
@@ -165,15 +173,31 @@ public sealed class AiRestorationBackendService
 
     public async Task ProcessFrameAsync(VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default)
     {
+        AiRestorationSession session = await CreateSessionAsync(settings, cancellationToken).ConfigureAwait(false);
+        await ProcessFrameAsync(session, settings, input, stagingOutput, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolves the executable, model, and device once. A feature-length encode must not
+    /// repeatedly rescan model files or rediscover capabilities for every source frame.
+    /// </summary>
+    public async Task<AiRestorationSession> CreateSessionAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default)
+    {
         AiRestorationCapabilities capabilities = await GetCapabilitiesAsync(settings, cancellationToken).ConfigureAwait(false);
-        AiRestorationModel model = await ValidateSelectionAsync(settings, cancellationToken).ConfigureAwait(false);
+        AiRestorationModel model = ValidateSelection(settings, capabilities);
+        return new AiRestorationSession(capabilities, model);
+    }
+
+    public async Task ProcessFrameAsync(AiRestorationSession session, VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
         try
         {
             if (File.Exists(stagingOutput)) File.Delete(stagingOutput);
             MediaToolProcessResult result = await _runner.RunAsync(new MediaToolProcessRequest
             {
-                FileName = capabilities.ExecutablePath,
-                Arguments = BuildFrameArguments(capabilities, model, settings, input, stagingOutput),
+                FileName = session.Capabilities.ExecutablePath,
+                Arguments = BuildFrameArguments(session.Capabilities, session.Model, settings, input, stagingOutput),
                 Timeout = TimeSpan.FromMinutes(2)
             }, cancellationToken).ConfigureAwait(false);
             if (result.TimedOut) throw new AiRestorationValidationException("AI restoration timed out while processing a frame.");

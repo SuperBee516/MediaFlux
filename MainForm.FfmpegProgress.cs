@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using MediaFlux.Services;
 
 namespace MediaFlux
 {
@@ -21,6 +23,13 @@ namespace MediaFlux
 
         private readonly Dictionary<DataGridViewRow, EncodeMetrics> _activeEncodeMetrics = new();
         private readonly List<DataGridViewRow> _activeEncodeRows = new();
+        private readonly Dictionary<DataGridViewRow, AiProgressState> _activeAiProgress = new();
+
+        private sealed class AiProgressState
+        {
+            public Stopwatch ProcessingStopwatch { get; } = new();
+            public int LastCompleted { get; set; }
+        }
 
         // Parses lines and updates metrics UI (thread-safe)
         private void HandleFfmpegProgressLine(string line)
@@ -282,6 +291,7 @@ namespace MediaFlux
             if (row == null)
                 return;
 
+            _activeAiProgress.Remove(row);
             _activeEncodeMetrics.Remove(row);
             _activeEncodeRows.Remove(row);
             UpdateQueueEstimatedCompletion();
@@ -297,6 +307,62 @@ namespace MediaFlux
                 progressBarEncode.Style = ProgressBarStyle.Continuous;
 
             UpdateEncodeMetricsPanel();
+        }
+
+        private void ApplyAiIntermediateProgress(DataGridViewRow row, AiIntermediateProgress progress)
+        {
+            if (row == null || row.DataGridView != dgvEncodeQueue || progress.Total <= 0)
+                return;
+
+            Ui(() =>
+            {
+                if (row.DataGridView != dgvEncodeQueue)
+                    return;
+
+                double fraction = Math.Clamp((double)progress.Current / progress.Total, 0, 1);
+                string stage = progress.Stage switch
+                {
+                    AiIntermediateStage.ExtractingFrames => "Extracting AI frames",
+                    AiIntermediateStage.AiProcessing => "AI restoring",
+                    AiIntermediateStage.Reassembling => "Reassembling AI video",
+                    AiIntermediateStage.Validating => "Validating AI video",
+                    _ => "Preparing AI restoration"
+                };
+
+                string eta = "Calculating...";
+                if (progress.Stage == AiIntermediateStage.AiProcessing)
+                {
+                    if (!_activeAiProgress.TryGetValue(row, out AiProgressState? state))
+                    {
+                        state = new AiProgressState();
+                        _activeAiProgress[row] = state;
+                    }
+                    if (!state.ProcessingStopwatch.IsRunning)
+                        state.ProcessingStopwatch.Start();
+                    state.LastCompleted = Math.Max(state.LastCompleted, progress.Current);
+                    if (state.LastCompleted >= 2 && state.ProcessingStopwatch.Elapsed.TotalSeconds > 0)
+                    {
+                        double framesPerSecond = state.LastCompleted / state.ProcessingStopwatch.Elapsed.TotalSeconds;
+                        eta = framesPerSecond > 0
+                            ? TimeSpan.FromSeconds((progress.Total - state.LastCompleted) / framesPerSecond).ToString(@"hh\:mm\:ss")
+                            : "Calculating...";
+                    }
+                }
+
+                SetEncodeRowState(
+                    row,
+                    stage,
+                    $"AI {fraction * 100:0}%",
+                    eta,
+                    $"{progress.Message}: {progress.Current:N0}/{progress.Total:N0} frames.");
+
+                if (_activeEncodeRows.Count <= 1)
+                {
+                    if (progressBarEncode.Style != ProgressBarStyle.Continuous)
+                        progressBarEncode.Style = ProgressBarStyle.Continuous;
+                    SetProgress(progressBarEncode, (int)Math.Round(fraction * 100));
+                }
+            });
         }
 
         private void UpdateEncodeMetricsForRow(DataGridViewRow row, EncodeMetrics metrics)

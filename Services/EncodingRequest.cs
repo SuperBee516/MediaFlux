@@ -22,6 +22,8 @@ namespace MediaFlux.Services
         public bool TenBit { get; init; }
         public int? AudioChannels { get; init; }
         public Action<string>? ProgressCallback { get; init; }
+        /// <summary>Structured progress while a frame-based AI intermediate is being prepared.</summary>
+        public Action<AiIntermediateProgress>? AiProgressCallback { get; init; }
         public bool ConcurrentEncoderSessions { get; init; }
         public EncodingService.StreamMapMode MapMode { get; init; } =
             EncodingService.StreamMapMode.KeepAll;

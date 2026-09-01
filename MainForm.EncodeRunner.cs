@@ -747,6 +747,7 @@ namespace MediaFlux
                     TenBit = tenBit,
                     AudioChannels = audioChannels,
                     ProgressCallback = jobCallback,
+                    AiProgressCallback = progress => ApplyAiIntermediateProgress(row, progress),
                     ConcurrentEncoderSessions =
                         concurrentEncoderSessions,
                     CancellationToken = cancellationToken,

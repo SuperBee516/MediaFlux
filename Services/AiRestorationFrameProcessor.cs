@@ -13,6 +13,7 @@ public sealed class AiRestorationFrameProcessor
         IReadOnlyList<string> orderedInputFrames,
         string outputDirectory,
         Func<string, string, CancellationToken, Task> processFrameAsync,
+        Action<int, int>? progress = null,
         CancellationToken cancellationToken = default)
     {
         if (orderedInputFrames.Count == 0) throw new ArgumentException("AI restoration needs at least one frame.", nameof(orderedInputFrames));
@@ -30,6 +31,7 @@ public sealed class AiRestorationFrameProcessor
                 await processFrameAsync(orderedInputFrames[index], output, cancellationToken).ConfigureAwait(false);
                 if (!File.Exists(output) || new FileInfo(output).Length < 64)
                     throw new InvalidOperationException($"AI restoration produced an incomplete frame at index {index}.");
+                progress?.Invoke(index + 1, orderedInputFrames.Count);
             }
         }
         catch

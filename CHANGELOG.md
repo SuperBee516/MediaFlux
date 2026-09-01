@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.76] - 2026-08-31
+
+### AI Encode-Stage Stabilization
+
+- Added live AI restoration stage/progress reporting during full encodes.
+- Added per-frame AI restoration progress and calculated ETA.
+- Added visible AI extraction, restoration, reassembly, and validation stages.
+- Final FFmpeg encode correctly transitions status back to Encoding.
+- Optimized AI operations by resolving backend/model validation once and reusing it throughout processing.
+- Conventional encoding, cancellation, and diagnostics remain unchanged.
+- VFR AI support remains unsupported.
+
 ## [0.1.75] - 2026-08-31
 
 ### AI Intermediate Finalization Fixes
@@ -31,6 +43,11 @@ stronger reliability safeguards, and safer CFR-only AI processing.
 - Added long AI-job temp-space checks, cleanup, cancellation handling, and diagnostics
 - Added multi-window source timing characterization and AI eligibility safeguards
 - Added CFR-safe AI full encoding plus still and five-second motion previews
+- Added live AI restoration stage/progress reporting during full encodes
+- Added per-frame AI restoration progress and calculated ETA
+- Added visible AI extraction, restoration, reassembly, and validation stages
+- Final FFmpeg encode correctly transitions status back to Encoding
+- Optimized AI operations by resolving backend/model validation once and reusing it throughout processing
 - Preserved original audio, subtitles, metadata, chapters, and ancillary streams through split-source encoding
 - Added saved-job and scheduled-job support for AI restoration through the shared encode path
 

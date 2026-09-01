@@ -27,7 +27,7 @@ public sealed class AiRestorationIntermediateVideoService
         if (!File.Exists(request.SourcePath)) throw new FileNotFoundException("AI intermediate source is unavailable.", request.SourcePath);
         if (request.FrameRate is < 1 or > 240 || double.IsNaN(request.FrameRate)) throw new AiRestorationValidationException("AI intermediate processing requires a known constant frame rate between 1 and 240 fps; VFR sources are not supported yet.");
         if (!request.Plan.UsesAi) throw new AiRestorationValidationException("AI intermediate processing requires AI restoration to be enabled.");
-        AiRestorationModel model = await _backend.ValidateSelectionAsync(request.Settings, token).ConfigureAwait(false);
+            AiRestorationSession session = await _backend.CreateSessionAsync(request.Settings, token).ConfigureAwait(false);
         Directory.CreateDirectory(_stagingRoot); AiProductionHardeningService.CleanupOrphans(_stagingRoot); string root = Path.Combine(_stagingRoot, "ai-intermediate-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root); AiProductionHardeningService.Register(root);
         try
         {
@@ -36,7 +36,6 @@ public sealed class AiRestorationIntermediateVideoService
             int total = checked((int)Math.Round(duration.TotalSeconds * request.FrameRate, MidpointRounding.AwayFromZero));
             if (total <= 0) throw new AiRestorationValidationException("AI intermediate processing could not determine an expected frame count.");
             AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot); AiProductionHardeningService.EnsureSpace(estimate); using (File.Create(Path.Combine(root, ".mediaflux-ai-staging"))) { }
-            _ = model;
             var chunks = new List<AiIntermediateChunkMetadata>();
             for (int offset = 0, chunkIndex = 0; offset < total; offset += AiRestorationFrameProcessor.MaximumFramesPerChunk, chunkIndex++)
             {
@@ -47,7 +46,12 @@ public sealed class AiRestorationIntermediateVideoService
                 await RunAsync(BuildExtractArguments(request, offset, count, input), "extract AI frames", chunks, token).ConfigureAwait(false);
                 string[] extracted = ExpectedFrames(input, count); ValidateFrameSet(input, extracted);
                 progress?.Report(new(AiIntermediateStage.AiProcessing, offset, total, $"AI restoring frames (chunk {chunkIndex + 1})"));
-                await _frames.ProcessChunkAsync(extracted, output, (source, destination, ct) => _backend.ProcessFrameAsync(request.Settings, source, destination, ct), token).ConfigureAwait(false);
+                await _frames.ProcessChunkAsync(
+                    extracted,
+                    output,
+                    (source, destination, ct) => _backend.ProcessFrameAsync(session, request.Settings, source, destination, ct),
+                    (completed, _) => progress?.Report(new(AiIntermediateStage.AiProcessing, offset + completed, total, $"AI restoring frames (chunk {chunkIndex + 1})")),
+                    token).ConfigureAwait(false);
                 string[] processed = ExpectedFrames(output, count); ValidateFrameSet(output, processed);
                 string chunkVideo = Path.Combine(root, $"chunk-{chunkIndex:D5}.mkv");
                 progress?.Report(new(AiIntermediateStage.Reassembling, offset + count, total, $"Reassembling AI frames (chunk {chunkIndex + 1})"));
@@ -70,6 +74,7 @@ public sealed class AiRestorationIntermediateVideoService
                 await File.WriteAllLinesAsync(list, BuildConcatListLines(chunks.Select(chunk => chunk.Path)), token).ConfigureAwait(false);
                 await RunAsync(new[] { "-y", "-f", "concat", "-safe", "0", "-i", list, "-map", "0:v:0", "-c:v", "copy", staging }, "join AI chunks", chunks, token).ConfigureAwait(false);
             }
+            progress?.Report(new(AiIntermediateStage.Validating, total, total, "Validating AI intermediate video"));
             AiIntermediateVideoResult result = await ValidateAsync(staging, duration, total, request.FrameRate, request.Settings.AiScale, token).ConfigureAwait(false);
             File.Move(staging, final, true); return result with { Path = final, StagingDirectory = root };
         }

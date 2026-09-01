@@ -3256,6 +3256,8 @@ namespace MediaFlux
                 : TimeSpan.FromSeconds(remaining);
 
             // Push into the grid
+            if ((row.Cells["colStatus"].Value?.ToString() ?? "").Contains("AI", StringComparison.OrdinalIgnoreCase))
+                row.Cells["colStatus"].Value = "Encoding";
             row.Cells["colProgress"].Value = $"{pct * 100:0}%";
             row.Cells["colETA"].Value = eta.ToString(@"hh\:mm\:ss");
 

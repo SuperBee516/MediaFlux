@@ -328,7 +328,8 @@ namespace MediaFlux.Services
                 request.ContainerDecisionCallback,
                 request.SampleStart,
                 request.SampleDuration,
-                request.Restoration);
+                request.Restoration,
+                request.AiProgressCallback);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -486,7 +487,8 @@ namespace MediaFlux.Services
             Action<OutputContainerDecision>? containerDecisionCallback = null,
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
-            VideoRestorationSettings? restoration = null)
+            VideoRestorationSettings? restoration = null,
+            Action<AiIntermediateProgress>? aiProgressCallback = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -516,7 +518,8 @@ namespace MediaFlux.Services
                 containerDecisionCallback,
                 sampleStart,
                 sampleDuration,
-                restoration);
+                restoration,
+                aiProgressCallback);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -547,7 +550,8 @@ namespace MediaFlux.Services
             Action<OutputContainerDecision>? containerDecisionCallback = null,
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
-            VideoRestorationSettings? restoration = null)
+            VideoRestorationSettings? restoration = null,
+            Action<AiIntermediateProgress>? aiProgressCallback = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             VideoRestorationPipeline.Validate(restoration ?? new VideoRestorationSettings(), scaleMode);
@@ -622,7 +626,10 @@ namespace MediaFlux.Services
                 AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"));
                 _log?.Invoke($"[EncodingService] AI preflight: source={inputSource.SourcePath}; model={aiSettings.AiModelId}; device={aiSettings.AiDevice}; scale={(int)aiSettings.AiScale}x; expectedFrames={expectedFrames}; {estimate.Describe()}; plan={aiPlan.DescribeStages()}.");
                 AiProductionHardeningService.EnsureSpace(estimate);
-                aiIntermediate = await intermediate.CreateAsync(new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0), new Progress<AiIntermediateProgress>(p => callback($"[MediaFlux] {p.Message}")), cancellationToken).ConfigureAwait(false);
+                aiIntermediate = await intermediate.CreateAsync(
+                    new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0),
+                    new Progress<AiIntermediateProgress>(p => { callback($"[MediaFlux] {p.Message}"); aiProgressCallback?.Invoke(p); }),
+                    cancellationToken).ConfigureAwait(false);
                 _log?.Invoke($"[EncodingService] AI intermediate ready: {aiIntermediate.Path}; {aiPlan.DescribeStages()}.");
             }
 

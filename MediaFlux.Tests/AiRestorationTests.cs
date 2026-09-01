@@ -86,6 +86,24 @@ public sealed class AiRestorationTests : IDisposable
     }
 
     [Fact]
+    public async Task FrameProcessorReportsEachCompletedFrameInChronologicalOrder()
+    {
+        string input = Path.Combine(_root, "input"), output = Path.Combine(_root, "output");
+        Directory.CreateDirectory(input);
+        string[] frames = AiRestorationIntermediateVideoService.ExpectedFrames(input, 3);
+        foreach (string frame in frames) File.WriteAllBytes(frame, new byte[64]);
+        var reports = new List<(int Current, int Total)>();
+
+        await new AiRestorationFrameProcessor().ProcessChunkAsync(
+            frames,
+            output,
+            (source, destination, _) => { File.Copy(source, destination); return Task.CompletedTask; },
+            (current, total) => reports.Add((current, total)));
+
+        Assert.Equal(new[] { (1, 3), (2, 3), (3, 3) }, reports);
+    }
+
+    [Fact]
     public void IntermediateValidationRejectsMissingOrExtraFrames()
     {
         string directory = Path.Combine(_root, "frames"); Directory.CreateDirectory(directory);
