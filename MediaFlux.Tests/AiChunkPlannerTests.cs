@@ -49,6 +49,43 @@ public sealed class AiChunkPlannerTests
     }
 
     [Fact]
+    public void DecisionReportShowsStorageConstraintAndEstimates()
+    {
+        var storage = new AiTemporaryStorageEstimate(0, 301, false, false, 1, 1);
+        var input = new AiChunkPlannerInput(640, 480, AiRestorationScale.X2, 16L * Gibibyte, storage, "ncnn-vulkan");
+        AiChunkPlannerDecision decision = _planner.DescribeDecision(input, _planner.Plan(input));
+
+        Assert.Equal(720, decision.DefaultChunkSize);
+        Assert.Equal(300, decision.StorageLimitedChunkSize);
+        Assert.Equal(AiChunkPlanner.MaximumFramesPerChunk, decision.VramLimitedChunkSize);
+        Assert.Equal(300, decision.FinalSelectedChunkSize);
+        Assert.Equal("Temporary storage", decision.DeterminingConstraint);
+        Assert.Equal(300, decision.EstimatedTemporaryStoragePerChunk);
+    }
+
+    [Fact]
+    public void DecisionReportShowsVramConstraintWhenStorageIsNotLimiting()
+    {
+        AiChunkPlannerInput input = Input(640, 480, AiRestorationScale.X2, 2);
+        AiChunkPlannerDecision decision = _planner.DescribeDecision(input, _planner.Plan(input));
+
+        Assert.Equal(90, decision.VramLimitedChunkSize);
+        Assert.Equal(90, decision.FinalSelectedChunkSize);
+        Assert.Equal("GPU VRAM", decision.DeterminingConstraint);
+    }
+
+    [Fact]
+    public void DecisionReportRecordsUnavailableGpuConservativeLimit()
+    {
+        AiChunkPlannerInput input = Input(640, 480, AiRestorationScale.X2, null);
+        AiChunkPlannerDecision decision = _planner.DescribeDecision(input, _planner.Plan(input));
+
+        Assert.Null(decision.DedicatedGpuVramBytes);
+        Assert.Equal(180, decision.VramLimitedChunkSize);
+        Assert.Equal("GPU VRAM", decision.DeterminingConstraint);
+    }
+
+    [Fact]
     public void PreviewSizedOperationRemainsOneChunkWhenItFitsThePlan()
     {
         AiChunkPlan plan = Plan(1920, 1080, AiRestorationScale.X2, 16);

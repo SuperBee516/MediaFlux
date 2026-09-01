@@ -34,7 +34,10 @@ public sealed class AiRestorationIntermediateVideoService
         using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiPreparation))
         { session = await _backend.CreateSessionAsync(request.Settings, token).ConfigureAwait(false); scope?.Complete(); }
         _timing?.SetAiBackend(session.Capabilities.BackendId, session.Capabilities.ExecutablePath);
-        using HardwarePerformanceSampler? hardwareSampler = _timing is null ? null : new HardwarePerformanceSampler(_timing);
+        AiChunkHardwareMetricsCollector? activeChunkHardware = null;
+        using HardwarePerformanceSampler? hardwareSampler = _timing is null ? null : new HardwarePerformanceSampler(
+            _timing,
+            sampleObserver: sample => Volatile.Read(ref activeChunkHardware)?.Record(sample));
         hardwareSampler?.SampleNow();
         Directory.CreateDirectory(_stagingRoot); AiProductionHardeningService.CleanupOrphans(_stagingRoot); string root = Path.Combine(_stagingRoot, "ai-intermediate-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root); AiProductionHardeningService.Register(root);
         try
@@ -45,26 +48,39 @@ public sealed class AiRestorationIntermediateVideoService
             if (total <= 0) throw new AiRestorationValidationException("AI intermediate processing could not determine an expected frame count.");
             AiTemporaryStorageEstimate planningEstimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot, AiChunkPlanner.MinimumFramesPerChunk);
             long? dedicatedGpuVram = _timing?.DedicatedGpuVramBytes ?? _dedicatedGpuVramProvider();
-            AiChunkPlan chunkPlan = new AiChunkPlanner().Plan(new(request.SourceWidth, request.SourceHeight, request.Settings.AiScale, dedicatedGpuVram, planningEstimate, session.Capabilities.Identity));
+            var planner = new AiChunkPlanner();
+            var plannerInput = new AiChunkPlannerInput(request.SourceWidth, request.SourceHeight, request.Settings.AiScale, dedicatedGpuVram, planningEstimate, session.Capabilities.Identity);
+            AiChunkPlan chunkPlan = planner.Plan(plannerInput);
+            AiChunkPlannerDecision plannerDecision = planner.DescribeDecision(plannerInput, chunkPlan);
             AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot, chunkPlan.FrameCount);
-            _log?.Invoke($"[AI Chunk Planner] Resolution: {request.SourceWidth}x{request.SourceHeight}; AI Scale: {(int)request.Settings.AiScale}x; GPU VRAM: {FormatBytes(dedicatedGpuVram)}; Estimated Temporary Storage: {estimate.Describe()}; Chosen Chunk Size: {chunkPlan.FrameCount} frames; Decision Reason: {chunkPlan.DecisionReason}; Backend: {session.Capabilities.Identity}.");
+            _timing?.SetAiChunkPlannerDecision(plannerDecision);
+            _log?.Invoke(FormatPlannerDecision(plannerDecision, session.Capabilities.Identity));
             AiProductionHardeningService.EnsureSpace(estimate); using (File.Create(Path.Combine(root, ".mediaflux-ai-staging"))) { }
             var chunks = new List<AiIntermediateChunkMetadata>();
             int chunkTotal = (total + chunkPlan.FrameCount - 1) / chunkPlan.FrameCount;
             for (int offset = 0, chunkIndex = 0; offset < total; offset += chunkPlan.FrameCount, chunkIndex++)
             {
+                var chunkHardware = new AiChunkHardwareMetricsCollector();
+                Volatile.Write(ref activeChunkHardware, chunkHardware);
+                hardwareSampler?.SampleNow();
                 long chunkStartedAt = Stopwatch.GetTimestamp();
                 int count = Math.Min(chunkPlan.FrameCount, total - offset);
                 AiProductionHardeningService.EnsureSpace(AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, count, request.Settings.AiScale, _stagingRoot, chunkPlan.FrameCount), runtime: true);
                 string chunk = Path.Combine(root, $"chunk-{chunkIndex:D5}"), input = Path.Combine(chunk, "input"), output = Path.Combine(chunk, "output"); Directory.CreateDirectory(input); Directory.CreateDirectory(output);
                 progress?.Report(new(AiIntermediateStage.ExtractingFrames, offset, total, $"Extracting AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
+                long stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiExtraction))
                 { await RunAsync(BuildExtractArguments(request, offset, count, input), "extract AI frames", chunks, token).ConfigureAwait(false); scope?.Complete(); }
+                TimeSpan extractionElapsed = Stopwatch.GetElapsedTime(stageStartedAt);
+                TimeSpan validationElapsed = TimeSpan.Zero;
                 string[] extracted = ExpectedFrames(input, count);
+                stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
                 { ValidateFrameSet(input, extracted); scope?.Complete(); }
+                validationElapsed += Stopwatch.GetElapsedTime(stageStartedAt);
                 string[] processed = ExpectedFrames(output, count);
                 progress?.Report(new(AiIntermediateStage.AiProcessing, offset, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})"));
+                stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiProcessing))
                 { await _backend.ProcessDirectoryAsync(
                     session,
@@ -74,15 +90,28 @@ public sealed class AiRestorationIntermediateVideoService
                     processed,
                     completed => progress?.Report(new(AiIntermediateStage.AiProcessing, offset + completed, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})")),
                     token).ConfigureAwait(false); scope?.Complete(); }
+                TimeSpan inferenceElapsed = Stopwatch.GetElapsedTime(stageStartedAt);
+                stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
                 { ValidateRestoredFrameSet(extracted, processed, request.Settings.AiScale); scope?.Complete(); }
+                validationElapsed += Stopwatch.GetElapsedTime(stageStartedAt);
                 string chunkVideo = Path.Combine(root, $"chunk-{chunkIndex:D5}.mkv");
                 progress?.Report(new(AiIntermediateStage.Reassembling, offset + count, total, $"Reassembling AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
+                stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiReassembly))
                 { await RunAsync(BuildReassemblyArguments(processed[0], request.FrameRate, chunkVideo), "reassemble AI chunk", chunks, token).ConfigureAwait(false); scope?.Complete(); }
+                TimeSpan reassemblyElapsed = Stopwatch.GetElapsedTime(stageStartedAt);
+                stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
                 { chunks.Add(await ProbeChunkAsync(chunkVideo, count, request.FrameRate, token).ConfigureAwait(false)); scope?.Complete(); }
-                _timing?.RecordAiChunk(count, Stopwatch.GetElapsedTime(chunkStartedAt));
+                validationElapsed += Stopwatch.GetElapsedTime(stageStartedAt);
+                TimeSpan totalElapsed = Stopwatch.GetElapsedTime(chunkStartedAt);
+                hardwareSampler?.SampleNow();
+                long measuredTemporaryStorage = MeasureTemporaryStorage(chunk, chunkVideo);
+                AiChunkPerformanceMetrics metrics = new(chunkIndex + 1, count, extractionElapsed, inferenceElapsed, validationElapsed, reassemblyElapsed, totalElapsed, chunkHardware.Snapshot(), measuredTemporaryStorage);
+                _timing?.RecordAiChunk(metrics);
+                _log?.Invoke(FormatChunkMetrics(metrics));
+                Volatile.Write(ref activeChunkHardware, null);
                 Directory.Delete(chunk, true);
             }
 
@@ -192,6 +221,30 @@ public sealed class AiRestorationIntermediateVideoService
         return result.StandardOutput.Split('\n').Select(line => line.Trim()).Select(line => line.Split('=', 2)).Where(parts => parts.Length == 2 && !string.IsNullOrWhiteSpace(parts[0])).GroupBy(parts => parts[0], StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.Last()[1].Trim(), StringComparer.OrdinalIgnoreCase);
     }
     private static string Describe(AiIntermediateChunkMetadata chunk) => $"codec={chunk.Codec}, {chunk.Width}x{chunk.Height}, pix_fmt={chunk.PixelFormat}, time_base={chunk.TimeBase}, fps={chunk.FrameRate}";
-    private static string FormatBytes(long? bytes) => bytes is long value ? $"{value / 1024d / 1024d / 1024d:0.0} GB" : "Unavailable";
+    private static string FormatPlannerDecision(AiChunkPlannerDecision decision, string backend) =>
+        "[AI Chunk Planner]" + Environment.NewLine +
+        $"Resolution: {decision.SourceWidth}x{decision.SourceHeight}; AI Scale: {(int)decision.AiScale}x; Estimated Bytes per Frame: {FormatBytes(decision.EstimatedBytesPerFrame)}" + Environment.NewLine +
+        $"Estimated Temporary Storage per Chunk: {FormatBytes(decision.EstimatedTemporaryStoragePerChunk)}; Available Temporary Storage: {FormatBytes(decision.AvailableTemporaryStorageBytes)}; GPU VRAM: {FormatBytes(decision.DedicatedGpuVramBytes)}" + Environment.NewLine +
+        $"Default Chunk Size: {decision.DefaultChunkSize}; Storage-Limited Chunk Size: {decision.StorageLimitedChunkSize}; VRAM-Limited Chunk Size: {decision.VramLimitedChunkSize}; Final Selected Chunk Size: {decision.FinalSelectedChunkSize}" + Environment.NewLine +
+        $"Constraint: {decision.DeterminingConstraint}; Decision Reason: {decision.DecisionReason}; Backend: {backend}.";
+    private static string FormatChunkMetrics(AiChunkPerformanceMetrics metrics) =>
+        $"[AI Chunk {metrics.ChunkNumber}] Frames: {metrics.FrameCount}; Extraction: {Format(metrics.ExtractionElapsed)}; Inference: {Format(metrics.InferenceElapsed)}; Validation: {Format(metrics.ValidationElapsed)}; Reassembly: {Format(metrics.ReassemblyElapsed)}; Total: {Format(metrics.TotalElapsed)}; FPS: {metrics.EffectiveFramesPerSecond:0.##}; GPU Avg/Peak: {Percent(metrics.Hardware.AverageGpuPercent)}/{Percent(metrics.Hardware.PeakGpuPercent)}; VRAM Avg/Peak: {FormatBytes(metrics.Hardware.AverageVramUsedBytes)}/{FormatBytes(metrics.Hardware.PeakVramUsedBytes)}; CPU Avg: {Percent(metrics.Hardware.AverageCpuPercent)}; Disk Avg: {BytesPerSecond(metrics.Hardware.AverageDiskThroughputBytesPerSecond)}.";
+    private static long MeasureTemporaryStorage(string chunkDirectory, string chunkVideo)
+    {
+        try
+        {
+            long total = Directory.EnumerateFiles(chunkDirectory, "*", SearchOption.AllDirectories)
+                .Aggregate(0L, (current, path) => SaturatingAdd(current, new FileInfo(path).Length));
+            return File.Exists(chunkVideo) ? SaturatingAdd(total, new FileInfo(chunkVideo).Length) : total;
+        }
+        catch { return 0; }
+    }
+    private static long SaturatingAdd(long value, long addition) => addition > 0 && value > long.MaxValue - addition ? long.MaxValue : value + Math.Max(0, addition);
+    private static string Format(TimeSpan elapsed) => elapsed.TotalHours >= 1 ? elapsed.ToString(@"h\:mm\:ss\.fff") : elapsed.ToString(@"m\:ss\.fff");
+    private static string FormatBytes(long? bytes) => bytes is not long value ? "Unavailable"
+        : value >= 1024L * 1024 * 1024 ? $"{value / 1024d / 1024d / 1024d:0.0} GB"
+        : $"{value / 1024d / 1024d:0.##} MiB";
+    private static string Percent(double? value) => value.HasValue ? $"{value:0.#}%" : "Unavailable";
+    private static string BytesPerSecond(double? value) => value.HasValue ? $"{value.Value / 1024d / 1024d:0.##} MiB/s" : "Unavailable";
     private static string Sanitize(string? value, int maximum) { string sanitized = string.IsNullOrWhiteSpace(value) ? "<none>" : value.Replace("\r", " ").Replace("\n", " ").Trim(); return sanitized[..Math.Min(sanitized.Length, maximum)]; }
 }

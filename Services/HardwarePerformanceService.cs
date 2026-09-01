@@ -114,20 +114,25 @@ public sealed class HardwarePerformanceSampler : IDisposable
 {
     private readonly PerformanceTimingService _timing;
     private readonly HardwarePerformanceService _hardware;
+    private readonly Action<HardwareUsageSample>? _sampleObserver;
     private readonly System.Threading.Timer _timer;
     private int _disposed;
 
-    public HardwarePerformanceSampler(PerformanceTimingService timing, TimeSpan? interval = null, HardwarePerformanceService? hardware = null)
+    public HardwarePerformanceSampler(PerformanceTimingService timing, TimeSpan? interval = null, HardwarePerformanceService? hardware = null, Action<HardwareUsageSample>? sampleObserver = null)
     {
         _timing = timing;
         _hardware = hardware ?? new HardwarePerformanceService();
+        _sampleObserver = sampleObserver;
         TimeSpan period = interval ?? TimeSpan.FromSeconds(3);
         _timer = new System.Threading.Timer(_ => SampleNow(), null, period, period);
     }
 
     public void SampleNow()
     {
-        if (Volatile.Read(ref _disposed) == 0) _timing.RecordHardwareSample(_hardware.Sample());
+        if (Volatile.Read(ref _disposed) != 0) return;
+        HardwareUsageSample sample = _hardware.Sample();
+        _timing.RecordHardwareSample(sample);
+        _sampleObserver?.Invoke(sample);
     }
 
     public void Dispose()

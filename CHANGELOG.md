@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.82] - 2026-09-01
+
+### AI Restoration Performance Diagnostics
+
+- Added detailed AI Chunk Planner decision logging showing source resolution, AI scale, estimated frame and temporary storage usage, VRAM and storage limits, selected chunk size, and limiting constraint.
+- Added per-chunk performance summaries including extraction, AI inference, validation, reassembly, effective FPS, GPU utilization, GPU VRAM usage, CPU utilization, disk throughput, and temporary storage usage.
+- Added AI Planner Calibration Summary to the existing MediaFlux Performance Summary.
+- Added measured planner mismatch detection that reports when chunk planning appears overly conservative based on actual hardware utilization.
+- Calibration is diagnostic only and does not modify chunk planning or encoding behavior.
+- Existing AI restoration, previews, recommendations, scheduling, and output quality remain unchanged.
+
 ## [0.1.81] - 2026-09-01
 
 ### Updater Improvements

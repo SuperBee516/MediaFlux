@@ -14,6 +14,8 @@ public sealed class PerformanceTimingService
     private TimeSpan _aiChunkElapsed;
     private TimeSpan _fastestAiChunk = TimeSpan.MaxValue;
     private TimeSpan _slowestAiChunk;
+    private readonly List<AiChunkPerformanceMetrics> _aiChunkMetrics = new();
+    private AiChunkPlannerDecision? _aiPlannerDecision;
     private HardwareSnapshot? _hardware;
     private int _hardwareSamples;
     private double _gpuTotal, _cpuTotal, _readTotal, _writeTotal;
@@ -31,13 +33,26 @@ public sealed class PerformanceTimingService
         if (frameCount <= 0) throw new ArgumentOutOfRangeException(nameof(frameCount));
         if (elapsed < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(elapsed));
         lock (_gate)
+            RecordAiChunkCore(frameCount, elapsed);
+    }
+
+    /// <summary>Records completed per-chunk diagnostics while retaining only the completed chunk metrics.</summary>
+    public void RecordAiChunk(AiChunkPerformanceMetrics metrics)
+    {
+        ArgumentNullException.ThrowIfNull(metrics);
+        if (metrics.FrameCount <= 0) throw new ArgumentOutOfRangeException(nameof(metrics));
+        if (metrics.TotalElapsed < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(metrics));
+        lock (_gate)
         {
-            _aiFrames += frameCount;
-            _aiChunks++;
-            _aiChunkElapsed += elapsed;
-            if (elapsed < _fastestAiChunk) _fastestAiChunk = elapsed;
-            if (elapsed > _slowestAiChunk) _slowestAiChunk = elapsed;
+            RecordAiChunkCore(metrics.FrameCount, metrics.TotalElapsed);
+            _aiChunkMetrics.Add(metrics);
         }
+    }
+
+    public void SetAiChunkPlannerDecision(AiChunkPlannerDecision decision)
+    {
+        ArgumentNullException.ThrowIfNull(decision);
+        lock (_gate) _aiPlannerDecision = decision;
     }
 
     public void SetHardwareSnapshot(HardwareSnapshot snapshot)
@@ -99,6 +114,8 @@ public sealed class PerformanceTimingService
                     .AppendLine(timing.Completed ? Format(timing.Elapsed) : "Not Completed");
             }
             AppendAiThroughput(builder);
+            AppendAiChunkPlannerSummary(builder);
+            AppendAiPlannerCalibrationSummary(builder);
             AppendHardwareSummary(builder);
             AppendLargestTimeConsumers(builder);
         }
@@ -116,6 +133,15 @@ public sealed class PerformanceTimingService
             }
             else _stages.Add(stage, new StageTiming(elapsed, completed));
         }
+    }
+
+    private void RecordAiChunkCore(int frameCount, TimeSpan elapsed)
+    {
+        _aiFrames += frameCount;
+        _aiChunks++;
+        _aiChunkElapsed += elapsed;
+        if (elapsed < _fastestAiChunk) _fastestAiChunk = elapsed;
+        if (elapsed > _slowestAiChunk) _slowestAiChunk = elapsed;
     }
 
     private static string Format(TimeSpan elapsed) => elapsed.TotalHours >= 1
@@ -158,6 +184,62 @@ public sealed class PerformanceTimingService
         }
     }
 
+    private void AppendAiChunkPlannerSummary(StringBuilder builder)
+    {
+        if (_aiPlannerDecision is not AiChunkPlannerDecision decision) return;
+        builder.AppendLine().AppendLine("AI Chunk Planner Summary")
+            .Append("Resolution: ").Append(decision.SourceWidth).Append('x').AppendLine(decision.SourceHeight.ToString())
+            .Append("AI Scale: ").Append((int)decision.AiScale).AppendLine("x")
+            .Append("Estimated Bytes per Frame: ").AppendLine(Bytes(decision.EstimatedBytesPerFrame))
+            .Append("Estimated Temporary Storage per Chunk: ").AppendLine(Bytes(decision.EstimatedTemporaryStoragePerChunk))
+            .Append("Available Temporary Storage: ").AppendLine(Bytes(decision.AvailableTemporaryStorageBytes))
+            .Append("Dedicated GPU VRAM: ").AppendLine(Bytes(decision.DedicatedGpuVramBytes))
+            .Append("Default Chunk Size: ").Append(decision.DefaultChunkSize).AppendLine(" frames")
+            .Append("Storage-Limited Chunk Size: ").Append(decision.StorageLimitedChunkSize).AppendLine(" frames")
+            .Append("VRAM-Limited Chunk Size: ").Append(decision.VramLimitedChunkSize).AppendLine(" frames")
+            .Append("Final Selected Chunk Size: ").Append(decision.FinalSelectedChunkSize).AppendLine(" frames")
+            .Append("Determining Constraint: ").AppendLine(decision.DeterminingConstraint);
+    }
+
+    private void AppendAiPlannerCalibrationSummary(StringBuilder builder)
+    {
+        if (_aiPlannerDecision is null || _aiChunkMetrics.Count == 0) return;
+        AiChunkPerformanceMetrics[] chunks = _aiChunkMetrics.ToArray();
+        long frames = chunks.Sum(chunk => (long)chunk.FrameCount);
+        TimeSpan total = TimeSpan.FromTicks(chunks.Sum(chunk => chunk.TotalElapsed.Ticks));
+        TimeSpan average = TimeSpan.FromTicks(total.Ticks / chunks.Length);
+        double? averageGpu = Average(chunks.Select(chunk => chunk.Hardware.AverageGpuPercent));
+        double? averageCpu = Average(chunks.Select(chunk => chunk.Hardware.AverageCpuPercent));
+        double? averageDisk = Average(chunks.Select(chunk => chunk.Hardware.AverageDiskThroughputBytesPerSecond));
+        long? averageVram = AverageLong(chunks.Select(chunk => chunk.Hardware.AverageVramUsedBytes));
+        long? peakVram = Max(chunks.Select(chunk => chunk.Hardware.PeakVramUsedBytes));
+        long? averageMeasuredStorage = AverageLong(chunks.Select(chunk => chunk.MeasuredTemporaryStorageBytes));
+        TimeSpan extraction = TimeSpan.FromTicks(chunks.Sum(chunk => chunk.ExtractionElapsed.Ticks));
+        TimeSpan inference = TimeSpan.FromTicks(chunks.Sum(chunk => chunk.InferenceElapsed.Ticks));
+
+        builder.AppendLine().AppendLine("AI Planner Calibration Summary")
+            .Append("Planned Chunk Size: ").Append(_aiPlannerDecision.FinalSelectedChunkSize).AppendLine(" frames")
+            .Append("Actual Average Chunk Duration: ").AppendLine(Format(average))
+            .Append("Average Effective FPS: ").AppendLine(CalculateAiFramesPerSecond(frames, total).ToString("0.##"))
+            .Append("Peak VRAM Used: ").AppendLine(Bytes(peakVram))
+            .Append("Average VRAM Used: ").AppendLine(Bytes(averageVram))
+            .Append("Average GPU Utilization: ").AppendLine(Percent(averageGpu))
+            .Append("Average CPU Utilization: ").AppendLine(Percent(averageCpu))
+            .Append("Average Disk Throughput: ").AppendLine(BytesPerSecond(averageDisk));
+
+        bool gpuConsistentlyBelowForty = chunks.All(chunk => chunk.Hardware.PeakGpuPercent is < 40);
+        bool gpuUnderutilized = gpuConsistentlyBelowForty && averageGpu is < 40 && peakVram is long used && _aiPlannerDecision.DedicatedGpuVramBytes is long capacity && used < capacity / 4;
+        bool storageConservative = averageMeasuredStorage is long actual && actual > 0 && _aiPlannerDecision.EstimatedTemporaryStoragePerChunk > actual * 2;
+        double extractionPercent = Percentage(extraction, total);
+        double inferencePercent = Percentage(inference, total);
+        bool conservative = _aiPlannerDecision.FinalSelectedChunkSize * 2 < _aiPlannerDecision.DefaultChunkSize || gpuUnderutilized || storageConservative;
+        if (conservative) builder.AppendLine("Planner appears conservative.");
+        if (gpuUnderutilized) builder.AppendLine($"GPU underutilized: average GPU utilization {averageGpu:0.#}%; peak VRAM {Bytes(peakVram)} of {Bytes(_aiPlannerDecision.DedicatedGpuVramBytes)}.");
+        if (storageConservative) builder.AppendLine($"Storage conservative: estimated chunk storage {Bytes(_aiPlannerDecision.EstimatedTemporaryStoragePerChunk)} exceeded measured {Bytes(averageMeasuredStorage)}.");
+        if (extractionPercent >= 25) builder.AppendLine($"CPU bottleneck: extraction consumed {extractionPercent:0.#}% of total AI time.");
+        if (inferencePercent >= 50) builder.AppendLine($"AI inference bottleneck: inference consumed {inferencePercent:0.#}% of total AI time.");
+    }
+
     private static void Add(double? value, ref double total, ref int count, ref double? peak)
     {
         if (!value.HasValue) return;
@@ -195,6 +277,23 @@ public sealed class PerformanceTimingService
     private static string Percent(double? value) => value.HasValue ? $"{value:0.#}%" : "Unavailable";
     private static string Bytes(long? bytes) => bytes.HasValue ? $"{bytes.Value / 1073741824d:0.##} GiB" : "Unavailable";
     private static string BytesPerSecond(double total, int count) => count == 0 ? "Unavailable" : $"{total / count / 1048576d:0.##} MiB/s";
+    private static string BytesPerSecond(double? bytes) => bytes.HasValue ? $"{bytes.Value / 1048576d:0.##} MiB/s" : "Unavailable";
+    private static double? Average(IEnumerable<double?> values)
+    {
+        double[] available = values.Where(value => value.HasValue).Select(value => value!.Value).ToArray();
+        return available.Length == 0 ? null : available.Average();
+    }
+    private static long? AverageLong(IEnumerable<long?> values)
+    {
+        long[] available = values.Where(value => value.HasValue).Select(value => value!.Value).ToArray();
+        return available.Length == 0 ? null : (long)available.Average(value => (double)value);
+    }
+    private static long? Max(IEnumerable<long?> values)
+    {
+        long[] available = values.Where(value => value.HasValue).Select(value => value!.Value).ToArray();
+        return available.Length == 0 ? null : available.Max();
+    }
+    private static double Percentage(TimeSpan portion, TimeSpan total) => total > TimeSpan.Zero ? portion.TotalMilliseconds * 100d / total.TotalMilliseconds : 0;
 
     internal static double CalculateAiFramesPerSecond(long frames, TimeSpan elapsed) =>
         frames > 0 && elapsed > TimeSpan.Zero ? frames / elapsed.TotalSeconds : 0;
@@ -261,6 +360,60 @@ public sealed class PerformanceTimingService
             _owner.Record(_stage, Stopwatch.GetElapsedTime(_startedAt), _completed);
         }
     }
+}
+
+/// <summary>Constant-memory hardware aggregation for a single AI chunk.</summary>
+public sealed class AiChunkHardwareMetricsCollector
+{
+    private readonly object _gate = new();
+    private double _gpuTotal, _cpuTotal, _diskTotal;
+    private int _gpuCount, _cpuCount, _diskCount;
+    private double? _gpuPeak;
+    private long _vramTotal;
+    private int _vramCount;
+    private long? _vramPeak;
+
+    public void Record(HardwareUsageSample sample)
+    {
+        lock (_gate)
+        {
+            Add(sample.GpuPercent, ref _gpuTotal, ref _gpuCount, ref _gpuPeak);
+            if (sample.CpuPercent is double cpu) { _cpuTotal += cpu; _cpuCount++; }
+            if (sample.VramUsedBytes is long vram) { _vramTotal += vram; _vramCount++; _vramPeak = Math.Max(_vramPeak ?? 0, vram); }
+            if (sample.DiskReadBytesPerSecond.HasValue || sample.DiskWriteBytesPerSecond.HasValue)
+            { _diskTotal += (sample.DiskReadBytesPerSecond ?? 0) + (sample.DiskWriteBytesPerSecond ?? 0); _diskCount++; }
+        }
+    }
+
+    public AiChunkHardwareMetrics Snapshot()
+    {
+        lock (_gate) return new(
+            _gpuCount == 0 ? null : _gpuTotal / _gpuCount,
+            _gpuPeak,
+            _vramCount == 0 ? null : _vramTotal / _vramCount,
+            _vramPeak,
+            _cpuCount == 0 ? null : _cpuTotal / _cpuCount,
+            _diskCount == 0 ? null : _diskTotal / _diskCount);
+    }
+
+    private static void Add(double? value, ref double total, ref int count, ref double? peak)
+    {
+        if (!value.HasValue) return;
+        total += value.Value; count++; peak = Math.Max(peak ?? value.Value, value.Value);
+    }
+}
+
+public sealed record AiChunkHardwareMetrics(
+    double? AverageGpuPercent, double? PeakGpuPercent,
+    long? AverageVramUsedBytes, long? PeakVramUsedBytes,
+    double? AverageCpuPercent, double? AverageDiskThroughputBytesPerSecond);
+
+public sealed record AiChunkPerformanceMetrics(
+    int ChunkNumber, int FrameCount,
+    TimeSpan ExtractionElapsed, TimeSpan InferenceElapsed, TimeSpan ValidationElapsed, TimeSpan ReassemblyElapsed,
+    TimeSpan TotalElapsed, AiChunkHardwareMetrics Hardware, long? MeasuredTemporaryStorageBytes = null)
+{
+    public double EffectiveFramesPerSecond => PerformanceTimingService.CalculateAiFramesPerSecond(FrameCount, TotalElapsed);
 }
 
 public enum PerformanceTimingStage
