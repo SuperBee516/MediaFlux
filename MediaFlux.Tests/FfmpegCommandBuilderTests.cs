@@ -41,6 +41,26 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void SplitSourceAiOriginalResolutionUsesOneFinalDownscale()
+    {
+        var settings = new VideoRestorationSettings { Preset = VideoRestorationPreset.Custom, AiMode = AiRestorationMode.Animation, AiScale = AiRestorationScale.X2 };
+        VideoOutputResolutionPlan final = VideoRestorationPipeline.ResolveFinalOutputResolution(640, 480, settings, EncodingService.ScaleMode.None);
+        VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None, final.ScaleFilter);
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            restoration: settings,
+            splitSource: new SplitSourceInput("C:\\AI\\intermediate.mkv", EncodingInputSource.FromFile("C:\\Media\\source.mkv")),
+            restorationFilterOverride: plan.PostAiFilterChain);
+
+        string arguments = CreateBuilder().Build(request);
+
+        Assert.Contains("-map 0:v:0", arguments);
+        Assert.Contains("-map_metadata 1 -map_chapters 1", arguments);
+        Assert.Equal(1, arguments.Split("scale=640:480:flags=lanczos", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
     public void ConcurrentNvencCommandUsesExistingReducedTuning()
     {
         FfmpegCommandRequest request = CreateRequest(
@@ -624,7 +644,9 @@ public sealed class FfmpegCommandBuilderTests
         bool nvencHighBitDepthOutputSupported = false,
         string sourcePixelFormat = "",
         OutputContainer outputContainer = OutputContainer.Mp4,
-        VideoRestorationSettings? restoration = null)
+        VideoRestorationSettings? restoration = null,
+        SplitSourceInput? splitSource = null,
+        string? restorationFilterOverride = null)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -648,7 +670,9 @@ public sealed class FfmpegCommandBuilderTests
              nvencHighBitDepthOutputSupported,
              sourcePixelFormat,
              outputContainer,
-             restoration);
+             restoration,
+             splitSource,
+             restorationFilterOverride);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -671,7 +695,9 @@ public sealed class FfmpegCommandBuilderTests
         bool nvencHighBitDepthOutputSupported = false,
         string sourcePixelFormat = "",
         OutputContainer outputContainer = OutputContainer.Mp4,
-        VideoRestorationSettings? restoration = null)
+        VideoRestorationSettings? restoration = null,
+        SplitSourceInput? splitSource = null,
+        string? restorationFilterOverride = null)
     {
 
         return new FfmpegCommandRequest
@@ -717,7 +743,9 @@ public sealed class FfmpegCommandBuilderTests
             KnownDuration = knownDuration ?? TimeSpan.FromMinutes(10),
             NvencHighBitDepthOutputSupported =
                 nvencHighBitDepthOutputSupported,
-            SourcePixelFormat = sourcePixelFormat
+            SourcePixelFormat = sourcePixelFormat,
+            SplitSource = splitSource,
+            RestorationFilterOverride = restorationFilterOverride
         };
     }
 }

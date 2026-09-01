@@ -244,6 +244,16 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void ExplicitFinalResolutionStillRejectsAiIntermediateDimensions()
+    {
+        EncodeOutputValidationRequest request = Request(expectedWidth: 640, expectedHeight: 480);
+        string error = EncodeOutputValidationService.ValidateProbe(request, SourceProbe(), OutputProbe(width: 1280, height: 960));
+
+        Assert.Contains("1280", error);
+        Assert.Contains("640", error);
+    }
+
+    [Fact]
     public void DegenerateSourceChapterDroppedByFfmpegPassesAfterNormalization()
     {
         MediaProbeResult source = CloneProbe(
@@ -408,7 +418,9 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
 
     private EncodeOutputValidationRequest Request(
         bool copySubtitles = false,
-        bool tenBit = false) => new()
+        bool tenBit = false,
+        int? expectedWidth = null,
+        int? expectedHeight = null) => new()
     {
         Input = EncodingInputSource.FromFile(_sourcePath),
         OutputPath = _outputPath,
@@ -420,7 +432,9 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         ScaleMode = EncodingService.ScaleMode.None,
         TenBit = tenBit,
         MapMode = EncodingService.StreamMapMode.KeepAll,
-        CopySubtitles = copySubtitles
+        CopySubtitles = copySubtitles,
+        ExpectedVideoWidth = expectedWidth,
+        ExpectedVideoHeight = expectedHeight
     };
 
     private static MediaProbeResult CloneProbe(

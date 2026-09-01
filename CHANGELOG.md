@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.78] - 2026-09-01
+
+### AI Final-Resolution Fix
+
+- Fixed AI full encodes incorrectly retaining the AI intermediate/upscaled resolution.
+- AI model scale is now correctly treated as an intermediate restoration scale only.
+- Final output resolution now follows the configured Restoration/Encode resolution plan.
+- \`Original\` output correctly restores the source dimensions after AI processing.
+- Explicit final resize remains authoritative and is applied exactly once.
+- Final FFmpeg output and output validation now use the same planned dimensions.
+- Added diagnostics showing source, AI intermediate, AI scale, planned final resolution, and final scale decision.
+- Preview behavior remains unchanged.
+- VFR AI support remains unsupported.
+
 ## [0.1.77] - 2026-09-01
 
 ### AI Batch Processing Optimization
@@ -63,6 +77,10 @@ stronger reliability safeguards, and safer CFR-only AI processing.
 - Added visible AI extraction, restoration, reassembly, and validation stages
 - Final FFmpeg encode correctly transitions status back to Encoding
 - Optimized AI operations by resolving backend/model validation once and reusing it throughout processing
+- Fixed AI full encodes incorrectly retaining the AI intermediate/upscaled resolution
+- AI model scale is treated as an intermediate restoration scale only; final output follows the configured resolution plan
+- \`Original\` output restores source dimensions after AI processing, while explicit final resize remains authoritative exactly once
+- Final FFmpeg output and validation use the same planned dimensions, with diagnostics for source/intermediate/final resolution decisions
 - Replaced per-frame Real-ESRGAN process launches with one directory-mode batch invocation per 180-frame chunk
 - Reduced backend process launches by roughly 180× for full-video AI restoration
 - Five-second AI motion previews use the same batch-processing path

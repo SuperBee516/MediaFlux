@@ -610,16 +610,24 @@ namespace MediaFlux.Services
             if (!sourceProbe.Success)
                 throw new InvalidOperationException(
                     $"FFprobe could not inspect the source before container selection: {sourceProbe.ErrorMessage}");
+            MediaProbeStreamInfo? sourceVideo = sourceProbe.Streams.FirstOrDefault(
+                stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+            VideoOutputResolutionPlan? finalOutputResolution = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0
+                ? VideoRestorationPipeline.ResolveFinalOutputResolution(sourceVideo.Width.Value, sourceVideo.Height.Value, restoration, scaleMode)
+                : null;
             AiIntermediateVideoResult? aiIntermediate = null;
             VideoRestorationPipelinePlan? aiPlan = null;
             if (restoration is { AiMode: not AiRestorationMode.Off } aiSettings)
             {
-                MediaProbeStreamInfo? video = sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
-                if (video?.FrameRate is not > 0) throw new AiRestorationValidationException("AI restoration requires a source with a known constant frame rate.");
+                MediaProbeStreamInfo? video = sourceVideo;
+                if (video?.FrameRate is not > 0 || video.Width is not > 0 || video.Height is not > 0)
+                    throw new AiRestorationValidationException("AI restoration requires a source with a known constant frame rate and resolution.");
                 SourceTimingAnalysis timing = await new SourceTimingAnalysisService(_ffprobePath, log: _log).AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
                 SourceTimingAnalysisService.EnsureCurrentCfrSupported(timing);
                 var backend = new AiRestorationBackendService(Path.GetDirectoryName(_ffmpegPath) ?? AppDomain.CurrentDomain.BaseDirectory, log: _log);
-                aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode);
+                finalOutputResolution ??= VideoRestorationPipeline.ResolveFinalOutputResolution(video.Width.Value, video.Height.Value, aiSettings, scaleMode);
+                bool restoreOriginalAfterAi = scaleMode == ScaleMode.None && VideoRestorationPipeline.Effective(aiSettings).Resize == VideoRestorationResize.Original;
+                aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode, restoreOriginalAfterAi ? finalOutputResolution.ScaleFilter : null);
                 callback("[MediaFlux] Preparing AI restoration.");
                 var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend, log: _log);
                 int expectedFrames = checked((int)Math.Round((sampleDuration ?? TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0)).TotalSeconds * video.FrameRate.Value));
@@ -630,6 +638,7 @@ namespace MediaFlux.Services
                     new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0),
                     new Progress<AiIntermediateProgress>(p => { callback($"[MediaFlux] {p.Message}"); aiProgressCallback?.Invoke(p); }),
                     cancellationToken).ConfigureAwait(false);
+                _log?.Invoke($"[EncodingService] AI resolution plan: source={video.Width}x{video.Height}; aiScale={(int)aiSettings.AiScale}x; intermediate={aiIntermediate.Width}x{aiIntermediate.Height}; requestedFinal={finalOutputResolution.Describe()}; finalScaleDecision={(restoreOriginalAfterAi ? finalOutputResolution.ScaleFilter : "provided by configured restoration/normal encode scale")}; postAiFilters={aiPlan.PostAiFilterChain}.");
                 _log?.Invoke($"[EncodingService] AI intermediate ready: {aiIntermediate.Path}; {aiPlan.DescribeStages()}.");
             }
 
@@ -743,8 +752,6 @@ namespace MediaFlux.Services
                 useGpu,
                 tenBit,
                 ffArgs);
-            MediaProbeStreamInfo? sourceVideo = sourceProbe.Streams.FirstOrDefault(
-                stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
             _log?.Invoke(
                 $"[EncodingService] Output format intent: Requested: " +
                 $"{requestedEncoder.CodecFamily} {(tenBit ? "10-bit" : "8-bit")}; " +
@@ -827,7 +834,9 @@ namespace MediaFlux.Services
                         CopyAttachments = allowAttachmentCopy,
                         ContainerDecision = containerDecision,
                         SourceProbe = sourceProbe,
-                        ExpectedDurationSeconds = sampleDuration?.TotalSeconds
+                        ExpectedDurationSeconds = sampleDuration?.TotalSeconds,
+                        ExpectedVideoWidth = finalOutputResolution?.Width,
+                        ExpectedVideoHeight = finalOutputResolution?.Height
                     },
                     finalizationStatusCallback,
                     cancellationToken).ConfigureAwait(false);

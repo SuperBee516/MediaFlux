@@ -32,6 +32,8 @@ namespace MediaFlux.Models
         };
         public MediaProbeResult? SourceProbe { get; init; }
         public double? ExpectedDurationSeconds { get; init; }
+        public int? ExpectedVideoWidth { get; init; }
+        public int? ExpectedVideoHeight { get; init; }
     }
 
     public sealed class EncodeOutputValidationEvidence

@@ -44,4 +44,38 @@ public sealed class VideoRestorationPipelineTests
         EncodeJobSettings clone = settings.Clone(); settings.Restoration.Denoise = VideoRestorationStrength.Off;
         Assert.Equal(VideoRestorationStrength.Medium, clone.Restoration.Denoise);
     }
+
+    [Fact]
+    public void AiX2OriginalFinalResolutionReturnsToSourceExactlyOnce()
+    {
+        var settings = new VideoRestorationSettings { Preset = VideoRestorationPreset.Custom, AiMode = AiRestorationMode.Animation, AiScale = AiRestorationScale.X2 };
+        VideoOutputResolutionPlan final = VideoRestorationPipeline.ResolveFinalOutputResolution(640, 480, settings, EncodingService.ScaleMode.None);
+        VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None, final.ScaleFilter);
+
+        Assert.Equal((640, 480), (final.Width, final.Height));
+        Assert.Equal(1, plan.PostAiFilterChain.Split("scale=", StringSplitOptions.None).Length - 1);
+        Assert.Contains("scale=640:480:flags=lanczos", plan.PostAiFilterChain);
+    }
+
+    [Fact]
+    public void AiX2ExplicitLargerFinalResolutionUsesRequestedResizeWithoutDoubleScaling()
+    {
+        var settings = new VideoRestorationSettings { Preset = VideoRestorationPreset.Custom, AiMode = AiRestorationMode.Animation, AiScale = AiRestorationScale.X2, Resize = VideoRestorationResize.To720p };
+        VideoOutputResolutionPlan final = VideoRestorationPipeline.ResolveFinalOutputResolution(640, 480, settings, EncodingService.ScaleMode.None);
+        VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None, null);
+
+        Assert.Equal((960, 720), (final.Width, final.Height));
+        Assert.Equal(1, plan.PostAiFilterChain.Split("scale=", StringSplitOptions.None).Length - 1);
+        Assert.Contains("scale=-2:720:flags=lanczos", plan.PostAiFilterChain);
+    }
+
+    [Fact]
+    public void AspectPreservingFinalResolutionIsDerivedWithoutAiScale()
+    {
+        var settings = new VideoRestorationSettings { Preset = VideoRestorationPreset.Custom, AiMode = AiRestorationMode.Animation, AiScale = AiRestorationScale.X2, Resize = VideoRestorationResize.Custom, CustomWidth = 1000, CustomHeight = 1000, PreserveAspectRatio = true };
+        VideoOutputResolutionPlan final = VideoRestorationPipeline.ResolveFinalOutputResolution(640, 480, settings, EncodingService.ScaleMode.None);
+
+        Assert.Equal((1000, 750), (final.Width, final.Height));
+        Assert.Contains("force_original_aspect_ratio=decrease", final.ScaleFilter);
+    }
 }

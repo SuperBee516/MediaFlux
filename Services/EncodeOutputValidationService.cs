@@ -345,6 +345,15 @@ namespace MediaFlux.Services
                     $"'{expectedCodec}' was requested.";
             }
 
+            if (request.ExpectedVideoWidth is > 0 && request.ExpectedVideoHeight is > 0)
+            {
+                bool exactDimensions = outputVideo.Width == request.ExpectedVideoWidth && outputVideo.Height == request.ExpectedVideoHeight;
+                bool originalRotationApplied = request.ExpectedVideoWidth == sourceVideo.Width && request.ExpectedVideoHeight == sourceVideo.Height && outputVideo.Width == sourceVideo.Height && outputVideo.Height == sourceVideo.Width;
+                if (!exactDimensions && !originalRotationApplied)
+                    return $"The encoded resolution is {Describe(outputVideo.Width)}×{Describe(outputVideo.Height)}, but {request.ExpectedVideoWidth}×{request.ExpectedVideoHeight} was expected.";
+            }
+            else
+            {
             int? expectedHeight = request.ScaleMode switch
             {
                 EncodingService.ScaleMode.To720p => 720,
@@ -376,6 +385,7 @@ namespace MediaFlux.Services
                 return
                     $"The encoded video height is {Describe(outputVideo.Height)}, but " +
                     $"{expectedHeight} was expected.";
+            }
             }
 
             bool outputIsTenBit = IsTenBit(outputVideo);

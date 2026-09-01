@@ -55,7 +55,7 @@ public static class VideoRestorationPipeline
     /// this plan here prevents preview and encode code from independently reordering filters.
     /// Destructive sharpening is always held for the finishing stage.
     /// </summary>
-    public static VideoRestorationPipelinePlan BuildPlan(VideoRestorationSettings? settings, EncodingService.ScaleMode encodeScale)
+    public static VideoRestorationPipelinePlan BuildPlan(VideoRestorationSettings? settings, EncodingService.ScaleMode encodeScale, string? aiIntermediateFinalScaleFilter = null)
     {
         var s = Effective(settings);
         Validate(s, encodeScale);
@@ -70,7 +70,12 @@ public static class VideoRestorationPipeline
         if (s.Brightness != 0 || s.Contrast != 1 || s.Saturation != 1) Add(pre, "eq", $"eq=brightness={Number(s.Brightness)}:contrast={Number(s.Contrast)}:saturation={Number(s.Saturation)}");
         var post = new List<string>();
         AddStrength(post, s.Deband, "deband", new[] { "deband=1thr=0.02:2thr=0.02:range=8", "deband=1thr=0.04:2thr=0.04:range=12", "deband=1thr=0.06:2thr=0.06:range=16" });
-        if (encodeScale == EncodingService.ScaleMode.None) AddResize(post, s);
+        if (encodeScale == EncodingService.ScaleMode.None)
+        {
+            AddResize(post, s);
+            if (s.Resize == VideoRestorationResize.Original && !string.IsNullOrWhiteSpace(aiIntermediateFinalScaleFilter))
+                post.Add(aiIntermediateFinalScaleFilter);
+        }
         AddStrength(post, s.Sharpen, "unsharp", new[] { "unsharp=5:5:0.3:5:5:0", "unsharp=5:5:0.6:5:5:0", "unsharp=5:5:0.9:5:5:0" });
         return new VideoRestorationPipelinePlan("", string.Join(',', pre), string.Join(',', post), true);
     }
@@ -82,11 +87,46 @@ public static class VideoRestorationPipeline
         if (settings.Resize != VideoRestorationResize.Original && encodeScale != EncodingService.ScaleMode.None) throw new ArgumentException("Choose either restoration resize or the normal encode resolution, not both.");
     }
 
+    /// <summary>Central final-output intent. AI scale is deliberately excluded from this plan.</summary>
+    public static VideoOutputResolutionPlan ResolveFinalOutputResolution(int sourceWidth, int sourceHeight, VideoRestorationSettings? settings, EncodingService.ScaleMode encodeScale)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0) throw new ArgumentOutOfRangeException(nameof(sourceWidth), "A known source resolution is required.");
+        VideoRestorationSettings s = Effective(settings);
+        Validate(s, encodeScale);
+        return encodeScale switch
+        {
+            EncodingService.ScaleMode.To720p => FromHeight(sourceWidth, sourceHeight, 720, "normal encode 720p"),
+            EncodingService.ScaleMode.To1080p => FromHeight(sourceWidth, sourceHeight, 1080, "normal encode 1080p"),
+            EncodingService.ScaleMode.To1440p => FromHeight(sourceWidth, sourceHeight, 1440, "normal encode 1440p"),
+            EncodingService.ScaleMode.To4K => FromHeight(sourceWidth, sourceHeight, 2160, "normal encode 4K"),
+            _ => FromRestorationResize(sourceWidth, sourceHeight, s)
+        };
+    }
+
+    private static VideoOutputResolutionPlan FromRestorationResize(int sourceWidth, int sourceHeight, VideoRestorationSettings settings) => settings.Resize switch
+    {
+        VideoRestorationResize.To720p => FromHeight(sourceWidth, sourceHeight, 720, "restoration resize 720p"),
+        VideoRestorationResize.To1080p => FromHeight(sourceWidth, sourceHeight, 1080, "restoration resize 1080p"),
+        VideoRestorationResize.Custom when settings.PreserveAspectRatio => Fit(sourceWidth, sourceHeight, settings.CustomWidth, settings.CustomHeight, "restoration custom aspect-preserving resize"),
+        VideoRestorationResize.Custom => new(Even(settings.CustomWidth), Even(settings.CustomHeight), $"scale={Even(settings.CustomWidth)}:{Even(settings.CustomHeight)}:flags=lanczos", "restoration custom resize"),
+        _ => new(sourceWidth, sourceHeight, $"scale={sourceWidth}:{sourceHeight}:flags=lanczos", "original source resolution")
+    };
+
+    private static VideoOutputResolutionPlan FromHeight(int sourceWidth, int sourceHeight, int height, string reason) =>
+        new(Even((int)Math.Round(sourceWidth * (height / (double)sourceHeight), MidpointRounding.AwayFromZero)), height, $"scale=-2:{height}:flags=lanczos", reason);
+    private static VideoOutputResolutionPlan Fit(int sourceWidth, int sourceHeight, int maxWidth, int maxHeight, string reason)
+    {
+        int evenMaxWidth = Even(maxWidth), evenMaxHeight = Even(maxHeight);
+        double factor = Math.Min(evenMaxWidth / (double)sourceWidth, evenMaxHeight / (double)sourceHeight);
+        return new(Even((int)Math.Floor(sourceWidth * factor)), Even((int)Math.Floor(sourceHeight * factor)), $"scale={evenMaxWidth}:{evenMaxHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos", reason);
+    }
+    private static int Even(int value) => Math.Max(2, value - value % 2);
+
     private static void AddStrength(List<string> filters, VideoRestorationStrength strength, string filter, string[] values) { if (strength != VideoRestorationStrength.Off) Add(filters, filter, values[(int)strength - 1]); }
     private static void Add(List<string> filters, string filter, string expression) { if (_availableFilters == null || _availableFilters.Contains(filter)) filters.Add(expression); }
     private static void AddResize(List<string> filters, VideoRestorationSettings s)
     {
-        string scale = s.Resize switch { VideoRestorationResize.To720p => "-2:720", VideoRestorationResize.To1080p => "-2:1080", VideoRestorationResize.Custom when s.PreserveAspectRatio => $"{s.CustomWidth}:{s.CustomHeight}:force_original_aspect_ratio=decrease", VideoRestorationResize.Custom => $"{s.CustomWidth}:{s.CustomHeight}", _ => "" };
+        string scale = s.Resize switch { VideoRestorationResize.To720p => "-2:720", VideoRestorationResize.To1080p => "-2:1080", VideoRestorationResize.Custom when s.PreserveAspectRatio => $"{Even(s.CustomWidth)}:{Even(s.CustomHeight)}:force_original_aspect_ratio=decrease:force_divisible_by=2", VideoRestorationResize.Custom => $"{Even(s.CustomWidth)}:{Even(s.CustomHeight)}", _ => "" };
         if (!string.IsNullOrEmpty(scale)) filters.Add($"scale={scale}:flags=lanczos");
     }
     private static string Number(decimal value) => value.ToString("0.###", CultureInfo.InvariantCulture);
@@ -103,4 +143,10 @@ public sealed record VideoRestorationPipelinePlan(string ConventionalFilterChain
         ? $"pre-cleanup={Display(PreAiFilterChain)} -> AI -> finishing={Display(PostAiFilterChain)}"
         : $"FFmpeg={Display(ConventionalFilterChain)}";
     private static string Display(string filters) => string.IsNullOrWhiteSpace(filters) ? "none" : filters;
+}
+
+/// <summary>The final encoded dimensions, independent of any AI intermediate upscale.</summary>
+public sealed record VideoOutputResolutionPlan(int Width, int Height, string ScaleFilter, string Reason)
+{
+    public string Describe() => $"{Width}x{Height} ({Reason})";
 }
