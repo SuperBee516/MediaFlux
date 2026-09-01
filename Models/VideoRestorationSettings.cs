@@ -6,7 +6,7 @@ public enum VideoRestorationDeinterlace { Off, AutoSafe, Yadif }
 public enum VideoRestorationResize { Original, To720p, To1080p, Custom }
 /// <summary>Optional frame-based AI stage. Off preserves the Phase 1-3 FFmpeg-only path.</summary>
 public enum AiRestorationMode { Off, Animation, General }
-public enum AiRestorationScale { X1 = 1, X2 = 2, X4 = 4 }
+public enum AiRestorationScale { X1 = 1, X2 = 2, X3 = 3, X4 = 4 }
 
 /// <summary>Persisted, encoder-independent description of the optional restoration pass.</summary>
 public sealed class VideoRestorationSettings

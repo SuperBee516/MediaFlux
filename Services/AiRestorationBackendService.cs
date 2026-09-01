@@ -14,7 +14,11 @@ public sealed record AiRestorationModel(
     string ModelsDirectory,
     string ParamPath,
     string BinPath,
-    string BackendId);
+    string BackendId,
+    string ResolvedModelName = "")
+{
+    public string BackendModelName => string.IsNullOrWhiteSpace(ResolvedModelName) ? Id : ResolvedModelName;
+}
 
 public sealed record AiRestorationCapabilities(
     bool IsAvailable,
@@ -43,16 +47,23 @@ public sealed class AiRestorationValidationException : InvalidOperationException
 public sealed class AiRestorationBackendService
 {
     private static readonly ConcurrentDictionary<string, AiRestorationCapabilities> Cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, byte> ResolutionLog = new(StringComparer.OrdinalIgnoreCase);
     private readonly IMediaToolProcessRunner _runner;
     private readonly string _applicationDirectory;
     private readonly Action<string>? _log;
 
-    private sealed record ModelDefinition(string Id, string DisplayName, AiRestorationMode Category, AiRestorationScale[] Scales);
+    private sealed record ModelVariant(AiRestorationScale Scale, string ResolvedModelName);
+    private sealed record ModelDefinition(string Id, string DisplayName, AiRestorationMode Category, IReadOnlyList<ModelVariant> Variants);
     private static readonly ModelDefinition[] KnownModels =
     {
-        new("realesr-animevideov3", "Real-ESRGAN AnimeVideo v3", AiRestorationMode.Animation, new[] { AiRestorationScale.X2, AiRestorationScale.X4 }),
-        new("realesrgan-x4plus-anime", "Real-ESRGAN x4plus Anime", AiRestorationMode.Animation, new[] { AiRestorationScale.X4 }),
-        new("realesrgan-x4plus", "Real-ESRGAN x4plus", AiRestorationMode.General, new[] { AiRestorationScale.X4 })
+        new("realesr-animevideov3", "Real-ESRGAN AnimeVideo v3", AiRestorationMode.Animation, new[]
+        {
+            new ModelVariant(AiRestorationScale.X2, "realesr-animevideov3-x2"),
+            new ModelVariant(AiRestorationScale.X3, "realesr-animevideov3-x3"),
+            new ModelVariant(AiRestorationScale.X4, "realesr-animevideov3-x4")
+        }),
+        new("realesrgan-x4plus-anime", "Real-ESRGAN x4plus Anime", AiRestorationMode.Animation, new[] { new ModelVariant(AiRestorationScale.X4, "realesrgan-x4plus-anime") }),
+        new("realesrgan-x4plus", "Real-ESRGAN x4plus", AiRestorationMode.General, new[] { new ModelVariant(AiRestorationScale.X4, "realesrgan-x4plus") })
     };
 
     public AiRestorationBackendService(string applicationDirectory, IMediaToolProcessRunner? runner = null, Action<string>? log = null)
@@ -101,7 +112,7 @@ public sealed class AiRestorationBackendService
             var capabilities = new AiRestorationCapabilities(true, "ncnn-vulkan", executable, identity, vulkan, devices, discovered,
                 discovered.Count == 0 ? "No complete supported AI models were found next to the backend." : null);
             Cache[identity] = capabilities;
-            _log?.Invoke($"[AI Restoration] backend=ncnn-vulkan; identity={identity}; vulkan={(vulkan ? "reported" : "not reported")}; devices={string.Join(", ", devices)}; models={discovered.Count}.");
+            _log?.Invoke($"[AI Restoration] backend=ncnn-vulkan; identity={identity}; vulkan={(vulkan ? "reported" : "not reported")}; devices={string.Join(", ", devices)}; models={discovered.Count}; modelDirectory={models}.");
             return capabilities;
         }
         catch (OperationCanceledException) { throw; }
@@ -123,20 +134,25 @@ public sealed class AiRestorationBackendService
             throw new AiRestorationValidationException("Vulkan device unavailable: the configured AI backend did not report Vulkan support.");
         if (!capabilities.Devices.Contains(settings.AiDevice, StringComparer.OrdinalIgnoreCase))
             throw new AiRestorationValidationException($"Vulkan device unavailable: '{settings.AiDevice}' is not available for the configured AI backend.");
-        AiRestorationModel? model = capabilities.Models.FirstOrDefault(model =>
-            model.Id.Equals(settings.AiModelId, StringComparison.OrdinalIgnoreCase));
+        string logicalId = NormalizeLogicalModelId(settings.AiModelId);
+        AiRestorationModel? model = capabilities.Models.FirstOrDefault(model => MatchesSettings(model, settings));
         if (model is null)
+        {
+            bool knownLogicalModel = capabilities.Models.Any(candidate => candidate.Id.Equals(logicalId, StringComparison.OrdinalIgnoreCase));
             throw new AiRestorationValidationException(string.IsNullOrWhiteSpace(settings.AiModelId)
                 ? "AI model missing/incomplete: choose a detected model before encoding."
-                : $"AI model missing/incomplete: '{settings.AiModelId}' was not found or is incomplete.");
+                : knownLogicalModel
+                    ? $"AI model missing/incomplete: '{settings.AiModelId}' has no complete {(int)settings.AiScale}x model pair in '{capabilities.Models.First(candidate => candidate.Id.Equals(logicalId, StringComparison.OrdinalIgnoreCase)).ModelsDirectory}'."
+                    : $"AI model missing/incomplete: '{settings.AiModelId}' was not found or is incomplete.");
+        }
         if (model.Category != settings.AiMode)
             throw new AiRestorationValidationException($"AI model '{model.DisplayName}' is not compatible with {settings.AiMode} restoration.");
-        if (!model.SupportedScales.Contains(settings.AiScale))
-            throw new AiRestorationValidationException($"Unsupported model scale: {model.DisplayName} does not support {(int)settings.AiScale}x.");
+        string resolutionKey = $"{capabilities.Identity}|{logicalId}|{model.BackendModelName}|{settings.AiScale}";
+        if (ResolutionLog.TryAdd(resolutionKey, 0)) _log?.Invoke($"[AI Restoration] model resolved; logical={logicalId}; resolved={model.BackendModelName}; scale={(int)settings.AiScale}x; models={model.ModelsDirectory}.");
         return model;
     }
 
-    public static void InvalidateCache() => Cache.Clear();
+    public static void InvalidateCache() { Cache.Clear(); ResolutionLog.Clear(); }
 
     /// <summary>Builds safe argument tokens for one deterministic frame operation.</summary>
     public IReadOnlyList<string> BuildFrameArguments(AiRestorationCapabilities capabilities, AiRestorationModel model, VideoRestorationSettings settings, string input, string output)
@@ -144,7 +160,7 @@ public sealed class AiRestorationBackendService
         if (!Path.IsPathFullyQualified(input) || !Path.IsPathFullyQualified(output))
             throw new AiRestorationValidationException("AI restoration requires absolute staging paths.");
         if (!File.Exists(input)) throw new FileNotFoundException("AI restoration input frame is missing.", input);
-        return new[] { "-i", input, "-o", output, "-m", model.ModelsDirectory, "-n", model.Id, "-s", ((int)settings.AiScale).ToString(), "-g", settings.AiDevice.Equals("Auto", StringComparison.OrdinalIgnoreCase) ? "auto" : settings.AiDevice };
+        return new[] { "-i", input, "-o", output, "-m", model.ModelsDirectory, "-n", model.BackendModelName, "-s", ((int)settings.AiScale).ToString(), "-g", settings.AiDevice.Equals("Auto", StringComparison.OrdinalIgnoreCase) ? "auto" : settings.AiDevice };
     }
 
     public async Task ProcessFrameAsync(VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default)
@@ -186,15 +202,31 @@ public sealed class AiRestorationBackendService
     private static IReadOnlyList<AiRestorationModel> DiscoverModels(string modelsDirectory)
     {
         if (!Directory.Exists(modelsDirectory)) return Array.Empty<AiRestorationModel>();
-        return KnownModels.Select(definition =>
+        return KnownModels.SelectMany(definition => definition.Variants.Select(variant =>
         {
-            string param = Path.Combine(modelsDirectory, definition.Id + ".param");
-            string bin = Path.Combine(modelsDirectory, definition.Id + ".bin");
+            string param = Path.Combine(modelsDirectory, variant.ResolvedModelName + ".param");
+            string bin = Path.Combine(modelsDirectory, variant.ResolvedModelName + ".bin");
             return File.Exists(param) && new FileInfo(param).Length > 0 && File.Exists(bin) && new FileInfo(bin).Length > 0
-                ? new AiRestorationModel(definition.Id, definition.DisplayName, definition.Category, definition.Scales, modelsDirectory, param, bin, "ncnn-vulkan")
+                ? new AiRestorationModel(definition.Id, definition.DisplayName, definition.Category, new[] { variant.Scale }, modelsDirectory, param, bin, "ncnn-vulkan", variant.ResolvedModelName)
                 : null;
-        }).Where(model => model is not null).Cast<AiRestorationModel>().ToArray();
+        })).Where(model => model is not null).Cast<AiRestorationModel>().ToArray();
     }
+
+    /// <summary>Accept older persisted AnimeVideo IDs while resolving exactly one scale suffix.</summary>
+    internal static string NormalizeLogicalModelId(string? configuredId)
+    {
+        string value = configuredId?.Trim() ?? "";
+        foreach (AiRestorationScale scale in new[] { AiRestorationScale.X2, AiRestorationScale.X3, AiRestorationScale.X4 })
+        {
+            string suffix = "-x" + (int)scale;
+            if (value.Equals("realesr-animevideov3" + suffix, StringComparison.OrdinalIgnoreCase)) return "realesr-animevideov3";
+        }
+        return value;
+    }
+
+    internal static bool MatchesSettings(AiRestorationModel model, VideoRestorationSettings settings) =>
+        model.Id.Equals(NormalizeLogicalModelId(settings.AiModelId), StringComparison.OrdinalIgnoreCase) &&
+        model.Category == settings.AiMode && model.SupportedScales.Contains(settings.AiScale);
 
     private static IEnumerable<string> ParseDevices(string output)
     {

@@ -38,6 +38,16 @@ stronger reliability safeguards, and safer CFR-only AI processing.
 - Temporal analysis is bounded and heuristic rather than a temporal ML model
 - AI restoration requires a locally available, validated backend/model/device
 
+### AI Model Resolution Fixes
+
+- Fixed Real-ESRGAN NCNN discovery for scale-specific `realesr-animevideov3-x2`, `-x3`, and `-x4` model files
+- `realesr-animevideov3` now resolves automatically to the correct scale-specific backend model
+- Fixed already-suffixed model handling so duplicated names such as `-x2-x2` cannot occur
+- Complete matching `.bin` and `.param` pairs are required before a model is offered
+- Correctly validates `realesrgan-x4plus` and `realesrgan-x4plus-anime` compatibility and supported scale
+- Preview, validation, and full encode share the same resolved backend model
+- Advanced Settings now provides detected compatible model selection and clearer unavailable-state validation
+
 ## 🤖 Video Restoration Phase 4A — AI Restoration
 
 MediaFlux now includes optional GPU-accelerated AI restoration for low-resolution and degraded video, with particular support for vintage animation.

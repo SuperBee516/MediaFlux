@@ -34,7 +34,7 @@ public sealed class AiConfigurationComparisonService
     public static IReadOnlyList<AiComparisonSessionEntry> SessionReport => SessionEntries.ToArray();
     public static IReadOnlyList<VideoRestorationSettings> ValidateCuratedCandidates(IEnumerable<VideoRestorationSettings> settings, IReadOnlyList<AiRestorationModel> models)
     {
-        return settings.Where(s => s.AiMode != AiRestorationMode.Off).Where(s => models.Any(model => model.Id.Equals(s.AiModelId, StringComparison.OrdinalIgnoreCase) && model.Category == s.AiMode && model.SupportedScales.Contains(s.AiScale))).Select(s => s.Clone()).DistinctBy(Key).Take(3).ToArray();
+        return settings.Where(s => s.AiMode != AiRestorationMode.Off).Where(s => models.Any(model => AiRestorationBackendService.MatchesSettings(model, s))).Select(s => s.Clone()).DistinctBy(Key).Take(3).ToArray();
     }
     private static IReadOnlyList<AiConfigurationComparisonItem> Rank(IReadOnlyList<(VideoRestorationSettings Settings, VideoRestorationMotionPreview Clip, TemporalQualityResult? Temporal)> values)
     {

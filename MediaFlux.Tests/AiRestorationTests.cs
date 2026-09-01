@@ -28,15 +28,45 @@ public sealed class AiRestorationTests : IDisposable
     }
 
     [Fact]
-    public async Task DiscoversOnlyCompleteModelsAndCachesByIdentity()
+    public async Task DiscoversScaleSpecificAnimeModelsAndCachesByIdentity()
     {
         string exe = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models"); File.WriteAllText(exe, "tool"); Directory.CreateDirectory(models);
-        File.WriteAllText(Path.Combine(models, "realesr-animevideov3.param"), "param"); File.WriteAllText(Path.Combine(models, "realesr-animevideov3.bin"), "bin");
+        WritePair(models, "realesr-animevideov3-x2"); WritePair(models, "realesr-animevideov3-x3"); WritePair(models, "realesr-animevideov3-x4");
         var runner = new AiRunner(); var service = new AiRestorationBackendService(_root, runner);
         var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = exe, AiModelsDirectory = models };
         AiRestorationCapabilities first = await service.GetCapabilitiesAsync(settings); AiRestorationCapabilities second = await service.GetCapabilitiesAsync(settings);
-        Assert.Single(first.Models); Assert.True(first.VulkanAvailable); Assert.Equal(first.Identity, second.Identity); Assert.Equal(1, runner.Calls);
-        Assert.Equal("realesr-animevideov3", (await service.ValidateSelectionAsync(settings)).Id);
+        Assert.Equal(3, first.Models.Count); Assert.True(first.VulkanAvailable); Assert.Equal(first.Identity, second.Identity); Assert.Equal(1, runner.Calls);
+        foreach (AiRestorationScale scale in new[] { AiRestorationScale.X2, AiRestorationScale.X3, AiRestorationScale.X4 }) { settings.AiScale = scale; AiRestorationModel resolved = await service.ValidateSelectionAsync(settings); Assert.Equal($"realesr-animevideov3-x{(int)scale}", resolved.BackendModelName); }
+    }
+
+    [Fact]
+    public async Task DiscoversUnsuffixedX4PlusPairsWithTheirSupportedScale()
+    {
+        string exe = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models"); File.WriteAllText(exe, "tool"); Directory.CreateDirectory(models);
+        WritePair(models, "realesrgan-x4plus"); WritePair(models, "realesrgan-x4plus-anime");
+        var service = new AiRestorationBackendService(_root, new AiRunner());
+        var general = new VideoRestorationSettings { AiMode = AiRestorationMode.General, AiModelId = "realesrgan-x4plus", AiScale = AiRestorationScale.X4, AiBackendPath = exe, AiModelsDirectory = models };
+        var anime = general.Clone(); anime.AiMode = AiRestorationMode.Animation; anime.AiModelId = "realesrgan-x4plus-anime";
+        Assert.Equal("realesrgan-x4plus", (await service.ValidateSelectionAsync(general)).BackendModelName);
+        Assert.Equal("realesrgan-x4plus-anime", (await service.ValidateSelectionAsync(anime)).BackendModelName);
+        general.AiScale = AiRestorationScale.X2; await Assert.ThrowsAsync<AiRestorationValidationException>(() => service.ValidateSelectionAsync(general));
+    }
+
+    [Fact]
+    public async Task AlreadySuffixedAnimeIdResolvesOnceAndCommandUsesExactBackendModelName()
+    {
+        string exe = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models"), input = Path.Combine(_root, "input.png"), output = Path.Combine(_root, "output.png"); File.WriteAllText(exe, "tool"); Directory.CreateDirectory(models); WritePair(models, "realesr-animevideov3-x2"); File.WriteAllBytes(input, new byte[64]);
+        var service = new AiRestorationBackendService(_root, new AiRunner()); var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3-x2", AiScale = AiRestorationScale.X2, AiBackendPath = exe, AiModelsDirectory = models };
+        AiRestorationCapabilities capabilities = await service.GetCapabilitiesAsync(settings); AiRestorationModel model = await service.ValidateSelectionAsync(settings); IReadOnlyList<string> arguments = service.BuildFrameArguments(capabilities, model, settings, input, output);
+        Assert.Equal("realesr-animevideov3-x2", arguments[arguments.ToList().IndexOf("-n") + 1]); Assert.DoesNotContain("realesr-animevideov3-x2-x2", arguments);
+    }
+
+    [Fact]
+    public async Task IncompleteScaleSpecificPairIsUnavailable()
+    {
+        string exe = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models"); File.WriteAllText(exe, "tool"); Directory.CreateDirectory(models); File.WriteAllText(Path.Combine(models, "realesr-animevideov3-x3.param"), "param");
+        var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X3, AiBackendPath = exe, AiModelsDirectory = models };
+        AiRestorationCapabilities capabilities = await new AiRestorationBackendService(_root, new AiRunner()).GetCapabilitiesAsync(settings); Assert.Empty(capabilities.Models); await Assert.ThrowsAsync<AiRestorationValidationException>(() => new AiRestorationBackendService(_root, new AiRunner()).ValidateSelectionAsync(settings));
     }
 
     [Fact]
@@ -72,4 +102,5 @@ public sealed class AiRestorationTests : IDisposable
         public Task<MediaToolProcessResult> RunAsync(MediaToolProcessRequest request, CancellationToken cancellationToken = default)
         { Calls++; return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardError = "NCNN Vulkan GPU 0" }); }
     }
+    private static void WritePair(string directory, string name) { File.WriteAllText(Path.Combine(directory, name + ".param"), "param"); File.WriteAllText(Path.Combine(directory, name + ".bin"), "bin"); }
 }

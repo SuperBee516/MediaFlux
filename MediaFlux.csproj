@@ -13,7 +13,7 @@
     <ApplicationIcon>images\mediaflux_icn.ico</ApplicationIcon>
     <PackageIcon>mediaflux_icn.png</PackageIcon>
     <!-- Release builds override this once with the validated release tag value. -->
-    <Version>0.1.73</Version>
+    <Version>0.1.74</Version>
   </PropertyGroup>
 
   <ItemGroup>
