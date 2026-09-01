@@ -125,8 +125,10 @@ Diagnostics clipboard action.
   decisions, cleanup audits, integrity state, and maintenance profiles/history.
   `PRAGMA user_version` is currently 12; migrations are transactional, sequential,
   backup-before-upgrade, and integrity-checked.
-- Whole-application backups include the complete user-data directory, including the
-  catalog, policies, plans, history, statistics, and configuration. The narrower
+- Whole-application backups include the persistent user-data manifest: configuration,
+  catalog, policies, plans, history, statistics, profiles, and user-created assets.
+  Regenerable AI intermediates, preview caches, staging folders, and temporary files
+  are cleaned or skipped before the archive is created. The narrower
   catalog decision export is intended for rebuild recovery and deliberately restores
   user decisions without replaying cleanup plans or audit actions.
 

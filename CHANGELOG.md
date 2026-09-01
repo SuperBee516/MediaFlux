@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.81] - 2026-09-01
+
+### Updater Improvements
+
+- Optimized the updater backup process by backing up only persistent MediaFlux user data instead of the entire UserData directory.
+- Added a persistent backup manifest to distinguish user configuration from temporary runtime artifacts.
+- Temporary AI restoration folders, preview caches, staging folders, and other MediaFlux-owned runtime files are now automatically excluded from backups.
+- Added safe cleanup of MediaFlux-owned temporary files before backup begins, reclaiming disk space and reducing upgrade time.
+- Improved updater progress reporting with clearer status messages during cleanup and backup operations.
+- Backup summaries now report temporary files/folders removed, reclaimed disk space, persistent files and folders backed up, and total backup size.
+- Missing or optional folders are handled gracefully without interrupting upgrades.
+- Existing user settings, restoration profiles, presets, scheduled jobs, Job Manager data, and persistent databases continue to be backed up and restored normally.
+
 ## [0.1.80] - 2026-09-01
 
 ### AI Restoration Usability

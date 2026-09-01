@@ -92,7 +92,8 @@ namespace MediaFlux
                         () => BackupManager.CreateBackup(
                             AppPaths.UserDataDirectory,
                             backupFolder,
-                            backupsToKeep),
+                            backupsToKeep,
+                            reportStatus),
                         cancellationToken);
                 }
 

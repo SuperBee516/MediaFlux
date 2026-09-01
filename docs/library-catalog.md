@@ -185,6 +185,7 @@ and visual decisions. Cleanup plans and audit rows remain available in the backu
 audit purposes but are never imported or re-executed. Protected paths and manual keeper
 references are path-based: they reattach after a rebuild when paths remain stable, while
 renamed or moved roots can require those choices to be reviewed and assigned again.
-The normal application backup archives the entire user-data directory and is the
-complete backup/restore path for maintenance profiles, integrity history, custom
-policies, reclamation plans, encoding history/statistics, and configuration.
+The normal application backup archives persistent user data and is the complete
+backup/restore path for maintenance profiles, integrity history, custom policies,
+reclamation plans, encoding history/statistics, configuration, and restoration
+profiles. Regenerable AI and preview caches are excluded.
