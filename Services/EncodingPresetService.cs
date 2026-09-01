@@ -30,6 +30,13 @@ namespace MediaFlux.Services
 
                 var json = File.ReadAllText(_path);
                 var list = JsonSerializer.Deserialize<List<EncodingPreset>>(json, _options) ?? new();
+                foreach (EncodingPreset preset in list)
+                {
+                    preset.Restoration ??= new VideoRestorationSettings();
+                    if (!json.Contains("\"Mode\"", StringComparison.OrdinalIgnoreCase) &&
+                        preset.Restoration.Preset != VideoRestorationPreset.Off)
+                        preset.Restoration.Mode = VideoRestorationMode.Custom;
+                }
                 return list
                     .Where(p => !string.IsNullOrWhiteSpace(p.Name))
                     .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)

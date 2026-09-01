@@ -277,6 +277,12 @@ namespace MediaFlux.Models
 
             config.LastQualityValue = Math.Clamp(config.LastQualityValue, 12, 35);
             config.VideoRestoration ??= new VideoRestorationSettings();
+            if (!json.Contains("\"Mode\"", StringComparison.OrdinalIgnoreCase) &&
+                config.VideoRestoration.Preset != VideoRestorationPreset.Off)
+            {
+                // Existing preset-based configurations were explicit restoration choices.
+                config.VideoRestoration.Mode = VideoRestorationMode.Custom;
+            }
 
             return config;
         }

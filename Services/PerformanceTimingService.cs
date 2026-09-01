@@ -46,6 +46,11 @@ public sealed class PerformanceTimingService
         lock (_gate) _hardware = snapshot;
     }
 
+    public long? DedicatedGpuVramBytes
+    {
+        get { lock (_gate) return _hardware?.DedicatedVramBytes; }
+    }
+
     public void SetAiBackend(string backend, string executablePath)
     {
         lock (_gate)

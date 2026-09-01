@@ -53,6 +53,7 @@ public sealed class VideoRestorationPreviewService
 
     public async Task<VideoRestorationStillPreview> GenerateStillAsync(VideoRestorationPreviewRequest request, CancellationToken cancellationToken = default)
     {
+        request = request with { Settings = VideoRestorationModeResolver.Resolve(request.Settings) };
         ValidateRequest(request); await EnsureAiSourceTimingAsync(request.SourcePath, request.Settings, cancellationToken).ConfigureAwait(false); string filterChain = await PreparePipelineAsync(request.Settings, request.EncodeScale, cancellationToken).ConfigureAwait(false);
         VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(request.Settings, request.EncodeScale);
         string cacheSettings = filterChain;
@@ -73,6 +74,7 @@ public sealed class VideoRestorationPreviewService
 
     public async Task<VideoRestorationMotionPreview> GenerateMotionAsync(VideoRestorationPreviewRequest request, TimeSpan? requestedDuration = null, CancellationToken cancellationToken = default)
     {
+        request = request with { Settings = VideoRestorationModeResolver.Resolve(request.Settings) };
         ValidateRequest(request); await EnsureAiSourceTimingAsync(request.SourcePath, request.Settings, cancellationToken).ConfigureAwait(false); string filterChain = await PreparePipelineAsync(request.Settings, request.EncodeScale, cancellationToken).ConfigureAwait(false);
         PrepareCache(); TimeSpan duration = TimeSpan.FromSeconds(Math.Min(Math.Max(1, (requestedDuration ?? TimeSpan.FromSeconds(5)).TotalSeconds), Math.Max(1, request.SourceDuration.TotalSeconds)));
         TimeSpan start = TimeSpan.FromSeconds(Math.Clamp(request.Position.TotalSeconds - duration.TotalSeconds / 2, 0, Math.Max(0, request.SourceDuration.TotalSeconds - duration.TotalSeconds)));

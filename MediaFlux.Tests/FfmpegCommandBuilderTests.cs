@@ -30,6 +30,7 @@ public sealed class FfmpegCommandBuilderTests
             scaleMode: EncodingService.ScaleMode.To1080p,
             restoration: new VideoRestorationSettings
             {
+                Mode = VideoRestorationMode.Custom,
                 Preset = VideoRestorationPreset.Custom,
                 Denoise = VideoRestorationStrength.Light,
                 Sharpen = VideoRestorationStrength.Light

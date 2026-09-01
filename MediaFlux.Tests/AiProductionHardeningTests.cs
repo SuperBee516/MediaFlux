@@ -13,8 +13,8 @@ public sealed class AiProductionHardeningTests : IDisposable
     [Fact]
     public void EstimateScalesWithAiScaleAndFrames()
     {
-        AiTemporaryStorageEstimate small = AiProductionHardeningService.Estimate(640, 480, 100, AiRestorationScale.X2, _root);
-        AiTemporaryStorageEstimate large = AiProductionHardeningService.Estimate(640, 480, 200, AiRestorationScale.X4, _root);
+        AiTemporaryStorageEstimate small = AiProductionHardeningService.Estimate(640, 480, 100, AiRestorationScale.X2, _root, AiChunkPlanner.MinimumFramesPerChunk);
+        AiTemporaryStorageEstimate large = AiProductionHardeningService.Estimate(640, 480, 200, AiRestorationScale.X4, _root, AiChunkPlanner.MaximumFramesPerChunk);
         Assert.True(large.EstimatedBytes > small.EstimatedBytes);
     }
     [Fact]

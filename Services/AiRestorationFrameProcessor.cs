@@ -7,8 +7,6 @@ namespace MediaFlux.Services;
 /// </summary>
 public sealed class AiRestorationFrameProcessor
 {
-    public const int MaximumFramesPerChunk = 180;
-
     public async Task ProcessChunkAsync(
         IReadOnlyList<string> orderedInputFrames,
         string outputDirectory,
@@ -17,7 +15,7 @@ public sealed class AiRestorationFrameProcessor
         CancellationToken cancellationToken = default)
     {
         if (orderedInputFrames.Count == 0) throw new ArgumentException("AI restoration needs at least one frame.", nameof(orderedInputFrames));
-        if (orderedInputFrames.Count > MaximumFramesPerChunk) throw new ArgumentException($"AI restoration chunks are limited to {MaximumFramesPerChunk} frames.", nameof(orderedInputFrames));
+        if (orderedInputFrames.Count > AiChunkPlanner.MaximumFramesPerChunk) throw new ArgumentException($"AI restoration chunks are limited to {AiChunkPlanner.MaximumFramesPerChunk} frames.", nameof(orderedInputFrames));
         if (!Path.IsPathFullyQualified(outputDirectory)) throw new ArgumentException("AI restoration needs an absolute staging directory.", nameof(outputDirectory));
         if (orderedInputFrames.Any(path => !Path.IsPathFullyQualified(path) || !File.Exists(path))) throw new FileNotFoundException("An AI restoration input frame is missing.");
         Directory.CreateDirectory(outputDirectory);

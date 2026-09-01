@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.80] - 2026-09-01
+
+### AI Restoration Usability
+
+- Added built-in restoration presets for common restoration workflows.
+- Added user restoration profiles with save, load, rename, and delete.
+- Profiles are stored as versioned JSON documents.
+- Added preset/profile selectors within Custom restoration mode.
+- Improved restoration workflow by separating built-in presets from user profiles.
+- Recommendations never overwrite saved profiles.
+- Existing restoration, preview, AI processing, scheduling, and performance behavior remain unchanged.
+
 ## [0.1.79] - 2026-09-01
 
 ### Performance Instrumentation (Phase 5.1)

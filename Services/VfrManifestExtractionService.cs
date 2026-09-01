@@ -7,7 +7,7 @@ public sealed class VfrManifestExtractionResult : IDisposable
     public VfrManifestExtractionResult(string stagingDirectory, CorrelatedFrameExtractionResult extraction, TimeSpan? requestedStart) { StagingDirectory = stagingDirectory; Extraction = extraction; RequestedStart = requestedStart; }
     public string StagingDirectory { get; } public CorrelatedFrameExtractionResult Extraction { get; } public TimeSpan? RequestedStart { get; }
     public AiTimestampManifest Manifest => Extraction.Manifest!; public IReadOnlyList<string> Frames => Extraction.Frames;
-    public IReadOnlyList<AiFrameTimingEntry> Chunk(int offset) => Manifest.Frames.Skip(offset).Take(AiRestorationFrameProcessor.MaximumFramesPerChunk).ToArray();
+    public IReadOnlyList<AiFrameTimingEntry> Chunk(int offset) => Manifest.Frames.Skip(offset).Take(AiChunkPlanner.MaximumFramesPerChunk).ToArray();
     public void Dispose() { try { if (Directory.Exists(StagingDirectory) && Path.GetFileName(StagingDirectory).StartsWith("ai-vfr-extraction-", StringComparison.OrdinalIgnoreCase)) Directory.Delete(StagingDirectory, true); } catch { } }
 }
 /// <summary>Future-only manifest investigation utility. It is not an AI, preview, or encoding activation path.</summary>

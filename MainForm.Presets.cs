@@ -198,6 +198,8 @@ namespace MediaFlux
                 _config.EnableCodecSuffix = preset.EnableCodecSuffix;
                 _config.OutputSuffix = preset.OutputSuffix ?? "";
                 _config.VideoRestoration = preset.Restoration?.Clone() ?? new VideoRestorationSettings();
+                if (_restorationPreset != null)
+                    _restorationPreset.SelectedIndex = (int)_config.VideoRestoration.Mode;
                 SelectOutputContainer(preset.OutputContainer);
                 _config.LastOutputContainer = GetSelectedOutputContainer().ToString();
                 _config.LastCompressionProfile = comboCompressionProfile.Text;
@@ -218,6 +220,7 @@ namespace MediaFlux
             }
 
             UpdateEncoderUiState();
+            UpdateRestorationControlState();
             UpdateEncodePreview();
             SafeRefreshEstimates();
             toolStripStatusLabel1.Text = $"Applied encode preset \"{preset.Name}\".";

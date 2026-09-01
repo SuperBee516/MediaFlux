@@ -80,9 +80,9 @@ public sealed class AiRestorationTests : IDisposable
     [Fact]
     public void IntermediateFrameNamesAreDeterministicAndBounded()
     {
-        string[] frames = AiRestorationIntermediateVideoService.ExpectedFrames(_root, AiRestorationFrameProcessor.MaximumFramesPerChunk);
+        string[] frames = AiRestorationIntermediateVideoService.ExpectedFrames(_root, AiChunkPlanner.MinimumFramesPerChunk);
         Assert.Equal("frame-00000000.png", Path.GetFileName(frames[0]));
-        Assert.Equal("frame-00000179.png", Path.GetFileName(frames[^1]));
+        Assert.Equal("frame-00000059.png", Path.GetFileName(frames[^1]));
     }
 
     [Fact]
@@ -183,8 +183,9 @@ public sealed class AiRestorationTests : IDisposable
         var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = ai, AiModelsDirectory = models };
         VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None);
         var updates = new List<AiIntermediateProgress>();
+        var logs = new List<string>();
         var progress = new CapturingProgress(updates);
-        var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, Path.Combine(_root, "staging"), backend, runner);
+        var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, Path.Combine(_root, "staging"), backend, runner, log: logs.Add, dedicatedGpuVramProvider: () => null);
 
         using AiIntermediateVideoResult result = await service.CreateAsync(new AiIntermediateVideoRequest(source, 30, TimeSpan.FromSeconds(7), settings, plan, SourceWidth: 2, SourceHeight: 2), progress);
 
@@ -193,6 +194,8 @@ public sealed class AiRestorationTests : IDisposable
         Assert.True(overall.SequenceEqual(overall.OrderBy(value => value)));
         Assert.Equal(210, overall[^1]);
         Assert.True(File.Exists(result.Path));
+        string plannerLog = Assert.Single(logs, log => log.StartsWith("[AI Chunk Planner]", StringComparison.Ordinal));
+        Assert.Contains("Resolution:", plannerLog); Assert.Contains("AI Scale:", plannerLog); Assert.Contains("GPU VRAM:", plannerLog); Assert.Contains("Estimated Temporary Storage:", plannerLog); Assert.Contains("Chosen Chunk Size:", plannerLog); Assert.Contains("Decision Reason:", plannerLog);
     }
 
     [Fact]
@@ -202,7 +205,7 @@ public sealed class AiRestorationTests : IDisposable
         File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(ffprobe, "tool"); File.WriteAllText(ai, "tool"); Directory.CreateDirectory(models); WritePair(models, "realesr-animevideov3-x2");
         var runner = new IntermediateBatchRunner(ai); var backend = new AiRestorationBackendService(_root, runner);
         var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = ai, AiModelsDirectory = models };
-        var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, Path.Combine(_root, "staging"), backend, runner);
+        var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, Path.Combine(_root, "staging"), backend, runner, dedicatedGpuVramProvider: () => null);
 
         using AiIntermediateVideoResult result = await service.CreateAsync(new AiIntermediateVideoRequest(source, 30, TimeSpan.FromSeconds(5), settings, VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None), SourceWidth: 2, SourceHeight: 2));
 

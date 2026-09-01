@@ -45,7 +45,7 @@ public sealed class VideoRestorationPreviewSelection
         PreviewSettings = mode switch
         {
             RestorationPreviewSelectionMode.NoRestoration => new VideoRestorationSettings(),
-            RestorationPreviewSelectionMode.Recommended => Recommendation!.Settings.Clone(),
+            RestorationPreviewSelectionMode.Recommended => RecommendedSettings(),
             _ => EncodeSettings.Clone()
         };
         return true;
@@ -72,10 +72,18 @@ public sealed class VideoRestorationPreviewSelection
     }
 
     public static bool Equivalent(VideoRestorationSettings left, VideoRestorationSettings right) =>
-        left.Preset == right.Preset && left.Denoise == right.Denoise && left.Deblock == right.Deblock &&
+        left.Mode == right.Mode && left.Preset == right.Preset && left.Denoise == right.Denoise && left.Deblock == right.Deblock &&
         left.Deband == right.Deband && left.Sharpen == right.Sharpen && left.Deinterlace == right.Deinterlace &&
         left.Brightness == right.Brightness && left.Contrast == right.Contrast && left.Saturation == right.Saturation &&
         left.Resize == right.Resize && left.CustomWidth == right.CustomWidth && left.CustomHeight == right.CustomHeight &&
         left.PreserveAspectRatio == right.PreserveAspectRatio && left.AiMode == right.AiMode && left.AiModelId == right.AiModelId &&
         left.AiScale == right.AiScale && left.AiDevice == right.AiDevice && left.AiBackendPath == right.AiBackendPath && left.AiModelsDirectory == right.AiModelsDirectory;
+
+    private VideoRestorationSettings RecommendedSettings()
+    {
+        VideoRestorationSettings settings = Recommendation!.Settings.Clone();
+        settings.Mode = VideoRestorationMode.Custom;
+        settings.AutoRecommendation = null;
+        return settings;
+    }
 }

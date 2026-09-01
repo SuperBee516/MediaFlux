@@ -29,6 +29,8 @@ public sealed class HardwarePerformanceService : IDisposable
             FileVersion(ffmpegPath));
     }
 
+    public static long? DetectDedicatedGpuVramBytes() => DiscoverNvidiaGpu().Vram;
+
     public HardwareUsageSample Sample()
     {
         EncodingSystemTelemetry telemetry = _telemetry.Sample();

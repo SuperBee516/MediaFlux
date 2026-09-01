@@ -20,9 +20,10 @@ public sealed class AiRestorationIntermediateVideoService
     private readonly AiRestorationBackendService _backend;
     private readonly Action<string>? _log;
     private readonly PerformanceTimingService? _timing;
+    private readonly Func<long?> _dedicatedGpuVramProvider;
 
-    public AiRestorationIntermediateVideoService(string ffmpegPath, string ffprobePath, string stagingRoot, AiRestorationBackendService backend, IMediaToolProcessRunner? runner = null, Action<string>? log = null, PerformanceTimingService? timing = null)
-    { _ffmpegPath = ffmpegPath; _ffprobePath = ffprobePath; _stagingRoot = stagingRoot; _backend = backend; _runner = runner ?? new MediaToolProcessRunner(); _log = log; _timing = timing; }
+    public AiRestorationIntermediateVideoService(string ffmpegPath, string ffprobePath, string stagingRoot, AiRestorationBackendService backend, IMediaToolProcessRunner? runner = null, Action<string>? log = null, PerformanceTimingService? timing = null, Func<long?>? dedicatedGpuVramProvider = null)
+    { _ffmpegPath = ffmpegPath; _ffprobePath = ffprobePath; _stagingRoot = stagingRoot; _backend = backend; _runner = runner ?? new MediaToolProcessRunner(); _log = log; _timing = timing; _dedicatedGpuVramProvider = dedicatedGpuVramProvider ?? HardwarePerformanceService.DetectDedicatedGpuVramBytes; }
 
     public async Task<AiIntermediateVideoResult> CreateAsync(AiIntermediateVideoRequest request, IProgress<AiIntermediateProgress>? progress = null, CancellationToken token = default)
     {
@@ -42,14 +43,19 @@ public sealed class AiRestorationIntermediateVideoService
             if (duration <= TimeSpan.Zero) throw new AiRestorationValidationException("AI intermediate processing requires a known source duration.");
             int total = checked((int)Math.Round(duration.TotalSeconds * request.FrameRate, MidpointRounding.AwayFromZero));
             if (total <= 0) throw new AiRestorationValidationException("AI intermediate processing could not determine an expected frame count.");
-            AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot); AiProductionHardeningService.EnsureSpace(estimate); using (File.Create(Path.Combine(root, ".mediaflux-ai-staging"))) { }
+            AiTemporaryStorageEstimate planningEstimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot, AiChunkPlanner.MinimumFramesPerChunk);
+            long? dedicatedGpuVram = _timing?.DedicatedGpuVramBytes ?? _dedicatedGpuVramProvider();
+            AiChunkPlan chunkPlan = new AiChunkPlanner().Plan(new(request.SourceWidth, request.SourceHeight, request.Settings.AiScale, dedicatedGpuVram, planningEstimate, session.Capabilities.Identity));
+            AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot, chunkPlan.FrameCount);
+            _log?.Invoke($"[AI Chunk Planner] Resolution: {request.SourceWidth}x{request.SourceHeight}; AI Scale: {(int)request.Settings.AiScale}x; GPU VRAM: {FormatBytes(dedicatedGpuVram)}; Estimated Temporary Storage: {estimate.Describe()}; Chosen Chunk Size: {chunkPlan.FrameCount} frames; Decision Reason: {chunkPlan.DecisionReason}; Backend: {session.Capabilities.Identity}.");
+            AiProductionHardeningService.EnsureSpace(estimate); using (File.Create(Path.Combine(root, ".mediaflux-ai-staging"))) { }
             var chunks = new List<AiIntermediateChunkMetadata>();
-            int chunkTotal = (total + AiRestorationFrameProcessor.MaximumFramesPerChunk - 1) / AiRestorationFrameProcessor.MaximumFramesPerChunk;
-            for (int offset = 0, chunkIndex = 0; offset < total; offset += AiRestorationFrameProcessor.MaximumFramesPerChunk, chunkIndex++)
+            int chunkTotal = (total + chunkPlan.FrameCount - 1) / chunkPlan.FrameCount;
+            for (int offset = 0, chunkIndex = 0; offset < total; offset += chunkPlan.FrameCount, chunkIndex++)
             {
                 long chunkStartedAt = Stopwatch.GetTimestamp();
-                int count = Math.Min(AiRestorationFrameProcessor.MaximumFramesPerChunk, total - offset);
-                AiProductionHardeningService.EnsureSpace(AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, count, request.Settings.AiScale, _stagingRoot), runtime: true);
+                int count = Math.Min(chunkPlan.FrameCount, total - offset);
+                AiProductionHardeningService.EnsureSpace(AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, count, request.Settings.AiScale, _stagingRoot, chunkPlan.FrameCount), runtime: true);
                 string chunk = Path.Combine(root, $"chunk-{chunkIndex:D5}"), input = Path.Combine(chunk, "input"), output = Path.Combine(chunk, "output"); Directory.CreateDirectory(input); Directory.CreateDirectory(output);
                 progress?.Report(new(AiIntermediateStage.ExtractingFrames, offset, total, $"Extracting AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiExtraction))
@@ -186,5 +192,6 @@ public sealed class AiRestorationIntermediateVideoService
         return result.StandardOutput.Split('\n').Select(line => line.Trim()).Select(line => line.Split('=', 2)).Where(parts => parts.Length == 2 && !string.IsNullOrWhiteSpace(parts[0])).GroupBy(parts => parts[0], StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.Last()[1].Trim(), StringComparer.OrdinalIgnoreCase);
     }
     private static string Describe(AiIntermediateChunkMetadata chunk) => $"codec={chunk.Codec}, {chunk.Width}x{chunk.Height}, pix_fmt={chunk.PixelFormat}, time_base={chunk.TimeBase}, fps={chunk.FrameRate}";
+    private static string FormatBytes(long? bytes) => bytes is long value ? $"{value / 1024d / 1024d / 1024d:0.0} GB" : "Unavailable";
     private static string Sanitize(string? value, int maximum) { string sanitized = string.IsNullOrWhiteSpace(value) ? "<none>" : value.Replace("\r", " ").Replace("\n", " ").Trim(); return sanitized[..Math.Min(sanitized.Length, maximum)]; }
 }

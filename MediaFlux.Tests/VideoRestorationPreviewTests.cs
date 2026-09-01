@@ -56,7 +56,7 @@ public sealed class VideoRestorationPreviewTests : IDisposable
         var runner = new PreviewRunner();
         var capabilities = new FfmpegRestorationCapabilityService(runner);
         var service = new VideoRestorationPreviewService(ffmpeg, ffmpeg, runner, capabilities, Path.Combine(_root, "cache"));
-        var request = new VideoRestorationPreviewRequest(source, TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(30), new VideoRestorationSettings { Preset = VideoRestorationPreset.VintageAnimationLight });
+        var request = new VideoRestorationPreviewRequest(source, TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(30), new VideoRestorationSettings { Mode = VideoRestorationMode.Custom, Preset = VideoRestorationPreset.VintageAnimationLight });
         using VideoRestorationStillPreview first = await service.GenerateStillAsync(request);
         using VideoRestorationStillPreview second = await service.GenerateStillAsync(request);
         Assert.Equal(2, runner.FrameCalls); // Original/restored once each; both are cached afterwards.

@@ -61,7 +61,8 @@ namespace MediaFlux.Services
                 _ => string.Empty
             };
             bool sourceIsTenBit = IsTenBitPixelFormat(request.SourcePixelFormat);
-            string restorationFilterChain = request.RestorationFilterOverride ?? VideoRestorationPipeline.BuildFilterChain(request.Restoration, request.ScaleMode);
+            VideoRestorationSettings effectiveRestoration = VideoRestorationModeResolver.Resolve(request.Restoration);
+            string restorationFilterChain = request.RestorationFilterOverride ?? VideoRestorationPipeline.BuildFilterChain(effectiveRestoration, request.ScaleMode);
             bool requiresVideoFilter =
                 !string.IsNullOrEmpty(scaleExpression) ||
                 string.IsNullOrWhiteSpace(request.SourcePixelFormat) ||

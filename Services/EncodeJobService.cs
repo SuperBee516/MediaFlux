@@ -14,7 +14,16 @@ public sealed class EncodeJobService
         try
         {
             if (!File.Exists(_path)) return new();
-            return JsonSerializer.Deserialize<List<EncodeJob>>(File.ReadAllText(_path), _json) ?? new();
+            string json = File.ReadAllText(_path);
+            List<EncodeJob> jobs = JsonSerializer.Deserialize<List<EncodeJob>>(json, _json) ?? new();
+            foreach (EncodeJob job in jobs)
+            {
+                job.Settings.Restoration ??= new VideoRestorationSettings();
+                if (!json.Contains("\"Mode\"", StringComparison.OrdinalIgnoreCase) &&
+                    job.Settings.Restoration.Preset != VideoRestorationPreset.Off)
+                    job.Settings.Restoration.Mode = VideoRestorationMode.Custom;
+            }
+            return jobs;
         }
         catch (Exception ex)
         {

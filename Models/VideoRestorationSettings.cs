@@ -1,6 +1,7 @@
 namespace MediaFlux.Models;
 
 public enum VideoRestorationPreset { Off, VintageAnimationLight, VintageAnimationRestore, DvdAnimationRestore, VhsTvCaptureRestore, Custom }
+public enum VideoRestorationMode { Off, Auto, Custom }
 public enum VideoRestorationStrength { Off, Light, Medium, Strong }
 public enum VideoRestorationDeinterlace { Off, AutoSafe, Yadif }
 public enum VideoRestorationResize { Original, To720p, To1080p, Custom }
@@ -11,7 +12,10 @@ public enum AiRestorationScale { X1 = 1, X2 = 2, X3 = 3, X4 = 4 }
 /// <summary>Persisted, encoder-independent description of the optional restoration pass.</summary>
 public sealed class VideoRestorationSettings
 {
+    /// <summary>Authoritative encode/preview controller. Advanced values remain persisted independently.</summary>
+    public VideoRestorationMode Mode { get; set; } = VideoRestorationMode.Off;
     public VideoRestorationPreset Preset { get; set; } = VideoRestorationPreset.Off;
+    public VideoRestorationSettings? AutoRecommendation { get; set; }
     public VideoRestorationStrength Denoise { get; set; }
     public VideoRestorationStrength Deblock { get; set; }
     public VideoRestorationStrength Deband { get; set; }
@@ -35,5 +39,17 @@ public sealed class VideoRestorationSettings
     public string AiBackendPath { get; set; } = "";
     public string AiModelsDirectory { get; set; } = "";
 
-    public VideoRestorationSettings Clone() => (VideoRestorationSettings)MemberwiseClone();
+    public VideoRestorationSettings Clone()
+    {
+        var clone = (VideoRestorationSettings)MemberwiseClone();
+        clone.AutoRecommendation = AutoRecommendation?.CloneWithoutRecommendation();
+        return clone;
+    }
+
+    private VideoRestorationSettings CloneWithoutRecommendation()
+    {
+        var clone = (VideoRestorationSettings)MemberwiseClone();
+        clone.AutoRecommendation = null;
+        return clone;
+    }
 }

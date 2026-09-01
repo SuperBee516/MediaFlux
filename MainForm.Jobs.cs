@@ -179,6 +179,9 @@ public partial class MainForm
         _config.EnableCodecSuffix = settings.EnableCodecSuffix;
         _config.OutputSuffix = settings.OutputSuffix;
         _config.VideoRestoration = settings.Restoration?.Clone() ?? new VideoRestorationSettings();
+        if (_restorationPreset != null)
+            _restorationPreset.SelectedIndex = (int)_config.VideoRestoration.Mode;
+        UpdateRestorationControlState();
         UpdateEncoderUiState();
     }
 

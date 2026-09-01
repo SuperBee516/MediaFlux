@@ -3,21 +3,29 @@ using MediaFlux.Models;
 
 namespace MediaFlux.Services;
 
-public sealed record AiTemporaryStorageEstimate(long EstimatedBytes, long AvailableBytes, bool IsClearlyInsufficient, bool IsBorderline)
-{ public string Describe() => $"Estimated AI temporary storage: {Format(EstimatedBytes)}; Available: {Format(AvailableBytes)}."; private static string Format(long bytes) => $"{bytes / 1024d / 1024d / 1024d:0.0} GB"; }
+public sealed record AiTemporaryStorageEstimate(long EstimatedBytes, long AvailableBytes, bool IsClearlyInsufficient, bool IsBorderline, long BaseEstimatedBytes, long ChunkEstimatedBytesPerFrame)
+{
+    public int MaximumSafeChunkFrames => ChunkEstimatedBytesPerFrame <= 0 ? AiChunkPlanner.MaximumFramesPerChunk
+        : (int)Math.Clamp((AvailableBytes - BaseEstimatedBytes) / ChunkEstimatedBytesPerFrame, 0, AiChunkPlanner.MaximumFramesPerChunk);
+    public string Describe() => $"Estimated AI temporary storage: {Format(EstimatedBytes)}; Available: {Format(AvailableBytes)}.";
+    private static string Format(long bytes) => $"{bytes / 1024d / 1024d / 1024d:0.0} GB";
+}
 
 /// <summary>Centralized production preflight and conservative MediaFlux-owned staging maintenance.</summary>
 public static class AiProductionHardeningService
 {
     private static readonly ConcurrentDictionary<string, byte> ActiveRoots = new(StringComparer.OrdinalIgnoreCase);
-    public static AiTemporaryStorageEstimate Estimate(int width, int height, int frames, AiRestorationScale scale, string stagingRoot)
+    public static AiTemporaryStorageEstimate Estimate(int width, int height, int frames, AiRestorationScale scale, string stagingRoot, int chunkFrames)
     {
         long pixels = checked((long)Math.Max(64, width) * Math.Max(64, height) * (int)scale * (int)scale);
-        long chunk = checked(pixels * 4 * AiRestorationFrameProcessor.MaximumFramesPerChunk * 3);
+        int boundedChunkFrames = Math.Clamp(chunkFrames, AiChunkPlanner.MinimumFramesPerChunk, AiChunkPlanner.MaximumFramesPerChunk);
+        long chunk = checked(pixels * 4 * boundedChunkFrames * 3);
         long intermediate = checked(pixels * 3 * Math.Max(1, frames));
         long estimate = checked((long)((chunk + intermediate) * 1.35));
         long available = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(stagingRoot))!).AvailableFreeSpace;
-        return new(estimate, available, available < estimate / 2, available < estimate);
+        long baseEstimate = checked((long)(intermediate * 1.35));
+        long chunkEstimatePerFrame = checked((long)(pixels * 4 * 3 * 1.35));
+        return new(estimate, available, available < estimate / 2, available < estimate, baseEstimate, chunkEstimatePerFrame);
     }
     public static void EnsureSpace(AiTemporaryStorageEstimate estimate, bool runtime = false)
     { if (estimate.IsClearlyInsufficient) throw new AiRestorationValidationException((runtime ? "AI processing stopped: " : "AI preflight failed: ") + "insufficient temporary storage. " + estimate.Describe()); }
