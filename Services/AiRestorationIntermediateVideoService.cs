@@ -7,7 +7,7 @@ namespace MediaFlux.Services;
 
 public enum AiIntermediateStage { ExtractingFrames, AiProcessing, Reassembling, Validating }
 public sealed record AiIntermediateProgress(AiIntermediateStage Stage, int Current, int Total, string Message);
-public sealed record AiIntermediateVideoRequest(string SourcePath, double FrameRate, TimeSpan SourceDuration, VideoRestorationSettings Settings, VideoRestorationPipelinePlan Plan, TimeSpan? Start = null, TimeSpan? Duration = null, int SourceWidth = 0, int SourceHeight = 0, bool IsMotionPreview = false);
+public sealed record AiIntermediateVideoRequest(string SourcePath, double FrameRate, TimeSpan SourceDuration, VideoRestorationSettings Settings, VideoRestorationPipelinePlan Plan, TimeSpan? Start = null, TimeSpan? Duration = null, int SourceWidth = 0, int SourceHeight = 0, bool IsMotionPreview = false, long? SourceFrameCount = null);
 public sealed record AiIntermediateVideoResult(string Path, TimeSpan Duration, int FrameCount, int Width, int Height, double FrameRate, string? StagingDirectory = null) : IDisposable
 { public void Dispose() { try { if (!string.IsNullOrWhiteSpace(StagingDirectory) && System.IO.Path.GetFileName(StagingDirectory).StartsWith("ai-intermediate-", StringComparison.OrdinalIgnoreCase) && Directory.Exists(StagingDirectory)) Directory.Delete(StagingDirectory, true); else if (File.Exists(Path)) File.Delete(Path); } catch { } } }
 internal sealed record AiIntermediateChunkMetadata(string Path, string Codec, int Width, int Height, string PixelFormat, string TimeBase, string FrameRate, int FrameCount, double Duration);
@@ -63,7 +63,7 @@ public sealed class AiRestorationIntermediateVideoService
         {
             TimeSpan duration = request.Duration ?? request.SourceDuration;
             if (duration <= TimeSpan.Zero) throw new AiRestorationValidationException("AI intermediate processing requires a known source duration.");
-            int total = checked((int)Math.Round(duration.TotalSeconds * request.FrameRate, MidpointRounding.AwayFromZero));
+            int total = await ResolveExpectedFrameCountAsync(request, duration, token).ConfigureAwait(false);
             if (total <= 0) throw new AiRestorationValidationException("AI intermediate processing could not determine an expected frame count.");
             AiTemporaryStorageEstimate planningEstimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot, AiChunkPlanner.MinimumFramesPerChunk);
             long? dedicatedGpuVram = _timing?.DedicatedGpuVramBytes ?? _dedicatedGpuVramProvider();
@@ -203,6 +203,39 @@ public sealed class AiRestorationIntermediateVideoService
     }
 
     internal static string[] ExpectedFrames(string directory, int count) => Enumerable.Range(0, count).Select(index => Path.Combine(directory, $"frame-{index:D8}.png")).ToArray();
+    /// <summary>
+    /// Full-source CFR jobs use the container's declared frame count when available. Duration is
+    /// often rounded to a stream time base and must not synthesize an EOF frame from duration × fps.
+    /// Excerpts retain their bounded duration calculation because their frame interval is not the full stream.
+    /// </summary>
+    internal static int ResolveExpectedFrameCount(AiIntermediateVideoRequest request, TimeSpan duration)
+    {
+        if (request.Start is null && request.Duration is null && request.SourceFrameCount is > 0)
+            return checked((int)request.SourceFrameCount.Value);
+        return checked((int)Math.Round(duration.TotalSeconds * request.FrameRate, MidpointRounding.AwayFromZero));
+    }
+    private async Task<int> ResolveExpectedFrameCountAsync(AiIntermediateVideoRequest request, TimeSpan duration, CancellationToken token)
+    {
+        if (request.Start is not null || request.Duration is not null || request.SourceFrameCount is > 0)
+            return ResolveExpectedFrameCount(request, duration);
+
+        MediaToolProcessResult result = await _runner.RunAsync(new MediaToolProcessRequest
+        {
+            FileName = _ffprobePath,
+            Arguments = new[] { "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "default=noprint_wrappers=1", request.SourcePath },
+            Timeout = TimeSpan.FromMinutes(5),
+            SendQuitOnCancellation = true
+        }, token).ConfigureAwait(false);
+        if (result.ExitCode != 0 || result.TimedOut || !TryReadPositiveFrameCount(result.StandardOutput, out int count))
+            throw new AiRestorationValidationException($"AI restoration could not determine the exact decodable source frame count before extraction. executable={_ffprobePath}; exitCode={result.ExitCode}; timedOut={result.TimedOut}; stderr={Sanitize(result.StandardError, 4096)}");
+        return count;
+    }
+    private static bool TryReadPositiveFrameCount(string output, out int count)
+    {
+        count = 0;
+        string? text = output.Split('\n').Select(line => line.Trim()).Select(line => line.Split('=', 2)).Where(parts => parts.Length == 2 && parts[0].Equals("nb_read_frames", StringComparison.OrdinalIgnoreCase)).Select(parts => parts[1].Trim()).LastOrDefault();
+        return int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out count) && count > 0;
+    }
     internal static void ValidateFrameSet(string directory, IReadOnlyList<string> expected)
     {
         AiFrameSetValidationReport report = AuditFrameSet(directory, expected, null, 0, 0);

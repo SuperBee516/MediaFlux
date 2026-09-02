@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.89] - 2026-09-02
+
+### AI Terminal-Chunk EOF Fix
+
+- Full-source AI restoration now uses authoritative decodable frame counts from `nb_frames`, with an `ffprobe -count_frames` fallback.
+- Fixed terminal-chunk EOF/frame-count mismatches without weakening strict frame validation.
+- Preserved preview and excerpt frame-count behavior.
+
 ## [0.1.88] - 2026-09-02
 
 ### AI Restoration Forensic Diagnostics

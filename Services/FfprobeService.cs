@@ -267,6 +267,7 @@ namespace MediaFlux.Services
                     Height = GetInt32(stream, "height"),
                     Channels = GetInt32(stream, "channels"),
                     DurationSeconds = GetPositiveDouble(stream, "duration"),
+                    FrameCount = GetPositiveLong(stream, "nb_frames"),
                     FrameRate = ParseFrameRate(
                         GetString(stream, "avg_frame_rate"),
                         GetString(stream, "r_frame_rate")),

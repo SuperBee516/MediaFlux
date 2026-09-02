@@ -50,6 +50,8 @@ namespace MediaFlux.Models
         public int? Channels { get; init; }
         public double? DurationSeconds { get; init; }
         public double? FrameRate { get; init; }
+        /// <summary>Container-declared frame count when available; null means the container does not provide one.</summary>
+        public long? FrameCount { get; init; }
         public IReadOnlyDictionary<string, bool> Dispositions { get; init; } =
             new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
     }

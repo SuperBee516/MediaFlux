@@ -248,7 +248,7 @@ public sealed class AiRestorationTests : IDisposable
     {
         string source = Path.Combine(_root, "source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"), ffprobe = Path.Combine(_root, "ffprobe.exe"), ai = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models");
         File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(ffprobe, "tool"); File.WriteAllText(ai, "tool"); Directory.CreateDirectory(models); WritePair(models, "realesr-animevideov3-x2");
-        var runner = new IntermediateBatchRunner(ai); var backend = new AiRestorationBackendService(_root, runner);
+        var runner = new IntermediateBatchRunner(ai, sourceFrameCount: 210); var backend = new AiRestorationBackendService(_root, runner);
         var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = ai, AiModelsDirectory = models };
         VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None);
         var updates = new List<AiIntermediateProgress>();
@@ -275,7 +275,7 @@ public sealed class AiRestorationTests : IDisposable
     {
         string source = Path.Combine(_root, "source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"), ffprobe = Path.Combine(_root, "ffprobe.exe"), ai = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models");
         File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(ffprobe, "tool"); File.WriteAllText(ai, "tool"); Directory.CreateDirectory(models); WritePair(models, "realesr-animevideov3-x2");
-        var runner = new IntermediateBatchRunner(ai); var backend = new AiRestorationBackendService(_root, runner);
+        var runner = new IntermediateBatchRunner(ai, sourceFrameCount: 150); var backend = new AiRestorationBackendService(_root, runner);
         var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = ai, AiModelsDirectory = models };
         var timing = new PerformanceTimingService();
         var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, Path.Combine(_root, "staging"), backend, runner, timing: timing, dedicatedGpuVramProvider: () => null);
@@ -292,9 +292,9 @@ public sealed class AiRestorationTests : IDisposable
     {
         string source = Path.Combine(_root, "forensic-source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"), ffprobe = Path.Combine(_root, "ffprobe.exe"), ai = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models"), staging = Path.Combine(_root, "staging");
         File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(ffprobe, "tool"); File.WriteAllText(ai, "tool"); Directory.CreateDirectory(models); WritePair(models, "realesr-animevideov3-x2");
-        var logs = new List<string>(); var backend = new AiRestorationBackendService(_root, new IntermediateBatchRunner(ai, writeAllFrames: false));
+        var logs = new List<string>(); var backend = new AiRestorationBackendService(_root, new IntermediateBatchRunner(ai, writeAllFrames: false, sourceFrameCount: 30));
         var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = ai, AiModelsDirectory = models };
-        var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, staging, backend, new IntermediateBatchRunner(ai, writeAllFrames: false), logs.Add, dedicatedGpuVramProvider: () => null);
+        var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, staging, backend, new IntermediateBatchRunner(ai, writeAllFrames: false, sourceFrameCount: 30), logs.Add, dedicatedGpuVramProvider: () => null);
 
         AiRestorationValidationException exception = await Assert.ThrowsAsync<AiRestorationValidationException>(() => service.CreateAsync(new AiIntermediateVideoRequest(source, 30, TimeSpan.FromSeconds(1), settings, VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None), SourceWidth: 2, SourceHeight: 2)));
 
@@ -309,7 +309,7 @@ public sealed class AiRestorationTests : IDisposable
     {
         string source = Path.Combine(_root, "input-forensic-source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"), ffprobe = Path.Combine(_root, "ffprobe.exe"), ai = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models"), staging = Path.Combine(_root, "input-forensic-staging");
         File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(ffprobe, "tool"); File.WriteAllText(ai, "tool"); Directory.CreateDirectory(models); WritePair(models, "realesr-animevideov3-x2");
-        var logs = new List<string>(); var runner = new IntermediateBatchRunner(ai, writeAllFrames: true, writeAllExtractedFrames: false); var backend = new AiRestorationBackendService(_root, runner);
+        var logs = new List<string>(); var runner = new IntermediateBatchRunner(ai, writeAllFrames: true, writeAllExtractedFrames: false, sourceFrameCount: 30); var backend = new AiRestorationBackendService(_root, runner);
         var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = ai, AiModelsDirectory = models };
         var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, staging, backend, runner, logs.Add, dedicatedGpuVramProvider: () => null);
 
@@ -319,6 +319,31 @@ public sealed class AiRestorationTests : IDisposable
         Assert.Contains("Validation Stage: ExtractedInput", report); Assert.Contains("FFmpeg Extraction Executable: " + ffmpeg, report); Assert.Contains("NCNN Executable: not invoked", report); Assert.Contains("Missing Frame Filenames", report);
         string preserved = exception.Message.Split("Preserved AI working directory: ")[1].Trim();
         Assert.True(Directory.Exists(preserved));
+    }
+
+    [Fact]
+    public async Task FullSourceUsesDeclaredFrameCountInsteadOfRoundedDurationAtTerminalChunk()
+    {
+        string source = Path.Combine(_root, "terminal-source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"), ffprobe = Path.Combine(_root, "ffprobe.exe"), ai = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models");
+        File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(ffprobe, "tool"); File.WriteAllText(ai, "tool"); Directory.CreateDirectory(models); WritePair(models, "realesr-animevideov3-x2");
+        var runner = new IntermediateBatchRunner(ai, maximumExtractedFrameCount: 38, sourceFrameCount: 38); var backend = new AiRestorationBackendService(_root, runner);
+        var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = ai, AiModelsDirectory = models };
+        var request = new AiIntermediateVideoRequest(source, 30, TimeSpan.FromSeconds(38.6 / 30d), settings, VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None), SourceWidth: 2, SourceHeight: 2);
+
+        using AiIntermediateVideoResult result = await new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, Path.Combine(_root, "terminal-staging"), backend, runner, dedicatedGpuVramProvider: () => null).CreateAsync(request);
+
+        Assert.Equal(38, result.FrameCount);
+        Assert.Equal(39, checked((int)Math.Round(request.SourceDuration.TotalSeconds * request.FrameRate, MidpointRounding.AwayFromZero)));
+        Assert.Equal(38, AiRestorationIntermediateVideoService.ResolveExpectedFrameCount(request with { SourceFrameCount = 38 }, request.SourceDuration));
+    }
+
+    [Fact]
+    public void ExcerptsDoNotUseTheFullSourceFrameCountForTheirBoundedInterval()
+    {
+        var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation };
+        var request = new AiIntermediateVideoRequest("C:\\source.mkv", 30, TimeSpan.FromSeconds(10), settings, VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1), SourceFrameCount: 300);
+
+        Assert.Equal(30, AiRestorationIntermediateVideoService.ResolveExpectedFrameCount(request, request.Duration!.Value));
     }
 
     [Fact]
@@ -397,12 +422,14 @@ public sealed class AiRestorationTests : IDisposable
     }
     private sealed class CapturingProgress(List<AiIntermediateProgress> updates) : IProgress<AiIntermediateProgress>
     { public void Report(AiIntermediateProgress value) => updates.Add(value); }
-    private sealed class IntermediateBatchRunner(string aiPath, bool writeAllFrames = true, bool writeAllExtractedFrames = true) : IMediaToolProcessRunner
+    private sealed class IntermediateBatchRunner(string aiPath, bool writeAllFrames = true, bool writeAllExtractedFrames = true, int? maximumExtractedFrameCount = null, int sourceFrameCount = 150) : IMediaToolProcessRunner
     {
         private readonly Dictionary<string, int> _frameCounts = new(StringComparer.OrdinalIgnoreCase);
         public int BatchCalls { get; private set; }
         public Task<MediaToolProcessResult> RunAsync(MediaToolProcessRequest request, CancellationToken cancellationToken = default)
         {
+            if (request.Arguments.Contains("-count_frames"))
+                return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardOutput = $"nb_read_frames={sourceFrameCount}" });
             if (request.FileName.Equals(aiPath, StringComparison.OrdinalIgnoreCase))
             {
                 if (request.Arguments.SequenceEqual(new[] { "-h" })) return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardError = "NCNN Vulkan GPU 0" });
@@ -412,13 +439,14 @@ public sealed class AiRestorationTests : IDisposable
             }
             if (request.FileName.EndsWith("ffprobe.exe", StringComparison.OrdinalIgnoreCase))
             {
-                string path = request.Arguments.Last(); int count = _frameCounts.TryGetValue(path, out int value) ? value : 150;
+                string path = request.Arguments.Last(); int count = _frameCounts.TryGetValue(path, out int value) ? value : Path.GetFileName(path).StartsWith("intermediate", StringComparison.OrdinalIgnoreCase) ? _frameCounts.Where(pair => Path.GetFileName(pair.Key).StartsWith("chunk-", StringComparison.OrdinalIgnoreCase)).Sum(pair => pair.Value) : 150;
                 return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardOutput = $"codec_name=ffv1\nwidth=4\nheight=4\npix_fmt=yuv420p\ntime_base=1/30\nnb_frames={count}\nr_frame_rate=30/1\nduration={(count / 30d).ToString(System.Globalization.CultureInfo.InvariantCulture)}" });
             }
             if (request.Arguments.Contains("-frames:v"))
             {
                 int count = int.Parse(request.Arguments[request.Arguments.ToList().IndexOf("-frames:v") + 1]); string pattern = request.Arguments.Last(); string directory = Path.GetDirectoryName(pattern)!;
-                Directory.CreateDirectory(directory); foreach (string frame in AiRestorationIntermediateVideoService.ExpectedFrames(directory, count).Take(writeAllExtractedFrames ? int.MaxValue : 1)) WritePng(frame, 2, 2);
+                int produced = Math.Min(count, maximumExtractedFrameCount ?? count);
+                Directory.CreateDirectory(directory); foreach (string frame in AiRestorationIntermediateVideoService.ExpectedFrames(directory, produced).Take(writeAllExtractedFrames ? int.MaxValue : 1)) WritePng(frame, 2, 2);
                 return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
             }
             string output = request.Arguments.Last(); Directory.CreateDirectory(Path.GetDirectoryName(output)!);

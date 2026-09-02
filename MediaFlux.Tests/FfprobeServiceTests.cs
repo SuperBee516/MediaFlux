@@ -54,6 +54,7 @@ public sealed class FfprobeServiceTests : IDisposable
                           "color_transfer": "bt709",
                           "color_primaries": "smpte170m",
                           "avg_frame_rate": "30000/1001",
+                          "nb_frames": "3611",
                           "time_base": "1/90000",
                           "duration": "120.5",
                           "disposition": { "default": 1 }
@@ -116,6 +117,7 @@ public sealed class FfprobeServiceTests : IDisposable
         Assert.Equal(8, result.Streams[0].BitsPerRawSample);
         Assert.Equal("smpte170m", result.Streams[0].ColorSpace);
         Assert.Equal(30000d / 1001d, result.Streams[0].FrameRate!.Value, precision: 6);
+        Assert.Equal(3611, result.Streams[0].FrameCount);
         Assert.Equal("eng", result.Streams[1].Language);
         Assert.Equal("GPAC ISO Hint Handler", result.Streams[2].Tags["handler_name"]);
         Assert.True(result.Streams[2].Dispositions["forced"]);

@@ -650,7 +650,10 @@ namespace MediaFlux.Services
                 aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode, restoreOriginalAfterAi ? finalOutputResolution.ScaleFilter : null);
                 callback("[MediaFlux] Preparing AI restoration.");
                 var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend, log: _log, timing: performance);
-                int expectedFrames = checked((int)Math.Round((sampleDuration ?? TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0)).TotalSeconds * video.FrameRate.Value));
+                TimeSpan aiDuration = sampleDuration ?? TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0);
+                int expectedFrames = AiRestorationIntermediateVideoService.ResolveExpectedFrameCount(
+                    new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0, SourceFrameCount: video.FrameCount),
+                    aiDuration);
                 string stagingRoot = Path.Combine(AppPaths.DataDirectory, "ai-intermediates");
                 AiTemporaryStorageEstimate planningEstimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, stagingRoot, AiChunkPlanner.MinimumFramesPerChunk);
                 AiChunkPlan plannedChunk = new AiChunkPlanner().Plan(new(video.Width ?? 0, video.Height ?? 0, aiSettings.AiScale, performance.DedicatedGpuVramBytes, planningEstimate, "Pending backend"));
@@ -658,7 +661,7 @@ namespace MediaFlux.Services
                 _log?.Invoke($"[EncodingService] AI preflight: source={inputSource.SourcePath}; model={aiSettings.AiModelId}; device={aiSettings.AiDevice}; scale={(int)aiSettings.AiScale}x; expectedFrames={expectedFrames}; {estimate.Describe()}; plan={aiPlan.DescribeStages()}.");
                 AiProductionHardeningService.EnsureSpace(estimate);
                 aiIntermediate = await intermediate.CreateAsync(
-                    new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0),
+                    new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0, SourceFrameCount: video.FrameCount),
                     new Progress<AiIntermediateProgress>(p => { callback($"[MediaFlux] {p.Message}"); aiProgressCallback?.Invoke(p); }),
                     cancellationToken).ConfigureAwait(false);
                 _log?.Invoke($"[EncodingService] AI resolution plan: source={video.Width}x{video.Height}; aiScale={(int)aiSettings.AiScale}x; intermediate={aiIntermediate.Width}x{aiIntermediate.Height}; requestedFinal={finalOutputResolution.Describe()}; finalScaleDecision={(restoreOriginalAfterAi ? finalOutputResolution.ScaleFilter : "provided by configured restoration/normal encode scale")}; postAiFilters={aiPlan.PostAiFilterChain}.");
