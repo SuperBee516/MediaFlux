@@ -20,6 +20,8 @@ namespace MediaFlux.Services
         public string StandardOutput { get; init; } = "";
         public string StandardError { get; init; } = "";
         public bool TimedOut { get; init; }
+        /// <summary>Wall-clock time spent creating the child process before it began execution.</summary>
+        public TimeSpan ProcessLaunchElapsed { get; init; }
     }
 
     public interface IMediaToolProcessRunner
@@ -59,8 +61,10 @@ namespace MediaFlux.Services
             foreach (string argument in request.Arguments)
                 startInfo.ArgumentList.Add(argument);
 
+            long launchStartedAt = Stopwatch.GetTimestamp();
             using var process = new Process { StartInfo = startInfo };
             process.Start();
+            TimeSpan processLaunchElapsed = Stopwatch.GetElapsedTime(launchStartedAt);
 
             Task<string> stdoutTask = ReadBoundedAsync(
                 process.StandardOutput,
@@ -97,7 +101,8 @@ namespace MediaFlux.Services
                 ExitCode = process.HasExited ? process.ExitCode : -1,
                 StandardOutput = stdout,
                 StandardError = stderr,
-                TimedOut = timedOut
+                TimedOut = timedOut,
+                ProcessLaunchElapsed = processLaunchElapsed
             };
         }
 

@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.87] - 2026-09-02
+
+### AI Throughput Investigation
+
+- Added diagnostic-only per-chunk timing for extraction, AI restoration, validation, reassembly, startup/shutdown, and FFmpeg process launch latency.
+- Added GPU/CPU/VRAM/disk telemetry analysis with effective and theoretical overlapped FPS, stage distribution, busy/idle percentages, pipeline efficiency, and planner-selected versus theoretical chunk sizing.
+- Added automatic reporting for GPU starvation, CPU and disk bottlenecks, small-chunk overhead, validation overhead, and process startup overhead.
+- Preserved existing AI restoration, planner, benchmarking, provider architecture, diagnostics, UI, quality, and encode behavior.
+
 ## [0.1.86] - 2026-09-02
 
 ### AI Storage Planner and Diagnostics

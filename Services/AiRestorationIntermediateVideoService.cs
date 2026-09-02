@@ -70,8 +70,9 @@ public sealed class AiRestorationIntermediateVideoService
                 string chunk = Path.Combine(root, $"chunk-{chunkIndex:D5}"), input = Path.Combine(chunk, "input"), output = Path.Combine(chunk, "output"); Directory.CreateDirectory(input); Directory.CreateDirectory(output);
                 progress?.Report(new(AiIntermediateStage.ExtractingFrames, offset, total, $"Extracting AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
                 long stageStartedAt = Stopwatch.GetTimestamp();
+                TimeSpan ffmpegProcessLaunchElapsed = TimeSpan.Zero;
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiExtraction))
-                { await RunAsync(BuildExtractArguments(request, offset, count, input), "extract AI frames", chunks, token).ConfigureAwait(false); scope?.Complete(); }
+                { MediaToolProcessResult extractionProcess = await RunAsync(BuildExtractArguments(request, offset, count, input), "extract AI frames", chunks, token).ConfigureAwait(false); ffmpegProcessLaunchElapsed += extractionProcess.ProcessLaunchElapsed; scope?.Complete(); }
                 TimeSpan extractionElapsed = Stopwatch.GetElapsedTime(stageStartedAt);
                 TimeSpan validationElapsed = TimeSpan.Zero;
                 string[] extracted = ExpectedFrames(input, count);
@@ -112,7 +113,7 @@ public sealed class AiRestorationIntermediateVideoService
                 progress?.Report(new(AiIntermediateStage.Reassembling, offset + count, total, $"Reassembling AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
                 stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiReassembly))
-                { await RunAsync(BuildReassemblyArguments(processed[0], request.FrameRate, chunkVideo), "reassemble AI chunk", chunks, token).ConfigureAwait(false); scope?.Complete(); }
+                { MediaToolProcessResult reassemblyProcess = await RunAsync(BuildReassemblyArguments(processed[0], request.FrameRate, chunkVideo), "reassemble AI chunk", chunks, token).ConfigureAwait(false); ffmpegProcessLaunchElapsed += reassemblyProcess.ProcessLaunchElapsed; scope?.Complete(); }
                 TimeSpan reassemblyElapsed = Stopwatch.GetElapsedTime(stageStartedAt);
                 stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
@@ -121,7 +122,9 @@ public sealed class AiRestorationIntermediateVideoService
                 TimeSpan totalElapsed = Stopwatch.GetElapsedTime(chunkStartedAt);
                 hardwareSampler?.SampleNow();
                 long measuredTemporaryStorage = MeasureTemporaryStorage(chunk, chunkVideo);
-                AiChunkPerformanceMetrics metrics = new(chunkIndex + 1, count, extractionElapsed, inferenceElapsed, validationElapsed, reassemblyElapsed, totalElapsed, chunkHardware.Snapshot(), measuredTemporaryStorage);
+                TimeSpan startupShutdownOverhead = totalElapsed - extractionElapsed - inferenceElapsed - validationElapsed - reassemblyElapsed;
+                if (startupShutdownOverhead < TimeSpan.Zero) startupShutdownOverhead = TimeSpan.Zero;
+                AiChunkPerformanceMetrics metrics = new(chunkIndex + 1, count, extractionElapsed, inferenceElapsed, validationElapsed, reassemblyElapsed, totalElapsed, chunkHardware.Snapshot(), measuredTemporaryStorage, ffmpegProcessLaunchElapsed, startupShutdownOverhead);
                 _timing?.RecordAiChunk(metrics);
                 _log?.Invoke(FormatChunkMetrics(metrics));
                 // Flush completed-chunk, planner, and calibration diagnostics before starting
@@ -204,10 +207,10 @@ public sealed class AiRestorationIntermediateVideoService
             if (!string.Equals(first.Codec, chunk.Codec, StringComparison.OrdinalIgnoreCase) || first.Width != chunk.Width || first.Height != chunk.Height || !string.Equals(first.PixelFormat, chunk.PixelFormat, StringComparison.OrdinalIgnoreCase) || !string.Equals(first.TimeBase, chunk.TimeBase, StringComparison.Ordinal) || !string.Equals(first.FrameRate, chunk.FrameRate, StringComparison.Ordinal))
                 throw new AiRestorationValidationException($"AI intermediate chunks are incompatible and cannot be joined without altering timing: '{Path.GetFileName(first.Path)}' ({Describe(first)}) vs '{Path.GetFileName(chunk.Path)}' ({Describe(chunk)}).");
     }
-    private async Task RunAsync(IReadOnlyList<string> args, string action, IReadOnlyList<AiIntermediateChunkMetadata> chunks, CancellationToken token)
+    private async Task<MediaToolProcessResult> RunAsync(IReadOnlyList<string> args, string action, IReadOnlyList<AiIntermediateChunkMetadata> chunks, CancellationToken token)
     {
         MediaToolProcessResult result = await _runner.RunAsync(new MediaToolProcessRequest { FileName = _ffmpegPath, Arguments = args, Timeout = TimeSpan.FromMinutes(5), SendQuitOnCancellation = true }, token).ConfigureAwait(false);
-        if (result.ExitCode == 0 && !result.TimedOut) return;
+        if (result.ExitCode == 0 && !result.TimedOut) return result;
         string diagnostic = BuildFailureDiagnostic(action, _ffmpegPath, args, result, chunks); _log?.Invoke(diagnostic); throw new AiRestorationValidationException(diagnostic);
     }
     internal static string BuildFailureDiagnostic(string action, string executable, IReadOnlyList<string> args, MediaToolProcessResult result, IReadOnlyList<AiIntermediateChunkMetadata> chunks)
@@ -252,7 +255,7 @@ public sealed class AiRestorationIntermediateVideoService
         $"Default Chunk Size: {decision.DefaultChunkSize}; Storage-Limited Chunk Size: {decision.StorageLimitedChunkSize}; VRAM-Limited Chunk Size: {decision.VramLimitedChunkSize}; Final Selected Chunk Size: {decision.FinalSelectedChunkSize}" + Environment.NewLine +
         $"Constraint: {decision.DeterminingConstraint}; Decision Reason: {decision.DecisionReason}; Backend: {backend}.";
     private static string FormatChunkMetrics(AiChunkPerformanceMetrics metrics) =>
-        $"[AI Chunk {metrics.ChunkNumber}] Frames: {metrics.FrameCount}; Extraction: {Format(metrics.ExtractionElapsed)}; Inference: {Format(metrics.InferenceElapsed)}; Validation: {Format(metrics.ValidationElapsed)}; Reassembly: {Format(metrics.ReassemblyElapsed)}; Total: {Format(metrics.TotalElapsed)}; FPS: {metrics.EffectiveFramesPerSecond:0.##}; GPU Avg/Peak: {Percent(metrics.Hardware.AverageGpuPercent)}/{Percent(metrics.Hardware.PeakGpuPercent)}; VRAM Avg/Peak: {FormatBytes(metrics.Hardware.AverageVramUsedBytes)}/{FormatBytes(metrics.Hardware.PeakVramUsedBytes)}; CPU Avg: {Percent(metrics.Hardware.AverageCpuPercent)}; Disk Avg: {BytesPerSecond(metrics.Hardware.AverageDiskThroughputBytesPerSecond)}.";
+        $"[AI Chunk {metrics.ChunkNumber}] Frames: {metrics.FrameCount}; Extraction: {Format(metrics.ExtractionElapsed)}; Inference: {Format(metrics.InferenceElapsed)}; Validation: {Format(metrics.ValidationElapsed)}; Reassembly: {Format(metrics.ReassemblyElapsed)}; Startup/Shutdown: {Format(metrics.StartupShutdownOverhead)}; FFmpeg Launch: {Format(metrics.FfmpegProcessLaunchElapsed)}; Total: {Format(metrics.TotalElapsed)}; FPS: {metrics.EffectiveFramesPerSecond:0.##}; GPU Avg/Peak: {Percent(metrics.Hardware.AverageGpuPercent)}/{Percent(metrics.Hardware.PeakGpuPercent)}; VRAM Avg/Peak: {FormatBytes(metrics.Hardware.AverageVramUsedBytes)}/{FormatBytes(metrics.Hardware.PeakVramUsedBytes)}; CPU Avg: {Percent(metrics.Hardware.AverageCpuPercent)}; Disk Avg: {BytesPerSecond(metrics.Hardware.AverageDiskThroughputBytesPerSecond)}.";
     private static long MeasureTemporaryStorage(string chunkDirectory, string chunkVideo)
     {
         try

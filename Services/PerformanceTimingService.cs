@@ -128,6 +128,7 @@ public sealed class PerformanceTimingService
             AppendAiThroughput(builder);
             AppendAiChunkPlannerSummary(builder);
             AppendAiPlannerCalibrationSummary(builder);
+            AppendAiThroughputInvestigation(builder, totalElapsed);
             AppendNcnnRuntimeSummary(builder);
             AppendHardwareSummary(builder);
             AppendLargestTimeConsumers(builder);
@@ -256,6 +257,36 @@ public sealed class PerformanceTimingService
         if (storageConservative) builder.AppendLine($"Storage conservative: estimated chunk storage {Bytes(_aiPlannerDecision.EstimatedTemporaryStoragePerChunk)} exceeded measured {Bytes(averageMeasuredStorage)}.");
         if (extractionPercent >= 25) builder.AppendLine($"CPU bottleneck: extraction consumed {extractionPercent:0.#}% of total AI time.");
         if (inferencePercent >= 50) builder.AppendLine($"AI inference bottleneck: inference consumed {inferencePercent:0.#}% of total AI time.");
+    }
+
+    private void AppendAiThroughputInvestigation(StringBuilder builder, TimeSpan encodeElapsed)
+    {
+        if (_aiChunkMetrics.Count == 0) return;
+        AiThroughputInvestigation report = AiThroughputInvestigationService.Analyze(_aiPlannerDecision, _aiChunkMetrics);
+        builder.AppendLine().AppendLine("AI Throughput Investigation")
+            .Append("Extraction: ").Append(Format(report.ExtractionElapsed)).Append(" (").Append(report.ExtractionPercent.ToString("0.#")).AppendLine("%)")
+            .Append("AI Inference: ").Append(Format(report.InferenceElapsed)).Append(" (").Append(report.InferencePercent.ToString("0.#")).AppendLine("%)")
+            .Append("Validation: ").Append(Format(report.ValidationElapsed)).Append(" (").Append(report.ValidationPercent.ToString("0.#")).AppendLine("%)")
+            .Append("Reassembly: ").Append(Format(report.ReassemblyElapsed)).Append(" (").Append(report.ReassemblyPercent.ToString("0.#")).AppendLine("%)")
+            .Append("Chunk Startup/Shutdown: ").Append(Format(report.StartupShutdownElapsed)).Append(" (").Append(report.StartupShutdownPercent.ToString("0.#")).AppendLine("%)")
+            .Append("FFmpeg Process Launch Latency: ").AppendLine(Format(report.FfmpegProcessLaunchElapsed))
+            .Append("Estimated Disk Wait: ").AppendLine(report.EstimatedDiskWaitElapsed is TimeSpan wait ? Format(wait) : "Unavailable")
+            .Append("GPU Busy / Idle: ").Append(Percent(report.GpuBusyPercent)).Append(" / ").AppendLine(Percent(report.GpuIdlePercent))
+            .Append("CPU Busy / Idle: ").Append(Percent(report.CpuBusyPercent)).Append(" / ").AppendLine(Percent(report.CpuIdlePercent))
+            .Append("Peak VRAM: ").AppendLine(Bytes(report.PeakVramBytes))
+            .Append("Average Disk Throughput: ").AppendLine(BytesPerSecond(report.AverageDiskThroughputBytesPerSecond))
+            .Append("Pipeline Efficiency: ").Append(report.PipelineEfficiencyPercent.ToString("0.#")).AppendLine("%")
+            .Append("Effective AI FPS: ").AppendLine(report.EffectiveFramesPerSecond.ToString("0.##"))
+            .Append("Theoretical Overlapped FPS: ").AppendLine(report.TheoreticalOverlappedFramesPerSecond.ToString("0.##"));
+        builder.Append("Extraction / AI / Validation / Reassembly Share of Encode: ")
+            .Append(Percentage(report.ExtractionElapsed, encodeElapsed).ToString("0.#")).Append("% / ")
+            .Append(Percentage(report.InferenceElapsed, encodeElapsed).ToString("0.#")).Append("% / ")
+            .Append(Percentage(report.ValidationElapsed, encodeElapsed).ToString("0.#")).Append("% / ")
+            .Append(Percentage(report.ReassemblyElapsed, encodeElapsed).ToString("0.#")).AppendLine("%");
+        if (report.PlannerSelectedChunkSize > 0)
+            builder.Append("Planner Selected / Theoretical Optimal Chunk: ").Append(report.PlannerSelectedChunkSize).Append(" / ").Append(report.TheoreticalOptimalChunkSize).AppendLine(" frames");
+        if (report.Bottlenecks.Count == 0) builder.AppendLine("Bottlenecks: No material bottleneck detected from available chunk telemetry.");
+        else foreach (string bottleneck in report.Bottlenecks) builder.Append("Bottleneck: ").AppendLine(bottleneck);
     }
 
     private void AppendNcnnRuntimeSummary(StringBuilder builder)
@@ -446,9 +477,14 @@ public sealed record AiChunkHardwareMetrics(
 public sealed record AiChunkPerformanceMetrics(
     int ChunkNumber, int FrameCount,
     TimeSpan ExtractionElapsed, TimeSpan InferenceElapsed, TimeSpan ValidationElapsed, TimeSpan ReassemblyElapsed,
-    TimeSpan TotalElapsed, AiChunkHardwareMetrics Hardware, long? MeasuredTemporaryStorageBytes = null)
+    TimeSpan TotalElapsed, AiChunkHardwareMetrics Hardware, long? MeasuredTemporaryStorageBytes = null,
+    TimeSpan FfmpegProcessLaunchElapsed = default, TimeSpan StartupShutdownOverhead = default)
 {
     public double EffectiveFramesPerSecond => PerformanceTimingService.CalculateAiFramesPerSecond(FrameCount, TotalElapsed);
+    /// <summary>Conservative disk-wait indicator when a disk-bound chunk samples very low process I/O throughput.</summary>
+    public TimeSpan? EstimatedDiskWaitElapsed => Hardware.AverageDiskThroughputBytesPerSecond is > 0 and < 20d * 1024 * 1024
+        ? ExtractionElapsed + ReassemblyElapsed
+        : null;
 }
 
 public enum PerformanceTimingStage
