@@ -90,6 +90,18 @@ public sealed class NcnnPerformanceTuningTests : IDisposable
     }
 
     [Fact]
+    public void PriorCacheSchemaFailsAsMissSoFalseSuccessSelectionsAreRetuned()
+    {
+        Directory.CreateDirectory(_root);
+        string path = Path.Combine(_root, "cache.json");
+        File.WriteAllText(path, "{\"Version\":1,\"Entries\":[{\"Key\":\"GPU|backend|model|4|1080p\",\"Configuration\":{\"Threads\":{\"Load\":1,\"Process\":2,\"Save\":2},\"TileSize\":1024}}]}");
+
+        var cache = new NcnnPerformanceTuningCacheService(path);
+
+        Assert.False(cache.TryGet(NcnnTuningCacheKey.Create("GPU", "backend", "model", 4, "1080p"), out _));
+    }
+
+    [Fact]
     public void CacheCanBeInvalidatedForExplicitRetuning()
     {
         Directory.CreateDirectory(_root);

@@ -278,10 +278,13 @@ public sealed class AiRestorationBackendService : IAiRestorationBackend
             }
 
             MediaToolProcessResult result = await operation.ConfigureAwait(false);
-            if (result.TimedOut || result.ExitCode != 0)
+            string? runtimeFailure = FindFatalRuntimeFailure(result.StandardOutput, result.StandardError);
+            if (result.TimedOut || result.ExitCode != 0 || runtimeFailure is not null)
             {
                 AiDirectoryProcessDiagnostic failedDiagnostic = CreateDirectoryDiagnostic(session.Capabilities.ExecutablePath, arguments, result, stopwatch.Elapsed, expectedOutputFrames.Count, outputDirectory);
-                string failure = BuildDirectoryFailureDiagnostic(session.Capabilities.ExecutablePath, arguments, result, stopwatch.Elapsed) + Environment.NewLine + FormatDirectoryDiagnostic(failedDiagnostic);
+                string failure = BuildDirectoryFailureDiagnostic(session.Capabilities.ExecutablePath, arguments, result, stopwatch.Elapsed) +
+                    (runtimeFailure is null ? "" : $"{Environment.NewLine}AI restoration backend reported a fatal Vulkan runtime failure despite exit code {result.ExitCode}: {runtimeFailure}.") +
+                    Environment.NewLine + FormatDirectoryDiagnostic(failedDiagnostic);
                 _log?.Invoke(failure);
                 throw new AiRestorationValidationException(failure);
             }
@@ -342,6 +345,25 @@ public sealed class AiRestorationBackendService : IAiRestorationBackend
 
     internal static string FormatDirectoryDiagnostic(AiDirectoryProcessDiagnostic value) =>
         $"[AI NCNN Process] Command: {value.CommandLine}{Environment.NewLine}Exit Code: {value.ExitCode}; Execution Time: {value.Elapsed:g}; Expected Frames: {value.ExpectedFrames}; Restored Frames Produced: {value.RestoredFrames}{Environment.NewLine}First Output: {value.FirstOutputFileName ?? "<none>"} ({value.FirstOutputTimestamp?.ToString("O") ?? "<none>"}); Last Output: {value.LastOutputFileName ?? "<none>"} ({value.LastOutputTimestamp?.ToString("O") ?? "<none>"}){Environment.NewLine}Stdout: {value.StandardOutput}{Environment.NewLine}Stderr: {value.StandardError}";
+
+    /// <summary>
+    /// Real-ESRGAN's Vulkan backend can emit these fatal allocation/queue errors yet still
+    /// return exit code zero and create structurally valid black PNGs. Treat that as a failed
+    /// inference operation before those frames can become an apparently valid intermediate.
+    /// </summary>
+    internal static string? FindFatalRuntimeFailure(string? standardOutput, string? standardError)
+    {
+        string output = string.Concat(standardOutput, "\n", standardError);
+        string[] signatures =
+        {
+            "vkAllocateMemory failed",
+            "vkWaitForFences failed",
+            "vkQueueSubmit failed",
+            "Vulkan device lost"
+        };
+        return signatures.FirstOrDefault(signature =>
+            output.Contains(signature, StringComparison.OrdinalIgnoreCase));
+    }
 
     private static void AppendRuntimeArguments(List<string> arguments, NcnnRuntimeConfiguration? runtimeConfiguration)
     {

@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.90] - 2026-09-02
+
+### NCNN False-Success Fix
+
+- Detect fatal NCNN/Vulkan failures even when NCNN exits with code 0, preventing black-frame AI output.
+- Invalidate legacy tuning cache entries via schema v2 so safe retuning occurs.
+- Added regression coverage for false-success backend failures and legacy cache selections.
+
 ## [0.1.89] - 2026-09-02
 
 ### AI Terminal-Chunk EOF Fix

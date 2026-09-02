@@ -6,7 +6,9 @@ namespace MediaFlux.Services;
 /// <summary>Versioned, best-effort cache for successful NCNN runtime selections.</summary>
 public sealed class NcnnPerformanceTuningCacheService
 {
-    public const int CurrentSchemaVersion = 1;
+    // Version 2 rejects selections made before successful Vulkan errors were
+    // distinguished from healthy inference output.
+    public const int CurrentSchemaVersion = 2;
     private readonly string _path;
     private static readonly ConcurrentDictionary<string, object> Locks = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate;

@@ -131,6 +131,27 @@ public sealed class AiRestorationTests : IDisposable
     }
 
     [Fact]
+    public async Task DirectoryBatchRejectsFatalVulkanOutputEvenWhenNcnnReturnsSuccess()
+    {
+        string input = Path.Combine(_root, "input-vulkan-failure"), output = Path.Combine(_root, "output-vulkan-failure");
+        Directory.CreateDirectory(input);
+        string[] inputs = AiRestorationIntermediateVideoService.ExpectedFrames(input, 2);
+        string[] outputs = AiRestorationIntermediateVideoService.ExpectedFrames(output, 2);
+        foreach (string frame in inputs) WritePng(frame, 2, 3);
+        var runner = new DirectoryBatchRunner(outputs, 4, 6, TimeSpan.Zero, "vkAllocateMemory failed -2\nvkQueueSubmit failed -4");
+        var service = new AiRestorationBackendService(_root, runner);
+        var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "anime", AiScale = AiRestorationScale.X2, AiDevice = "Auto" };
+        var session = new AiRestorationSession(new(true, "ncnn-vulkan", "ai.exe", "test", true, new[] { "Auto" }, Array.Empty<AiRestorationModel>(), null), new("anime", "Anime", AiRestorationMode.Animation, new[] { AiRestorationScale.X2 }, Path.Combine(_root, "models"), "a.param", "a.bin", "ncnn-vulkan", "realesr-animevideov3-x2"));
+
+        AiRestorationValidationException exception = await Assert.ThrowsAsync<AiRestorationValidationException>(
+            () => service.ProcessDirectoryAsync(session, settings, input, output, outputs, null));
+
+        Assert.Contains("fatal Vulkan runtime failure", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vkAllocateMemory failed", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateFiles(output));
+    }
+
+    [Fact]
     public void RestoredFrameValidationRejectsMissingUnexpectedAndWrongSizedOutputs()
     {
         string input = Path.Combine(_root, "input"), output = Path.Combine(_root, "output");
@@ -409,9 +430,10 @@ public sealed class AiRestorationTests : IDisposable
     {
         private readonly IReadOnlyList<string> _outputs; private readonly int _width, _height; private readonly TimeSpan _delay;
         public List<MediaToolProcessRequest> Requests { get; } = new();
-        public DirectoryBatchRunner(IReadOnlyList<string> outputs, int width, int height, TimeSpan delay) { _outputs = outputs; _width = width; _height = height; _delay = delay; }
+        private readonly string _standardError;
+        public DirectoryBatchRunner(IReadOnlyList<string> outputs, int width, int height, TimeSpan delay, string standardError = "") { _outputs = outputs; _width = width; _height = height; _delay = delay; _standardError = standardError; }
         public async Task<MediaToolProcessResult> RunAsync(MediaToolProcessRequest request, CancellationToken cancellationToken = default)
-        { Requests.Add(request); foreach (string output in _outputs) { await Task.Delay(_delay, cancellationToken); WritePng(output, _width, _height); } return new MediaToolProcessResult { ExitCode = 0 }; }
+        { Requests.Add(request); foreach (string output in _outputs) { await Task.Delay(_delay, cancellationToken); WritePng(output, _width, _height); } return new MediaToolProcessResult { ExitCode = 0, StandardError = _standardError }; }
     }
     private sealed class CancellingBatchRunner : IMediaToolProcessRunner
     {
