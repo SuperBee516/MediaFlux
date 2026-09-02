@@ -196,7 +196,7 @@ public sealed class AiRestorationTests : IDisposable
         Assert.Equal(210, overall[^1]);
         Assert.True(File.Exists(result.Path));
         string plannerLog = Assert.Single(logs, log => log.StartsWith("[AI Chunk Planner]", StringComparison.Ordinal));
-        Assert.Contains("Resolution:", plannerLog); Assert.Contains("AI Scale:", plannerLog); Assert.Contains("GPU VRAM:", plannerLog); Assert.Contains("Estimated Bytes per Frame:", plannerLog); Assert.Contains("Storage-Limited Chunk Size:", plannerLog); Assert.Contains("VRAM-Limited Chunk Size:", plannerLog); Assert.Contains("Final Selected Chunk Size:", plannerLog); Assert.Contains("Constraint:", plannerLog);
+        Assert.Contains("Resolution:", plannerLog); Assert.Contains("AI Scale:", plannerLog); Assert.Contains("GPU VRAM:", plannerLog); Assert.Contains("Estimated Bytes per Frame:", plannerLog); Assert.Contains("Estimated Peak Extracted Storage:", plannerLog); Assert.Contains("Estimated Peak Restored Storage:", plannerLog); Assert.Contains("Estimated Intermediate Storage:", plannerLog); Assert.Contains("Safety Margin:", plannerLog); Assert.Contains("Final Required Storage:", plannerLog); Assert.Contains("Available Storage:", plannerLog); Assert.Contains("Storage-Limited Chunk Size:", plannerLog); Assert.Contains("VRAM-Limited Chunk Size:", plannerLog); Assert.Contains("Final Selected Chunk Size:", plannerLog); Assert.Contains("Constraint:", plannerLog);
         Assert.Equal(2, logs.Count(log => log.StartsWith("[AI Chunk ", StringComparison.Ordinal) && log.Length > 10 && char.IsDigit(log[10])));
         Assert.Contains("AI Planner Calibration Summary", timing.BuildSummary());
     }

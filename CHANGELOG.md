@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.86] - 2026-09-02
+
+### AI Storage Planner and Diagnostics
+
+- Corrected AI temporary storage estimation to use the peak active working set instead of cumulative video duration.
+- Accounted for active extracted frames, restored frames, intermediate video, active working files, and one safety margin.
+- Expanded planner diagnostics with peak storage components, safety margin, final required storage, and available storage.
+- Updated storage validation and regression coverage while preserving existing AI preview, restoration, planner, benchmark, and encode behavior.
+
 ## [0.1.85] - 2026-09-02
 
 ### AI Configuration and Provider Experience

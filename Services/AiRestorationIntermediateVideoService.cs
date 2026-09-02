@@ -51,8 +51,8 @@ public sealed class AiRestorationIntermediateVideoService
             var planner = new AiChunkPlanner();
             var plannerInput = new AiChunkPlannerInput(request.SourceWidth, request.SourceHeight, request.Settings.AiScale, dedicatedGpuVram, planningEstimate, session.Capabilities.Identity);
             AiChunkPlan chunkPlan = planner.Plan(plannerInput);
-            AiChunkPlannerDecision plannerDecision = planner.DescribeDecision(plannerInput, chunkPlan);
             AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot, chunkPlan.FrameCount);
+            AiChunkPlannerDecision plannerDecision = planner.DescribeDecision(plannerInput with { TemporaryStorageEstimate = estimate }, chunkPlan);
             _timing?.SetAiChunkPlannerDecision(plannerDecision);
             _log?.Invoke(FormatPlannerDecision(plannerDecision, session.Capabilities.Identity));
             AiProductionHardeningService.EnsureSpace(estimate); using (File.Create(Path.Combine(root, ".mediaflux-ai-staging"))) { }
@@ -246,7 +246,9 @@ public sealed class AiRestorationIntermediateVideoService
     private static string FormatPlannerDecision(AiChunkPlannerDecision decision, string backend) =>
         "[AI Chunk Planner]" + Environment.NewLine +
         $"Resolution: {decision.SourceWidth}x{decision.SourceHeight}; AI Scale: {(int)decision.AiScale}x; Estimated Bytes per Frame: {FormatBytes(decision.EstimatedBytesPerFrame)}" + Environment.NewLine +
-        $"Estimated Temporary Storage per Chunk: {FormatBytes(decision.EstimatedTemporaryStoragePerChunk)}; Available Temporary Storage: {FormatBytes(decision.AvailableTemporaryStorageBytes)}; GPU VRAM: {FormatBytes(decision.DedicatedGpuVramBytes)}" + Environment.NewLine +
+        $"Estimated Peak Extracted Storage: {FormatBytes(decision.EstimatedPeakExtractedStorageBytes)}; Estimated Peak Restored Storage: {FormatBytes(decision.EstimatedPeakRestoredStorageBytes)}" + Environment.NewLine +
+        $"Estimated Intermediate Storage: {FormatBytes(decision.EstimatedIntermediateStorageBytes)}; Active Working Files: {FormatBytes(decision.ActiveWorkingFilesBytes)}; Safety Margin: {FormatBytes(decision.SafetyMarginBytes)}" + Environment.NewLine +
+        $"Final Required Storage: {FormatBytes(decision.FinalRequiredStorageBytes)}; Available Storage: {FormatBytes(decision.AvailableTemporaryStorageBytes)}; GPU VRAM: {FormatBytes(decision.DedicatedGpuVramBytes)}" + Environment.NewLine +
         $"Default Chunk Size: {decision.DefaultChunkSize}; Storage-Limited Chunk Size: {decision.StorageLimitedChunkSize}; VRAM-Limited Chunk Size: {decision.VramLimitedChunkSize}; Final Selected Chunk Size: {decision.FinalSelectedChunkSize}" + Environment.NewLine +
         $"Constraint: {decision.DeterminingConstraint}; Decision Reason: {decision.DecisionReason}; Backend: {backend}.";
     private static string FormatChunkMetrics(AiChunkPerformanceMetrics metrics) =>

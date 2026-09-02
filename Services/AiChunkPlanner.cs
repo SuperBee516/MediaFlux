@@ -70,7 +70,9 @@ public sealed class AiChunkPlanner
                 ? "GPU VRAM"
                 : afterScale < resolutionDefault ? "AI scale"
                     : "Source resolution";
-        long estimatedChunkBytes = SaturatingMultiply(input.TemporaryStorageEstimate.ChunkEstimatedBytesPerFrame, plan.FrameCount);
+        long estimatedChunkBytes = input.TemporaryStorageEstimate.EstimatedBytes > 0
+            ? input.TemporaryStorageEstimate.EstimatedBytes
+            : SaturatingMultiply(input.TemporaryStorageEstimate.ChunkEstimatedBytesPerFrame, plan.FrameCount);
         return new(
             input.SourceWidth, input.SourceHeight, input.AiScale,
             input.TemporaryStorageEstimate.ChunkEstimatedBytesPerFrame,
@@ -82,7 +84,13 @@ public sealed class AiChunkPlanner
             vramLimit,
             plan.FrameCount,
             constraint,
-            plan.DecisionReason);
+            plan.DecisionReason,
+            input.TemporaryStorageEstimate.EstimatedPeakExtractedBytes,
+            input.TemporaryStorageEstimate.EstimatedPeakRestoredBytes,
+            input.TemporaryStorageEstimate.EstimatedIntermediateBytes,
+            input.TemporaryStorageEstimate.ActiveWorkingFilesBytes,
+            input.TemporaryStorageEstimate.SafetyMarginBytes,
+            estimatedChunkBytes);
     }
 
     private static int DefaultChunkSize(int pixels) => pixels <= 640 * 480 ? 720
@@ -143,4 +151,10 @@ public sealed record AiChunkPlannerDecision(
     int VramLimitedChunkSize,
     int FinalSelectedChunkSize,
     string DeterminingConstraint,
-    string DecisionReason);
+    string DecisionReason,
+    long EstimatedPeakExtractedStorageBytes = 0,
+    long EstimatedPeakRestoredStorageBytes = 0,
+    long EstimatedIntermediateStorageBytes = 0,
+    long ActiveWorkingFilesBytes = 0,
+    long SafetyMarginBytes = 0,
+    long FinalRequiredStorageBytes = 0);
