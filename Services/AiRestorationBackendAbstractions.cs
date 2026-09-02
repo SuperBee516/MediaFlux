@@ -3,6 +3,11 @@ using MediaFlux.Models;
 
 namespace MediaFlux.Services;
 
+public sealed record AiDirectoryProcessDiagnostic(
+    string CommandLine, int ExitCode, TimeSpan Elapsed, string StandardOutput, string StandardError,
+    int ExpectedFrames, int RestoredFrames, string? FirstOutputFileName, string? LastOutputFileName,
+    DateTimeOffset? FirstOutputTimestamp, DateTimeOffset? LastOutputTimestamp, bool TimedOut = false, string? ExecutablePath = null);
+
 /// <summary>Persisted preference for the optional AI restoration engine.</summary>
 public enum AiBackendSelection { Auto, NcnnVulkan, NvidiaTensorRt }
 
@@ -31,7 +36,7 @@ public interface IAiRestorationBackend
     Task<AiRestorationModel> ValidateSelectionAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default);
     Task<AiRestorationSession> CreateSessionAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default);
     Task ProcessFrameAsync(AiRestorationSession session, VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null);
-    Task ProcessDirectoryAsync(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory, IReadOnlyList<string> expectedOutputFrames, Action<int>? completedFrames, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null, TimeSpan? timeout = null);
+    Task<AiDirectoryProcessDiagnostic> ProcessDirectoryAsync(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory, IReadOnlyList<string> expectedOutputFrames, Action<int>? completedFrames, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null, TimeSpan? timeout = null);
 }
 
 /// <summary>Discovery-only TensorRT placeholder. It never executes inference.</summary>
@@ -72,7 +77,7 @@ public sealed class TensorRtAiRestorationBackend : IAiRestorationBackend
     public async Task<AiRestorationModel> ValidateSelectionAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default) => throw new AiRestorationValidationException((await GetMetadataAsync(settings, cancellationToken).ConfigureAwait(false)).Reason!);
     public async Task<AiRestorationSession> CreateSessionAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default) => throw new AiRestorationValidationException((await GetMetadataAsync(settings, cancellationToken).ConfigureAwait(false)).Reason!);
     public Task ProcessFrameAsync(AiRestorationSession session, VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null) => throw new AiRestorationValidationException("TensorRT inference is not implemented.");
-    public Task ProcessDirectoryAsync(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory, IReadOnlyList<string> expectedOutputFrames, Action<int>? completedFrames, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null, TimeSpan? timeout = null) => throw new AiRestorationValidationException("TensorRT inference is not implemented.");
+    public Task<AiDirectoryProcessDiagnostic> ProcessDirectoryAsync(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory, IReadOnlyList<string> expectedOutputFrames, Action<int>? completedFrames, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null, TimeSpan? timeout = null) => throw new AiRestorationValidationException("TensorRT inference is not implemented.");
 
 }
 

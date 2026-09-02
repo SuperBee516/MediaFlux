@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.88] - 2026-09-02
+
+### AI Restoration Forensic Diagnostics
+
+- Expanded pre-NCNN `ExtractedInput` forensic diagnostics with FFmpeg extraction details, frame-set comparisons, and explicit NCNN-not-invoked reporting.
+- Preserved failed AI working directories for investigation and added regression coverage for extracted-input validation failures.
+- Preserved AI restoration and validation behavior.
+
 ## [0.1.87] - 2026-09-02
 
 ### AI Throughput Investigation

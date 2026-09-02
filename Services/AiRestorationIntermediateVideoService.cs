@@ -28,11 +28,29 @@ public sealed class AiRestorationIntermediateVideoService
     public async Task<AiIntermediateVideoResult> CreateAsync(AiIntermediateVideoRequest request, IProgress<AiIntermediateProgress>? progress = null, CancellationToken token = default)
     {
         if (!File.Exists(request.SourcePath)) throw new FileNotFoundException("AI intermediate source is unavailable.", request.SourcePath);
-        if (request.FrameRate is < 1 or > 240 || double.IsNaN(request.FrameRate)) throw new AiRestorationValidationException("AI intermediate processing requires a known constant frame rate between 1 and 240 fps; VFR sources are not supported yet.");
-        if (!request.Plan.UsesAi) throw new AiRestorationValidationException("AI intermediate processing requires AI restoration to be enabled.");
+        if (request.FrameRate is < 1 or > 240 || double.IsNaN(request.FrameRate))
+        {
+            var exception = new AiRestorationValidationException("AI intermediate processing requires a known constant frame rate between 1 and 240 fps; VFR sources are not supported yet.");
+            _log?.Invoke(new AiForensicContext(request.SourcePath, "<working-directory-not-created>", token).BuildReport(exception));
+            throw exception;
+        }
+        if (!request.Plan.UsesAi)
+        {
+            var exception = new AiRestorationValidationException("AI intermediate processing requires AI restoration to be enabled.");
+            _log?.Invoke(new AiForensicContext(request.SourcePath, "<working-directory-not-created>", token).BuildReport(exception));
+            throw exception;
+        }
         AiRestorationSession session;
-        using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiPreparation))
-        { session = await _backend.CreateSessionAsync(request.Settings, token).ConfigureAwait(false); scope?.Complete(); }
+        try
+        {
+            using PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiPreparation);
+            session = await _backend.CreateSessionAsync(request.Settings, token).ConfigureAwait(false); scope?.Complete();
+        }
+        catch (AiRestorationValidationException exception)
+        {
+            _log?.Invoke(new AiForensicContext(request.SourcePath, "<working-directory-not-created>", token).BuildReport(exception));
+            throw;
+        }
         _timing?.SetAiBackend(session.Capabilities.BackendId, session.Capabilities.ExecutablePath);
         AiChunkHardwareMetricsCollector? activeChunkHardware = null;
         using HardwarePerformanceSampler? hardwareSampler = _timing is null ? null : new HardwarePerformanceSampler(
@@ -40,6 +58,7 @@ public sealed class AiRestorationIntermediateVideoService
             sampleObserver: sample => Volatile.Read(ref activeChunkHardware)?.Record(sample));
         hardwareSampler?.SampleNow();
         Directory.CreateDirectory(_stagingRoot); AiProductionHardeningService.CleanupOrphans(_stagingRoot); string root = Path.Combine(_stagingRoot, "ai-intermediate-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root); AiProductionHardeningService.Register(root);
+        var forensic = new AiForensicContext(request.SourcePath, root, token);
         try
         {
             TimeSpan duration = request.Duration ?? request.SourceDuration;
@@ -68,14 +87,18 @@ public sealed class AiRestorationIntermediateVideoService
                 int count = Math.Min(chunkPlan.FrameCount, total - offset);
                 AiProductionHardeningService.EnsureSpace(AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, count, request.Settings.AiScale, _stagingRoot, chunkPlan.FrameCount), runtime: true);
                 string chunk = Path.Combine(root, $"chunk-{chunkIndex:D5}"), input = Path.Combine(chunk, "input"), output = Path.Combine(chunk, "output"); Directory.CreateDirectory(input); Directory.CreateDirectory(output);
+                forensic.SetChunk(chunkIndex + 1, chunkTotal, chunk, input, output, count);
                 progress?.Report(new(AiIntermediateStage.ExtractingFrames, offset, total, $"Extracting AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
                 long stageStartedAt = Stopwatch.GetTimestamp();
                 TimeSpan ffmpegProcessLaunchElapsed = TimeSpan.Zero;
+                IReadOnlyList<string> extractionArguments = BuildExtractArguments(request, offset, count, input);
+                MediaToolProcessResult extractionProcess;
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiExtraction))
-                { MediaToolProcessResult extractionProcess = await RunAsync(BuildExtractArguments(request, offset, count, input), "extract AI frames", chunks, token).ConfigureAwait(false); ffmpegProcessLaunchElapsed += extractionProcess.ProcessLaunchElapsed; scope?.Complete(); }
+                { extractionProcess = await RunAsync(extractionArguments, "extract AI frames", chunks, token).ConfigureAwait(false); ffmpegProcessLaunchElapsed += extractionProcess.ProcessLaunchElapsed; scope?.Complete(); }
                 TimeSpan extractionElapsed = Stopwatch.GetElapsedTime(stageStartedAt);
                 TimeSpan validationElapsed = TimeSpan.Zero;
                 string[] extracted = ExpectedFrames(input, count);
+                forensic.SetValidation("ExtractedInput", input, extracted, _ffmpegPath, extractionArguments, extractionProcess);
                 stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
                 { ValidateFrameSet(input, extracted); scope?.Complete(); }
@@ -94,8 +117,9 @@ public sealed class AiRestorationIntermediateVideoService
                 string[] processed = ExpectedFrames(output, count);
                 progress?.Report(new(AiIntermediateStage.AiProcessing, offset, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})"));
                 stageStartedAt = Stopwatch.GetTimestamp();
+                AiDirectoryProcessDiagnostic ncnnDiagnostic;
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiProcessing))
-                { await _backend.ProcessDirectoryAsync(
+                { ncnnDiagnostic = await _backend.ProcessDirectoryAsync(
                     session,
                     request.Settings,
                     input,
@@ -104,10 +128,22 @@ public sealed class AiRestorationIntermediateVideoService
                     completed => progress?.Report(new(AiIntermediateStage.AiProcessing, offset + completed, total, $"AI restoring frames (chunk {chunkIndex + 1}/{chunkTotal})")),
                     token,
                     runtimeSelection.Configuration).ConfigureAwait(false); scope?.Complete(); }
+                forensic.NcnnDiagnostic = ncnnDiagnostic;
                 TimeSpan inferenceElapsed = Stopwatch.GetElapsedTime(stageStartedAt);
+                forensic.SetValidation("RestoredOutput", output, processed, null, null, null);
                 stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
-                { ValidateRestoredFrameSet(extracted, processed, request.Settings.AiScale); scope?.Complete(); }
+                {
+                    try { ValidateRestoredFrameSet(extracted, processed, request.Settings.AiScale, chunkIndex + 1, chunkTotal); }
+                    catch (AiRestorationValidationException exception)
+                    {
+                        string diagnostic = $"AI Restoration Failure{Environment.NewLine}Chunk: {chunkIndex + 1}/{chunkTotal}{Environment.NewLine}Reason: NCNN completed successfully but produced an invalid frame set.{Environment.NewLine}NCNN Exit Code: {ncnnDiagnostic.ExitCode}{Environment.NewLine}Frames Expected: {ncnnDiagnostic.ExpectedFrames}{Environment.NewLine}Frames Produced: {ncnnDiagnostic.RestoredFrames}{Environment.NewLine}Validation: Failed{Environment.NewLine}Recommendation: Investigate backend output generation before pipeline retry.{Environment.NewLine}{exception.Message}";
+                        _log?.Invoke($"[AI Chunk {chunkIndex + 1}] Frames Expected: {count}; Frames Restored: {ncnnDiagnostic.RestoredFrames}; Frames Validated: 0; Frames Failed: {Math.Max(0, count - ncnnDiagnostic.RestoredFrames)}; Elapsed Extraction: {Format(extractionElapsed)}; Elapsed Restoration: {Format(inferenceElapsed)}; Elapsed Validation: {Format(Stopwatch.GetElapsedTime(stageStartedAt))}; Elapsed Reassembly: <not-run>; Peak RAM: {FormatBytes(Process.GetCurrentProcess().PeakWorkingSet64)}; Peak VRAM: {FormatBytes(chunkHardware.Snapshot().PeakVramUsedBytes)}; GPU Utilization Average: {Percent(chunkHardware.Snapshot().AverageGpuPercent)}; CPU Utilization Average: {Percent(chunkHardware.Snapshot().AverageCpuPercent)}; Disk Throughput Average: {BytesPerSecond(chunkHardware.Snapshot().AverageDiskThroughputBytesPerSecond)}.");
+                        _log?.Invoke(diagnostic);
+                        throw new AiRestorationValidationException(diagnostic);
+                    }
+                    scope?.Complete();
+                }
                 validationElapsed += Stopwatch.GetElapsedTime(stageStartedAt);
                 string chunkVideo = Path.Combine(root, $"chunk-{chunkIndex:D5}.mkv");
                 progress?.Report(new(AiIntermediateStage.Reassembling, offset + count, total, $"Reassembling AI frames (chunk {chunkIndex + 1}/{chunkTotal})"));
@@ -156,6 +192,12 @@ public sealed class AiRestorationIntermediateVideoService
             { result = await ValidateAsync(staging, duration, total, request.FrameRate, request.Settings.AiScale, token).ConfigureAwait(false); scope?.Complete(); }
             File.Move(staging, final, true); return result with { Path = final, StagingDirectory = root };
         }
+        catch (AiRestorationValidationException exception)
+        {
+            string report = forensic.BuildReport(exception);
+            _log?.Invoke(report);
+            throw new AiRestorationValidationException($"{exception.Message}{Environment.NewLine}Preserved AI working directory: {root}");
+        }
         catch { try { using PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.TemporaryFileCleanup); if (Directory.Exists(root)) Directory.Delete(root, true); scope?.Complete(); } catch { } throw; }
         finally { AiProductionHardeningService.Unregister(root); }
     }
@@ -163,23 +205,146 @@ public sealed class AiRestorationIntermediateVideoService
     internal static string[] ExpectedFrames(string directory, int count) => Enumerable.Range(0, count).Select(index => Path.Combine(directory, $"frame-{index:D8}.png")).ToArray();
     internal static void ValidateFrameSet(string directory, IReadOnlyList<string> expected)
     {
-        string[] actual = Directory.EnumerateFiles(directory, "*.png").OrderBy(path => path, StringComparer.Ordinal).ToArray();
-        if (!actual.SequenceEqual(expected, StringComparer.Ordinal) || actual.Any(path => new FileInfo(path).Length < 64))
-            throw new AiRestorationValidationException("AI frame set is missing, incomplete, or contains unexpected frames.");
+        AiFrameSetValidationReport report = AuditFrameSet(directory, expected, null, 0, 0);
+        if (!report.IsValid) throw new AiRestorationValidationException(report.Format());
     }
-    internal static void ValidateRestoredFrameSet(IReadOnlyList<string> inputs, IReadOnlyList<string> outputs, AiRestorationScale scale)
+    internal static void ValidateRestoredFrameSet(IReadOnlyList<string> inputs, IReadOnlyList<string> outputs, AiRestorationScale scale, int chunkNumber = 0, int chunkTotal = 0)
     {
         if (inputs.Count != outputs.Count || inputs.Count == 0)
             throw new AiRestorationValidationException("AI restored-frame validation requires matching non-empty input and output frame sets.");
-        ValidateFrameSet(Path.GetDirectoryName(outputs[0])!, outputs);
+        AiFrameSetValidationReport report = AuditFrameSet(Path.GetDirectoryName(outputs[0])!, outputs, inputs, chunkNumber, chunkTotal);
         for (int index = 0; index < inputs.Count; index++)
         {
+            if (!File.Exists(inputs[index]) || !File.Exists(outputs[index])) continue;
+            try
+            {
             (int inputWidth, int inputHeight) = ReadPngDimensions(inputs[index]);
             (int outputWidth, int outputHeight) = ReadPngDimensions(outputs[index]);
             int expectedWidth = checked(inputWidth * (int)scale), expectedHeight = checked(inputHeight * (int)scale);
             if (outputWidth != expectedWidth || outputHeight != expectedHeight)
-                throw new AiRestorationValidationException($"AI restored frame '{Path.GetFileName(outputs[index])}' has invalid dimensions {outputWidth}x{outputHeight}; expected {expectedWidth}x{expectedHeight}.");
+                report.DimensionFailures.Add($"{Path.GetFileName(outputs[index])} ({outputWidth}x{outputHeight}; expected {expectedWidth}x{expectedHeight})");
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or AiRestorationValidationException)
+            { report.UnreadableImages.Add($"{Path.GetFileName(outputs[index])} ({exception.Message})"); }
         }
+        if (!report.IsValid) throw new AiRestorationValidationException(report.Format());
+    }
+    internal static AiFrameSetValidationReport AuditFrameSet(string restoredDirectory, IReadOnlyList<string> expected, IReadOnlyList<string>? inputs, int chunkNumber, int chunkTotal)
+    {
+        var report = new AiFrameSetValidationReport(chunkNumber, chunkTotal, inputs is { Count: > 0 } ? Path.GetDirectoryName(inputs[0])! : "<not-applicable>", restoredDirectory, expected.Count);
+        report.ValidationStartedAt = DateTimeOffset.UtcNow;
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        FileInfo[] files;
+        try { files = Directory.Exists(restoredDirectory) ? Directory.EnumerateFiles(restoredDirectory).Select(path => new FileInfo(path)).OrderBy(file => file.Name, StringComparer.Ordinal).ToArray() : Array.Empty<FileInfo>(); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { report.EnumerationFailures.Add(exception.Message); files = Array.Empty<FileInfo>(); }
+        report.DirectoryEnumerationElapsed = stopwatch.Elapsed;
+        report.ActualFrameCount = files.Length;
+        var expectedNames = new HashSet<string>(expected.Select(path => Path.GetFileName(path)!), StringComparer.Ordinal);
+        var firstSnapshot = files.ToDictionary(file => file.FullName, file => (file.Length, file.LastWriteTimeUtc), StringComparer.OrdinalIgnoreCase);
+        stopwatch.Restart();
+        foreach (string expectedPath in expected)
+            if (!File.Exists(expectedPath)) report.MissingFrameNumbers.Add(Path.GetFileName(expectedPath));
+        foreach (FileInfo file in files)
+        {
+            if (!expectedNames.Contains(file.Name)) report.UnexpectedFilenames.Add(file.Name);
+            if (!file.Extension.Equals(".png", StringComparison.OrdinalIgnoreCase)) report.IncorrectExtensions.Add(file.Name);
+            if (file.Length == 0) report.ZeroByteFiles.Add(file.Name);
+            if (file.Extension.Equals(".png", StringComparison.OrdinalIgnoreCase))
+            {
+                try { ReadPngDimensions(file.FullName); }
+                catch (AiRestorationValidationException exception) { report.UnreadableImages.Add($"{file.Name} ({exception.Message})"); report.CorruptPngFiles.Add(file.Name); }
+                catch (IOException exception) { report.UnreadableImages.Add($"{file.Name} ({exception.Message})"); }
+            }
+            string stem = Path.GetFileNameWithoutExtension(file.Name);
+            if (stem.StartsWith("frame-", StringComparison.OrdinalIgnoreCase) && int.TryParse(stem[6..], NumberStyles.None, CultureInfo.InvariantCulture, out int number))
+            {
+                if (!file.Name.Equals($"frame-{number:D8}.png", StringComparison.Ordinal)) report.FilenameOrderingErrors.Add(file.Name);
+            }
+        }
+        foreach (IGrouping<int, FileInfo> group in files.Where(file => Path.GetFileNameWithoutExtension(file.Name).StartsWith("frame-", StringComparison.OrdinalIgnoreCase))
+            .Select(file => (File: file, Stem: Path.GetFileNameWithoutExtension(file.Name)))
+            .Where(value => int.TryParse(value.Stem[6..], NumberStyles.None, CultureInfo.InvariantCulture, out _))
+            .GroupBy(value => int.Parse(value.Stem[6..], CultureInfo.InvariantCulture), value => value.File))
+            if (group.Count() > 1) report.DuplicateFrameNumbers.Add($"{group.Key:D8}: {string.Join(", ", group.Select(file => file.Name))}");
+        report.ImageVerificationElapsed = stopwatch.Elapsed;
+        stopwatch.Restart();
+        Thread.Sleep(TimeSpan.FromMilliseconds(50));
+        foreach (FileInfo file in files)
+        {
+            try
+            {
+                FileInfo refreshed = new(file.FullName);
+                if (!refreshed.Exists || !firstSnapshot.TryGetValue(file.FullName, out var first) || first.Length != refreshed.Length || first.LastWriteTimeUtc != refreshed.LastWriteTimeUtc)
+                    report.FilesStillChanging.Add(file.Name);
+            }
+            catch (IOException) { report.FilesStillChanging.Add(file.Name); }
+        }
+        report.FilesystemWaitElapsed = stopwatch.Elapsed;
+        report.ValidationFinishedAt = DateTimeOffset.UtcNow;
+        return report;
+    }
+
+    internal sealed class AiFrameSetValidationReport
+    {
+        public AiFrameSetValidationReport(int chunkNumber, int chunkTotal, string sourceDirectory, string restoredDirectory, int expectedFrameCount)
+        { ChunkNumber = chunkNumber; ChunkTotal = chunkTotal; SourceDirectory = sourceDirectory; RestoredDirectory = restoredDirectory; ExpectedFrameCount = expectedFrameCount; }
+        public int ChunkNumber { get; } public int ChunkTotal { get; } public string SourceDirectory { get; } public string RestoredDirectory { get; } public int ExpectedFrameCount { get; } public int ActualFrameCount { get; set; }
+        public DateTimeOffset ValidationStartedAt { get; set; } public DateTimeOffset ValidationFinishedAt { get; set; } public TimeSpan DirectoryEnumerationElapsed { get; set; } public TimeSpan ImageVerificationElapsed { get; set; } public TimeSpan FilesystemWaitElapsed { get; set; }
+        public List<string> MissingFrameNumbers { get; } = new(); public List<string> DuplicateFrameNumbers { get; } = new(); public List<string> UnexpectedFilenames { get; } = new(); public List<string> ZeroByteFiles { get; } = new(); public List<string> UnreadableImages { get; } = new(); public List<string> FilesStillChanging { get; } = new(); public List<string> IncorrectExtensions { get; } = new(); public List<string> FilenameOrderingErrors { get; } = new(); public List<string> CorruptPngFiles { get; } = new(); public List<string> DimensionFailures { get; } = new(); public List<string> EnumerationFailures { get; } = new();
+        public bool IsValid => MissingFrameNumbers.Count == 0 && DuplicateFrameNumbers.Count == 0 && UnexpectedFilenames.Count == 0 && ZeroByteFiles.Count == 0 && UnreadableImages.Count == 0 && FilesStillChanging.Count == 0 && IncorrectExtensions.Count == 0 && FilenameOrderingErrors.Count == 0 && CorruptPngFiles.Count == 0 && DimensionFailures.Count == 0 && EnumerationFailures.Count == 0 && ActualFrameCount == ExpectedFrameCount;
+        public string Format() => $"AI Frame Set Validation{Environment.NewLine}Chunk: {(ChunkNumber > 0 ? $"{ChunkNumber}/{ChunkTotal}" : "<not-applicable>")}{Environment.NewLine}Source Frame Directory: {SourceDirectory}{Environment.NewLine}Restored Frame Directory: {RestoredDirectory}{Environment.NewLine}Expected Frame Count: {ExpectedFrameCount}{Environment.NewLine}Actual Frame Count: {ActualFrameCount}{Environment.NewLine}Validation Start: {ValidationStartedAt:O}{Environment.NewLine}Validation Finish: {ValidationFinishedAt:O}{Environment.NewLine}Directory Enumeration Time: {DirectoryEnumerationElapsed:g}{Environment.NewLine}Image Verification Time: {ImageVerificationElapsed:g}{Environment.NewLine}Time Waiting for Filesystem: {FilesystemWaitElapsed:g}{Environment.NewLine}Missing: {List(MissingFrameNumbers)}{Environment.NewLine}Duplicate: {List(DuplicateFrameNumbers)}{Environment.NewLine}Unexpected: {List(UnexpectedFilenames)}{Environment.NewLine}Zero-byte: {List(ZeroByteFiles)}{Environment.NewLine}Unreadable: {List(UnreadableImages)}{Environment.NewLine}Output files were still being written: {List(FilesStillChanging)}{Environment.NewLine}Incorrect extension: {List(IncorrectExtensions)}{Environment.NewLine}Filename ordering errors: {List(FilenameOrderingErrors)}{Environment.NewLine}Corrupt PNG: {List(CorruptPngFiles)}{Environment.NewLine}Dimension failures: {List(DimensionFailures)}{Environment.NewLine}Enumeration failures: {List(EnumerationFailures)}";
+        private static string List(IReadOnlyCollection<string> values) => values.Count == 0 ? "none" : string.Join(Environment.NewLine, values);
+    }
+
+    private sealed class AiForensicContext
+    {
+        private readonly string _sourcePath, _root;
+        private readonly CancellationToken _token;
+        private int _chunkIndex, _chunkTotal, _expectedCount;
+        private string? _chunkDirectory, _inputDirectory, _outputDirectory;
+        private string _validationStage = "<not-started>";
+        private string? _validationDirectory;
+        private IReadOnlyList<string>? _validationExpected;
+        private string? _extractionExecutable;
+        private IReadOnlyList<string>? _extractionArguments;
+        private MediaToolProcessResult? _extractionResult;
+        public AiDirectoryProcessDiagnostic? NcnnDiagnostic { get; set; }
+        public AiForensicContext(string sourcePath, string root, CancellationToken token) { _sourcePath = sourcePath; _root = root; _token = token; }
+        public void SetChunk(int chunkIndex, int chunkTotal, string chunkDirectory, string inputDirectory, string outputDirectory, int expectedCount)
+        { _chunkIndex = chunkIndex; _chunkTotal = chunkTotal; _chunkDirectory = chunkDirectory; _inputDirectory = inputDirectory; _outputDirectory = outputDirectory; _expectedCount = expectedCount; }
+        public void SetValidation(string stage, string directory, IReadOnlyList<string> expected, string? extractionExecutable, IReadOnlyList<string>? extractionArguments, MediaToolProcessResult? extractionResult)
+        { _validationStage = stage; _validationDirectory = directory; _validationExpected = expected; _extractionExecutable = extractionExecutable; _extractionArguments = extractionArguments; _extractionResult = extractionResult; }
+        public string BuildReport(Exception exception)
+        {
+            DateTimeOffset started = DateTimeOffset.UtcNow;
+            string? directory = _validationDirectory ?? _outputDirectory;
+            FileInfo[] actual = Enumerate(directory);
+            string[] expected = _validationExpected?.ToArray() ?? (directory is null ? Array.Empty<string>() : ExpectedFrames(directory, _expectedCount));
+            var expectedNames = new HashSet<string>(expected.Select(path => Path.GetFileName(path)!), StringComparer.Ordinal);
+            string[] missing = expected.Where(path => !File.Exists(path)).Select(path => Path.GetFileName(path)!).ToArray();
+            string[] unexpected = actual.Select(file => file.Name).Where(name => !expectedNames.Contains(name)).ToArray();
+            var numbered = actual.Select(file => (File: file, Stem: Path.GetFileNameWithoutExtension(file.Name)))
+                .Where(value => value.Stem.StartsWith("frame-", StringComparison.OrdinalIgnoreCase) && int.TryParse(value.Stem[6..], NumberStyles.None, CultureInfo.InvariantCulture, out _))
+                .Select(value => (value.File, Number: int.Parse(value.Stem[6..], CultureInfo.InvariantCulture))).ToArray();
+            string[] duplicates = numbered.GroupBy(value => value.Number).Where(group => group.Count() > 1).Select(group => $"{group.Key:D8}: {string.Join(", ", group.Select(value => value.File.Name))}").ToArray();
+            int[] numbers = numbered.Select(value => value.Number).Distinct().OrderBy(value => value).ToArray();
+            string[] gaps = numbers.Length < 2 ? Array.Empty<string>() : Enumerable.Range(numbers[0], numbers[^1] - numbers[0] + 1).Except(numbers).Select(value => $"frame-{value:D8}.png").ToArray();
+            string pattern = numbered.Length == 0 ? "none" : string.Join(", ", numbered.GroupBy(value => (Digits: Path.GetFileNameWithoutExtension(value.File.Name).Length - 6, Extension: value.File.Extension), value => value.File.Name).Select(group => $"frame-{'0'}x{group.Key.Digits}{group.Key.Extension} ({group.Count()})"));
+            DriveInfo? drive = TryGetDrive(_root);
+            DateTimeOffset finished = DateTimeOffset.UtcNow;
+            AiDirectoryProcessDiagnostic? process = NcnnDiagnostic;
+            string ncnnNotInvoked = "not invoked (validation failed before inference)";
+            string extractionArguments = _extractionArguments is null ? "<not-run>" : string.Join(" ", _extractionArguments);
+            string extractionExitCode = _extractionResult?.ExitCode.ToString(CultureInfo.InvariantCulture) ?? "<not-run>";
+            string extractionTimedOut = _extractionResult?.TimedOut.ToString() ?? "<not-run>";
+            return $"AI Restoration Forensic Failure Report{Environment.NewLine}Validation Stage: {_validationStage}{Environment.NewLine}Chunk: {(_chunkIndex > 0 ? $"{_chunkIndex}/{_chunkTotal}" : "<not-started>")}{Environment.NewLine}Source File: {_sourcePath}{Environment.NewLine}Working Directory (preserved): {_root}{Environment.NewLine}Chunk Working Directory: {_chunkDirectory ?? "<not-created>"}{Environment.NewLine}Input Directory: {_inputDirectory ?? "<not-created>"}{Environment.NewLine}Output Directory: {_outputDirectory ?? "<not-created>"}{Environment.NewLine}Validation Directory: {directory ?? "<not-created>"}{Environment.NewLine}Expected Frame Count: {expected.Length}{Environment.NewLine}Actual Frame Count: {actual.Length}{Environment.NewLine}First/Last Expected Frame: {Path.GetFileName(expected.FirstOrDefault()) ?? "none"} / {Path.GetFileName(expected.LastOrDefault()) ?? "none"}{Environment.NewLine}First/Last Actual Frame: {actual.FirstOrDefault()?.Name ?? "none"} / {actual.LastOrDefault()?.Name ?? "none"}{Environment.NewLine}Missing Frame Filenames ({missing.Length}; first 50): {List(missing, 50)}{Environment.NewLine}Unexpected Frame Filenames ({unexpected.Length}; first 50): {List(unexpected, 50)}{Environment.NewLine}Duplicate Frame Filenames: {List(duplicates, 50)}{Environment.NewLine}Sequential Numbering Gaps: {List(gaps, 50)}{Environment.NewLine}Frame Numbering Pattern Detected: {pattern}{Environment.NewLine}Zero-byte Files: {List(actual.Where(file => file.Length == 0).Select(file => file.Name), 50)}{Environment.NewLine}Corrupt/Unreadable PNGs: {List(actual.Where(file => file.Extension.Equals(".png", StringComparison.OrdinalIgnoreCase)).Where(file => !IsReadablePng(file.FullName)).Select(file => file.Name), 50)}{Environment.NewLine}Directory File Count/Listing Summary: {actual.Length}; {List(actual.Select(file => file.Name), 50)}{Environment.NewLine}FFmpeg Extraction Executable: {_extractionExecutable ?? "<not-run>"}{Environment.NewLine}FFmpeg Extraction Arguments: {extractionArguments}{Environment.NewLine}FFmpeg Extraction Exit Code: {extractionExitCode}; Timed Out: {extractionTimedOut}; Stderr: {LastLines(_extractionResult?.StandardError, 100)}{Environment.NewLine}NCNN Executable: {process?.ExecutablePath ?? ncnnNotInvoked}{Environment.NewLine}NCNN Arguments: {process?.CommandLine ?? ncnnNotInvoked}{Environment.NewLine}NCNN Exit Code: {process?.ExitCode.ToString(CultureInfo.InvariantCulture) ?? ncnnNotInvoked}{Environment.NewLine}Process Runtime: {process?.Elapsed.ToString("g") ?? ncnnNotInvoked}{Environment.NewLine}Timed Out: {process?.TimedOut.ToString() ?? ncnnNotInvoked}; Cancellation Requested: {_token.IsCancellationRequested}{Environment.NewLine}NCNN Stdout (last 100 lines):{Environment.NewLine}{LastLines(process?.StandardOutput, 100)}{Environment.NewLine}NCNN Stderr (last 100 lines):{Environment.NewLine}{LastLines(process?.StandardError, 100)}{Environment.NewLine}Validation Start: {started:O}{Environment.NewLine}Validation End: {finished:O}{Environment.NewLine}Validation Duration: {(finished - started):g}{Environment.NewLine}Filesystem Stabilization Attempts: 1 observation only (no retry){Environment.NewLine}Directory Enumeration Retries: 0{Environment.NewLine}Total Files in Working Directory: {CountFiles(_root)}{Environment.NewLine}Disk Free Space: {(drive is null ? "<unavailable>" : FormatBytes(drive.AvailableFreeSpace))}{Environment.NewLine}Inner Exception Details:{Environment.NewLine}{exception}";
+        }
+        private static FileInfo[] Enumerate(string? directory) { try { return directory is not null && Directory.Exists(directory) ? Directory.EnumerateFiles(directory).Select(path => new FileInfo(path)).OrderBy(file => file.Name, StringComparer.Ordinal).ToArray() : Array.Empty<FileInfo>(); } catch { return Array.Empty<FileInfo>(); } }
+        private static long CountFiles(string directory) { try { return Directory.Exists(directory) ? Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).LongCount() : 0; } catch { return -1; } }
+        private static DriveInfo? TryGetDrive(string path) { try { string? root = Path.GetPathRoot(path); return string.IsNullOrWhiteSpace(root) ? null : new DriveInfo(root); } catch { return null; } }
+        private static string LastLines(string? value, int count) => string.IsNullOrWhiteSpace(value) ? "<none>" : string.Join(Environment.NewLine, value.Replace("\r", "").Split('\n').TakeLast(count));
+        private static string List(IEnumerable<string> values, int limit) { string[] array = values.ToArray(); return array.Length == 0 ? "none" : string.Join(Environment.NewLine, array.Take(limit)); }
+        private static bool IsReadablePng(string path) { try { ReadPngDimensions(path); return true; } catch { return false; } }
     }
     private static (int Width, int Height) ReadPngDimensions(string path)
     {
@@ -255,7 +420,7 @@ public sealed class AiRestorationIntermediateVideoService
         $"Default Chunk Size: {decision.DefaultChunkSize}; Storage-Limited Chunk Size: {decision.StorageLimitedChunkSize}; VRAM-Limited Chunk Size: {decision.VramLimitedChunkSize}; Final Selected Chunk Size: {decision.FinalSelectedChunkSize}" + Environment.NewLine +
         $"Constraint: {decision.DeterminingConstraint}; Decision Reason: {decision.DecisionReason}; Backend: {backend}.";
     private static string FormatChunkMetrics(AiChunkPerformanceMetrics metrics) =>
-        $"[AI Chunk {metrics.ChunkNumber}] Frames: {metrics.FrameCount}; Extraction: {Format(metrics.ExtractionElapsed)}; Inference: {Format(metrics.InferenceElapsed)}; Validation: {Format(metrics.ValidationElapsed)}; Reassembly: {Format(metrics.ReassemblyElapsed)}; Startup/Shutdown: {Format(metrics.StartupShutdownOverhead)}; FFmpeg Launch: {Format(metrics.FfmpegProcessLaunchElapsed)}; Total: {Format(metrics.TotalElapsed)}; FPS: {metrics.EffectiveFramesPerSecond:0.##}; GPU Avg/Peak: {Percent(metrics.Hardware.AverageGpuPercent)}/{Percent(metrics.Hardware.PeakGpuPercent)}; VRAM Avg/Peak: {FormatBytes(metrics.Hardware.AverageVramUsedBytes)}/{FormatBytes(metrics.Hardware.PeakVramUsedBytes)}; CPU Avg: {Percent(metrics.Hardware.AverageCpuPercent)}; Disk Avg: {BytesPerSecond(metrics.Hardware.AverageDiskThroughputBytesPerSecond)}.";
+        $"[AI Chunk {metrics.ChunkNumber}] Frames Expected: {metrics.FrameCount}; Frames Restored: {metrics.FrameCount}; Frames Validated: {metrics.FrameCount}; Frames Failed: 0; Elapsed Extraction: {Format(metrics.ExtractionElapsed)}; Elapsed Restoration: {Format(metrics.InferenceElapsed)}; Elapsed Validation: {Format(metrics.ValidationElapsed)}; Elapsed Reassembly: {Format(metrics.ReassemblyElapsed)}; Peak RAM: {FormatBytes(Process.GetCurrentProcess().PeakWorkingSet64)}; Peak VRAM: {FormatBytes(metrics.Hardware.PeakVramUsedBytes)}; GPU Utilization Average: {Percent(metrics.Hardware.AverageGpuPercent)}; CPU Utilization Average: {Percent(metrics.Hardware.AverageCpuPercent)}; Disk Throughput Average: {BytesPerSecond(metrics.Hardware.AverageDiskThroughputBytesPerSecond)}; Startup/Shutdown: {Format(metrics.StartupShutdownOverhead)}; FFmpeg Launch: {Format(metrics.FfmpegProcessLaunchElapsed)}; Total: {Format(metrics.TotalElapsed)}; FPS: {metrics.EffectiveFramesPerSecond:0.##}; GPU Peak: {Percent(metrics.Hardware.PeakGpuPercent)}; VRAM Average: {FormatBytes(metrics.Hardware.AverageVramUsedBytes)}.";
     private static long MeasureTemporaryStorage(string chunkDirectory, string chunkVideo)
     {
         try

@@ -117,11 +117,11 @@ public sealed class AiBackendBenchmarkTests : IDisposable
         public Task<AiRestorationModel> ValidateSelectionAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<AiRestorationSession> CreateSessionAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default) => Task.FromResult(new AiRestorationSession(new(true, Id, "", "test", true, new[] { "Auto" }, Array.Empty<AiRestorationModel>(), null), new("model", "Model", settings.AiMode, new[] { settings.AiScale }, "", "", "", Id, "model-x2")));
         public Task ProcessFrameAsync(AiRestorationSession session, VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null) => throw new NotSupportedException();
-        public Task ProcessDirectoryAsync(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory, IReadOnlyList<string> expectedOutputFrames, Action<int>? completedFrames, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null, TimeSpan? timeout = null)
+        public Task<AiDirectoryProcessDiagnostic> ProcessDirectoryAsync(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory, IReadOnlyList<string> expectedOutputFrames, Action<int>? completedFrames, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null, TimeSpan? timeout = null)
         {
             if (_writeValidOutput)
                 foreach (string output in expectedOutputFrames) WritePng(output, 4, 4);
-            return Task.CompletedTask;
+            return Task.FromResult(new AiDirectoryProcessDiagnostic("test", 0, TimeSpan.Zero, "", "", expectedOutputFrames.Count, _writeValidOutput ? expectedOutputFrames.Count : 0, null, null, null, null));
         }
     }
 }

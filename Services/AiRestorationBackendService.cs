@@ -229,7 +229,7 @@ public sealed class AiRestorationBackendService : IAiRestorationBackend
     /// Runs NCNN once for a bounded directory chunk. Progress is derived from complete
     /// expected outputs while the process runs; output identity is validated by the caller.
     /// </summary>
-    public async Task ProcessDirectoryAsync(
+    public async Task<AiDirectoryProcessDiagnostic> ProcessDirectoryAsync(
         AiRestorationSession session,
         VideoRestorationSettings settings,
         string inputDirectory,
@@ -279,13 +279,21 @@ public sealed class AiRestorationBackendService : IAiRestorationBackend
 
             MediaToolProcessResult result = await operation.ConfigureAwait(false);
             if (result.TimedOut || result.ExitCode != 0)
-                throw new AiRestorationValidationException(BuildDirectoryFailureDiagnostic(session.Capabilities.ExecutablePath, arguments, result, stopwatch.Elapsed));
+            {
+                AiDirectoryProcessDiagnostic failedDiagnostic = CreateDirectoryDiagnostic(session.Capabilities.ExecutablePath, arguments, result, stopwatch.Elapsed, expectedOutputFrames.Count, outputDirectory);
+                string failure = BuildDirectoryFailureDiagnostic(session.Capabilities.ExecutablePath, arguments, result, stopwatch.Elapsed) + Environment.NewLine + FormatDirectoryDiagnostic(failedDiagnostic);
+                _log?.Invoke(failure);
+                throw new AiRestorationValidationException(failure);
+            }
 
             int finalComplete = CountCompleteOutputs(expectedOutputFrames);
             if (finalComplete != lastReported)
                 completedFrames?.Invoke(finalComplete);
             double fps = stopwatch.Elapsed.TotalSeconds > 0 ? finalComplete / stopwatch.Elapsed.TotalSeconds : 0;
+            AiDirectoryProcessDiagnostic diagnostic = CreateDirectoryDiagnostic(session.Capabilities.ExecutablePath, arguments, result, stopwatch.Elapsed, expectedOutputFrames.Count, outputDirectory);
+            _log?.Invoke(FormatDirectoryDiagnostic(diagnostic));
             _log?.Invoke($"[AI Restoration] chunk complete; inputFrames={Directory.EnumerateFiles(inputDirectory, "*.png").Count()}; outputFrames={finalComplete}; elapsed={stopwatch.Elapsed:g}; fps={fps:0.###}; model={session.Model.BackendModelName}; scale={(int)settings.AiScale}x; device={settings.AiDevice}.");
+            return diagnostic;
         }
         catch (OperationCanceledException)
         {
@@ -323,7 +331,17 @@ public sealed class AiRestorationBackendService : IAiRestorationBackend
     }
 
     internal static string BuildDirectoryFailureDiagnostic(string executable, IReadOnlyList<string> arguments, MediaToolProcessResult result, TimeSpan elapsed) =>
-        $"AI restoration batch failed. executable={SanitizeDiagnostic(executable)}; arguments={string.Join(" ", arguments)}; elapsed={elapsed:g}; exitCode={result.ExitCode}; timedOut={result.TimedOut}; stderr={SanitizeDiagnostic(result.StandardError)}";
+        $"AI restoration batch failed. command={SanitizeDiagnostic(executable)} {string.Join(" ", arguments.Select(SanitizeDiagnostic))}; elapsed={elapsed:g}; exitCode={result.ExitCode}; timedOut={result.TimedOut}; stdout={SanitizeDiagnostic(result.StandardOutput)}; stderr={SanitizeDiagnostic(result.StandardError)}";
+
+    private static AiDirectoryProcessDiagnostic CreateDirectoryDiagnostic(string executable, IReadOnlyList<string> arguments, MediaToolProcessResult result, TimeSpan elapsed, int expectedFrames, string outputDirectory)
+    {
+        FileInfo[] files = Directory.Exists(outputDirectory) ? Directory.EnumerateFiles(outputDirectory).Select(path => new FileInfo(path)).OrderBy(file => file.Name, StringComparer.Ordinal).ToArray() : Array.Empty<FileInfo>();
+        return new($"{executable} {string.Join(" ", arguments)}", result.ExitCode, elapsed, result.StandardOutput, result.StandardError, expectedFrames, files.Length,
+            files.FirstOrDefault()?.Name, files.LastOrDefault()?.Name, files.FirstOrDefault()?.LastWriteTimeUtc, files.LastOrDefault()?.LastWriteTimeUtc, result.TimedOut, executable);
+    }
+
+    internal static string FormatDirectoryDiagnostic(AiDirectoryProcessDiagnostic value) =>
+        $"[AI NCNN Process] Command: {value.CommandLine}{Environment.NewLine}Exit Code: {value.ExitCode}; Execution Time: {value.Elapsed:g}; Expected Frames: {value.ExpectedFrames}; Restored Frames Produced: {value.RestoredFrames}{Environment.NewLine}First Output: {value.FirstOutputFileName ?? "<none>"} ({value.FirstOutputTimestamp?.ToString("O") ?? "<none>"}); Last Output: {value.LastOutputFileName ?? "<none>"} ({value.LastOutputTimestamp?.ToString("O") ?? "<none>"}){Environment.NewLine}Stdout: {value.StandardOutput}{Environment.NewLine}Stderr: {value.StandardError}";
 
     private static void AppendRuntimeArguments(List<string> arguments, NcnnRuntimeConfiguration? runtimeConfiguration)
     {

@@ -147,6 +147,75 @@ public sealed class AiRestorationTests : IDisposable
     }
 
     [Fact]
+    public void FrameSetAuditReportsMissingDuplicateUnexpectedExtensionsAndZeroByteFilesTogether()
+    {
+        string input = Path.Combine(_root, "audit-input"), output = Path.Combine(_root, "audit-output");
+        Directory.CreateDirectory(input); Directory.CreateDirectory(output);
+        string[] expected = AiRestorationIntermediateVideoService.ExpectedFrames(output, 3);
+        string[] inputs = AiRestorationIntermediateVideoService.ExpectedFrames(input, 3);
+        foreach (string path in inputs) WritePng(path, 2, 2);
+        WritePng(expected[0], 4, 4);
+        File.WriteAllBytes(Path.Combine(output, "frame-00000000.jpg"), new byte[0]);
+        WritePng(Path.Combine(output, "unexpected.png"), 4, 4);
+
+        AiRestorationIntermediateVideoService.AiFrameSetValidationReport report = AiRestorationIntermediateVideoService.AuditFrameSet(output, expected, inputs, 7, 9);
+
+        Assert.False(report.IsValid);
+        Assert.Contains("frame-00000001.png", report.MissingFrameNumbers);
+        Assert.Contains(report.DuplicateFrameNumbers, value => value.StartsWith("00000000:"));
+        Assert.Contains("unexpected.png", report.UnexpectedFilenames);
+        Assert.Contains("frame-00000000.jpg", report.IncorrectExtensions);
+        Assert.Contains("frame-00000000.jpg", report.ZeroByteFiles);
+        Assert.Contains("frame-00000000.jpg", report.FilenameOrderingErrors);
+        Assert.Contains("Chunk: 7/9", report.Format());
+    }
+
+    [Fact]
+    public void FrameSetAuditReportsCorruptPngAndDoesNotStopAtOtherFailures()
+    {
+        string output = Path.Combine(_root, "corrupt-output"); Directory.CreateDirectory(output);
+        string[] expected = AiRestorationIntermediateVideoService.ExpectedFrames(output, 2);
+        File.WriteAllBytes(expected[0], new byte[] { 1, 2, 3 });
+        File.WriteAllBytes(Path.Combine(output, "extra.bin"), new byte[0]);
+
+        AiRestorationIntermediateVideoService.AiFrameSetValidationReport report = AiRestorationIntermediateVideoService.AuditFrameSet(output, expected, null, 0, 0);
+
+        Assert.Contains("frame-00000000.png", report.CorruptPngFiles);
+        Assert.Contains("frame-00000001.png", report.MissingFrameNumbers);
+        Assert.Contains("extra.bin", report.IncorrectExtensions);
+        Assert.Contains("extra.bin", report.ZeroByteFiles);
+    }
+
+    [Fact]
+    public async Task FrameSetAuditDetectsFilesStillChangingDuringFilesystemWait()
+    {
+        string output = Path.Combine(_root, "race-output"); Directory.CreateDirectory(output);
+        string[] expected = AiRestorationIntermediateVideoService.ExpectedFrames(output, 1);
+        WritePng(expected[0], 4, 4);
+        Task writer = Task.Run(async () => { await Task.Delay(10); File.WriteAllBytes(expected[0], new byte[96]); });
+
+        AiRestorationIntermediateVideoService.AiFrameSetValidationReport report = AiRestorationIntermediateVideoService.AuditFrameSet(output, expected, null, 0, 0);
+        await writer;
+
+        Assert.Contains("frame-00000000.png", report.FilesStillChanging);
+        Assert.True(report.FilesystemWaitElapsed >= TimeSpan.FromMilliseconds(50));
+    }
+
+    [Fact]
+    public void FrameSetAuditAcceptsACompleteStableFrameSet()
+    {
+        string output = Path.Combine(_root, "valid-output"); Directory.CreateDirectory(output);
+        string[] expected = AiRestorationIntermediateVideoService.ExpectedFrames(output, 2);
+        foreach (string path in expected) WritePng(path, 4, 4);
+
+        AiRestorationIntermediateVideoService.AiFrameSetValidationReport report = AiRestorationIntermediateVideoService.AuditFrameSet(output, expected, null, 0, 0);
+
+        Assert.True(report.IsValid);
+        Assert.Equal(2, report.ActualFrameCount);
+        Assert.Contains("Missing: none", report.Format());
+    }
+
+    [Fact]
     public void BatchedEtaWaitsForAStableThroughputSample()
     {
         Assert.Null(AiRestorationProgressEstimator.EstimateRemaining(11, 180, TimeSpan.FromSeconds(10)));
@@ -216,6 +285,40 @@ public sealed class AiRestorationTests : IDisposable
         Assert.Equal(1, runner.BatchCalls);
         Assert.Equal(150, result.FrameCount);
         Assert.Contains("AI Chunk Planner Summary", timing.BuildSummary());
+    }
+
+    [Fact]
+    public async Task ValidationFailureLogsForensicReportAndPreservesWorkingDirectory()
+    {
+        string source = Path.Combine(_root, "forensic-source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"), ffprobe = Path.Combine(_root, "ffprobe.exe"), ai = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models"), staging = Path.Combine(_root, "staging");
+        File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(ffprobe, "tool"); File.WriteAllText(ai, "tool"); Directory.CreateDirectory(models); WritePair(models, "realesr-animevideov3-x2");
+        var logs = new List<string>(); var backend = new AiRestorationBackendService(_root, new IntermediateBatchRunner(ai, writeAllFrames: false));
+        var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = ai, AiModelsDirectory = models };
+        var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, staging, backend, new IntermediateBatchRunner(ai, writeAllFrames: false), logs.Add, dedicatedGpuVramProvider: () => null);
+
+        AiRestorationValidationException exception = await Assert.ThrowsAsync<AiRestorationValidationException>(() => service.CreateAsync(new AiIntermediateVideoRequest(source, 30, TimeSpan.FromSeconds(1), settings, VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None), SourceWidth: 2, SourceHeight: 2)));
+
+        string report = Assert.Single(logs, line => line.StartsWith("AI Restoration Forensic Failure Report", StringComparison.Ordinal));
+        Assert.Contains("Missing Frame Filenames", report); Assert.Contains("NCNN Stdout (last 100 lines)", report); Assert.Contains("Directory Enumeration Retries: 0", report);
+        string preserved = exception.Message.Split("Preserved AI working directory: ")[1].Trim();
+        Assert.True(Directory.Exists(preserved));
+    }
+
+    [Fact]
+    public async Task ExtractedInputValidationFailureLogsExtractionForensicsAndDoesNotInvokeNcnn()
+    {
+        string source = Path.Combine(_root, "input-forensic-source.mkv"), ffmpeg = Path.Combine(_root, "ffmpeg.exe"), ffprobe = Path.Combine(_root, "ffprobe.exe"), ai = Path.Combine(_root, "ai.exe"), models = Path.Combine(_root, "models"), staging = Path.Combine(_root, "input-forensic-staging");
+        File.WriteAllText(source, "source"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(ffprobe, "tool"); File.WriteAllText(ai, "tool"); Directory.CreateDirectory(models); WritePair(models, "realesr-animevideov3-x2");
+        var logs = new List<string>(); var runner = new IntermediateBatchRunner(ai, writeAllFrames: true, writeAllExtractedFrames: false); var backend = new AiRestorationBackendService(_root, runner);
+        var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiModelId = "realesr-animevideov3", AiScale = AiRestorationScale.X2, AiBackendPath = ai, AiModelsDirectory = models };
+        var service = new AiRestorationIntermediateVideoService(ffmpeg, ffprobe, staging, backend, runner, logs.Add, dedicatedGpuVramProvider: () => null);
+
+        AiRestorationValidationException exception = await Assert.ThrowsAsync<AiRestorationValidationException>(() => service.CreateAsync(new AiIntermediateVideoRequest(source, 30, TimeSpan.FromSeconds(1), settings, VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None), SourceWidth: 2, SourceHeight: 2)));
+
+        string report = Assert.Single(logs, line => line.StartsWith("AI Restoration Forensic Failure Report", StringComparison.Ordinal));
+        Assert.Contains("Validation Stage: ExtractedInput", report); Assert.Contains("FFmpeg Extraction Executable: " + ffmpeg, report); Assert.Contains("NCNN Executable: not invoked", report); Assert.Contains("Missing Frame Filenames", report);
+        string preserved = exception.Message.Split("Preserved AI working directory: ")[1].Trim();
+        Assert.True(Directory.Exists(preserved));
     }
 
     [Fact]
@@ -294,7 +397,7 @@ public sealed class AiRestorationTests : IDisposable
     }
     private sealed class CapturingProgress(List<AiIntermediateProgress> updates) : IProgress<AiIntermediateProgress>
     { public void Report(AiIntermediateProgress value) => updates.Add(value); }
-    private sealed class IntermediateBatchRunner(string aiPath) : IMediaToolProcessRunner
+    private sealed class IntermediateBatchRunner(string aiPath, bool writeAllFrames = true, bool writeAllExtractedFrames = true) : IMediaToolProcessRunner
     {
         private readonly Dictionary<string, int> _frameCounts = new(StringComparer.OrdinalIgnoreCase);
         public int BatchCalls { get; private set; }
@@ -304,7 +407,7 @@ public sealed class AiRestorationTests : IDisposable
             {
                 if (request.Arguments.SequenceEqual(new[] { "-h" })) return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardError = "NCNN Vulkan GPU 0" });
                 BatchCalls++; string batchOutput = request.Arguments[request.Arguments.ToList().IndexOf("-o") + 1]; string input = request.Arguments[request.Arguments.ToList().IndexOf("-i") + 1];
-                foreach (string source in Directory.EnumerateFiles(input, "*.png").OrderBy(path => path)) WritePng(Path.Combine(batchOutput, Path.GetFileName(source)), 4, 4);
+                foreach (string source in Directory.EnumerateFiles(input, "*.png").OrderBy(path => path).Take(writeAllFrames ? int.MaxValue : 1)) WritePng(Path.Combine(batchOutput, Path.GetFileName(source)), 4, 4);
                 return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
             }
             if (request.FileName.EndsWith("ffprobe.exe", StringComparison.OrdinalIgnoreCase))
@@ -315,7 +418,7 @@ public sealed class AiRestorationTests : IDisposable
             if (request.Arguments.Contains("-frames:v"))
             {
                 int count = int.Parse(request.Arguments[request.Arguments.ToList().IndexOf("-frames:v") + 1]); string pattern = request.Arguments.Last(); string directory = Path.GetDirectoryName(pattern)!;
-                Directory.CreateDirectory(directory); foreach (string frame in AiRestorationIntermediateVideoService.ExpectedFrames(directory, count)) WritePng(frame, 2, 2);
+                Directory.CreateDirectory(directory); foreach (string frame in AiRestorationIntermediateVideoService.ExpectedFrames(directory, count).Take(writeAllExtractedFrames ? int.MaxValue : 1)) WritePng(frame, 2, 2);
                 return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
             }
             string output = request.Arguments.Last(); Directory.CreateDirectory(Path.GetDirectoryName(output)!);
