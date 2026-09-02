@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.85] - 2026-09-02
+
+### AI Configuration and Provider Experience
+
+- Refined the AI Restoration Advanced Settings UI with independent provider identity, health, and version reporting.
+- Added resolved-provider display for Auto backend selection and clearer unavailable-provider messaging.
+- Added immediate compatible model/scale refresh and automatic correction of invalid model/scale combinations.
+- Preserved existing AI preview, restoration, planner, benchmark, and encode behavior.
+
 ## [0.1.84] - 2026-09-01
 
 ### AI Provider and Restoration Infrastructure
