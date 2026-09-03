@@ -78,6 +78,16 @@ public sealed class NcnnPerformanceTuningTests : IDisposable
     }
 
     [Fact]
+    public void DriverChangeInvalidatesTheSelectedRuntimeCache()
+    {
+        Directory.CreateDirectory(_root);
+        var cache = new NcnnPerformanceTuningCacheService(Path.Combine(_root, "cache.json"));
+        cache.Store(NcnnTuningCacheKey.Create("GPU A", "backend-v1", "anime-x2", 2, "1080p", "555.1"), new(NcnnThreadConfiguration.TwoTwoTwo, 512));
+
+        Assert.False(cache.TryGet(NcnnTuningCacheKey.Create("GPU A", "backend-v1", "anime-x2", 2, "1080p", "556.2"), out _));
+    }
+
+    [Fact]
     public void CorruptOrFutureCacheFailsAsMiss()
     {
         Directory.CreateDirectory(_root);
@@ -130,6 +140,30 @@ public sealed class NcnnPerformanceTuningTests : IDisposable
     }
 
     [Fact]
+    public async Task ValidBenchmarkDatabaseResultIsReusedWhenTheJsonTuningCacheMisses()
+    {
+        Directory.CreateDirectory(_root);
+        string input = Path.Combine(_root, "input");
+        Directory.CreateDirectory(input);
+        var cache = new NcnnPerformanceTuningCacheService(Path.Combine(_root, "cache.json"));
+        var database = new AiBenchmarkDatabase(Path.Combine(_root, "benchmarks.db"));
+        var backend = new NoOpBackend();
+        AiRestorationSession session = Session();
+        var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.Animation, AiScale = AiRestorationScale.X2 };
+        var key = new AiBenchmarkDatabaseKey("ncnn-vulkan", "backend-v1", "anime-x2", "GPU A", "555.1", "FP32", 2, "1080p");
+        database.Store(new(key, new(NcnnThreadConfiguration.TwoTwoTwo, 512), 25, 1_000_000_000, true, DateTimeOffset.UtcNow, "validated"));
+
+        NcnnRuntimeSelection selection = await new NcnnPerformanceAutoTuner(backend, cache, benchmarks: database).SelectAsync(
+            session, settings, input, Path.Combine(_root, "tuning"), 1920, 1080, "GPU A", "555.1", 8_000_000_000, true, CancellationToken.None);
+
+        Assert.Equal(NcnnRuntimeConfigurationSource.BenchmarkDatabase, selection.Source);
+        Assert.Equal("2:2:2", selection.Configuration.Threads!.ToString());
+        Assert.Equal(512, selection.Configuration.TileSize);
+        Assert.Equal(0, backend.ProcessDirectoryCalls);
+        Assert.True(cache.TryGet(NcnnTuningCacheKey.Create("GPU A", "backend-v1", "anime-x2", 2, "1080p", "555.1"), out _));
+    }
+
+    [Fact]
     public void ResolutionClassesAreDeterministic()
     {
         Assert.Equal("SD", NcnnPerformanceAutoTuner.ResolutionClass(640, 480));
@@ -139,6 +173,29 @@ public sealed class NcnnPerformanceTuningTests : IDisposable
     }
 
     private static NcnnTuningBenchmarkResult Result(NcnnRuntimeConfiguration configuration, double fps, bool valid) => new(configuration, fps, TimeSpan.FromSeconds(1), null, null, valid, valid ? "valid" : "invalid");
+
+    private AiRestorationSession Session()
+    {
+        var model = new AiRestorationModel("anime", "Anime", AiRestorationMode.Animation, new[] { AiRestorationScale.X2 }, _root, "a.param", "a.bin", "ncnn-vulkan", "anime-x2");
+        return new(new(true, "ncnn-vulkan", "ai.exe", "backend-v1", true, new[] { "Auto" }, new[] { model }, null), model);
+    }
+
+    private sealed class NoOpBackend : IAiRestorationBackend
+    {
+        public int ProcessDirectoryCalls { get; private set; }
+        public string Id => "ncnn-vulkan";
+        public string DisplayName => "NCNN Vulkan";
+        public Task<AiBackendMetadata> GetMetadataAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<AiRestorationCapabilities> GetCapabilitiesAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<AiRestorationModel> ValidateSelectionAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<AiRestorationSession> CreateSessionAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task ProcessFrameAsync(AiRestorationSession session, VideoRestorationSettings settings, string input, string stagingOutput, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null) => throw new NotSupportedException();
+        public Task<AiDirectoryProcessDiagnostic> ProcessDirectoryAsync(AiRestorationSession session, VideoRestorationSettings settings, string inputDirectory, string outputDirectory, IReadOnlyList<string> expectedOutputFrames, Action<int>? completedFrames, CancellationToken cancellationToken = default, NcnnRuntimeConfiguration? runtimeConfiguration = null, TimeSpan? timeout = null)
+        {
+            ProcessDirectoryCalls++;
+            throw new NotSupportedException();
+        }
+    }
 
     public void Dispose() { try { if (Directory.Exists(_root)) Directory.Delete(_root, true); } catch { } }
 }

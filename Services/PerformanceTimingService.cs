@@ -72,6 +72,11 @@ public sealed class PerformanceTimingService
         get { lock (_gate) return _hardware?.Gpu; }
     }
 
+    public string? GpuDriver
+    {
+        get { lock (_gate) return _hardware?.GpuDriver; }
+    }
+
     public void SetNcnnRuntimeSelection(NcnnRuntimeSelection selection)
     {
         ArgumentNullException.ThrowIfNull(selection);
@@ -299,6 +304,7 @@ public sealed class PerformanceTimingService
             {
                 NcnnRuntimeConfigurationSource.AutoTuned => "Auto-tuned",
                 NcnnRuntimeConfigurationSource.Cached => "Cached",
+                NcnnRuntimeConfigurationSource.BenchmarkDatabase => "Benchmark database",
                 _ => "Safe default"
             });
         if (selection.BaselineFramesPerSecond is double baseline) builder.Append("Baseline FPS: ").AppendLine(baseline.ToString("0.##"));

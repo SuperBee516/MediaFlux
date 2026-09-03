@@ -12,7 +12,14 @@ namespace MediaFlux.Services
         public bool SendQuitOnCancellation { get; init; }
         public Action<string>? StandardOutputLineCallback { get; init; }
         public Action<string>? StandardErrorLineCallback { get; init; }
+        public Action<MediaToolProcessLaunchInfo>? ProcessStartedCallback { get; init; }
     }
+
+    public sealed record MediaToolProcessLaunchInfo(
+        int ProcessId,
+        string FileName,
+        string WorkingDirectory,
+        IReadOnlyList<string> ArgumentList);
 
     public sealed class MediaToolProcessResult
     {
@@ -43,28 +50,24 @@ namespace MediaFlux.Services
             if (string.IsNullOrWhiteSpace(request.FileName))
                 throw new ArgumentException("A media-tool executable path is required.", nameof(request));
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = request.FileName,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                RedirectStandardInput = request.SendQuitOnCancellation,
-                CreateNoWindow = true,
-                ErrorDialog = false,
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
-
-            if (!string.IsNullOrWhiteSpace(request.WorkingDirectory))
-                startInfo.WorkingDirectory = request.WorkingDirectory;
-
-            foreach (string argument in request.Arguments)
-                startInfo.ArgumentList.Add(argument);
+            ProcessStartInfo startInfo = CreateStartInfo(request);
 
             long launchStartedAt = Stopwatch.GetTimestamp();
             using var process = new Process { StartInfo = startInfo };
             process.Start();
             TimeSpan processLaunchElapsed = Stopwatch.GetElapsedTime(launchStartedAt);
+            try
+            {
+                request.ProcessStartedCallback?.Invoke(new MediaToolProcessLaunchInfo(
+                    process.Id,
+                    startInfo.FileName,
+                    startInfo.WorkingDirectory,
+                    startInfo.ArgumentList.ToArray()));
+            }
+            catch
+            {
+                // Launch observers are diagnostics only and must not affect the media process.
+            }
 
             Task<string> stdoutTask = ReadBoundedAsync(
                 process.StandardOutput,
@@ -104,6 +107,36 @@ namespace MediaFlux.Services
                 TimedOut = timedOut,
                 ProcessLaunchElapsed = processLaunchElapsed
             };
+        }
+
+        internal static ProcessStartInfo CreateStartInfo(MediaToolProcessRequest request)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = request.FileName,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                RedirectStandardInput = request.SendQuitOnCancellation,
+                // Bundled FFmpeg/FFprobe write UTF-8 to redirected pipes. Without an
+                // explicit decoder, StreamReader uses the active ANSI code page and
+                // turns valid Unicode paths in diagnostics into mojibake.
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+                CreateNoWindow = true,
+                ErrorDialog = false,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+
+            if (!string.IsNullOrWhiteSpace(request.WorkingDirectory))
+                startInfo.WorkingDirectory = request.WorkingDirectory;
+
+            foreach (string argument in request.Arguments)
+                startInfo.ArgumentList.Add(argument);
+
+            return startInfo;
         }
 
         private static async Task<string> ReadBoundedAsync(

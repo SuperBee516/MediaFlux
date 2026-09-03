@@ -85,6 +85,26 @@ public sealed class AiRestorationTests : IDisposable
         Assert.Equal("frame-00000059.png", Path.GetFileName(frames[^1]));
     }
 
+    [Theory]
+    [InlineData("Life, Larry and the Pursuit of Unhappiness ｜ Episode 4 Preview ｜ HBO Max [HEVC].mp4")]
+    [InlineData("Miyazaki 日本語 résumé Привет 😀.mp4")]
+    public void AiExtractionArgumentsPreserveUnicodeSourcePathsExactly(string fileName)
+    {
+        string source = Path.Combine(_root, fileName);
+        var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.General };
+        var request = new AiIntermediateVideoRequest(
+            source,
+            24000d / 1001d,
+            TimeSpan.FromSeconds(10),
+            settings,
+            VideoRestorationPipeline.BuildPlan(settings, EncodingService.ScaleMode.None));
+
+        IReadOnlyList<string> arguments = AiRestorationIntermediateVideoService.BuildExtractArguments(
+            request, 180, 90, Path.Combine(_root, "frames"));
+
+        Assert.Equal(source, arguments[arguments.ToList().IndexOf("-i") + 1]);
+    }
+
     [Fact]
     public async Task FrameProcessorReportsEachCompletedFrameInChronologicalOrder()
     {
@@ -246,6 +266,23 @@ public sealed class AiRestorationTests : IDisposable
     }
 
     [Fact]
+    public void AiProgressMessageIncludesStageChunkRatesTimingBackendAndRuntime()
+    {
+        string message = AiRestorationIntermediateVideoService.FormatProgressMessage(
+            AiIntermediateStage.AiProcessing, 3, 12, 450, 1800, 22.5, 20, TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(5), "ncnn-vulkan", "Threads 1:2:2; Tile 512; Auto-tuned");
+
+        Assert.Contains("AI Restore", message);
+        Assert.Contains("Chunk 3/12", message);
+        Assert.Contains("Frames 450/1,800", message);
+        Assert.Contains("Current AI FPS 22.5", message);
+        Assert.Contains("Average AI FPS 20", message);
+        Assert.Contains("Elapsed 2:00.000", message);
+        Assert.Contains("ETA 5:00.000", message);
+        Assert.Contains("Backend ncnn-vulkan", message);
+        Assert.Contains("Runtime Threads 1:2:2; Tile 512; Auto-tuned", message);
+    }
+
+    [Fact]
     public async Task BatchCancellationPropagatesToBackendAndCleansPartialOwnedOutput()
     {
         string input = Path.Combine(_root, "input"), output = Path.Combine(_root, "output");
@@ -284,6 +321,13 @@ public sealed class AiRestorationTests : IDisposable
         int[] overall = updates.Where(update => update.Stage == AiIntermediateStage.AiProcessing).Select(update => update.Current).ToArray();
         Assert.True(overall.SequenceEqual(overall.OrderBy(value => value)));
         Assert.Equal(210, overall[^1]);
+        AiIntermediateProgress restore = Assert.Single(updates, update => update.Stage == AiIntermediateStage.AiProcessing && update.Current == 210);
+        Assert.Equal(2, restore.ChunkNumber);
+        Assert.Equal(2, restore.ChunkTotal);
+        Assert.Equal("ncnn-vulkan", restore.Backend);
+        Assert.Contains("AI Restore", restore.Message);
+        Assert.Contains("Frames 210/210", restore.Message);
+        Assert.Contains("Runtime Threads", restore.Message);
         Assert.True(File.Exists(result.Path));
         string plannerLog = Assert.Single(logs, log => log.StartsWith("[AI Chunk Planner]", StringComparison.Ordinal));
         Assert.Contains("Resolution:", plannerLog); Assert.Contains("AI Scale:", plannerLog); Assert.Contains("GPU VRAM:", plannerLog); Assert.Contains("Estimated Bytes per Frame:", plannerLog); Assert.Contains("Estimated Peak Extracted Storage:", plannerLog); Assert.Contains("Estimated Peak Restored Storage:", plannerLog); Assert.Contains("Estimated Intermediate Storage:", plannerLog); Assert.Contains("Safety Margin:", plannerLog); Assert.Contains("Final Required Storage:", plannerLog); Assert.Contains("Available Storage:", plannerLog); Assert.Contains("Storage-Limited Chunk Size:", plannerLog); Assert.Contains("VRAM-Limited Chunk Size:", plannerLog); Assert.Contains("Final Selected Chunk Size:", plannerLog); Assert.Contains("Constraint:", plannerLog);

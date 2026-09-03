@@ -78,6 +78,6 @@ public sealed class NcnnPerformanceTuningCacheService
 
 public sealed record NcnnTuningCacheKey(string Value)
 {
-    public static NcnnTuningCacheKey Create(string gpuIdentity, string backendIdentity, string model, int scale, string resolutionClass) =>
-        new($"{gpuIdentity.Trim()}|{backendIdentity.Trim()}|{model.Trim()}|{scale}|{resolutionClass}");
+    public static NcnnTuningCacheKey Create(string gpuIdentity, string backendIdentity, string model, int scale, string resolutionClass, string? driverVersion = null) =>
+        new($"{gpuIdentity.Trim()}|{backendIdentity.Trim()}|{model.Trim()}|{scale}|{resolutionClass}|driver={(driverVersion ?? "").Trim()}");
 }

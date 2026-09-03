@@ -65,15 +65,17 @@ public sealed class AiBackendBenchmarkService
     private readonly Func<HardwareUsageSample> _sampleResources;
     private readonly Func<(string Gpu, string Driver)> _gpuInfo;
     private readonly AiBackendBenchmarkHistoryStore _history;
+    private readonly AiBenchmarkDatabase _database;
     private readonly Action<string>? _log;
 
-    public AiBackendBenchmarkService(string stagingRoot, Action<string>? log = null, Func<HardwareUsageSample>? sampleResources = null, Func<(string Gpu, string Driver)>? gpuInfo = null, AiBackendBenchmarkHistoryStore? history = null)
+    public AiBackendBenchmarkService(string stagingRoot, Action<string>? log = null, Func<HardwareUsageSample>? sampleResources = null, Func<(string Gpu, string Driver)>? gpuInfo = null, AiBackendBenchmarkHistoryStore? history = null, AiBenchmarkDatabase? database = null)
     {
         _stagingRoot = stagingRoot;
         _log = log;
         _sampleResources = sampleResources ?? (() => { using var hardware = new HardwarePerformanceService(); return hardware.Sample(); });
         _gpuInfo = gpuInfo ?? (() => { HardwareSnapshot snapshot = HardwarePerformanceService.Capture("", "", "", ""); return (snapshot.Gpu, snapshot.GpuDriver); });
         _history = history ?? new AiBackendBenchmarkHistoryStore(Path.Combine(AppPaths.DataDirectory, "ai-benchmark-history.json"));
+        _database = database ?? new AiBenchmarkDatabase();
     }
 
     public async Task<AiBackendBenchmarkResult> RunAsync(AiBackendBenchmarkRequest request, CancellationToken cancellationToken = default)
@@ -121,6 +123,14 @@ public sealed class AiBackendBenchmarkService
         var result = new AiBackendBenchmarkResult(DateTimeOffset.UtcNow, metadata.Id, metadata.DisplayName, metadata.Version, gpu, driver,
             session.Model.BackendModelName, request.Settings.AiScale, ResolutionClass(request.SourceWidth, request.SourceHeight), request.SourceWidth, request.SourceHeight,
             frames.Count, stopwatch.Elapsed, frames.Count / Math.Max(stopwatch.Elapsed.TotalSeconds, .001), resources, validation, metadata.Diagnostics);
+        _database.Store(new AiBenchmarkDatabaseEntry(
+            new(metadata.Id, session.Capabilities.Identity, session.Model.BackendModelName, gpu, driver, "FP32", (int)request.Settings.AiScale, result.ResolutionClass),
+            NcnnRuntimeConfiguration.SafeDefault,
+            result.EffectiveFramesPerSecond,
+            result.Resources.PeakVramBytes,
+            result.Validation.IsValid,
+            result.Date,
+            result.Validation.Summary));
         _log?.Invoke($"[AI Benchmark] completed; backend={result.BackendName}; elapsed={result.Elapsed:g}; fps={result.EffectiveFramesPerSecond:0.##}; validation={(result.Validation.IsValid ? "passed" : "failed")}; {result.Validation.Summary}");
         await _history.AppendAsync(result, cancellationToken).ConfigureAwait(false);
         try { Directory.Delete(root, true); } catch { }

@@ -17,7 +17,7 @@ public sealed class AiBackendBenchmarkTests : IDisposable
         string input = CreateFrames(3, 2, 2);
         var logs = new List<string>();
         var service = new AiBackendBenchmarkService(Path.Combine(_root, "benchmarks"), logs.Add,
-            sampleResources: () => new HardwareUsageSample(50, 1024, 20, 10, 20), gpuInfo: () => ("NVIDIA Test", "555.1"), history: History());
+            sampleResources: () => new HardwareUsageSample(50, 1024, 20, 10, 20), gpuInfo: () => ("NVIDIA Test", "555.1"), history: History(), database: Database());
         var backend = new BenchmarkBackend("ncnn-vulkan", writeValidOutput: true);
 
         AiBackendBenchmarkResult result = await service.RunAsync(new(backend, Settings(), Directory.EnumerateFiles(input).OrderBy(path => path).ToArray(), 2, 2, 3));
@@ -38,7 +38,7 @@ public sealed class AiBackendBenchmarkTests : IDisposable
     public async Task ValidationFailureIsRecordedAndExcludedFromComparison()
     {
         string input = CreateFrames(2, 2, 2);
-        var service = new AiBackendBenchmarkService(Path.Combine(_root, "benchmarks"), sampleResources: () => new(null, null, null, null, null), history: History());
+        var service = new AiBackendBenchmarkService(Path.Combine(_root, "benchmarks"), sampleResources: () => new(null, null, null, null, null), history: History(), database: Database());
         AiBackendBenchmarkResult failed = await service.RunAsync(new(new BenchmarkBackend("ncnn-vulkan", writeValidOutput: false), Settings(), Directory.EnumerateFiles(input).OrderBy(path => path).ToArray(), 2, 2, 2));
         AiBackendBenchmarkResult valid = Result("other", 5, valid: true);
 
@@ -93,6 +93,7 @@ public sealed class AiBackendBenchmarkTests : IDisposable
 
     private VideoRestorationSettings Settings() => new() { AiMode = AiRestorationMode.Animation, AiModelId = "model", AiScale = AiRestorationScale.X2 };
     private AiBackendBenchmarkHistoryStore History() => new(Path.Combine(_root, "service-history.json"));
+    private AiBenchmarkDatabase Database() => new(Path.Combine(_root, "ai-benchmarks.db"));
     private string CreateFrames(int count, int width, int height)
     {
         string directory = Path.Combine(_root, Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);

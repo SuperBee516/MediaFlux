@@ -12,10 +12,11 @@ public sealed class NcnnPerformanceAutoTuner
     private static readonly TimeSpan TotalBudget = TimeSpan.FromSeconds(90);
     private readonly IAiRestorationBackend _backend;
     private readonly NcnnPerformanceTuningCacheService _cache;
+    private readonly AiBenchmarkDatabase _benchmarks;
     private readonly Action<string>? _log;
 
-    public NcnnPerformanceAutoTuner(IAiRestorationBackend backend, NcnnPerformanceTuningCacheService? cache = null, Action<string>? log = null)
-    { _backend = backend; _cache = cache ?? new NcnnPerformanceTuningCacheService(); _log = log; }
+    public NcnnPerformanceAutoTuner(IAiRestorationBackend backend, NcnnPerformanceTuningCacheService? cache = null, Action<string>? log = null, AiBenchmarkDatabase? benchmarks = null)
+    { _backend = backend; _cache = cache ?? new NcnnPerformanceTuningCacheService(); _benchmarks = benchmarks ?? new AiBenchmarkDatabase(); _log = log; }
 
     public async Task<NcnnRuntimeSelection> SelectAsync(
         AiRestorationSession session,
@@ -25,13 +26,21 @@ public sealed class NcnnPerformanceAutoTuner
         int sourceWidth,
         int sourceHeight,
         string gpuIdentity,
+        string gpuDriver,
         long? dedicatedGpuVramBytes,
         bool allowTuning,
         CancellationToken cancellationToken)
     {
-        NcnnTuningCacheKey key = NcnnTuningCacheKey.Create(gpuIdentity, session.Capabilities.Identity, session.Model.BackendModelName, (int)settings.AiScale, ResolutionClass(sourceWidth, sourceHeight));
+        NcnnTuningCacheKey key = NcnnTuningCacheKey.Create(gpuIdentity, session.Capabilities.Identity, session.Model.BackendModelName, (int)settings.AiScale, ResolutionClass(sourceWidth, sourceHeight), gpuDriver);
         if (_cache.TryGet(key, out NcnnRuntimeConfiguration cached))
             return new(cached, NcnnRuntimeConfigurationSource.Cached, CacheKey: key.Value);
+        var benchmarkKey = new AiBenchmarkDatabaseKey(session.Capabilities.BackendId, session.Capabilities.Identity, session.Model.BackendModelName, gpuIdentity, gpuDriver, "FP32", (int)settings.AiScale, ResolutionClass(sourceWidth, sourceHeight));
+        if (_benchmarks.TryGetFastestStable(benchmarkKey, out AiBenchmarkDatabaseEntry benchmark))
+        {
+            _cache.Store(key, benchmark.Configuration);
+            _log?.Invoke($"[NCNN Tuning] Reusing validated benchmark database result: {benchmark.Configuration.ThreadsDisplay}, tile {benchmark.Configuration.TileDisplay}; {benchmark.FramesPerSecond:0.##} FPS; recorded {benchmark.Timestamp:O}.");
+            return new(benchmark.Configuration, NcnnRuntimeConfigurationSource.BenchmarkDatabase, SelectedFramesPerSecond: benchmark.FramesPerSecond, CacheKey: key.Value);
+        }
         if (!allowTuning || string.IsNullOrWhiteSpace(gpuIdentity) || gpuIdentity.Equals("Unavailable", StringComparison.OrdinalIgnoreCase))
             return new(NcnnRuntimeConfiguration.SafeDefault, NcnnRuntimeConfigurationSource.SafeDefault, CacheKey: key.Value);
 
@@ -61,7 +70,10 @@ public sealed class NcnnPerformanceAutoTuner
         }
 
         foreach (NcnnTuningBenchmarkResult result in results)
+        {
+            _benchmarks.Store(new AiBenchmarkDatabaseEntry(benchmarkKey, result.Configuration, result.FramesPerSecond, result.PeakVramBytes, result.IsValid, DateTimeOffset.UtcNow, result.Result));
             _log?.Invoke($"[NCNN Tuning] {result.Configuration.ThreadsDisplay} | {result.Configuration.TileDisplay} | {result.FramesPerSecond:0.##} FPS | {FormatBytes(result.PeakVramBytes)} | {result.Result}");
+        }
 
         NcnnTuningBenchmarkResult selected = SelectWinner(results) ?? baseline;
         NcnnRuntimeConfiguration selectedConfiguration = selected.IsValid ? selected.Configuration : NcnnRuntimeConfiguration.SafeDefault;

@@ -31,7 +31,7 @@ public sealed record NcnnThreadConfiguration(int Load, int Process, int Save)
     }
 }
 
-public enum NcnnRuntimeConfigurationSource { SafeDefault, Cached, AutoTuned }
+public enum NcnnRuntimeConfigurationSource { SafeDefault, Cached, BenchmarkDatabase, AutoTuned }
 
 public sealed record NcnnRuntimeSelection(
     NcnnRuntimeConfiguration Configuration,

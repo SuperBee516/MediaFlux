@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -23,13 +22,6 @@ namespace MediaFlux
 
         private readonly Dictionary<DataGridViewRow, EncodeMetrics> _activeEncodeMetrics = new();
         private readonly List<DataGridViewRow> _activeEncodeRows = new();
-        private readonly Dictionary<DataGridViewRow, AiProgressState> _activeAiProgress = new();
-
-        private sealed class AiProgressState
-        {
-            public Stopwatch ProcessingStopwatch { get; } = new();
-            public int LastCompleted { get; set; }
-        }
 
         // Parses lines and updates metrics UI (thread-safe)
         private void HandleFfmpegProgressLine(string line)
@@ -291,7 +283,6 @@ namespace MediaFlux
             if (row == null)
                 return;
 
-            _activeAiProgress.Remove(row);
             _activeEncodeMetrics.Remove(row);
             _activeEncodeRows.Remove(row);
             UpdateQueueEstimatedCompletion();
@@ -329,28 +320,14 @@ namespace MediaFlux
                     _ => "Preparing AI restoration"
                 };
 
-                string eta = "Calculating...";
-                if (progress.Stage == AiIntermediateStage.AiProcessing)
-                {
-                    if (!_activeAiProgress.TryGetValue(row, out AiProgressState? state))
-                    {
-                        state = new AiProgressState();
-                        _activeAiProgress[row] = state;
-                    }
-                    if (!state.ProcessingStopwatch.IsRunning)
-                        state.ProcessingStopwatch.Start();
-                    state.LastCompleted = Math.Max(state.LastCompleted, progress.Current);
-                    TimeSpan? remaining = AiRestorationProgressEstimator.EstimateRemaining(state.LastCompleted, progress.Total, state.ProcessingStopwatch.Elapsed);
-                    if (remaining.HasValue)
-                        eta = remaining.Value.ToString(@"hh\:mm\:ss");
-                }
+                string eta = progress.EstimatedRemaining?.ToString(@"hh\:mm\:ss") ?? "Calculating...";
 
                 SetEncodeRowState(
                     row,
                     stage,
                     $"AI {fraction * 100:0}%",
                     eta,
-                    $"{progress.Message}: {progress.Current:N0}/{progress.Total:N0} frames.");
+                    progress.Message);
 
                 if (_activeEncodeRows.Count <= 1)
                 {

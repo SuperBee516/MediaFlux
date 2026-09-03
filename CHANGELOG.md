@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.91] - 2026-09-02
+
+### AI Diagnostics, Progress, and Benchmark Persistence
+
+- Improved AI restoration process diagnostics, including exact FFmpeg launch snapshots and UTF-8 process output decoding.
+- Added richer AI restoration progress reporting with stage, chunk progress, frame counts, FPS, ETA, backend, and runtime configuration.
+- Added a persistent SQLite AI benchmark database with automatic cache reuse and invalidation based on driver, backend, model, precision, scale, and GPU changes.
+- Expanded regression coverage for Unicode paths, AI progress reporting, benchmarking, and tuning.
+- No changes to AI restoration algorithms or restoration quality.
+
 ## [0.1.90] - 2026-09-02
 
 ### NCNN False-Success Fix

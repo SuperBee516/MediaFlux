@@ -25,6 +25,7 @@ namespace MediaFlux.Services
         public static string EncodeJobsFile => Path.Combine(DataDirectory, "encode-jobs.json");
         public static string RestorationProfilesDirectory => Path.Combine(DataDirectory, "restoration-profiles");
         public static string NcnnPerformanceTuningCacheFile => Path.Combine(DataDirectory, "ncnn-performance-tuning.json");
+        public static string AiBenchmarkDatabaseFile => Path.Combine(DataDirectory, "ai-benchmarks.db");
         public static string CommercialDetectorAnalysisFile => Path.Combine(DataDirectory, "commercial-detector-analysis.json");
         public static string TempDirectory => Path.Combine(UserDataDirectory, "temp");
         public static string ConfigFile => Path.Combine(UserDataDirectory, "config.json");
