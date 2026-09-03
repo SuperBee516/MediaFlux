@@ -247,6 +247,9 @@ namespace MediaFlux
         private async Task<bool> ConfirmExplicitMp4CompatibilityAsync(
             IReadOnlyList<DataGridViewRow> rows)
         {
+            ContainerCompatibilityPolicy policy = GetContainerCompatibilityPolicy();
+            if (policy != ContainerCompatibilityPolicy.AlwaysAsk)
+                return true;
             if (!rows.Any(row => RequestedOutputContainerForRow(row) == OutputContainerSelection.Mp4))
                 return true;
 
@@ -774,6 +777,7 @@ namespace MediaFlux
                     },
                     OutputContainer = PolicyOutputContainer(policyIntent),
                     ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
+                    CompatibilityPolicy = GetContainerCompatibilityPolicy(),
                     ContainerDecisionCallback = decision => appliedContainerDecision = decision
                 };
 

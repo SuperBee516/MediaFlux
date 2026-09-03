@@ -34,6 +34,7 @@ namespace MediaFlux.Services
         public OutputContainerSelection OutputContainer { get; init; } =
             OutputContainerSelection.Mp4;
         public bool ContainerCompatibilityConfirmed { get; init; }
+        public ContainerCompatibilityPolicy CompatibilityPolicy { get; init; } = ContainerCompatibilityPolicy.Intelligent;
         public Action<OutputContainerDecision>? ContainerDecisionCallback { get; init; }
         public CancellationToken CancellationToken { get; init; }
         public Action<string>? OutputPathCallback { get; init; }

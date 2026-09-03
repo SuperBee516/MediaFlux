@@ -13,6 +13,13 @@ namespace MediaFlux.Models
         Mp4 = 2
     }
 
+    public enum ContainerCompatibilityPolicy { Intelligent, AlwaysAsk, Strict }
+    public enum StreamCompatibilityAction { Copy, Transcode, Omit, Unsupported }
+
+    public sealed record StreamCompatibilityPlan(
+        int StreamIndex, string StreamType, string Codec, StreamCompatibilityAction Action,
+        string Reason, string? TargetCodec = null);
+
     public sealed class OutputContainerDecision
     {
         public OutputContainerSelection Requested { get; init; }
@@ -23,6 +30,14 @@ namespace MediaFlux.Models
         public bool CopySubtitles { get; init; }
         public bool CopyDataStreams { get; init; }
         public bool CopyAttachments { get; init; }
+        public IReadOnlyList<StreamCompatibilityPlan> StreamPlans { get; init; } = Array.Empty<StreamCompatibilityPlan>();
+        public bool ConvertSubtitlesToMovText => Resolved == OutputContainer.Mp4 && StreamPlans.Any(plan =>
+            plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
+            plan.Action == StreamCompatibilityAction.Transcode &&
+            plan.TargetCodec == "mov_text");
+        public bool HasUnsupportedMeaningfulStreams => StreamPlans.Any(plan =>
+            plan.Action == StreamCompatibilityAction.Unsupported &&
+            (plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) || plan.StreamType.Equals("video", StringComparison.OrdinalIgnoreCase) || plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase)));
 
         public string Extension => Resolved == OutputContainer.Matroska ? ".mkv" : ".mp4";
         public string MuxerName => Resolved == OutputContainer.Matroska ? "matroska" : "mp4";

@@ -126,6 +126,7 @@ namespace MediaFlux
         private CheckBox? chkTenBit;
         private ComboBox? comboAudioChannels;
         private ComboBox? comboOutputContainer;
+        private ComboBox? comboContainerCompatibilityPolicy;
         private Label? lblOutputContainerReason;
         private CheckBox? chkWatchFolder;
         private Label? lblWatchFolderStatus;
@@ -1497,6 +1498,25 @@ namespace MediaFlux
                 _ => OutputContainerSelection.Mp4
             };
 
+        private ContainerCompatibilityPolicy GetContainerCompatibilityPolicy() =>
+            comboContainerCompatibilityPolicy?.SelectedIndex switch
+            {
+                1 => ContainerCompatibilityPolicy.AlwaysAsk,
+                2 => ContainerCompatibilityPolicy.Strict,
+                _ => ContainerCompatibilityPolicy.Intelligent
+            };
+
+        private void SelectContainerCompatibilityPolicy(string? value)
+        {
+            if (comboContainerCompatibilityPolicy == null) return;
+            comboContainerCompatibilityPolicy.SelectedIndex = Enum.TryParse(value, true, out ContainerCompatibilityPolicy policy) ? policy switch
+            {
+                ContainerCompatibilityPolicy.AlwaysAsk => 1,
+                ContainerCompatibilityPolicy.Strict => 2,
+                _ => 0
+            } : 0;
+        }
+
         private void SelectOutputContainer(string? value)
         {
             if (comboOutputContainer == null)
@@ -2314,6 +2334,12 @@ namespace MediaFlux
                 Margin = new Padding(0, 0, 0, 3)
             };
             comboOutputContainer.Items.AddRange(new object[] { "Auto", "Matroska (MKV)", "MP4" });
+            comboContainerCompatibilityPolicy = new ComboBox
+            {
+                Name = "comboContainerCompatibilityPolicy", DropDownStyle = ComboBoxStyle.DropDownList,
+                Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 3)
+            };
+            comboContainerCompatibilityPolicy.Items.AddRange(new object[] { "Compatibility: Intelligent (Automatic)", "Compatibility: Always Ask", "Compatibility: Strict" });
             lblOutputContainerReason = new Label
             {
                 Name = "lblOutputContainerReason",
@@ -2343,7 +2369,7 @@ namespace MediaFlux
             };
 
             int startRow = tlOptions.RowCount;
-            tlOptions.RowCount = startRow + 9;
+            tlOptions.RowCount = startRow + 10;
             for (int row = startRow; row < tlOptions.RowCount; row++)
             {
                 tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -2370,12 +2396,13 @@ namespace MediaFlux
             tlOptions.Controls.Add(lblOutputHeader, 0, startRow);
             tlOptions.Controls.Add(comboOutputContainer, 0, startRow + 1);
             tlOptions.Controls.Add(lblOutputContainerReason, 0, startRow + 2);
-            tlOptions.Controls.Add(chkTenBit, 0, startRow + 3);
-            tlOptions.Controls.Add(lblAudioLayout, 0, startRow + 4);
-            tlOptions.Controls.Add(comboAudioChannels, 0, startRow + 5);
-            tlOptions.Controls.Add(lblAutomationHeader, 0, startRow + 6);
-            tlOptions.Controls.Add(chkWatchFolder, 0, startRow + 7);
-            tlOptions.Controls.Add(lblWatchFolderStatus, 0, startRow + 8);
+            tlOptions.Controls.Add(comboContainerCompatibilityPolicy, 0, startRow + 3);
+            tlOptions.Controls.Add(chkTenBit, 0, startRow + 4);
+            tlOptions.Controls.Add(lblAudioLayout, 0, startRow + 5);
+            tlOptions.Controls.Add(comboAudioChannels, 0, startRow + 6);
+            tlOptions.Controls.Add(lblAutomationHeader, 0, startRow + 7);
+            tlOptions.Controls.Add(chkWatchFolder, 0, startRow + 8);
+            tlOptions.Controls.Add(lblWatchFolderStatus, 0, startRow + 9);
 
             void UpdateWatchStatusWrapWidth()
             {
@@ -2387,6 +2414,15 @@ namespace MediaFlux
             UpdateWatchStatusWrapWidth();
             AddVideoRestorationControls(tlOptions);
             SelectOutputContainer(_config.LastOutputContainer);
+            SelectContainerCompatibilityPolicy(_config.ContainerCompatibilityPolicy);
+            comboContainerCompatibilityPolicy.SelectedIndexChanged += (_, __) =>
+            {
+                if (!_applyingEncodeDropdownSettings)
+                {
+                    _config.ContainerCompatibilityPolicy = GetContainerCompatibilityPolicy().ToString();
+                    _config.Save(_configPath);
+                }
+            };
             comboOutputContainer.SelectedIndexChanged += (_, __) =>
             {
                 Interlocked.Increment(ref _outputContainerPreviewGeneration);

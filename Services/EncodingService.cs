@@ -325,6 +325,7 @@ namespace MediaFlux.Services
                 request.CopyDataStreams,
                 request.CopyAttachments,
                 request.ContainerCompatibilityConfirmed,
+                request.CompatibilityPolicy,
                 request.ContainerDecisionCallback,
                 request.SampleStart,
                 request.SampleDuration,
@@ -484,6 +485,7 @@ namespace MediaFlux.Services
             bool copyDataStreams = true,
             bool copyAttachments = true,
             bool containerCompatibilityConfirmed = false,
+            ContainerCompatibilityPolicy compatibilityPolicy = ContainerCompatibilityPolicy.Intelligent,
             Action<OutputContainerDecision>? containerDecisionCallback = null,
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
@@ -515,6 +517,7 @@ namespace MediaFlux.Services
                 copyDataStreams,
                 copyAttachments,
                 containerCompatibilityConfirmed,
+                compatibilityPolicy,
                 containerDecisionCallback,
                 sampleStart,
                 sampleDuration,
@@ -547,6 +550,7 @@ namespace MediaFlux.Services
             bool copyDataStreams = true,
             bool copyAttachments = true,
             bool containerCompatibilityConfirmed = false,
+            ContainerCompatibilityPolicy compatibilityPolicy = ContainerCompatibilityPolicy.Intelligent,
             Action<OutputContainerDecision>? containerDecisionCallback = null,
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
@@ -677,6 +681,16 @@ namespace MediaFlux.Services
                 copyDataStreams,
                 copyAttachments,
                 audioWillBeTranscoded: audioChannels is > 0);
+            if (containerDecision.Resolved == OutputContainer.Mp4 &&
+                compatibilityPolicy == ContainerCompatibilityPolicy.Strict &&
+                !OutputContainerPolicy.CanProceedAutomatically(containerDecision, compatibilityPolicy))
+                throw new InvalidOperationException("Strict container compatibility policy rejected a required stream conversion or omission.");
+            if (containerDecision.Resolved == OutputContainer.Mp4 &&
+                compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent &&
+                containerDecision.HasUnsupportedMeaningfulStreams)
+                throw new InvalidOperationException("Intelligent container compatibility could not safely preserve a requested audio, video, or subtitle stream.");
+            ProgramDurationDecision programDuration = ProgramDurationResolver.Resolve(sourceProbe);
+            _log?.Invoke($"[EncodingService] Authoritative duration={programDuration.DurationSeconds?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; fallback={programDuration.UsedVideoFallback}; {programDuration.Reason}");
             _log?.Invoke($"[EncodingService] {containerDecision.Reason}");
             containerDecisionCallback?.Invoke(containerDecision);
             if (containerDecision.Requested == OutputContainerSelection.Mp4)
@@ -684,6 +698,10 @@ namespace MediaFlux.Services
                 foreach (string warning in containerDecision.CompatibilityWarnings)
                     _log?.Invoke($"[EncodingService] Container compatibility: {warning}.");
             }
+            foreach (StreamCompatibilityPlan plan in containerDecision.StreamPlans.Where(plan => plan.Action != StreamCompatibilityAction.Copy))
+                _log?.Invoke($"[EncodingService] Stream {plan.StreamIndex} {plan.StreamType}/{plan.Codec}: {plan.Action}; {plan.Reason}");
+            if (containerDecision.ConvertSubtitlesToMovText)
+                _log?.Invoke("[EncodingService] ASS/SSA subtitles will be converted to mov_text; language/title/dispositions are retained where MP4 supports them, styling may be lost.");
             if (containerDecision.RequiresConfirmation && !containerCompatibilityConfirmed)
             {
                 _log?.Invoke(
@@ -737,6 +755,8 @@ namespace MediaFlux.Services
                 ? requestedSample
                 : inputSource.KnownDurationSeconds is > 0
                 ? TimeSpan.FromSeconds(inputSource.KnownDurationSeconds.Value)
+                : programDuration.DurationSeconds is > 0
+                ? TimeSpan.FromSeconds(programDuration.DurationSeconds.Value)
                 : GetVideoDuration(input);
             if (totalDuration <= TimeSpan.Zero)
                 _log?.Invoke("[EncodingService] Warning: could not determine duration, progress percent will be 0.");
@@ -875,7 +895,8 @@ namespace MediaFlux.Services
                         CopyAttachments = allowAttachmentCopy,
                         ContainerDecision = containerDecision,
                         SourceProbe = sourceProbe,
-                        ExpectedDurationSeconds = sampleDuration?.TotalSeconds,
+                        ExpectedDurationSeconds = sampleDuration?.TotalSeconds ?? programDuration.DurationSeconds,
+                        ExpectedVideoFrameCount = sampleDuration is null ? programDuration.PrimaryVideo?.FrameCount : null,
                         ExpectedVideoWidth = finalOutputResolution?.Width,
                         ExpectedVideoHeight = finalOutputResolution?.Height,
                         PerformanceTiming = performance

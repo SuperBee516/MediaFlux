@@ -50,8 +50,11 @@ public sealed class OutputContainerPolicyTests
 
         Assert.Equal(OutputContainer.Mp4, decision.Resolved);
         Assert.True(decision.RequiresConfirmation);
-        Assert.False(decision.CopySubtitles);
+        Assert.True(decision.CopySubtitles);
         Assert.False(decision.CopyAttachments);
+        StreamCompatibilityPlan subtitle = Assert.Single(decision.StreamPlans, plan => plan.StreamType == "subtitle");
+        Assert.Equal(StreamCompatibilityAction.Transcode, subtitle.Action);
+        Assert.Equal("mov_text", subtitle.TargetCodec);
     }
 
     [Fact]
@@ -121,6 +124,33 @@ public sealed class OutputContainerPolicyTests
             EncodingService.StreamMapMode.KeepAll);
 
         Assert.Equal(OutputContainer.Mp4, decision.Resolved);
+    }
+
+    [Fact]
+    public void Mp4_AssConversion_PreservesStreamMetadataByKeepingTheMappedSubtitle()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"), new MediaProbeStreamInfo
+            {
+                Index = 44, CodecType = "subtitle", CodecName = "ass", Language = "eng",
+                Tags = new Dictionary<string, string> { ["title"] = "Signs" },
+                Dispositions = new Dictionary<string, bool> { ["forced"] = true, ["default"] = true }
+            });
+
+        StreamCompatibilityPlan plan = Assert.Single(decision.StreamPlans, plan => plan.StreamIndex == 44);
+        Assert.Equal(StreamCompatibilityAction.Transcode, plan.Action);
+        Assert.True(decision.CopySubtitles);
+    }
+
+    [Fact]
+    public void AssConversion_RespectsAutomaticAskAndStrictPolicies()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"), Stream("subtitle", "ass"));
+
+        Assert.True(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Intelligent));
+        Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.AlwaysAsk));
+        Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Strict));
     }
 
     private static OutputContainerDecision Decide(

@@ -20,6 +20,14 @@ namespace MediaFlux.Services
                 ? parsed
                 : OutputContainerSelection.Mp4;
 
+        public static bool CanProceedAutomatically(OutputContainerDecision decision, ContainerCompatibilityPolicy policy) => policy switch
+        {
+            ContainerCompatibilityPolicy.Intelligent => !decision.HasUnsupportedMeaningfulStreams,
+            ContainerCompatibilityPolicy.AlwaysAsk => !decision.RequiresConfirmation,
+            ContainerCompatibilityPolicy.Strict => decision.StreamPlans.All(plan => plan.Action == StreamCompatibilityAction.Copy),
+            _ => false
+        };
+
         public static OutputContainerDecision Decide(
             OutputContainerSelection requested,
             MediaProbeResult source,
@@ -28,7 +36,8 @@ namespace MediaFlux.Services
             bool copySubtitles = true,
             bool copyDataStreams = true,
             bool copyAttachments = true,
-            bool audioWillBeTranscoded = false)
+            bool audioWillBeTranscoded = false,
+            ContainerCompatibilityPolicy compatibilityPolicy = ContainerCompatibilityPolicy.Intelligent)
         {
             ArgumentNullException.ThrowIfNull(source);
             ArgumentNullException.ThrowIfNull(input);
@@ -41,6 +50,14 @@ namespace MediaFlux.Services
             int attachmentCount = copyAttachments && !input.HasExplicitStreamSelection ? Count(source, "attachment") : 0;
 
             var warnings = new List<string>();
+            var plans = new List<StreamCompatibilityPlan>();
+            foreach (MediaProbeStreamInfo stream in selectedAudio)
+            {
+                bool compatible = audioWillBeTranscoded || Mp4AudioCodecs.Contains(stream.CodecName);
+                plans.Add(new(stream.Index, "audio", stream.CodecName,
+                    compatible ? StreamCompatibilityAction.Copy : StreamCompatibilityAction.Unsupported,
+                    compatible ? "Selected audio is retained." : "MP4 audio codec cannot be safely copied and no audio transcode was requested."));
+            }
             if (!audioWillBeTranscoded)
             {
                 string[] incompatibleAudio = selectedAudio
@@ -57,10 +74,27 @@ namespace MediaFlux.Services
                 .Select(stream => string.IsNullOrWhiteSpace(stream.CodecName) ? "unknown" : stream.CodecName)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
+            foreach (MediaProbeStreamInfo stream in selectedSubtitles)
+            {
+                bool supported = Mp4SubtitleCodecs.Contains(stream.CodecName);
+                bool ass = stream.CodecName.Equals("ass", StringComparison.OrdinalIgnoreCase) || stream.CodecName.Equals("ssa", StringComparison.OrdinalIgnoreCase);
+                StreamCompatibilityAction action = supported ? StreamCompatibilityAction.Copy : ass ? StreamCompatibilityAction.Transcode : StreamCompatibilityAction.Unsupported;
+                string streamReason = supported ? "Selected subtitle is MP4-compatible." : ass
+                    ? "ASS/SSA will be converted to mov_text; styling may be lost."
+                    : "Subtitle cannot be safely represented in MP4.";
+                plans.Add(new(stream.Index, "subtitle", stream.CodecName, action, streamReason, ass ? "mov_text" : null));
+            }
             if (incompatibleSubtitles.Length > 0)
-                warnings.Add($"subtitle codec(s) that MP4 cannot preserve by stream copy: {string.Join(", ", incompatibleSubtitles)}");
+                warnings.Add($"subtitle codec(s) requiring conversion or a decision: {string.Join(", ", incompatibleSubtitles)}");
             if (attachmentCount > 0)
+            {
                 warnings.Add($"{attachmentCount} attachment stream(s) that MP4 will not preserve");
+                foreach (MediaProbeStreamInfo stream in source.Streams.Where(s => IsType(s, "attachment")))
+                    plans.Add(new(stream.Index, "attachment", stream.CodecName, StreamCompatibilityAction.Omit, "MP4 does not preserve attachments."));
+            }
+            if (copyDataStreams)
+                foreach (MediaProbeStreamInfo stream in source.Streams.Where(s => IsType(s, "data")))
+                    plans.Add(new(stream.Index, "data", stream.CodecName, StreamCompatibilityAction.Omit, "Neither supported output container safely muxes this data stream."));
 
             OutputContainer resolved = requested switch
             {
@@ -85,7 +119,9 @@ namespace MediaFlux.Services
                 Resolved = resolved,
                 Reason = reason,
                 CompatibilityWarnings = warnings,
-                CopySubtitles = copySubtitles && (matroska || incompatibleSubtitles.Length == 0),
+                StreamPlans = plans,
+                CopySubtitles = copySubtitles && (matroska || selectedSubtitles.Any(s =>
+                    Mp4SubtitleCodecs.Contains(s.CodecName) || s.CodecName.Equals("ass", StringComparison.OrdinalIgnoreCase) || s.CodecName.Equals("ssa", StringComparison.OrdinalIgnoreCase))),
                 // Neither supported output container can safely mux arbitrary FFmpeg data
                 // streams. They are intentionally omitted rather than driving Auto to MKV.
                 CopyDataStreams = copyDataStreams &&

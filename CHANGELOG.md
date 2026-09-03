@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.93] - 2026-09-03
+
+### Stream-Aware Encoding Reliability
+
+- Use the authoritative program/video duration for bitrate and size estimation and final validation, avoiding subtitle-driven duration inflation.
+- Plan MP4 streams intelligently, including viable ASS/SSA to `mov_text` conversion with stream metadata and forced/default dispositions retained where supported.
+- Added persisted Intelligent, Always Ask, and Strict compatibility policies; routine safe MP4 cases no longer show unnecessary prompts.
+- Validate mapped video duration and reliable frame counts while continuing to reject genuine truncation, corruption, or meaningful content loss.
+
 ## [0.1.92] - 2026-09-02
 
 ### AI Restoration Runtime and Diagnostics

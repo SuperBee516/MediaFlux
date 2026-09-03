@@ -132,6 +132,7 @@ namespace MediaFlux.Models
         public string LastVideoCodec { get; set; } = nameof(VideoCodecFamily.Hevc);
         public string LastEncoderPreset { get; set; } = "p5";
         public string LastOutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
+        public string ContainerCompatibilityPolicy { get; set; } = nameof(Models.ContainerCompatibilityPolicy.Intelligent);
         public int LastQualityValue { get; set; } = 22;
         public VideoRestorationSettings VideoRestoration { get; set; } = new();
 
@@ -248,6 +249,11 @@ namespace MediaFlux.Models
                     out OutputContainerSelection outputContainer)
                 ? outputContainer.ToString()
                 : OutputContainerSelection.Mp4.ToString();
+            config.ContainerCompatibilityPolicy = Enum.TryParse(
+                    config.ContainerCompatibilityPolicy, true,
+                    out Models.ContainerCompatibilityPolicy compatibilityPolicy)
+                ? compatibilityPolicy.ToString()
+                : nameof(Models.ContainerCompatibilityPolicy.Intelligent);
 
             string[] knownEncoderIds =
             [

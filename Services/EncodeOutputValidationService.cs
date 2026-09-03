@@ -183,7 +183,7 @@ namespace MediaFlux.Services
             DecodeIntegritySpotCheckResult decode =
                 await _decodeIntegrityService.CheckAsync(
                     request.OutputPath,
-                    mediaValidation.Evidence!.OutputProbe.DurationSeconds,
+                    ProgramDurationResolver.Resolve(mediaValidation.Evidence!.OutputProbe).DurationSeconds,
                     cancellationToken).ConfigureAwait(false);
             if (!decode.Success)
                 return Failed($"Decode-integrity spot check failed: {decode.ErrorMessage}");
@@ -263,7 +263,7 @@ namespace MediaFlux.Services
             }
 
             long minimumSize = MinimumPlausibleSize(
-                request.ExpectedDurationSeconds ?? sourceProbe.DurationSeconds);
+                request.ExpectedDurationSeconds ?? ProgramDurationResolver.Resolve(sourceProbe).DurationSeconds);
             if (length < minimumSize)
             {
                 return Failed(
@@ -406,17 +406,25 @@ namespace MediaFlux.Services
             if (!string.IsNullOrWhiteSpace(profileError))
                 return profileError;
 
+            double? authoritativeDuration = request.ExpectedDurationSeconds ??
+                (request.Input.Kind == EncodingInputKind.DvdPhysicalConcat
+                    ? request.Input.KnownDurationSeconds
+                    : ProgramDurationResolver.Resolve(source).DurationSeconds);
+            log?.Invoke($"[EncodeOutputValidation] Duration basis=authoritative video/program timeline {authoritativeDuration?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}s; output container={output.DurationSeconds?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}s.");
             string durationError = ValidateDuration(
                 request.Input.Kind,
-                request.ExpectedDurationSeconds ??
-                (request.Input.Kind == EncodingInputKind.DvdPhysicalConcat
-                    ? request.Input.KnownDurationSeconds ??
-                      source.DurationSeconds
-                    : source.DurationSeconds ??
-                      request.Input.KnownDurationSeconds),
-                output.DurationSeconds);
+                authoritativeDuration ?? request.Input.KnownDurationSeconds,
+                ProgramDurationResolver.Resolve(output).DurationSeconds);
             if (!string.IsNullOrWhiteSpace(durationError))
                 return durationError;
+
+            if (request.ExpectedVideoFrameCount is > 0)
+            {
+                MediaProbeStreamInfo? outputVideoForFrames = FirstStream(output, "video");
+                if (outputVideoForFrames?.FrameCount is > 0 && outputVideoForFrames.FrameCount != request.ExpectedVideoFrameCount)
+                    return $"The encoded output contains {outputVideoForFrames.FrameCount} video frames, but {request.ExpectedVideoFrameCount} were expected from the authoritative source video stream.";
+                log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount}; output={outputVideoForFrames?.FrameCount?.ToString() ?? "unavailable"}; result=accepted.");
+            }
 
             int sourceAudioCount = CountStreams(source, "audio");
             int expectedAudioCount = request.Input.HasExplicitStreamSelection
@@ -444,7 +452,11 @@ namespace MediaFlux.Services
 
             if (request.CopySubtitles)
             {
-                int expectedSubtitles = request.Input.HasExplicitStreamSelection
+                int expectedSubtitles = request.ContainerDecision.Resolved == OutputContainer.Mp4 && request.ContainerDecision.StreamPlans.Count > 0
+                    ? request.ContainerDecision.StreamPlans.Count(plan =>
+                        plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
+                        plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode)
+                    : request.Input.HasExplicitStreamSelection
                     ? request.Input.SubtitleStreamIndexes.Count
                     : CountStreams(source, "subtitle");
                 int actualSubtitles = CountStreams(output, "subtitle");

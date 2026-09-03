@@ -124,19 +124,30 @@ namespace MediaFlux.Services
             bool copyDataStreams = request.CopyDataStreams &&
                 OutputContainerPolicy.SupportsGenericDataStreams(
                     request.ContainerDecision.Resolved);
+            bool usePlannedMp4Subtitles = request.ContainerDecision.Resolved == OutputContainer.Mp4 && request.ContainerDecision.StreamPlans.Count > 0;
             if (request.SplitSource is { } splitMapping)
             {
                 builder.Append("-map 0:v:0 ");
-                AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, request.CopySubtitles, copyDataStreams, request.CopyAttachments, 1, includeVideo: false);
+                AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, request.CopySubtitles && !usePlannedMp4Subtitles, copyDataStreams, request.CopyAttachments, 1, includeVideo: false);
+                if (usePlannedMp4Subtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 1);
                 builder.Append("-map_metadata 1 -map_chapters 1 ");
             }
-            else { AppendStreamMapping(builder, request.Input, request.MapMode, request.CopySubtitles, copyDataStreams, request.CopyAttachments); builder.Append("-map_metadata 0 -map_chapters 0 "); }
+            else { AppendStreamMapping(builder, request.Input, request.MapMode, request.CopySubtitles && !usePlannedMp4Subtitles, copyDataStreams, request.CopyAttachments); if (usePlannedMp4Subtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 0); builder.Append("-map_metadata 0 -map_chapters 0 "); }
             AppendObsoleteVideoStatisticsCleanup(builder);
             if (request.SampleDuration is { } sampleDuration && sampleDuration > TimeSpan.Zero)
                 builder.Append($"-t {Seconds(sampleDuration.TotalSeconds)} ");
 
             if (request.CopySubtitles)
+            {
                 builder.Append("-c:s copy ");
+                int subtitleOutputIndex = 0;
+                foreach (StreamCompatibilityPlan plan in request.ContainerDecision.StreamPlans.Where(plan => plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) && plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
+                {
+                    if (plan.Action == StreamCompatibilityAction.Transcode)
+                        builder.Append($"-c:s:{subtitleOutputIndex} {plan.TargetCodec} ");
+                    subtitleOutputIndex++;
+                }
+            }
             else
                 builder.Append("-sn ");
             if (request.CopyAttachments)
@@ -360,6 +371,14 @@ namespace MediaFlux.Services
                 if (copyAttachments)
                     builder.Append($"-map {inputIndex}:t? ");
             }
+        }
+
+        private static void AppendPlannedSubtitleMappings(StringBuilder builder, OutputContainerDecision decision, int inputIndex)
+        {
+            foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(plan =>
+                         plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
+                         plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
+                builder.Append($"-map {inputIndex}:{plan.StreamIndex} ");
         }
 
         private static bool IsAsfFamilyInput(string path)
