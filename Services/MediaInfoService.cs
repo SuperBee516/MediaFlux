@@ -6,12 +6,13 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
     public sealed class MediaInfoService
     {
-        private const int PersistentCacheVersion = 4;
+        private const int PersistentCacheVersion = 5;
         private readonly string _ffprobePath;
         private readonly string? _cachePath;
         private readonly bool _persistentCacheEnabled;
@@ -375,6 +376,14 @@ namespace MediaFlux.Services
                     if (remaining > 0)
                         info.AudioBitrateKbps = remaining;
                 }
+
+                // Keep the container duration for metadata/diagnostics, but use the
+                // same program-duration resolver as encode planning and finalization.
+                MediaProbeResult probe = FfprobeService.ParseProbeJson(output, path);
+                ProgramDurationDecision duration = ProgramDurationResolver.Resolve(probe);
+                info.ContainerDurationSeconds = probe.DurationSeconds;
+                if (duration.DurationSeconds is > 0)
+                    info.DurationSeconds = duration.DurationSeconds;
             }
             catch (Exception ex)
             {
@@ -523,6 +532,7 @@ namespace MediaFlux.Services
             public int? Height { get; set; }
             public double? Fps { get; set; }
             public double? DurationSeconds { get; set; }
+            public double? ContainerDurationSeconds { get; set; }
             // Primary video stream bitrate.
             public int? BitrateKbps { get; set; }
             public int? TotalBitrateKbps { get; set; }

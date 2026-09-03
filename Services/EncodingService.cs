@@ -630,6 +630,11 @@ namespace MediaFlux.Services
                     $"FFprobe could not inspect the source before container selection: {sourceProbe.ErrorMessage}");
             MediaProbeStreamInfo? sourceVideo = sourceProbe.Streams.FirstOrDefault(
                 stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+            ProgramDurationDecision programDuration = ProgramDurationResolver.Resolve(sourceProbe);
+            double? primaryVideoDuration = programDuration.PrimaryVideo is null
+                ? null
+                : ProgramDurationResolver.GetReliableDuration(programDuration.PrimaryVideo);
+            _log?.Invoke($"[EncodingService] Container duration={sourceProbe.DurationSeconds?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; primary video duration={primaryVideoDuration?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; authoritative duration={programDuration.DurationSeconds?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; reason={programDuration.Reason}");
             VideoOutputResolutionPlan? finalOutputResolution = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0
                 ? VideoRestorationPipeline.ResolveFinalOutputResolution(sourceVideo.Width.Value, sourceVideo.Height.Value, restoration, scaleMode)
                 : null;
@@ -654,9 +659,9 @@ namespace MediaFlux.Services
                 aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode, restoreOriginalAfterAi ? finalOutputResolution.ScaleFilter : null);
                 callback("[MediaFlux] Preparing AI restoration.");
                 var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend, log: _log, timing: performance);
-                TimeSpan aiDuration = sampleDuration ?? TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0);
+                TimeSpan aiDuration = sampleDuration ?? TimeSpan.FromSeconds(programDuration.DurationSeconds ?? 0);
                 int expectedFrames = AiRestorationIntermediateVideoService.ResolveExpectedFrameCount(
-                    new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0, SourceFrameCount: video.FrameCount),
+                    new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(programDuration.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0, SourceFrameCount: video.FrameCount),
                     aiDuration);
                 string stagingRoot = Path.Combine(AppPaths.DataDirectory, "ai-intermediates");
                 AiTemporaryStorageEstimate planningEstimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, stagingRoot, AiChunkPlanner.MinimumFramesPerChunk);
@@ -665,7 +670,7 @@ namespace MediaFlux.Services
                 _log?.Invoke($"[EncodingService] AI preflight: source={inputSource.SourcePath}; model={aiSettings.AiModelId}; device={aiSettings.AiDevice}; scale={(int)aiSettings.AiScale}x; expectedFrames={expectedFrames}; {estimate.Describe()}; plan={aiPlan.DescribeStages()}.");
                 AiProductionHardeningService.EnsureSpace(estimate);
                 aiIntermediate = await intermediate.CreateAsync(
-                    new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(sourceProbe.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0, SourceFrameCount: video.FrameCount),
+                    new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(programDuration.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0, SourceFrameCount: video.FrameCount),
                     new Progress<AiIntermediateProgress>(p => { callback($"[MediaFlux] {p.Message}"); aiProgressCallback?.Invoke(p); }),
                     cancellationToken).ConfigureAwait(false);
                 _log?.Invoke($"[EncodingService] AI resolution plan: source={video.Width}x{video.Height}; aiScale={(int)aiSettings.AiScale}x; intermediate={aiIntermediate.Width}x{aiIntermediate.Height}; requestedFinal={finalOutputResolution.Describe()}; finalScaleDecision={(restoreOriginalAfterAi ? finalOutputResolution.ScaleFilter : "provided by configured restoration/normal encode scale")}; postAiFilters={aiPlan.PostAiFilterChain}.");
@@ -689,8 +694,6 @@ namespace MediaFlux.Services
                 compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent &&
                 containerDecision.HasUnsupportedMeaningfulStreams)
                 throw new InvalidOperationException("Intelligent container compatibility could not safely preserve a requested audio, video, or subtitle stream.");
-            ProgramDurationDecision programDuration = ProgramDurationResolver.Resolve(sourceProbe);
-            _log?.Invoke($"[EncodingService] Authoritative duration={programDuration.DurationSeconds?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; fallback={programDuration.UsedVideoFallback}; {programDuration.Reason}");
             _log?.Invoke($"[EncodingService] {containerDecision.Reason}");
             containerDecisionCallback?.Invoke(containerDecision);
             if (containerDecision.Requested == OutputContainerSelection.Mp4)
@@ -726,6 +729,18 @@ namespace MediaFlux.Services
             bool allowSubtitleCopy = containerDecision.CopySubtitles;
             bool allowDataCopy = containerDecision.CopyDataStreams;
             bool allowAttachmentCopy = containerDecision.CopyAttachments;
+            int plannedAudioStreams = inputSource.HasExplicitStreamSelection
+                ? inputSource.AudioStreamIndexes.Count
+                : mapMode == StreamMapMode.FirstAudioOnly
+                    ? Math.Min(1, sourceProbe.Streams.Count(stream => stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase)))
+                    : sourceProbe.Streams.Count(stream => stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase));
+            int plannedSubtitleStreams = !allowSubtitleCopy ? 0
+                : containerDecision.Resolved == OutputContainer.Mp4 && containerDecision.StreamPlans.Count > 0
+                    ? containerDecision.StreamPlans.Count(plan => plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) && plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode)
+                    : inputSource.HasExplicitStreamSelection
+                        ? inputSource.SubtitleStreamIndexes.Count
+                        : sourceProbe.Streams.Count(stream => stream.CodecType.Equals("subtitle", StringComparison.OrdinalIgnoreCase));
+            _log?.Invoke($"[EncodingService] FFmpeg mapping plan: video=1; audio={plannedAudioStreams}; subtitles={plannedSubtitleStreams}; data={(allowDataCopy ? "included" : "omitted")}; attachments={(allowAttachmentCopy ? "included" : "omitted")}.");
             if (copyDataStreams && !allowDataCopy)
             {
                 MediaProbeStreamInfo[] omittedDataStreams = sourceProbe.Streams

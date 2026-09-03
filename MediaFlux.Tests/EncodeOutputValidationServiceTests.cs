@@ -40,6 +40,27 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void SubtitleInflatedMkv_CompleteMappedMp4PassesAgainstVideoTimeline()
+    {
+        MediaProbeResult source = TopologyProbe(1475.25, 1419.96, 34045, includeOutlierSubtitle: true);
+        MediaProbeResult output = TopologyProbe(1419.96, 1419.96, 34045, includeOutlierSubtitle: false, format: "mov,mp4,m4a,3gp,3g2,mj2");
+        EncodeOutputValidationRequest request = TopologyRequest();
+
+        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(request, source, output));
+    }
+
+    [Fact]
+    public void SubtitleInflatedMkv_TruncatedMp4StillFails()
+    {
+        MediaProbeResult source = TopologyProbe(1475.25, 1419.96, 34045, includeOutlierSubtitle: true);
+        MediaProbeResult output = TopologyProbe(1364.67, 1364.67, 32700, includeOutlierSubtitle: false, format: "mov,mp4,m4a,3gp,3g2,mj2");
+
+        string error = EncodeOutputValidationService.ValidateProbe(TopologyRequest(), source, output);
+
+        Assert.Contains("duration differs", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task CorruptOrUnprobeableOutputFailsClosed()
     {
         var service = CreateService(
@@ -546,6 +567,26 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
             }
         };
     }
+
+    private static EncodeOutputValidationRequest TopologyRequest() => new()
+    {
+        Input = EncodingInputSource.FromFile("topology.mkv"),
+        Encoder = new VideoEncoderSelection(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
+        ExpectedDurationSeconds = 1419.96,
+        ExpectedVideoFrameCount = 34045,
+        ContainerDecision = new OutputContainerDecision { Requested = OutputContainerSelection.Mp4, Resolved = OutputContainer.Mp4, Reason = "test" }
+    };
+
+    private static MediaProbeResult TopologyProbe(double containerDuration, double videoDuration, long frames, bool includeOutlierSubtitle, string format = "matroska,webm") => new()
+    {
+        Success = true, FormatName = format, DurationSeconds = containerDuration,
+        Streams = new MediaProbeStreamInfo[]
+        {
+            new() { Index = 0, CodecType = "video", CodecName = format.StartsWith("mov") ? "hevc" : "h264", Width = 1920, Height = 1080, PixelFormat = "yuv420p", DurationSeconds = videoDuration, FrameCount = frames, FrameRate = 34045d / 1419.96d },
+            new() { Index = 1, CodecType = "audio", CodecName = "aac", Channels = 2, DurationSeconds = 1420 },
+            new() { Index = 2, CodecType = "audio", CodecName = "aac", Channels = 2, DurationSeconds = 1420 }
+        }.Concat(includeOutlierSubtitle ? new[] { new MediaProbeStreamInfo { Index = 3, CodecType = "subtitle", CodecName = "ass", DurationSeconds = 1475.25 } } : Array.Empty<MediaProbeStreamInfo>()).ToArray()
+    };
 
     private static IReadOnlyList<MediaProbeChapterInfo> Chapters(
         params (int Id, double Start, double End, string Title)[] values) =>

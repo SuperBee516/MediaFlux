@@ -382,7 +382,7 @@ namespace MediaFlux.Services
                 $"(ffprobe total={sourceTotalBitrateKbps} kbps), " +
                 $"video={sourceVideoKbps:0} kbps [{videoSource}], " +
                 $"audio={plannedAudioKbps:0} kbps/{sourceAudioStreamCount} stream(s), " +
-                $"subtitles mapped={sourceSubtitleStreamCount}, " +
+                $"subtitles present={sourceSubtitleStreamCount} (mapping is decided at encode time), " +
                 $"data excluded={sourceDataStreamCount}/{measuredDataKbps:0} kbps, " +
                 $"attachments excluded={sourceAttachmentStreamCount}/" +
                 $"{sourceAttachmentSizeBytes} bytes; " +
