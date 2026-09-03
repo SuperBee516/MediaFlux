@@ -32,6 +32,40 @@ public sealed class UiConfigPersistenceTests : IDisposable
     }
 
     [Fact]
+    public void ExpandedDetailsRatioRoundTripsWithoutChangingCollapseState()
+    {
+        string path = Path.Combine(_root, "encode-layout.json");
+        var config = new Config { EncodeInfoHeaderCollapsed = false, EncodeInfoHeight = 420, EncodeInfoExpandedRatio = 0.42 };
+        config.Save(path);
+
+        Config loaded = Config.Load(path);
+
+        Assert.False(loaded.EncodeInfoHeaderCollapsed);
+        Assert.Equal(420, loaded.EncodeInfoHeight);
+        Assert.Equal(0.42, loaded.EncodeInfoExpandedRatio, 3);
+    }
+
+    [Fact]
+    public void MissingExpandedDetailsRatioRemainsBackwardCompatible()
+    {
+        string path = Path.Combine(_root, "legacy-encode-layout.json");
+        File.WriteAllText(path, "{\"EncodeInfoHeaderCollapsed\":true,\"EncodeInfoHeight\":300}");
+
+        Config loaded = Config.Load(path);
+
+        Assert.True(loaded.EncodeInfoHeaderCollapsed);
+        Assert.Equal(300, loaded.EncodeInfoHeight);
+        Assert.Equal(0, loaded.EncodeInfoExpandedRatio);
+    }
+
+    [Fact]
+    public void ExpandedLayoutUsesDeterministicFortyFivePercentDetailsAllocation()
+    {
+        Assert.Equal(450, MainForm.CalculateStandardEncodeDetailsHeight(1000));
+        Assert.Equal(0, MainForm.CalculateStandardEncodeDetailsHeight(0));
+    }
+
+    [Fact]
     public void OlderConfigUsesDefaultSummaryPreviewHeight()
     {
         string path = Path.Combine(_root, "legacy.json");

@@ -217,7 +217,7 @@ public sealed class EncoderBenchmarkUiTests
                 using var main = new MainForm();
                 DataGridView queue = (DataGridView)(main.GetType().GetField("dgvEncodeQueue", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(main)
                     ?? throw new MissingFieldException("dgvEncodeQueue"));
-                Assert.Contains(queue.ContextMenuStrip!.Items.Cast<ToolStripItem>(), item => item.Text == "Benchmark Encode Performance");
+                Assert.Contains(AllMenuItems(queue.ContextMenuStrip!.Items), item => item.Text == "Benchmark Encode Performance");
                 MenuStrip menu = main.Controls.OfType<MenuStrip>().First();
                 Assert.Contains(AllMenuItems(menu.Items), item => item.Text == "Encoder Benchmark");
 

@@ -552,6 +552,7 @@ namespace MediaFlux
                 if (_summaryDuplicateRecoverableValue != null) _summaryDuplicateRecoverableValue.Text = "--";
                 if (_summarySelectedCountValue != null) _summarySelectedCountValue.Text = "0";
                 if (_summarySelectedSavedValue != null) _summarySelectedSavedValue.Text = "--";
+                UpdateQueueCommandSummary();
                 return;
             }
 
@@ -589,6 +590,7 @@ namespace MediaFlux
                     : "--";
             }
 
+            UpdateQueueCommandSummary();
             UpdateRelocatedEncodeStatus(lblEncodeStatus?.Text);
 
             UpdateSelectedSpaceTotals();

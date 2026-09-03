@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.94] - 2026-09-03
+
+- Modernized the queue-first Encode workspace with a compact Active Encoding Profile and contextual Details workspace.
+- Reorganized queue commands and context-menu actions, improved Encoding Options presentation, and adapted Current Operation/progress display.
+- Added cleaner idle status, improved resizing/layout behavior, and persisted UI/grid state handling.
+
 ## [0.1.93] - 2026-09-03
 
 ### Stream-Aware Encoding Reliability

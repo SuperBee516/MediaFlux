@@ -335,6 +335,7 @@ namespace MediaFlux
                         progressBarEncode.Style = ProgressBarStyle.Continuous;
                     SetProgress(progressBarEncode, (int)Math.Round(fraction * 100));
                 }
+                UpdateCurrentOperationSummary();
             });
         }
 
@@ -349,6 +350,7 @@ namespace MediaFlux
             _activeEncodeMetrics[row] = metrics;
 
             UpdateEncodeMetricsPanel();
+            UpdateCurrentOperationSummary();
 
             bool singleEncode = _activeEncodeRows.Count <= 1;
             if (singleEncode)
@@ -419,6 +421,9 @@ namespace MediaFlux
                 .Take(2)
                 .ToList();
 
+            if (progressPanel != null)
+                progressPanel.Visible = rows.Count > 0 || _encodingActive;
+
             bool showSecond = rows.Count > 1;
 
             Ui(() =>
@@ -477,6 +482,9 @@ namespace MediaFlux
             ApplyEmptyMetrics(lblSpeedValue, lblSizeValue, lblFPSValue, lblBitrateValue, lblTimeValue);
             ApplyEmptyMetrics(lblSpeedValue2, lblSizeValue2, lblFPSValue2, lblBitrateValue2, lblTimeValue2);
             SetLabel(lblJobTimer2, "--");
+            if (progressPanel != null && !_encodingActive)
+                progressPanel.Visible = false;
+            UpdateCurrentOperationPresentation();
 
             Ui(() =>
             {

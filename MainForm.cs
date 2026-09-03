@@ -68,6 +68,15 @@ namespace MediaFlux
         private Label? _summaryFileCountValue;
         private Label? _summaryQueueStatusValue;
         private Label? _collapsedQueueStatusLabel;
+        private Label? _activeConfigurationSummaryLabel;
+        private Label? _queueCommandSummaryLabel;
+        private Label? _detailsContextLabel;
+        private Label? _streamsContextLabel;
+        private Label? _restorationContextLabel;
+        private Label? _currentOperationSummaryLabel;
+        private Panel? _currentOperationBar;
+        private Label? _currentOperationTitleLabel;
+        private Label? _currentOperationMetricsLabel;
         private Label? _summarySelectedCountValue;
         private Label? _summarySelectedSavedValue;
         private Label? _summaryTotalCurrentValue;
@@ -89,16 +98,15 @@ namespace MediaFlux
         private bool _applyingCheckboxStates;
         private bool _applyingRememberedSort;
         private CompactModeForm? _compactModeForm;
-        private Button? _btnCompactMode;
         private bool _applyingEncodeInfoSplitterState;
         private bool _mp4CompatibilityConfirmedForRun;
         private OutputContainerSelection _activeOutputContainer = OutputContainerSelection.Mp4;
         private int _outputContainerPreviewGeneration;
 
-        private const int DefaultEncodeInfoHeight = 274;
         private const int MinimumEncodeInfoHeight = 150;
         private const int MinimumEncodeQueueHeight = 160;
         private const int EncodeInfoSplitterWidth = 7;
+        private const double StandardEncodeDetailsRatio = 0.45;
 
         private PictureBox? _encodingSpinner;
         private Label? _activityLabel;
@@ -186,6 +194,10 @@ namespace MediaFlux
         public MainForm()
         {
             InitializeComponent();
+            AutoScaleMode = AutoScaleMode.Dpi;
+            MinimumSize = new Size(900, 650);
+            if (progressPanel != null)
+                progressPanel.Height = ScaleUi(80);
             Text = $"MediaFlux v{UpdateManager.CurrentVersion}";
 
 
@@ -305,6 +317,7 @@ namespace MediaFlux
             {
                 UpdateSelectedSpaceTotals();
                 UpdateEncodePreview();
+                UpdateContextualDetails();
             };
 
             chkAutoTargetSize.CheckedChanged += (_, __) => ScheduleEstimateRefresh();
@@ -374,8 +387,11 @@ namespace MediaFlux
             WireEncodePreviewAndDropdownPersistence();
             ApplyRememberedEncodeDropdowns();
 
+            Shown += (_, __) => ApplyEncodeInfoSplitterState();
+
             // persist column‐width changes
             dgvEncodeQueue.ColumnWidthChanged += DgvEncodeQueue_ColumnWidthChanged;
+            dgvEncodeQueue.ColumnDisplayIndexChanged += DgvEncodeQueue_ColumnDisplayIndexChanged;
 
             // enable drag‐drop reordering
             dgvEncodeQueue.GiveFeedback += (s, ev) => ev.UseDefaultCursors = true;
@@ -441,14 +457,23 @@ namespace MediaFlux
             if (position.Row < 0)
                 return;
 
+            // Keep the existing grid instance authoritative.  The surrounding layout
+            // changes, but its event wiring, context menu, selection and queue state do not.
             tlEncode.Controls.Remove(dgvEncodeQueue);
+
+            // The former accordion content remains available, but belongs with the
+            // contextual details rather than competing with the queue for vertical space.
+            tlEncode.Controls.Remove(grpOptions);
+            tlEncode.Controls.Remove(grpDuplicateFinder);
+            MoveEncodingProfileFieldsToDetails();
+            AddQueueCommandSummary();
 
             _encodeQueueSplit = new SplitContainer
             {
                 Name = "splitEncodeQueueAndInfo",
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
-                FixedPanel = FixedPanel.Panel1,
+                FixedPanel = FixedPanel.Panel2,
                 SplitterWidth = EncodeInfoSplitterWidth,
                 Margin = Padding.Empty,
                 BorderStyle = BorderStyle.None,
@@ -459,16 +484,234 @@ namespace MediaFlux
             dgvEncodeQueue.Dock = DockStyle.Fill;
             _encodeInfoHeader = CreateEncodeInfoHeader();
             _encodeInfoHeader.Dock = DockStyle.Fill;
-            _encodeQueueSplit.Panel1.Controls.Add(_encodeInfoHeader);
-            _encodeQueueSplit.Panel2.Controls.Add(dgvEncodeQueue);
+            _encodeQueueSplit.Panel1.Controls.Add(dgvEncodeQueue);
+            _encodeQueueSplit.Panel2.Controls.Add(_encodeInfoHeader);
             _encodeQueueSplit.SplitterMoved += EncodeQueueSplit_SplitterMoved;
-            _encodeQueueSplit.SizeChanged += (_, __) => ApplyEncodeInfoSplitterState();
+            _encodeQueueSplit.SizeChanged += (_, __) => ClampEncodeInfoSplitterState();
 
             tlEncode.Controls.Add(_encodeQueueSplit, position.Column, position.Row);
             tlEncode.SetColumnSpan(_encodeQueueSplit, 4);
             InitializeEncodeStatusRelocation();
+            InitializeCurrentOperationBar();
             UpdateSizeTotals();
             UpdateEncodePreview();
+        }
+
+        private int ScaleUi(int pixels) => (int)Math.Round(pixels * (DeviceDpi / 96.0));
+
+        private void MoveEncodingProfileFieldsToDetails()
+        {
+            if (pnlEncodingProfileCard == null || tlEncodingProfileFields == null)
+                return;
+
+            pnlEncodingProfileCard.SuspendLayout();
+            try
+            {
+                pnlEncodingProfileCard.Controls.Clear();
+                pnlEncodingProfileCard.RowStyles.Clear();
+                pnlEncodingProfileCard.RowCount = 1;
+                pnlEncodingProfileCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+                var compactProfile = new TableLayoutPanel
+                {
+                    Dock = DockStyle.Top,
+                    AutoSize = true,
+                    ColumnCount = 3,
+                    RowCount = 1,
+                    Padding = new Padding(10, 7, 10, 7),
+                    Margin = Padding.Empty
+                };
+                compactProfile.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                compactProfile.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+                compactProfile.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+                compactProfile.Controls.Add(new Label
+                {
+                    Text = "Active encoding profile",
+                    AutoSize = true,
+                    Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                    Anchor = AnchorStyles.Left,
+                    Margin = new Padding(0, 3, 12, 3)
+                }, 0, 0);
+
+                _activeConfigurationSummaryLabel = new Label
+                {
+                    AutoSize = false,
+                    AutoEllipsis = true,
+                    Dock = DockStyle.Fill,
+                    Anchor = AnchorStyles.Left,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    ForeColor = SystemColors.ControlText,
+                    Margin = new Padding(0, 2, 12, 2)
+                };
+                compactProfile.Controls.Add(_activeConfigurationSummaryLabel, 1, 0);
+
+                var configureButton = new Button
+                {
+                    Text = "Configure…",
+                    AutoSize = true,
+                    Margin = Padding.Empty
+                };
+                configureButton.Click += (_, __) => ShowEncodingConfiguration();
+                compactProfile.Controls.Add(configureButton, 2, 0);
+                pnlEncodingProfileCard.Controls.Add(compactProfile, 0, 0);
+            }
+            finally
+            {
+                pnlEncodingProfileCard.ResumeLayout(true);
+            }
+        }
+
+        private void ShowEncodingConfiguration()
+        {
+            ApplyEncodeInfoHeaderCollapsedState(false);
+            ApplyEncodingOptionsCollapsedState(false);
+            if (_encodeInfoTabs != null)
+                _encodeInfoTabs.SelectedTab = _encodeInfoTabs.TabPages.Cast<TabPage>()
+                    .FirstOrDefault(page => page.Text == "Encoding Options");
+        }
+
+        private void AddQueueCommandSummary()
+        {
+            if (pnlQueueControlsCard == null || _queueCommandSummaryLabel != null)
+                return;
+
+            pnlQueueControlsCard.SuspendLayout();
+            try
+            {
+                pnlQueueControlsCard.RowCount = Math.Max(pnlQueueControlsCard.RowCount + 1, 5);
+                pnlQueueControlsCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                pnlQueueControlsCard.SetCellPosition(lblEncodeStatus, new TableLayoutPanelCellPosition(0, 4));
+                _queueCommandSummaryLabel = new Label
+                {
+                    AutoSize = true,
+                    ForeColor = SystemColors.GrayText,
+                    Margin = new Padding(0, 5, 0, 0),
+                    Text = "0 files  |  Estimated output: --  |  Estimated savings: --"
+                };
+                pnlQueueControlsCard.Controls.Add(_queueCommandSummaryLabel, 0, 3);
+                if (_analyzeQueueButton != null)
+                {
+                    statusStrip1.Items.Remove(_analyzeQueueButton);
+                    var analyzeHost = new ToolStrip
+                    {
+                        AutoSize = true,
+                        GripStyle = ToolStripGripStyle.Hidden,
+                        RenderMode = ToolStripRenderMode.System,
+                        Margin = new Padding(8, 0, 0, 0)
+                    };
+                    analyzeHost.Items.Add(_analyzeQueueButton);
+                    pnlQueueActionButtons.Controls.Add(analyzeHost);
+                }
+            }
+            finally
+            {
+                pnlQueueControlsCard.ResumeLayout(true);
+            }
+        }
+
+        private void UpdateQueueCommandSummary()
+        {
+            if (_queueCommandSummaryLabel == null)
+                return;
+
+            double savings = Math.Max(0, _queueTotalSourceMb - _queueTotalEstimatedMb);
+            string estimates = _queueTotalEstimatedMb > 0 && _queueTotalSourceMb > 0
+                ? $"Estimated output: {FormatSize(_queueTotalEstimatedMb)}  |  Estimated savings: {FormatSize(savings)} ({(savings / _queueTotalSourceMb) * 100:0}% saved)"
+                : "Estimated output: --  |  Estimated savings: --";
+            _queueCommandSummaryLabel.Text = $"{_queueFileCount} file{(_queueFileCount == 1 ? "" : "s")}  |  {estimates}";
+        }
+
+        private void InitializeCurrentOperationBar()
+        {
+            if (progressPanel == null || _currentOperationBar != null)
+                return;
+
+            foreach (Control control in progressPanel.Controls)
+                control.Visible = false;
+
+            _currentOperationTitleLabel = new Label
+            {
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                Margin = new Padding(0, 0, 16, 0),
+                Anchor = AnchorStyles.Left
+            };
+            _currentOperationMetricsLabel = new Label
+            {
+                AutoSize = true,
+                ForeColor = SystemColors.GrayText,
+                Margin = Padding.Empty,
+                Anchor = AnchorStyles.Left
+            };
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                Padding = new Padding(10, 4, 10, 4),
+                Margin = Padding.Empty
+            };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.Controls.Add(_currentOperationTitleLabel, 0, 0);
+            layout.SetColumnSpan(_currentOperationTitleLabel, 2);
+            layout.Controls.Add(progressBarEncode, 0, 1);
+            layout.Controls.Add(_currentOperationMetricsLabel, 1, 1);
+            progressBarEncode.Dock = DockStyle.Fill;
+            progressBarEncode.Margin = new Padding(0, 2, 16, 0);
+            _currentOperationBar = new Panel { Dock = DockStyle.Fill, Visible = false };
+            _currentOperationBar.Controls.Add(layout);
+            progressPanel.Controls.Add(_currentOperationBar);
+            _currentOperationBar.BringToFront();
+            UpdateCurrentOperationPresentation();
+        }
+
+        private void UpdateCurrentOperationPresentation()
+        {
+            if (_currentOperationBar == null || _currentOperationTitleLabel == null || _currentOperationMetricsLabel == null)
+                return;
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(UpdateCurrentOperationPresentation));
+                return;
+            }
+
+            var row = _activeEncodeRow;
+            bool active = _encodingActive || (_activeEncodeRows?.Count ?? 0) > 0;
+            _currentOperationBar.Visible = active;
+            if (!active)
+            {
+                progressPanel!.Visible = false;
+                return;
+            }
+
+            progressPanel!.Visible = true;
+            string fileName = row == null ? "Current operation" : Path.GetFileName(GetFullPathFromRow(row) ?? "");
+            string? stage = row?.Cells["colStatus"]?.Value?.ToString();
+            if (string.IsNullOrWhiteSpace(stage)) stage = "Encoding";
+            _currentOperationTitleLabel.Text = $"{stage} — {fileName}";
+            _currentOperationMetricsLabel.Text = BuildCurrentOperationMetrics(row);
+            progressBarEncode.Visible = true;
+        }
+
+        private string BuildCurrentOperationMetrics(DataGridViewRow? row)
+        {
+            var parts = new List<string>();
+            if (_activeEncodeRows.Count > 0 && _activeEncodeMetrics.TryGetValue(_activeEncodeRows[0], out var metrics) && metrics.HasData)
+            {
+                if (metrics.Fps > 0) parts.Add($"{metrics.Fps:N0} FPS");
+                if (metrics.Bitrate > 0) parts.Add($"{metrics.Bitrate:F1} kbits/s");
+                if (!string.IsNullOrWhiteSpace(metrics.TimeStr)) parts.Add(metrics.TimeStr + " elapsed");
+            }
+            if (row != null)
+            {
+                string eta = row.Cells["colETA"]?.Value?.ToString() ?? "";
+                if (!string.IsNullOrWhiteSpace(eta) && eta != "--") parts.Add("ETA " + eta);
+            }
+            return string.Join("  ·  ", parts);
         }
 
         private void InitializeEncodeStatusRelocation()
@@ -495,11 +738,7 @@ namespace MediaFlux
 
             if (_collapsedQueueStatusLabel != null)
             {
-                double savings = Math.Max(0, _queueTotalSourceMb - _queueTotalEstimatedMb);
-                string estimates = _queueTotalEstimatedMb > 0 && _queueTotalSourceMb > 0
-                    ? $"Estimated Output: {FormatSize(_queueTotalEstimatedMb)}   |   Est. Savings: {FormatSize(savings)} ({(savings / _queueTotalSourceMb) * 100:0}% saved)"
-                    : "Estimated Output: --   |   Est. Savings: --";
-                _collapsedQueueStatusLabel.Text = $"{displayText}   |   {estimates}";
+                UpdateDetailsHeaderContext();
                 UpdateCollapsedQueueStatusLabelMaximumWidth();
             }
         }
@@ -659,18 +898,191 @@ namespace MediaFlux
                 Margin = Padding.Empty
             };
 
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Queue Summary", CreateQueueSummaryGroup()));
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Output Preview", CreateEncodePreviewGroup()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Details", CreateContextualDetailsGroup()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Preview", CreateEncodePreviewGroup()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Streams", CreateStreamsGroup()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Restoration", CreateRestorationGroup()));
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Statistics", CreateEncodingStatisticsGroup()));
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Diagnostics", CreateEncodingDiagnosticsGroup()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Encoding Options", CreateEncodingOptionsDetails()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Duplicates", grpDuplicateFinder));
             _encodeInfoTabs.SelectedIndexChanged += (_, __) =>
             {
+                if (_encodeInfoTabs.SelectedTab != null && !_applyingEncodeDropdownSettings)
+                {
+                    _config.EncodeDetailsTab = _encodeInfoTabs.SelectedTab.Text;
+                    _config.Save(_configPath);
+                }
                 if (_encodeInfoTabs.SelectedTab?.Text == "Statistics")
                     RefreshEncodingStatistics();
                 else if (_encodeInfoTabs.SelectedTab?.Text == "Diagnostics")
                     RefreshEncodingDiagnostics();
             };
             return _encodeInfoTabs;
+        }
+
+        private Control CreateContextualDetailsGroup()
+        {
+            var content = CreateContextPanel(out _detailsContextLabel);
+            content.Controls.Add(CreateQueueSummaryGroup());
+            return content;
+        }
+
+        private Control CreateStreamsGroup()
+        {
+            return CreateContextPanel(out _streamsContextLabel);
+        }
+
+        private Control CreateRestorationGroup()
+        {
+            var content = CreateContextPanel(out _restorationContextLabel);
+            var configure = new Button { Text = "Open restoration settings…", AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
+            configure.Click += (_, __) => ShowEncodingConfiguration();
+            content.Controls.Add(configure);
+            return content;
+        }
+
+        private TableLayoutPanel CreateContextPanel(out Label contextLabel)
+        {
+            var content = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                Dock = DockStyle.Top,
+                Padding = new Padding(4),
+                Margin = Padding.Empty
+            };
+            content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            contextLabel = new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(900, 0),
+                Margin = new Padding(0, 0, 0, 8),
+                ForeColor = SystemColors.ControlText,
+                Text = "Queue summary"
+            };
+            var operationLabel = new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(900, 0),
+                Margin = new Padding(0, 0, 0, 8),
+                ForeColor = Color.FromArgb(35, 84, 130),
+                Visible = false
+            };
+            _currentOperationSummaryLabel ??= operationLabel;
+            content.Controls.Add(contextLabel, 0, 0);
+            content.Controls.Add(operationLabel, 0, 1);
+            UpdateContextualDetails();
+            return content;
+        }
+
+        private void UpdateContextualDetails()
+        {
+            if (dgvEncodeQueue == null)
+                return;
+
+            var rows = dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().Where(row => !row.IsNewRow).ToList();
+            string details;
+            string streams;
+            string restoration;
+            if (rows.Count == 0)
+            {
+                details = $"Queue: {_queueFileCount:N0} file(s). Select a file to view its cached encode details.";
+                streams = "Select one file to view already-known stream information.";
+                restoration = "Select one file to view its existing restoration analysis or recommendation.";
+            }
+            else if (rows.Count > 1)
+            {
+                double source = rows.Sum(row => (row.Tag as RowMeta)?.SrcMb ?? 0);
+                double estimated = rows.Sum(row =>
+                {
+                    string? path = GetFullPathFromRow(row);
+                    return path != null && _estimatedSizeMap.TryGetValue(path, out double value) ? value : 0;
+                });
+                details = $"{rows.Count:N0} selected  |  Source: {(source > 0 ? FormatSize(source) : "not yet available")}  |  Estimated output: {(estimated > 0 ? FormatSize(estimated) : "waiting for estimates")}";
+                streams = "Stream details are available for one selected file at a time.";
+                restoration = "Restoration analysis is available for one selected file at a time.";
+            }
+            else
+            {
+                DataGridViewRow row = rows[0];
+                RowMeta? meta = row.Tag as RowMeta;
+                string path = GetFullPathFromRow(row) ?? meta?.Path ?? "Unknown file";
+                double estimate = _estimatedSizeMap.TryGetValue(path, out double value) ? value : 0;
+                string status = row.Cells["colStatus"]?.Value?.ToString() ?? "Queued";
+                details = $"{Path.GetFileName(path)}\r\n{path}\r\nStatus: {status}  |  Source: {(meta?.SrcMb > 0 ? FormatSize(meta.SrcMb) : "not yet available")}  |  Estimated output: {(estimate > 0 ? FormatSize(estimate) : "waiting for estimate")}  |  Custom settings: {(meta?.HasCustomSettings == true ? "Yes" : "No")}";
+                streams = $"Codec: {meta?.VideoCodec ?? "not yet available"}  |  Resolution: {meta?.Resolution ?? "not yet available"}  |  Duration: {(meta?.DurationSec > 0 ? TimeSpan.FromSeconds(meta.DurationSec).ToString(@"hh\:mm\:ss") : "not yet available")}  |  FPS: {(meta?.Fps > 0 ? meta.Fps.ToString() : "not yet available")}";
+                restoration = meta?.DeepAnalysis != null
+                    ? "Existing deep/restoration analysis is available for this item. Use the existing configuration and analysis actions to review or change it."
+                    : meta?.EncodeRecommendation != null
+                        ? "An existing Smart Encode recommendation is available for this item."
+                        : "No existing restoration analysis is available for this item.";
+            }
+
+            if (_detailsContextLabel != null) _detailsContextLabel.Text = details;
+            if (_streamsContextLabel != null) _streamsContextLabel.Text = streams;
+            if (_restorationContextLabel != null) _restorationContextLabel.Text = restoration;
+            UpdateDetailsHeaderContext();
+            UpdateCurrentOperationSummary();
+        }
+
+        private void UpdateDetailsHeaderContext()
+        {
+            if (_collapsedQueueStatusLabel == null || dgvEncodeQueue == null)
+                return;
+            int selected = dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().Count(row => !row.IsNewRow);
+            _collapsedQueueStatusLabel.Text = selected switch
+            {
+                0 => "Selected: None",
+                1 => "Selected: 1 file",
+                _ => $"Selected: {selected:N0} files"
+            };
+        }
+
+        private void UpdateCurrentOperationSummary()
+        {
+            if (_currentOperationSummaryLabel == null)
+                return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(UpdateCurrentOperationSummary));
+                return;
+            }
+
+            bool active = _encodingActive || (_activeEncodeRows?.Count ?? 0) > 0;
+            _currentOperationSummaryLabel.Visible = active;
+            if (!active)
+                return;
+
+            string name = _activeEncodeRow != null
+                ? Path.GetFileName(GetFullPathFromRow(_activeEncodeRow) ?? string.Empty)
+                : "Current operation";
+            _currentOperationSummaryLabel.Text = $"Active: {name}  |  {progressBarEncode.Value}%  |  FPS {lblFPSValue.Text}  |  {lblBitrateValue.Text}  |  Elapsed {lblJobTimer.Text}";
+            UpdateCurrentOperationPresentation();
+        }
+
+        private Control CreateEncodingOptionsDetails()
+        {
+            var content = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                RowCount = 2,
+                Dock = DockStyle.Top,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            tlEncodingProfileFields.Dock = DockStyle.Top;
+            grpOptions.Dock = DockStyle.Top;
+            content.Controls.Add(tlEncodingProfileFields, 0, 0);
+            content.Controls.Add(grpOptions, 0, 1);
+            return content;
         }
 
         private static TabPage CreateScrollableInfoTab(string title, Control content)
@@ -725,7 +1137,7 @@ namespace MediaFlux
 
             var title = new Label
             {
-                Text = "Summary / Preview",
+                Text = "Details",
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(27, 34, 43),
@@ -807,32 +1219,30 @@ namespace MediaFlux
             _applyingEncodeInfoSplitterState = true;
             try
             {
-                // Temporarily relax the top minimum so an expanded section can
-                // still collapse to its compact header.
+                // Temporarily relax both minimums while calculating a legal layout.
                 _encodeQueueSplit.Panel1MinSize = 0;
                 _encodeQueueSplit.Panel2MinSize = 0;
 
-                int desiredHeight = collapsed
+                int desiredDetailsHeight = collapsed
                     ? collapsedHeight
-                    : (_config.EncodeInfoHeight > 0
-                        ? _config.EncodeInfoHeight
-                        : DefaultEncodeInfoHeight);
-                int summaryMinimum = collapsed ? collapsedHeight : MinimumEncodeInfoHeight;
+                    : CalculateStandardEncodeDetailsHeight(availableHeight);
+                int detailsMinimum = collapsed ? collapsedHeight : MinimumEncodeInfoHeight;
                 int legalMaximumHeight = Math.Max(
                     0,
                     availableHeight - EncodeInfoSplitterWidth);
-                int effectiveSummaryMinimum = Math.Min(
-                    summaryMinimum,
+                int effectiveDetailsMinimum = Math.Min(
+                    detailsMinimum,
                     legalMaximumHeight);
-                int maximumHeight = Math.Min(
+                int maximumDetailsHeight = Math.Min(
                     legalMaximumHeight,
                     Math.Max(
-                        effectiveSummaryMinimum,
+                        effectiveDetailsMinimum,
                         availableHeight - EncodeInfoSplitterWidth - MinimumEncodeQueueHeight));
-                int splitterDistance = Math.Clamp(
-                    desiredHeight,
-                    effectiveSummaryMinimum,
-                    maximumHeight);
+                int detailsHeight = Math.Clamp(
+                    desiredDetailsHeight,
+                    effectiveDetailsMinimum,
+                    maximumDetailsHeight);
+                int splitterDistance = legalMaximumHeight - detailsHeight;
 
                 _encodeQueueSplit.SplitterDistance = splitterDistance;
                 _encodeQueueSplit.IsSplitterFixed = collapsed;
@@ -840,12 +1250,8 @@ namespace MediaFlux
                 // Enforce both normal minimums whenever the host has enough room.
                 // If the whole window is temporarily smaller, SplitContainer must
                 // remain lay-outable instead of throwing or overlapping controls.
-                int remainingHeight =
-                    availableHeight - EncodeInfoSplitterWidth - splitterDistance;
-                _encodeQueueSplit.Panel1MinSize = Math.Min(summaryMinimum, splitterDistance);
-                _encodeQueueSplit.Panel2MinSize = Math.Min(
-                    MinimumEncodeQueueHeight,
-                    Math.Max(0, remainingHeight));
+                _encodeQueueSplit.Panel1MinSize = Math.Min(MinimumEncodeQueueHeight, splitterDistance);
+                _encodeQueueSplit.Panel2MinSize = Math.Min(detailsMinimum, detailsHeight);
             }
             finally
             {
@@ -862,29 +1268,50 @@ namespace MediaFlux
                 return;
             }
 
-            _config.EncodeInfoHeight = _encodeQueueSplit.SplitterDistance;
-            _config.Save(_configPath);
+            // Splitter position is intentionally session-only. Persist only the
+            // independent expanded/collapsed Details state.
         }
+
+        private void ClampEncodeInfoSplitterState()
+        {
+            if (_encodeQueueSplit == null || _encodeQueueSplit.Height <= EncodeInfoSplitterWidth || _applyingEncodeInfoSplitterState)
+                return;
+
+            int available = Math.Max(0, _encodeQueueSplit.ClientSize.Height - EncodeInfoSplitterWidth);
+            if (available == 0) return;
+            int collapsedHeight = Math.Max(36, (_encodeInfoToggleBar?.PreferredSize.Height ?? 34) + 2);
+            int detailsMinimum = _encodeInfoHeaderContent?.Visible == true ? MinimumEncodeInfoHeight : collapsedHeight;
+            int maximumDetails = Math.Max(detailsMinimum, available - MinimumEncodeQueueHeight);
+            int currentDetails = available - _encodeQueueSplit.SplitterDistance;
+            int details = Math.Clamp(currentDetails, Math.Min(detailsMinimum, available), Math.Min(maximumDetails, available));
+
+            _applyingEncodeInfoSplitterState = true;
+            try
+            {
+                _encodeQueueSplit.Panel1MinSize = 0;
+                _encodeQueueSplit.Panel2MinSize = 0;
+                _encodeQueueSplit.SplitterDistance = available - details;
+                _encodeQueueSplit.Panel1MinSize = Math.Min(MinimumEncodeQueueHeight, _encodeQueueSplit.SplitterDistance);
+                _encodeQueueSplit.Panel2MinSize = Math.Min(detailsMinimum, details);
+            }
+            finally { _applyingEncodeInfoSplitterState = false; }
+        }
+
+        internal static int CalculateStandardEncodeDetailsHeight(int availableHeight) =>
+            (int)Math.Round(Math.Max(0, availableHeight) * StandardEncodeDetailsRatio);
 
         private void ApplyEncodingOptionsCollapsedState(bool collapsed)
         {
             if (_encodingOptionsBodyPanel != null)
-                _encodingOptionsBodyPanel.Visible = !collapsed;
+                _encodingOptionsBodyPanel.Visible = true;
 
             if (_btnToggleEncodingOptions != null)
-                _btnToggleEncodingOptions.Text = collapsed ? ">" : "v";
+                _btnToggleEncodingOptions.Visible = false;
         }
 
         private void ToggleEncodingOptionsCollapsed()
         {
-            bool collapsed = _encodingOptionsBodyPanel?.Visible == true;
-            ApplyEncodingOptionsCollapsedState(collapsed);
-
-            if (_config != null)
-            {
-                _config.EncodingOptionsCollapsed = collapsed;
-                _config.Save(_configPath);
-            }
+            ApplyEncodingOptionsCollapsedState(false);
         }
 
         private void ApplyDuplicateFinderCollapsedState(bool collapsed)
@@ -1362,6 +1789,7 @@ namespace MediaFlux
 
         private void UpdateEncodePreview()
         {
+            UpdateActiveConfigurationSummary();
             if (_previewValueLabels.Count == 0 || dgvEncodeQueue == null)
                 return;
 
@@ -1488,6 +1916,36 @@ namespace MediaFlux
             SetPreviewValue(
                 "Confidence",
                 recommendation?.Confidence.ToString() ?? "--");
+        }
+
+        private void UpdateActiveConfigurationSummary()
+        {
+            if (_activeConfigurationSummaryLabel == null)
+                return;
+
+            var values = new List<string>();
+            AddActiveConfigurationValue(values, comboEncoderMode?.Text);
+            AddActiveConfigurationValue(values, comboVideoFormat?.Text);
+            AddActiveConfigurationValue(values, comboCompressionProfile?.Text);
+            if (nudAutoQuality != null)
+                values.Add($"CQ{nudAutoQuality.Value:0}");
+            AddActiveConfigurationValue(values, comboEncoderPreset?.Text);
+            if (chkTenBit?.Checked == true)
+                values.Add("10-bit");
+            AddActiveConfigurationValue(values, comboOutputContainer?.Text);
+
+            _activeConfigurationSummaryLabel.Text = values.Count == 0
+                ? "Current settings"
+                : string.Join("  ·  ", values);
+        }
+
+        private static void AddActiveConfigurationValue(ICollection<string> values, string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value) &&
+                !string.Equals(value, "Auto", StringComparison.OrdinalIgnoreCase))
+            {
+                values.Add(value.Trim());
+            }
         }
 
         private OutputContainerSelection GetSelectedOutputContainer() =>
@@ -2770,6 +3228,7 @@ namespace MediaFlux
                 dgvEncodeQueue.Columns["colEstimatedSize"].Visible = true; // Ensure visible
             ApplyEncodeGridColumnLayout();
             ApplyRememberedEncodeQueueSort();
+            ApplyRememberedEncodeDetailsState();
 
             // Populate input‐folder history:
             RefreshHistoryCombo(cmbInputFolder, _config.LastInputFolders);
@@ -3374,16 +3833,8 @@ namespace MediaFlux
             toolsToolStripMenuItem.DropDownItems.Insert(0, compactMenuItem);
             toolsToolStripMenuItem.DropDownItems.Insert(1, new ToolStripSeparator());
 
-            _btnCompactMode = new Button
-            {
-                Name = "btnCompactMode",
-                Text = "Compact",
-                AutoSize = true,
-                Margin = new Padding(8, 0, 0, 0)
-            };
-            _btnCompactMode.Click += (_, __) => EnterCompactMode();
-
-            pnlQueueActionButtons?.Controls.Add(_btnCompactMode);
+            // Compact Mode remains available from Tools (Ctrl+M), but is intentionally
+            // kept out of the primary queue command bar.
             UpdateQueueControlsResponsiveLayout();
         }
 
@@ -4254,6 +4705,10 @@ namespace MediaFlux
 
         private void DgvEncodeQueue_ColumnWidthChanged(object? sender, DataGridViewColumnEventArgs e)
         {
+            if (_applyingRememberedSort)
+                return;
+            if (e.Column.Name.Length > 0)
+                _config.EncodeGridColumnWidths[e.Column.Name] = e.Column.Width;
             switch (e.Column.Name)
             {
                 case "colName":
@@ -4268,6 +4723,51 @@ namespace MediaFlux
                     break;
             }
             _config.Save(_configPath);
+        }
+
+        private void DgvEncodeQueue_ColumnDisplayIndexChanged(object? sender, DataGridViewColumnEventArgs e)
+        {
+            if (_applyingRememberedSort)
+                return;
+            _config.EncodeGridColumnOrder = dgvEncodeQueue.Columns
+                .Cast<DataGridViewColumn>()
+                .OrderBy(column => column.DisplayIndex)
+                .Select(column => column.Name)
+                .ToList();
+            _config.Save(_configPath);
+        }
+
+        private void ApplyRememberedEncodeDetailsState()
+        {
+            if (_encodeInfoTabs == null)
+                return;
+
+            var tab = _encodeInfoTabs.TabPages.Cast<TabPage>()
+                .FirstOrDefault(page => string.Equals(page.Text, _config.EncodeDetailsTab, StringComparison.OrdinalIgnoreCase));
+            if (tab != null)
+                _encodeInfoTabs.SelectedTab = tab;
+
+            _applyingRememberedSort = true;
+            try
+            {
+                var rememberedOrder = _config.EncodeGridColumnOrder ?? new List<string>();
+                foreach (string name in rememberedOrder)
+                {
+                    if (dgvEncodeQueue.Columns.Contains(name))
+                        dgvEncodeQueue.Columns[name].DisplayIndex = Math.Clamp(
+                            rememberedOrder.IndexOf(name), 0, dgvEncodeQueue.Columns.Count - 1);
+                }
+
+                foreach (var pair in _config.EncodeGridColumnWidths ?? new Dictionary<string, int>())
+                {
+                    if (dgvEncodeQueue.Columns.Contains(pair.Key) && pair.Value >= 40 && pair.Value <= 2000)
+                        dgvEncodeQueue.Columns[pair.Key].Width = pair.Value;
+                }
+            }
+            finally
+            {
+                _applyingRememberedSort = false;
+            }
         }
 
         private void RemoveSelectedRows_Click(object? sender, EventArgs e)

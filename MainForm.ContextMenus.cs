@@ -33,16 +33,13 @@ namespace MediaFlux
         private void InitializeEncodeQueueContextMenu()
         {
             var menu = new ContextMenuStrip();
-            menu.Items.Add("Start Full Queue", null, StartFullEncodeQueueFromContextMenu_Click);
-            menu.Items.Add("Start Selected Files", null, StartSelectedEncodeFilesFromContextMenu_Click);
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Add to Encoding Queue", null, AddToEncodeQueueFromContextMenu_Click);
-            var saveAsJob = new ToolStripMenuItem("Save as Job");
-            saveAsJob.DropDownItems.Add("Selected Files…", null, (_, __) => SaveJobFromQueue(selectedOnly: true));
-            saveAsJob.DropDownItems.Add("Entire Queue…", null, (_, __) => SaveJobFromQueue(selectedOnly: false));
-            menu.Items.Add(saveAsJob);
+            var encode = new ToolStripMenuItem("Encode");
+            encode.DropDownItems.Add("Start Selected", null, StartSelectedEncodeFilesFromContextMenu_Click);
+            encode.DropDownItems.Add("Start Full Queue", null, StartFullEncodeQueueFromContextMenu_Click);
+            encode.DropDownItems.Add("Add Selected to Active Queue", null, AddToEncodeQueueFromContextMenu_Click);
+            menu.Items.Add(encode);
 
-            var customSettings = new ToolStripMenuItem("Custom Encode Settings");
+            var customSettings = new ToolStripMenuItem("Encode Settings");
             var customProfileMenu = new ToolStripMenuItem("Quality / File Size");
 
             IEnumerable<string> profileItems = comboCompressionProfile?.Items
@@ -100,21 +97,69 @@ namespace MediaFlux
             customSettings.DropDownItems.Add("Clear Custom Settings", null, ClearCustomSettings_Click);
             menu.Items.Add(customSettings);
 
+            var analyze = new ToolStripMenuItem("Analyze");
+            analyze.DropDownItems.Add("Smart Encode Recommendation…", null, ViewRecommendationDetails_Click);
+            analyze.DropDownItems.Add("Deep Analyze Selected", null, DeepAnalyzeSelected_Click);
+            analyze.DropDownItems.Add("Benchmark Encode Performance", null, BenchmarkEncodePerformance_Click);
+            menu.Items.Add(analyze);
+
+            var jobs = new ToolStripMenuItem("Jobs");
+            jobs.DropDownItems.Add("Save Selected as Job…", null, (_, __) => SaveJobFromQueue(selectedOnly: true));
+            jobs.DropDownItems.Add("Save Entire Queue as Job…", null, (_, __) => SaveJobFromQueue(selectedOnly: false));
+            menu.Items.Add(jobs);
+
+            var file = new ToolStripMenuItem("File");
+            file.DropDownItems.Add("Open Location", null, OpenLocationFromContextMenu_Click);
+            file.DropDownItems.Add("Rename…", null, RenameFile_Click);
+            file.DropDownItems.Add("Copy Source Path", null, CopySourcePathFromContextMenu_Click);
+            file.DropDownItems.Add("Copy Output Preview", null, CopyOutputPreviewFromContextMenu_Click);
+            menu.Items.Add(file);
+
+            var duplicates = new ToolStripMenuItem("Duplicates");
+            duplicates.DropDownItems.Add("Open Duplicate Manager", null, ShowDuplicateManager_Click);
+            duplicates.DropDownItems.Add("Include Excluded Duplicate(s)", null, IncludeSelectedDuplicateRowsInEncode_Click);
+            menu.Items.Add(duplicates);
+
+            var utilities = new ToolStripMenuItem("Utilities");
+            utilities.DropDownItems.Add("Remux Selected to MKV (Stream Copy)", null, RemuxSelectedToMkv_Click);
+            menu.Items.Add(utilities);
+
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Remove Selected", null, RemoveSelectedRows_Click);
-            menu.Items.Add("Clear Grid", null, ClearGrid_Click);
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Rename File…", null, RenameFile_Click);
-            menu.Items.Add("Open Location", null, OpenLocationFromContextMenu_Click);
-            menu.Items.Add("Copy Source Path", null, CopySourcePathFromContextMenu_Click);
-            menu.Items.Add("Copy Output Preview", null, CopyOutputPreviewFromContextMenu_Click);
-            menu.Items.Add("View Smart Encode Recommendation…", null, ViewRecommendationDetails_Click);
-            menu.Items.Add("Calibrate Estimate / Deep Analyze Selected", null, DeepAnalyzeSelected_Click);
-            menu.Items.Add("Benchmark Encode Performance", null, BenchmarkEncodePerformance_Click);
-            menu.Items.Add("Remux Selected to MKV (Stream Copy)", null, RemuxSelectedToMkv_Click);
-            menu.Items.Add("Open Duplicate Manager", null, ShowDuplicateManager_Click);
-            menu.Items.Add("Include Selected Exact Duplicate(s) in Encode", null, IncludeSelectedDuplicateRowsInEncode_Click);
+            menu.Items.Add("Clear Queue", null, ClearGrid_Click);
+            menu.Opening += (_, __) => UpdateEncodeQueueContextMenuState(menu, encode, customSettings, analyze, jobs, file, duplicates, utilities);
             dgvEncodeQueue.ContextMenuStrip = menu;
+        }
+
+        private void UpdateEncodeQueueContextMenuState(
+            ContextMenuStrip menu,
+            ToolStripMenuItem encode,
+            ToolStripMenuItem settings,
+            ToolStripMenuItem analyze,
+            ToolStripMenuItem jobs,
+            ToolStripMenuItem file,
+            ToolStripMenuItem duplicates,
+            ToolStripMenuItem utilities)
+        {
+            int selected = dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().Count(row => !row.IsNewRow);
+            bool hasSelection = selected > 0;
+            bool hasQueue = dgvEncodeQueue.Rows.Cast<DataGridViewRow>().Any(row => !row.IsNewRow);
+            encode.DropDownItems[0].Enabled = hasSelection && !_encodingActive;
+            encode.DropDownItems[1].Enabled = hasQueue && !_encodingActive;
+            encode.DropDownItems[2].Enabled = hasSelection && _encodingActive;
+            settings.Enabled = hasSelection && !_encodingActive;
+            analyze.Enabled = hasSelection && !_encodingActive;
+            jobs.DropDownItems[0].Enabled = hasSelection;
+            jobs.DropDownItems[1].Enabled = hasQueue;
+            file.Enabled = hasSelection;
+            duplicates.DropDownItems[0].Enabled = hasQueue;
+            duplicates.DropDownItems[1].Enabled = hasSelection;
+            utilities.Enabled = hasSelection && !_encodingActive;
+            foreach (ToolStripItem item in menu.Items)
+            {
+                if (item.Text == "Remove Selected") item.Enabled = hasSelection && !_encodingActive;
+                if (item.Text == "Clear Queue") item.Enabled = hasQueue && !_encodingActive;
+            }
         }
 
         private void IncludeSelectedDuplicateRowsInEncode_Click(object? sender, EventArgs e)
