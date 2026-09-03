@@ -1,5 +1,7 @@
 using MediaFlux.Models;
 using MediaFlux.Services;
+using System.Drawing;
+using System.Drawing.Imaging;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -41,7 +43,9 @@ public sealed class TensorRtRuntimeAndEngineTests : IDisposable
         TensorRtEngineValidationResult validation = await manager.ValidateAsync(path, metadata.Identity);
 
         Assert.Single(discovered);
-        Assert.Equal(metadata, await manager.LoadMetadataAsync(path));
+        TensorRtEngineMetadata persisted = Assert.IsType<TensorRtEngineMetadata>(await manager.LoadMetadataAsync(path));
+        Assert.Equal(metadata.Identity, persisted.Identity);
+        Assert.False(string.IsNullOrWhiteSpace(persisted.EngineHash));
         Assert.True(validation.IsValid);
         Assert.Contains("Validated", validation.Reason);
     }
@@ -106,7 +110,7 @@ public sealed class TensorRtRuntimeAndEngineTests : IDisposable
     }
 
     [Fact]
-    public async Task TensorRtBackendRemainsDiscoveryOnlyAfterRuntimeAndEngineValidation()
+    public async Task TensorRtBackendIsUnavailableWithoutTheNativeBridge()
     {
         string runtimeDirectory = Path.Combine(_root, "runtime"); Directory.CreateDirectory(runtimeDirectory);
         foreach (string file in new[] { "cudart64_130.dll", "nvinfer.dll", "nvinfer_plugin.dll" }) File.WriteAllText(Path.Combine(runtimeDirectory, file), "runtime");
@@ -117,8 +121,59 @@ public sealed class TensorRtRuntimeAndEngineTests : IDisposable
         Assert.True(metadata.IsAvailable);
         Assert.False(metadata.IsReady);
         Assert.False(metadata.SupportsFullEncode);
-        Assert.Contains("inference is not implemented", metadata.Reason!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("bridge", metadata.Reason!, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(metadata.Diagnostics, line => line.StartsWith("Available engines:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task EngineBuildIsReusedAndIncompatibleMetadataTriggersAutomaticRebuild()
+    {
+        TensorRtRuntimeService runtime = CreateRuntime(); string engines = Path.Combine(_root, "managed-engines"); string bridgePath = Path.Combine(_root, "mediaflux-tensorrt.exe"); File.WriteAllText(bridgePath, "bridge");
+        var runner = new TensorRtFakeRunner(); var bridge = new TensorRtProcessBridge(bridgePath, runner); var manager = new TensorRtEngineManager(engines, runtime);
+        string onnx = Path.Combine(_root, "model.onnx"); File.WriteAllText(onnx, "onnx");
+        var identity = new AiModelIdentity("model", "nvidia-tensorrt", AiRestorationScale.X2, AiRestorationMode.General, "1", new[] { "nvidia-tensorrt" }, "MODEL-HASH");
+        var model = new AiManagedModel(identity, AiModelFormat.Onnx, "Model", onnx, null, null);
+
+        TensorRtEngineResolution built = await manager.ResolveOrBuildAsync(model, TensorRtPrecision.FP16, new(), bridge);
+        TensorRtEngineResolution reused = await manager.ResolveOrBuildAsync(model, TensorRtPrecision.FP16, new(), bridge);
+        await manager.SaveMetadataAsync(built.EnginePath, built.Metadata with { Identity = built.Metadata.Identity with { TensorRtVersion = "incompatible" } });
+        TensorRtEngineResolution rebuilt = await manager.ResolveOrBuildAsync(model, TensorRtPrecision.FP16, new(), bridge);
+
+        Assert.Equal(TensorRtEngineCacheState.Built, built.CacheState);
+        Assert.Equal(TensorRtEngineCacheState.Reused, reused.CacheState);
+        Assert.Equal(TensorRtEngineCacheState.Rebuilt, rebuilt.CacheState);
+        Assert.Equal(2, runner.BuildCount);
+        Assert.True(rebuilt.Validation.IsValid);
+    }
+
+    [Fact]
+    public async Task TensorRtBackendBuildsSessionRunsInferenceAndPassesSharedFrameValidation()
+    {
+        string runtimeDirectory = Path.Combine(_root, "runtime-live"); Directory.CreateDirectory(runtimeDirectory);
+        foreach (string file in new[] { "cudart64_130.dll", "nvinfer.dll", "nvinfer_plugin.dll" }) File.WriteAllText(Path.Combine(runtimeDirectory, file), "runtime");
+        string bridgePath = Path.Combine(_root, "mediaflux-tensorrt.exe"); File.WriteAllText(bridgePath, "bridge");
+        string modelDirectory = Path.Combine(_root, "tensorrt-models"); Directory.CreateDirectory(modelDirectory); string onnx = Path.Combine(modelDirectory, "general.onnx"); File.WriteAllText(onnx, "onnx-model");
+        var modelManager = new AiModelManager(); await modelManager.SaveMetadataAsync(onnx, new(new("general", "nvidia-tensorrt", AiRestorationScale.X2, AiRestorationMode.General, "1", new[] { "nvidia-tensorrt" }, ""), DateTimeOffset.UtcNow, new[] { "dynamic-shapes" }, "General"));
+        var runner = new TensorRtFakeRunner();
+        var backend = new TensorRtAiRestorationBackend(_root, () => true, () => new[] { runtimeDirectory }, () => new("NVIDIA Test", "555.1", "8.6"), runner, bridgePath, Path.Combine(_root, "engines"));
+        var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.General, AiModelId = "general", AiScale = AiRestorationScale.X2, AiBackendSelection = AiBackendSelection.NvidiaTensorRt };
+        AiRestorationSession session = await backend.CreateSessionAsync(settings);
+        string inputDirectory = Path.Combine(_root, "frames-in"), outputDirectory = Path.Combine(_root, "frames-out"); Directory.CreateDirectory(inputDirectory); Directory.CreateDirectory(outputDirectory);
+        string input = Path.Combine(inputDirectory, "frame-00000000.png"), output = Path.Combine(outputDirectory, "frame-00000000.png"); using (var bitmap = new Bitmap(2, 2)) { bitmap.SetPixel(0, 0, Color.Red); bitmap.Save(input, ImageFormat.Png); }
+
+        AiDirectoryProcessDiagnostic diagnostic = await backend.ProcessDirectoryAsync(session, settings, inputDirectory, outputDirectory, new[] { output }, null);
+        AiRestorationIntermediateVideoService.ValidateRestoredFrameSet(new[] { input }, new[] { output }, AiRestorationScale.X2);
+
+        Assert.Equal("FP16", session.Runtime!.Precision);
+        Assert.Equal(1, diagnostic.RestoredFrames);
+        Assert.Equal(1, runner.InferenceCount);
+        Assert.Contains("validation pending", TensorRtRuntimeDiagnostics.Shared.GetLatest()!.ValidationStatus, StringComparison.OrdinalIgnoreCase);
+
+        var database = new AiBenchmarkDatabase(Path.Combine(_root, "benchmark.db"));
+        var benchmark = new AiBackendBenchmarkService(Path.Combine(_root, "benchmark-staging"), sampleResources: () => new HardwareUsageSample(50, 1024, 20, null, null), gpuInfo: () => ("NVIDIA Test", "555.1"), history: new AiBackendBenchmarkHistoryStore(Path.Combine(_root, "benchmark-history.json")), database: database);
+        AiBackendBenchmarkResult benchmarkResult = await benchmark.RunAsync(new(backend, settings, new[] { input }, 2, 2, 1, "TensorRT test"));
+        Assert.True(benchmarkResult.Validation.IsValid);
+        Assert.Contains(database.List(), record => record.Entry.Key.BackendId == "nvidia-tensorrt" && record.Entry.Key.Precision == "FP16");
     }
 
     private TensorRtRuntimeService CreateRuntime()
@@ -129,4 +184,21 @@ public sealed class TensorRtRuntimeAndEngineTests : IDisposable
     }
     private static TensorRtEngineMetadata Metadata(TensorRtRuntimeInfo runtime) => new(new("anime", AiRestorationScale.X2, TensorRtPrecision.FP16, runtime.TensorRtVersion, runtime.CudaVersion), DateTimeOffset.UtcNow, "7.0");
     private static string WriteEngine(string directory, string name) { string path = Path.Combine(directory, name); File.WriteAllText(path, "metadata-only-engine"); return path; }
+
+    private sealed class TensorRtFakeRunner : IMediaToolProcessRunner
+    {
+        public int BuildCount { get; private set; } public int InferenceCount { get; private set; }
+        public Task<MediaToolProcessResult> RunAsync(MediaToolProcessRequest request, CancellationToken cancellationToken = default)
+        {
+            string command = request.Arguments[0];
+            if (command == "build") { BuildCount++; string engine = Value(request.Arguments, "--engine"); Directory.CreateDirectory(Path.GetDirectoryName(engine)!); File.WriteAllBytes(engine, Enumerable.Repeat((byte)7, 128).ToArray()); }
+            else if (command == "run-directory")
+            {
+                InferenceCount++; string input = Value(request.Arguments, "--input"), output = Value(request.Arguments, "--output"); Directory.CreateDirectory(output);
+                foreach (string source in Directory.EnumerateFiles(input, "*.png")) using (var original = new Bitmap(source)) using (var restored = new Bitmap(original.Width * 2, original.Height * 2)) { using Graphics graphics = Graphics.FromImage(restored); graphics.DrawImage(original, 0, 0, restored.Width, restored.Height); restored.Save(Path.Combine(output, Path.GetFileName(source)), ImageFormat.Png); }
+            }
+            return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
+        }
+        private static string Value(IReadOnlyList<string> arguments, string name) { for (int index = 0; index < arguments.Count - 1; index++) if (arguments[index] == name) return arguments[index + 1]; throw new InvalidOperationException($"Missing argument {name}."); }
+    }
 }

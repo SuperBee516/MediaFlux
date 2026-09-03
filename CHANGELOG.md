@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.92] - 2026-09-02
+
+### AI Restoration Runtime and Diagnostics
+
+- Fixed end-to-end Unicode path handling across FFmpeg, staging, NCNN, validation, and finalization while preserving original filenames.
+- Added the AI Runtime Dashboard, shared runtime telemetry, and live performance/health visibility.
+- Added the AI Benchmark Manager with comparison, management, and version-validated import/export.
+- Added timestamped AI Diagnostics Packages containing runtime, benchmark, hardware, validation, and forensic data.
+- Added automatic backend selection with deterministic fallback diagnostics.
+- Added host-side TensorRT provider, engine cache validation/rebuild, dynamic-shape profiles, FP16 capability handling, and telemetry/diagnostics integration.
+- Added deterministic AI Health evaluation and recommendations, plus benchmark and validation diagnostics improvements.
+- TensorRT native hardware execution requires the TensorRT runtime and `mediaflux-tensorrt.exe` bridge to be present before TensorRT becomes an available backend.
+
 ## [0.1.91] - 2026-09-02
 
 ### AI Diagnostics, Progress, and Benchmark Persistence

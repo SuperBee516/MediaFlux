@@ -36,7 +36,8 @@ public sealed record AiRestorationCapabilities(
 }
 
 /// <summary>Validated immutable backend state reused for every frame in one AI operation.</summary>
-public sealed record AiRestorationSession(AiRestorationCapabilities Capabilities, AiRestorationModel Model);
+public sealed record AiBackendRuntimeDescriptor(string RuntimeVersion, string Precision, string EngineStatus, string CacheState, string BuildSource);
+public sealed record AiRestorationSession(AiRestorationCapabilities Capabilities, AiRestorationModel Model, AiBackendRuntimeDescriptor? Runtime = null);
 
 public sealed class AiRestorationValidationException : InvalidOperationException
 {

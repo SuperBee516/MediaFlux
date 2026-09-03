@@ -81,8 +81,9 @@ public sealed class AiBackendBenchmarkService
     public async Task<AiBackendBenchmarkResult> RunAsync(AiBackendBenchmarkRequest request, CancellationToken cancellationToken = default)
     {
         ValidateRequest(request);
-        ProviderManager manager = request.ProviderManager ?? new ProviderManager(new[] { new NcnnAiProvider(request.Backend, request.Settings) }, _log);
-        AiProviderHealth providerHealth = await manager.InitializeAsync(request.ProviderId ?? "ncnn-vulkan", new(AiProviderSdk.CurrentVersion), requireImageProcessing: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+        IAiProvider provider = request.Backend.Id.Equals("nvidia-tensorrt", StringComparison.OrdinalIgnoreCase) ? new TensorRtAiProvider(request.Backend, request.Settings) : new NcnnAiProvider(request.Backend, request.Settings);
+        ProviderManager manager = request.ProviderManager ?? new ProviderManager(new[] { provider }, _log);
+        AiProviderHealth providerHealth = await manager.InitializeAsync(request.ProviderId ?? request.Backend.Id, new(AiProviderSdk.CurrentVersion), requireImageProcessing: true, cancellationToken: cancellationToken).ConfigureAwait(false);
         if (!providerHealth.IsReady) throw new AiRestorationValidationException(providerHealth.Reason ?? "AI provider is unavailable for benchmarking.");
         IReadOnlyList<string> frames = request.PreviewFrames.Take(request.RequestedFrameCount).ToArray();
         AiBackendMetadata metadata = await request.Backend.GetMetadataAsync(request.Settings, cancellationToken).ConfigureAwait(false);
@@ -124,7 +125,7 @@ public sealed class AiBackendBenchmarkService
             session.Model.BackendModelName, request.Settings.AiScale, ResolutionClass(request.SourceWidth, request.SourceHeight), request.SourceWidth, request.SourceHeight,
             frames.Count, stopwatch.Elapsed, frames.Count / Math.Max(stopwatch.Elapsed.TotalSeconds, .001), resources, validation, metadata.Diagnostics);
         _database.Store(new AiBenchmarkDatabaseEntry(
-            new(metadata.Id, session.Capabilities.Identity, session.Model.BackendModelName, gpu, driver, "FP32", (int)request.Settings.AiScale, result.ResolutionClass),
+            new(metadata.Id, session.Capabilities.Identity, session.Model.BackendModelName, gpu, driver, session.Runtime?.Precision ?? "FP32", (int)request.Settings.AiScale, result.ResolutionClass),
             NcnnRuntimeConfiguration.SafeDefault,
             result.EffectiveFramesPerSecond,
             result.Resources.PeakVramBytes,

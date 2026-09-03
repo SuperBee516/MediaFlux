@@ -38,6 +38,8 @@ public static class AiConfigurationUiPresentation
         {
             AiBackendSelection.NcnnVulkan => ncnn ?? Unavailable("NCNN Vulkan"),
             AiBackendSelection.NvidiaTensorRt => tensorRt ?? Unavailable("NVIDIA TensorRT"),
+            AiBackendSelection.DirectMl => Unavailable("DirectML") with { Reason = "DirectML inference is not implemented in this MediaFlux phase." },
+            AiBackendSelection.Cpu => Unavailable("CPU") with { Reason = "CPU inference is not implemented in this MediaFlux phase." },
             _ => tensorRt?.IsReady == true ? tensorRt : ncnn ?? Unavailable("NCNN Vulkan")
         };
     }

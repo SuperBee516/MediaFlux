@@ -156,6 +156,19 @@ public sealed class EncodeFinalizationSafetyTests : IDisposable
         });
     }
 
+    [Fact]
+    public void EncodeStagingPathPreservesUnicodeParentAndOutputFileName()
+    {
+        string directory = Path.Combine(_root, "output 日本語 Привет 😀");
+        string final = Path.Combine(directory, "restored é 漢字 Кириллица 😀.mp4");
+
+        string staging = OutputPathService.CreateEncodeStagingPath(final);
+
+        Assert.Equal(directory, Path.GetDirectoryName(staging));
+        Assert.Contains("restored é 漢字 Кириллица 😀", Path.GetFileName(staging));
+        Assert.EndsWith(".mp4.partial", staging, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("failed")]
     [InlineData("canceled")]

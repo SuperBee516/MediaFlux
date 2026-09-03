@@ -77,6 +77,12 @@ public sealed class PerformanceTimingService
         get { lock (_gate) return _hardware?.GpuDriver; }
     }
 
+    /// <summary>Returns the immutable discovery result for read-only runtime observers.</summary>
+    public HardwareSnapshot? GetHardwareSnapshot()
+    {
+        lock (_gate) return _hardware;
+    }
+
     public void SetNcnnRuntimeSelection(NcnnRuntimeSelection selection)
     {
         ArgumentNullException.ThrowIfNull(selection);

@@ -113,3 +113,58 @@ public sealed class NcnnAiProvider : IAiProvider
     public Task<IReadOnlyList<AiProviderDiagnostic>> QueryDiagnosticsAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<AiProviderDiagnostic>>(_diagnostics.ToArray());
     public async ValueTask DisposeAsync() { await ShutdownAsync().ConfigureAwait(false); }
 }
+
+/// <summary>Provider SDK adapter for the TensorRT backend and its validated engine lifecycle.</summary>
+public sealed class TensorRtAiProvider : IAiProvider
+{
+    private readonly IAiRestorationBackend _backend; private readonly VideoRestorationSettings _settings; private readonly List<AiProviderDiagnostic> _diagnostics = new(); private readonly Dictionary<string, AiRestorationSession> _sessions = new(StringComparer.OrdinalIgnoreCase); private CancellationTokenSource? _cancel; private bool _initialized;
+    public TensorRtAiProvider(IAiRestorationBackend backend, VideoRestorationSettings settings) { _backend = backend; _settings = settings.Clone(); }
+    public AiProviderIdentity Identity => new("nvidia-tensorrt", "NVIDIA TensorRT", "Adapter", "NVIDIA/MediaFlux");
+    public AiProviderSdkVersion QueryVersion() => AiProviderSdk.CurrentVersion;
+    public async Task<AiProviderError?> InitializeAsync(AiProviderInitialization initialization, CancellationToken cancellationToken = default)
+    {
+        AiBackendMetadata metadata = await _backend.GetMetadataAsync(_settings, cancellationToken).ConfigureAwait(false);
+        if (!metadata.IsReady) return new(AiProviderErrorCode.Unavailable, metadata.Reason ?? "TensorRT provider is unavailable.");
+        _cancel = new(); _initialized = true; _diagnostics.Add(new("Lifecycle", $"TensorRT provider initialized; runtime={metadata.Version}.", DateTimeOffset.UtcNow)); return null;
+    }
+    public async Task<AiProviderCapabilities> QueryCapabilitiesAsync(CancellationToken cancellationToken = default)
+    {
+        AiBackendMetadata metadata = await _backend.GetMetadataAsync(_settings, cancellationToken).ConfigureAwait(false);
+        bool fp16 = metadata.Diagnostics.Any(line => line.Contains("FP16", StringComparison.OrdinalIgnoreCase));
+        return new(metadata.IsReady, true, true, true, true, fp16, true, false, new[] { "Image processing", "Engine build/load/cache", "Dynamic shapes", fp16 ? "FP16" : "FP32", "Cancellation", "Progress" });
+    }
+    public async Task<IReadOnlyList<AiProviderModel>> EnumerateModelsAsync(CancellationToken cancellationToken = default)
+    {
+        AiRestorationCapabilities capabilities = await _backend.GetCapabilitiesAsync(_settings, cancellationToken).ConfigureAwait(false);
+        return capabilities.Models.Select(model => new AiProviderModel(model.Id, model.DisplayName, "onnx", (int)model.SupportedScales[0], model.Category.ToString(), new[] { Identity.Id }, "", new Dictionary<string, string> { ["onnxPath"] = model.ParamPath })).ToArray();
+    }
+    public async Task<AiProviderError?> ValidateModelAsync(AiProviderModel model, CancellationToken cancellationToken = default) => (await EnumerateModelsAsync(cancellationToken).ConfigureAwait(false)).Any(item => item.Id.Equals(model.Id, StringComparison.OrdinalIgnoreCase) && item.Scale == model.Scale && item.Mode.Equals(model.Mode, StringComparison.OrdinalIgnoreCase)) ? null : new(AiProviderErrorCode.InvalidModel, "TensorRT ONNX model is unavailable or invalid.");
+    public async Task<AiProviderModelHandle> LoadModelAsync(AiProviderModel model, CancellationToken cancellationToken = default)
+    {
+        if (!_initialized) throw new AiRestorationValidationException("TensorRT provider is not initialized.");
+        AiProviderError? error = await ValidateModelAsync(model, cancellationToken).ConfigureAwait(false); if (error is not null) throw new AiRestorationValidationException(error.Message);
+        VideoRestorationSettings settings = _settings.Clone(); settings.AiModelId = model.Id; settings.AiMode = Enum.Parse<AiRestorationMode>(model.Mode); settings.AiScale = (AiRestorationScale)model.Scale;
+        AiRestorationSession session = await _backend.CreateSessionAsync(settings, cancellationToken).ConfigureAwait(false); string key = model.Id + "|" + model.Scale + "|" + Guid.NewGuid().ToString("N"); _sessions[key] = session;
+        _diagnostics.Add(new("Engine", $"Loaded {model.Id}; precision={session.Runtime?.Precision}; cache={session.Runtime?.CacheState}.", DateTimeOffset.UtcNow)); return new(key, model);
+    }
+    public Task UnloadModelAsync(AiProviderModelHandle model, CancellationToken cancellationToken = default) { _sessions.Remove(model.Value); return Task.CompletedTask; }
+    public async Task<AiProviderInferenceResult> ProcessImageAsync(AiProviderInferenceRequest request, CancellationToken cancellationToken = default)
+    {
+        if (!_initialized || !_sessions.TryGetValue(request.Model.Value, out AiRestorationSession? session)) return new(null, TimeSpan.Zero, new(AiProviderErrorCode.LifecycleError, "TensorRT model is not loaded."));
+        if (!request.Input.Metadata.TryGetValue("mediaflux.png.path", out string? input) || !request.Input.Metadata.TryGetValue("mediaflux.png.output-path", out string? output)) return new(null, TimeSpan.Zero, new(AiProviderErrorCode.InvalidImage, "TensorRT provider requires MediaFlux-owned PNG staging paths."));
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cancel?.Token ?? CancellationToken.None);
+        try
+        {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew(); VideoRestorationSettings settings = _settings.Clone(); settings.AiModelId = request.Model.Model.Id; settings.AiMode = Enum.Parse<AiRestorationMode>(request.Model.Model.Mode); settings.AiScale = (AiRestorationScale)request.Model.Model.Scale;
+            await _backend.ProcessFrameAsync(session, settings, input, output, linked.Token).ConfigureAwait(false); stopwatch.Stop(); byte[] bytes = await File.ReadAllBytesAsync(output, linked.Token).ConfigureAwait(false);
+            return new(new AiProviderImage(request.Input.Width * request.Model.Model.Scale, request.Input.Height * request.Model.Model.Scale, request.Input.PixelFormat, request.Input.ColorSpace, request.Input.Stride * request.Model.Model.Scale, bytes, new Dictionary<string, string> { ["mediaflux.png.path"] = output }, AiProviderMemoryOwnership.ProviderOwned), stopwatch.Elapsed);
+        }
+        catch (OperationCanceledException) { return new(null, TimeSpan.Zero, new(AiProviderErrorCode.Cancelled, "TensorRT inference was cancelled.")); }
+        catch (Exception ex) { return new(null, TimeSpan.Zero, new(AiProviderErrorCode.ProcessingFailed, ex.Message)); }
+    }
+    public Task CancelAsync(CancellationToken cancellationToken = default) { _cancel?.Cancel(); return Task.CompletedTask; }
+    public Task ReleaseResourcesAsync(CancellationToken cancellationToken = default) { _sessions.Clear(); _diagnostics.Add(new("Lifecycle", "TensorRT provider resources released.", DateTimeOffset.UtcNow)); return Task.CompletedTask; }
+    public async Task ShutdownAsync(CancellationToken cancellationToken = default) { await ReleaseResourcesAsync(cancellationToken).ConfigureAwait(false); _initialized = false; _cancel?.Dispose(); _cancel = null; }
+    public Task<IReadOnlyList<AiProviderDiagnostic>> QueryDiagnosticsAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<AiProviderDiagnostic>>(_diagnostics.ToArray());
+    public async ValueTask DisposeAsync() { await ShutdownAsync().ConfigureAwait(false); }
+}

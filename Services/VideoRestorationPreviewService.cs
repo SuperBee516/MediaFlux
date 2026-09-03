@@ -106,7 +106,7 @@ public sealed class VideoRestorationPreviewService
                 double? fps = sourceVideo?.FrameRate;
                 if (!probe.Success || fps is not > 0) throw new AiRestorationValidationException("AI motion preview requires a source with a known constant frame rate.");
                 VideoRestorationPipelinePlan plan = VideoRestorationPipeline.BuildPlan(request.Settings, request.EncodeScale);
-                IAiRestorationBackend backend = await _aiBackendManager.SelectAsync(request.Settings, token).ConfigureAwait(false);
+                IAiRestorationBackend backend = await _aiBackendManager.SelectAsync(request.Settings, sourceVideo?.Width ?? 0, sourceVideo?.Height ?? 0, token).ConfigureAwait(false);
                 var service = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, _cacheDirectory, backend, _runner, _log);
                 intermediate = await service.CreateAsync(new AiIntermediateVideoRequest(request.SourcePath, fps.Value, request.SourceDuration, request.Settings, plan, start, duration, sourceVideo?.Width ?? 0, sourceVideo?.Height ?? 0, IsMotionPreview: true), null, token).ConfigureAwait(false);
                 string post = BuildPostAiPreviewFilterChain(plan.PostAiFilterChain, request.EncodeScale);

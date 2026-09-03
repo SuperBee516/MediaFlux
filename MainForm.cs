@@ -243,6 +243,9 @@ namespace MediaFlux
             var encoderBenchmarkToolStripMenuItem = new ToolStripMenuItem("Encoder Benchmark");
             encoderBenchmarkToolStripMenuItem.Click += BenchmarkEncodePerformance_Click;
             toolsToolStripMenuItem.DropDownItems.Insert(5, encoderBenchmarkToolStripMenuItem);
+            InitializeAiRuntimeDashboardMenu();
+            InitializeAiBenchmarkManagerMenu();
+            InitializeAiDiagnosticsMenu();
 
             // File → View Error Log
             var videoSplitterToolStripMenuItem = new ToolStripMenuItem("Video Splitter / Trimmer…");

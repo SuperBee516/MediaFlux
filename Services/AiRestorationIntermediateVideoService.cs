@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Text;
 using MediaFlux.Models;
 
 namespace MediaFlux.Services;
@@ -32,10 +33,11 @@ public sealed class AiRestorationIntermediateVideoService
     private readonly IAiRestorationBackend _backend;
     private readonly Action<string>? _log;
     private readonly PerformanceTimingService? _timing;
+    private readonly AiRuntimeTelemetryService _runtimeTelemetry;
     private readonly Func<long?> _dedicatedGpuVramProvider;
 
-    public AiRestorationIntermediateVideoService(string ffmpegPath, string ffprobePath, string stagingRoot, IAiRestorationBackend backend, IMediaToolProcessRunner? runner = null, Action<string>? log = null, PerformanceTimingService? timing = null, Func<long?>? dedicatedGpuVramProvider = null)
-    { _ffmpegPath = ffmpegPath; _ffprobePath = ffprobePath; _stagingRoot = stagingRoot; _backend = backend; _runner = runner ?? new MediaToolProcessRunner(); _log = log; _timing = timing; _dedicatedGpuVramProvider = dedicatedGpuVramProvider ?? HardwarePerformanceService.DetectDedicatedGpuVramBytes; }
+    public AiRestorationIntermediateVideoService(string ffmpegPath, string ffprobePath, string stagingRoot, IAiRestorationBackend backend, IMediaToolProcessRunner? runner = null, Action<string>? log = null, PerformanceTimingService? timing = null, Func<long?>? dedicatedGpuVramProvider = null, AiRuntimeTelemetryService? runtimeTelemetry = null)
+    { _ffmpegPath = ffmpegPath; _ffprobePath = ffprobePath; _stagingRoot = stagingRoot; _backend = backend; _runner = runner ?? new MediaToolProcessRunner(); _log = log; _timing = timing; _runtimeTelemetry = runtimeTelemetry ?? AiRuntimeTelemetryService.Shared; _dedicatedGpuVramProvider = dedicatedGpuVramProvider ?? HardwarePerformanceService.DetectDedicatedGpuVramBytes; }
 
     public async Task<AiIntermediateVideoResult> CreateAsync(AiIntermediateVideoRequest request, IProgress<AiIntermediateProgress>? progress = null, CancellationToken token = default)
     {
@@ -67,7 +69,7 @@ public sealed class AiRestorationIntermediateVideoService
         AiChunkHardwareMetricsCollector? activeChunkHardware = null;
         using HardwarePerformanceSampler? hardwareSampler = _timing is null ? null : new HardwarePerformanceSampler(
             _timing,
-            sampleObserver: sample => Volatile.Read(ref activeChunkHardware)?.Record(sample));
+            sampleObserver: sample => { Volatile.Read(ref activeChunkHardware)?.Record(sample); _runtimeTelemetry.RecordHardwareSample(sample); });
         hardwareSampler?.SampleNow();
         Directory.CreateDirectory(_stagingRoot); AiProductionHardeningService.CleanupOrphans(_stagingRoot); string root = Path.Combine(_stagingRoot, "ai-intermediate-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root); AiProductionHardeningService.Register(root);
         var forensic = new AiForensicContext(request.SourcePath, root, token);
@@ -77,6 +79,7 @@ public sealed class AiRestorationIntermediateVideoService
             if (duration <= TimeSpan.Zero) throw new AiRestorationValidationException("AI intermediate processing requires a known source duration.");
             int total = await ResolveExpectedFrameCountAsync(request, duration, token).ConfigureAwait(false);
             if (total <= 0) throw new AiRestorationValidationException("AI intermediate processing could not determine an expected frame count.");
+            _runtimeTelemetry.Begin(session, request.Settings, total, request.SourceWidth, request.SourceHeight, _timing?.GetHardwareSnapshot());
             AiTemporaryStorageEstimate planningEstimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot, AiChunkPlanner.MinimumFramesPerChunk);
             long? dedicatedGpuVram = _timing?.DedicatedGpuVramBytes ?? _dedicatedGpuVramProvider();
             var planner = new AiChunkPlanner();
@@ -85,6 +88,7 @@ public sealed class AiRestorationIntermediateVideoService
             AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(request.SourceWidth, request.SourceHeight, total, request.Settings.AiScale, _stagingRoot, chunkPlan.FrameCount);
             AiChunkPlannerDecision plannerDecision = planner.DescribeDecision(plannerInput with { TemporaryStorageEstimate = estimate }, chunkPlan);
             _timing?.SetAiChunkPlannerDecision(plannerDecision);
+            _runtimeTelemetry.SetPlanner(plannerDecision);
             _log?.Invoke(FormatPlannerDecision(plannerDecision, session.Capabilities.Identity));
             AiProductionHardeningService.EnsureSpace(estimate); using (File.Create(Path.Combine(root, ".mediaflux-ai-staging"))) { }
             var chunks = new List<AiIntermediateChunkMetadata>();
@@ -100,10 +104,12 @@ public sealed class AiRestorationIntermediateVideoService
                 double? currentFps = activeChunkFrames is int activeFrames && activeInferenceElapsed > TimeSpan.Zero ? PerformanceTimingService.CalculateAiFramesPerSecond(activeFrames, activeInferenceElapsed) : null;
                 double? averageFps = inferenceElapsed > TimeSpan.Zero ? PerformanceTimingService.CalculateAiFramesPerSecond(current, inferenceElapsed) : null;
                 TimeSpan? remaining = inferenceElapsed > TimeSpan.Zero ? AiRestorationProgressEstimator.EstimateRemaining(current, total, inferenceElapsed) : null;
-                string runtime = $"Threads {runtimeSelection.Configuration.ThreadsDisplay}; Tile {runtimeSelection.Configuration.TileDisplay}; {Describe(runtimeSelection.Source)}";
-                progress?.Report(new AiIntermediateProgress(stage, current, total,
+                string runtime = session.Runtime is null ? $"Threads {runtimeSelection.Configuration.ThreadsDisplay}; Tile {runtimeSelection.Configuration.TileDisplay}; {Describe(runtimeSelection.Source)}" : $"{session.Runtime.Precision}; Engine {session.Runtime.CacheState}; Dynamic shapes";
+                var update = new AiIntermediateProgress(stage, current, total,
                     FormatProgressMessage(stage, chunkNumber, chunkTotal, current, total, currentFps, averageFps, elapsed, remaining, session.Capabilities.BackendId, runtime),
-                    chunkNumber, chunkTotal, currentFps, averageFps, elapsed, remaining, session.Capabilities.BackendId, runtime));
+                    chunkNumber, chunkTotal, currentFps, averageFps, elapsed, remaining, session.Capabilities.BackendId, runtime);
+                _runtimeTelemetry.ReportProgress(update);
+                progress?.Report(update);
             }
             for (int offset = 0, chunkIndex = 0; offset < total; offset += chunkPlan.FrameCount, chunkIndex++)
             {
@@ -132,14 +138,23 @@ public sealed class AiRestorationIntermediateVideoService
                 validationElapsed += Stopwatch.GetElapsedTime(stageStartedAt);
                 if (chunkIndex == 0)
                 {
-                    string? capturedGpuIdentity = _timing?.GpuIdentity;
-                    string gpuIdentity = capturedGpuIdentity ?? HardwarePerformanceService.DetectGpuIdentity();
-                    bool canTune = !request.IsMotionPreview && !string.IsNullOrWhiteSpace(capturedGpuIdentity) && !capturedGpuIdentity.Equals("Unavailable", StringComparison.OrdinalIgnoreCase) && _timing?.DedicatedGpuVramBytes is > 0;
-                    runtimeSelection = await new NcnnPerformanceAutoTuner(_backend, log: _log).SelectAsync(
-                        session, request.Settings, input, Path.Combine(root, "ncnn-tuning"), request.SourceWidth, request.SourceHeight,
-                        gpuIdentity, _timing?.GpuDriver ?? "Unavailable", _timing?.DedicatedGpuVramBytes, canTune, token).ConfigureAwait(false);
-                    _timing?.SetNcnnRuntimeSelection(runtimeSelection);
-                    _log?.Invoke($"NCNN Performance Configuration{Environment.NewLine}GPU: {gpuIdentity}; Model: {session.Model.BackendModelName}; Scale: {(int)request.Settings.AiScale}x; Resolution: {request.SourceWidth}x{request.SourceHeight}; Threads: {runtimeSelection.Configuration.ThreadsDisplay}; Tile: {runtimeSelection.Configuration.TileDisplay}; Source: {Describe(runtimeSelection.Source)}.");
+                    if (session.Capabilities.BackendId.Equals("ncnn-vulkan", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string? capturedGpuIdentity = _timing?.GpuIdentity;
+                        string gpuIdentity = capturedGpuIdentity ?? HardwarePerformanceService.DetectGpuIdentity();
+                        bool canTune = !request.IsMotionPreview && !string.IsNullOrWhiteSpace(capturedGpuIdentity) && !capturedGpuIdentity.Equals("Unavailable", StringComparison.OrdinalIgnoreCase) && _timing?.DedicatedGpuVramBytes is > 0;
+                        runtimeSelection = await new NcnnPerformanceAutoTuner(_backend, log: _log).SelectAsync(
+                            session, request.Settings, input, Path.Combine(root, "ncnn-tuning"), request.SourceWidth, request.SourceHeight,
+                            gpuIdentity, _timing?.GpuDriver ?? "Unavailable", _timing?.DedicatedGpuVramBytes, canTune, token).ConfigureAwait(false);
+                        _timing?.SetNcnnRuntimeSelection(runtimeSelection);
+                        _runtimeTelemetry.SetRuntime(runtimeSelection);
+                        _log?.Invoke($"NCNN Performance Configuration{Environment.NewLine}GPU: {gpuIdentity}; Model: {session.Model.BackendModelName}; Scale: {(int)request.Settings.AiScale}x; Resolution: {request.SourceWidth}x{request.SourceHeight}; Threads: {runtimeSelection.Configuration.ThreadsDisplay}; Tile: {runtimeSelection.Configuration.TileDisplay}; Source: {Describe(runtimeSelection.Source)}.");
+                    }
+                    else if (session.Runtime is not null)
+                    {
+                        _runtimeTelemetry.SetRuntime(session.Runtime);
+                        _log?.Invoke($"TensorRT Runtime Configuration{Environment.NewLine}Version: {session.Runtime.RuntimeVersion}; Precision: {session.Runtime.Precision}; Engine: {session.Runtime.EngineStatus}; Cache: {session.Runtime.CacheState}; Source: {session.Runtime.BuildSource}.");
+                    }
                 }
                 string[] processed = ExpectedFrames(output, count);
                 stageStartedAt = Stopwatch.GetTimestamp();
@@ -164,10 +179,10 @@ public sealed class AiRestorationIntermediateVideoService
                 stageStartedAt = Stopwatch.GetTimestamp();
                 using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
                 {
-                    try { ValidateRestoredFrameSet(extracted, processed, request.Settings.AiScale, chunkIndex + 1, chunkTotal); }
+                    try { ValidateRestoredFrameSet(extracted, processed, request.Settings.AiScale, chunkIndex + 1, chunkTotal); if (session.Capabilities.BackendId.Equals("nvidia-tensorrt", StringComparison.OrdinalIgnoreCase)) TensorRtRuntimeDiagnostics.Shared.RecordValidation("Shared frame validation passed."); }
                     catch (AiRestorationValidationException exception)
                     {
-                        string diagnostic = $"AI Restoration Failure{Environment.NewLine}Chunk: {chunkIndex + 1}/{chunkTotal}{Environment.NewLine}Reason: NCNN completed successfully but produced an invalid frame set.{Environment.NewLine}NCNN Exit Code: {ncnnDiagnostic.ExitCode}{Environment.NewLine}Frames Expected: {ncnnDiagnostic.ExpectedFrames}{Environment.NewLine}Frames Produced: {ncnnDiagnostic.RestoredFrames}{Environment.NewLine}Validation: Failed{Environment.NewLine}Recommendation: Investigate backend output generation before pipeline retry.{Environment.NewLine}{exception.Message}";
+                        string diagnostic = $"AI Restoration Failure{Environment.NewLine}Chunk: {chunkIndex + 1}/{chunkTotal}{Environment.NewLine}Backend: {session.Capabilities.BackendId}{Environment.NewLine}Reason: The AI backend completed successfully but produced an invalid frame set.{Environment.NewLine}Backend Exit Code: {ncnnDiagnostic.ExitCode}{Environment.NewLine}Frames Expected: {ncnnDiagnostic.ExpectedFrames}{Environment.NewLine}Frames Produced: {ncnnDiagnostic.RestoredFrames}{Environment.NewLine}Validation: Failed{Environment.NewLine}Recommendation: Investigate backend output generation before pipeline retry.{Environment.NewLine}{exception.Message}";
                         _log?.Invoke($"[AI Chunk {chunkIndex + 1}] Frames Expected: {count}; Frames Restored: {ncnnDiagnostic.RestoredFrames}; Frames Validated: 0; Frames Failed: {Math.Max(0, count - ncnnDiagnostic.RestoredFrames)}; Elapsed Extraction: {Format(extractionElapsed)}; Elapsed Restoration: {Format(inferenceElapsed)}; Elapsed Validation: {Format(Stopwatch.GetElapsedTime(stageStartedAt))}; Elapsed Reassembly: <not-run>; Peak RAM: {FormatBytes(Process.GetCurrentProcess().PeakWorkingSet64)}; Peak VRAM: {FormatBytes(chunkHardware.Snapshot().PeakVramUsedBytes)}; GPU Utilization Average: {Percent(chunkHardware.Snapshot().AverageGpuPercent)}; CPU Utilization Average: {Percent(chunkHardware.Snapshot().AverageCpuPercent)}; Disk Throughput Average: {BytesPerSecond(chunkHardware.Snapshot().AverageDiskThroughputBytesPerSecond)}.");
                         _log?.Invoke(diagnostic);
                         throw new AiRestorationValidationException(diagnostic);
@@ -212,7 +227,11 @@ public sealed class AiRestorationIntermediateVideoService
                 using PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiIntermediateJoin);
                 ValidateChunkCompatibility(chunks);
                 string list = Path.Combine(root, "chunks.ffconcat");
-                await File.WriteAllLinesAsync(list, BuildConcatListLines(chunks.Select(chunk => chunk.Path)), token).ConfigureAwait(false);
+                // The concat demuxer consumes this file itself rather than receiving the
+                // chunk paths through ProcessStartInfo.ArgumentList. Pin its encoding to
+                // UTF-8 (without a BOM) so a Unicode staging root survives this textual
+                // process boundary unchanged.
+                await WriteConcatListAsync(list, chunks.Select(chunk => chunk.Path), token).ConfigureAwait(false);
                 await RunAsync(new[] { "-y", "-f", "concat", "-safe", "0", "-i", list, "-map", "0:v:0", "-c:v", "copy", staging }, "join AI chunks", chunks, token).ConfigureAwait(false);
                 scope?.Complete();
             }
@@ -220,15 +239,16 @@ public sealed class AiRestorationIntermediateVideoService
             AiIntermediateVideoResult result;
             using (PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiValidation))
             { result = await ValidateAsync(staging, duration, total, request.FrameRate, request.Settings.AiScale, token).ConfigureAwait(false); scope?.Complete(); }
-            File.Move(staging, final, true); return result with { Path = final, StagingDirectory = root };
+            File.Move(staging, final, true); _runtimeTelemetry.Complete(); return result with { Path = final, StagingDirectory = root };
         }
         catch (AiRestorationValidationException exception)
         {
+            _runtimeTelemetry.Fail();
             string report = forensic.BuildReport(exception);
             _log?.Invoke(report);
             throw new AiRestorationValidationException($"{exception.Message}{Environment.NewLine}Preserved AI working directory: {root}");
         }
-        catch { try { using PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.TemporaryFileCleanup); if (Directory.Exists(root)) Directory.Delete(root, true); scope?.Complete(); } catch { } throw; }
+        catch { _runtimeTelemetry.Fail(); try { using PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.TemporaryFileCleanup); if (Directory.Exists(root)) Directory.Delete(root, true); scope?.Complete(); } catch { } throw; }
         finally { AiProductionHardeningService.Unregister(root); }
     }
 
@@ -448,6 +468,8 @@ public sealed class AiRestorationIntermediateVideoService
     private static IReadOnlyList<string> BuildReassemblyArguments(string first, double fps, string output) => new[] { "-y", "-framerate", fps.ToString("0.######", CultureInfo.InvariantCulture), "-start_number", "0", "-i", Path.Combine(Path.GetDirectoryName(first)!, "frame-%08d.png"), "-map", "0:v:0", "-c:v", "ffv1", "-level", "3", output };
     internal static bool ShouldJoinChunks(int count) => count > 1;
     internal static IReadOnlyList<string> BuildConcatListLines(IEnumerable<string> paths) => paths.Select(path => "file '" + path.Replace("'", "'\\''") + "'").ToArray();
+    internal static Task WriteConcatListAsync(string path, IEnumerable<string> chunks, CancellationToken token = default) =>
+        File.WriteAllLinesAsync(path, BuildConcatListLines(chunks), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), token);
     internal static void ValidateChunkCompatibility(IReadOnlyList<AiIntermediateChunkMetadata> chunks)
     {
         if (chunks.Count < 2) return;

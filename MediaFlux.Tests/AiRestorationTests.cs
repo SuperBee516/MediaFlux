@@ -1,3 +1,4 @@
+using System.Text;
 using MediaFlux.Models;
 using MediaFlux.Services;
 using Xunit;
@@ -440,6 +441,21 @@ public sealed class AiRestorationTests : IDisposable
         AiRestorationIntermediateVideoService.ValidateChunkCompatibility(chunks);
         string line = Assert.Single(AiRestorationIntermediateVideoService.BuildConcatListLines(new[] { chunks[0].Path }));
         Assert.Equal("file 'C:\\AI O'\\''Brien\\chunk-00000.mkv'", line);
+    }
+
+    [Fact]
+    public async Task ConcatManifestPreservesUnicodeChunkPathsAsUtf8WithoutBom()
+    {
+        string directory = Path.Combine(_root, "staging 日本語 Привет 😀");
+        Directory.CreateDirectory(directory);
+        string manifest = Path.Combine(directory, "chunks.ffconcat");
+        string chunk = Path.Combine(directory, "chunk é 漢字 Кириллица 😀.mkv");
+
+        await AiRestorationIntermediateVideoService.WriteConcatListAsync(manifest, new[] { chunk });
+
+        byte[] bytes = await File.ReadAllBytesAsync(manifest);
+        Assert.False(bytes.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }));
+        Assert.Equal("file '" + chunk + "'" + Environment.NewLine, Encoding.UTF8.GetString(bytes));
     }
 
     [Fact]

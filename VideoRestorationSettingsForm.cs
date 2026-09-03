@@ -45,7 +45,7 @@ internal sealed class VideoRestorationSettingsForm : MediaFluxForm
         _working = settings.Clone(); Text = "Video Restoration Advanced Settings"; StartPosition = FormStartPosition.CenterParent; ClientSize = new Size(620, 690);
         Set(_denoise, _working.Denoise); Set(_deblock, _working.Deblock); Set(_deband, _working.Deband); Set(_sharpen, _working.Sharpen); Set(_deinterlace, _working.Deinterlace); Set(_resize, _working.Resize);
         _brightness.Value = _working.Brightness; _contrast.Value = _working.Contrast; _saturation.Value = _working.Saturation; _width.Value = Math.Clamp(_working.CustomWidth == 0 ? 1920 : _working.CustomWidth, 64, 7680); _height.Value = Math.Clamp(_working.CustomHeight == 0 ? 1080 : _working.CustomHeight, 64, 4320); _aspect.Checked = _working.PreserveAspectRatio;
-        Set(_aiMode, _working.AiMode); Set(_aiScale, _working.AiScale); SetBackendChoices(null); SelectBackend(_working.AiBackendSelection); _lastAvailableBackendSelection = _working.AiBackendSelection; _persistedModelId = _working.AiModelId; _aiDevice.Text = string.IsNullOrWhiteSpace(_working.AiDevice) ? "Auto" : _working.AiDevice; _aiBackend.Text = _working.AiBackendPath; _aiModels.Text = _working.AiModelsDirectory;
+        Set(_aiMode, _working.AiMode); Set(_aiScale, _working.AiScale); SetBackendChoices(null); SelectBackend(_working.AiBackendSelection); _lastAvailableBackendSelection = GetBackendSelection(); _persistedModelId = _working.AiModelId; _aiDevice.Text = string.IsNullOrWhiteSpace(_working.AiDevice) ? "Auto" : _working.AiDevice; _aiBackend.Text = _working.AiBackendPath; _aiModels.Text = _working.AiModelsDirectory;
         var grid = new TableLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(12), ColumnCount = 2 };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Add(grid, "Denoise", _denoise); Add(grid, "Deblock / artifacts", _deblock); Add(grid, "Deband", _deband); Add(grid, "Sharpen", _sharpen); Add(grid, "Deinterlace", _deinterlace); Add(grid, "Brightness", _brightness); Add(grid, "Contrast", _contrast); Add(grid, "Saturation", _saturation); Add(grid, "Restoration resize", _resize); Add(grid, "Custom width", _width); Add(grid, "Custom height", _height); Add(grid, "", _aspect);
@@ -132,15 +132,22 @@ internal sealed class VideoRestorationSettingsForm : MediaFluxForm
         _aiBackendSelection.Items.AddRange(new object[]
         {
             new BackendChoice(AiBackendSelection.Auto, "Auto", true, null),
-            new BackendChoice(AiBackendSelection.NcnnVulkan, "NCNN Vulkan", ncnn?.IsAvailable ?? true, ncnn?.Reason),
-            new BackendChoice(AiBackendSelection.NvidiaTensorRt, "NVIDIA TensorRT", tensorRt?.IsAvailable ?? true, tensorRt?.Reason)
+            new BackendChoice(AiBackendSelection.NcnnVulkan, "NCNN Vulkan", ncnn?.IsReady ?? true, ncnn?.Reason),
+            new BackendChoice(AiBackendSelection.NvidiaTensorRt, "NVIDIA TensorRT", tensorRt?.IsReady ?? true, tensorRt?.Reason),
+            new BackendChoice(AiBackendSelection.DirectMl, "DirectML", false, "DirectML inference is not implemented in this MediaFlux phase."),
+            new BackendChoice(AiBackendSelection.Cpu, "CPU", false, "CPU inference is not implemented in this MediaFlux phase.")
         });
         SelectBackend(selected);
         if (_aiBackendSelection.SelectedItem is BackendChoice choice && choice.IsEnabled) _lastAvailableBackendSelection = choice.Selection;
         string unavailable = string.Join(Environment.NewLine, _aiBackendSelection.Items.Cast<BackendChoice>().Where(choice => !choice.IsEnabled).Select(choice => $"{choice.DisplayName}: {choice.UnavailableReason ?? "Unavailable"}"));
         _toolTip.SetToolTip(_aiBackendSelection, string.IsNullOrWhiteSpace(unavailable) ? "Select the AI provider. Auto resolves to the best ready provider." : unavailable);
     }
-    private void SelectBackend(AiBackendSelection selection) => _aiBackendSelection.SelectedItem = _aiBackendSelection.Items.Cast<BackendChoice>().FirstOrDefault(choice => choice.Selection == selection) ?? _aiBackendSelection.Items.Cast<BackendChoice>().First();
+    private void SelectBackend(AiBackendSelection selection)
+    {
+        BackendChoice fallback = _aiBackendSelection.Items.Cast<BackendChoice>().First(choice => choice.Selection == AiBackendSelection.Auto);
+        BackendChoice choice = _aiBackendSelection.Items.Cast<BackendChoice>().FirstOrDefault(item => item.Selection == selection) ?? fallback;
+        _aiBackendSelection.SelectedItem = choice.IsEnabled ? choice : fallback;
+    }
     private AiBackendSelection GetBackendSelection() => (_aiBackendSelection.SelectedItem as BackendChoice)?.Selection ?? AiBackendSelection.Auto;
     private void DrawBackendChoice(object? sender, DrawItemEventArgs e)
     {
