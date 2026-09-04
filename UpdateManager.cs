@@ -12,6 +12,13 @@ namespace MediaFlux
         public const string RepositoryUrl = "https://github.com/SuperBee516/MediaFlux";
         public const string ReleasesUrl = RepositoryUrl + "/releases";
 
+        internal static bool IsBusyForUpdate(
+            bool encodingActive,
+            int pendingEncodeImports,
+            bool importActive,
+            bool duplicateScanActive) =>
+            encodingActive || pendingEncodeImports > 0 || importActive || duplicateScanActive;
+
         public static string CurrentVersion
         {
             get

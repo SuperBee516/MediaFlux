@@ -73,11 +73,12 @@ namespace MediaFlux
             bool requireCodecProbeDuringDiscovery = requestedCodecFilter && _encodingActive;
             _importCts?.Cancel();
             _importCts?.Dispose();
-            _importCts = new CancellationTokenSource();
+            var importCts = new CancellationTokenSource();
+            _importCts = importCts;
             _codecFilterCts?.Cancel();
             _codecFilterCts?.Dispose();
             _codecFilterCts = new CancellationTokenSource();
-            var ct = _importCts.Token;
+            var ct = importCts.Token;
             var codecFilterToken = _codecFilterCts.Token;
             _lastImportDiscoveredCount = 0;
             _lastImportAddedCount = 0;
@@ -365,6 +366,11 @@ namespace MediaFlux
                 _activityIndicator?.StopActivity(UiActivity.FolderScan);
                 Interlocked.Decrement(ref _pendingEncodeImports);
                 SetQueueWorkCancelVisible(_estimateService?.PendingEstimates > 0);
+                if (ReferenceEquals(_importCts, importCts))
+                {
+                    _importCts = null;
+                    importCts.Dispose();
+                }
             }
         }
 

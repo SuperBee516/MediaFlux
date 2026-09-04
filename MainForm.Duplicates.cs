@@ -165,6 +165,7 @@ namespace MediaFlux
                 UpdateRelocatedEncodeStatus("Duplicate scan canceled.");
                 SetQueueProgress(0, 0, visible: false);
                 SetQueueWorkCancelVisible(_estimateService?.PendingEstimates > 0);
+                ClearDuplicateScanIfCurrent(token);
                 return;
             }
             catch (Exception ex)
@@ -177,11 +178,15 @@ namespace MediaFlux
                 UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
                 SetQueueProgress(0, 0, visible: false);
                 SetQueueWorkCancelVisible(_estimateService?.PendingEstimates > 0);
+                ClearDuplicateScanIfCurrent(token);
                 return;
             }
 
             if (token.IsCancellationRequested)
+            {
+                ClearDuplicateScanIfCurrent(token);
                 return;
+            }
 
             if (paths.Count < 2)
             {
@@ -189,6 +194,7 @@ namespace MediaFlux
                 ShowStatusInfo("The selected folder has fewer than two supported video files to analyze.");
                 SetQueueProgress(0, 0, visible: false);
                 SetQueueWorkCancelVisible(_estimateService?.PendingEstimates > 0);
+                ClearDuplicateScanIfCurrent(token);
                 return;
             }
 
@@ -318,6 +324,19 @@ namespace MediaFlux
                     SetQueueProgress(0, 0, visible: false);
                 });
             }
+            finally
+            {
+                ClearDuplicateScanIfCurrent(token);
+            }
+        }
+
+        private void ClearDuplicateScanIfCurrent(CancellationToken token)
+        {
+            CancellationTokenSource? source = _duplicateScanCts;
+            if (source?.Token != token)
+                return;
+            _duplicateScanCts = null;
+            source.Dispose();
         }
 
         private void ApplyDuplicateScanResult(

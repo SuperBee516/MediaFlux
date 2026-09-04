@@ -4593,10 +4593,11 @@ namespace MediaFlux
 
         private async void CheckForUpdatesToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            if (_encodingActive ||
-                _pendingEncodeImports > 0 ||
-                (_importCts != null && !_importCts.IsCancellationRequested) ||
-                (_duplicateScanCts != null && !_duplicateScanCts.IsCancellationRequested))
+            if (UpdateManager.IsBusyForUpdate(
+                    _encodingActive,
+                    Volatile.Read(ref _pendingEncodeImports),
+                    _importCts is { IsCancellationRequested: false },
+                    _duplicateScanCts is { IsCancellationRequested: false }))
             {
                 MessageBox.Show(
                     this,
