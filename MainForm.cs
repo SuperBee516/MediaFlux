@@ -95,6 +95,7 @@ namespace MediaFlux
         private Label? _duplicateFinderHeaderStatusLabel;
         private bool _applyingEncodeDropdownSettings;
         private bool _refreshingEncoderControls;
+        private bool? _encodingOptionsStacked;
         private bool _applyingCheckboxStates;
         private bool _applyingRememberedSort;
         private CompactModeForm? _compactModeForm;
@@ -3040,9 +3041,7 @@ namespace MediaFlux
                 return;
 
             bool stackCards = tlEncodingOptions.ClientSize.Width < 650;
-            var codecPosition = tlEncodingOptions.GetPositionFromControl(pnlCodecFiltersCard);
-            bool isStacked = codecPosition.Row == 1;
-            if (stackCards == isStacked)
+            if (!EncodingOptionsLayoutState.ShouldApply(_encodingOptionsStacked, stackCards))
                 return;
 
             tlEncodingOptions.SuspendLayout();
@@ -3069,6 +3068,7 @@ namespace MediaFlux
                     pnlEncodingBehaviorCard.Margin = new Padding(0, 0, 6, 0);
                     pnlCodecFiltersCard.Margin = new Padding(6, 0, 0, 0);
                 }
+                _encodingOptionsStacked = stackCards;
             }
             finally
             {
