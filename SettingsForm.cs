@@ -47,6 +47,9 @@ namespace MediaFlux
         private NumericUpDown nudVisualMassReviewMinimumMargin = null!;
         private NumericUpDown nudVisualMassReviewMinimumConfidence = null!;
         private FlowLayoutPanel? _libraryAnalyzerSettingsPanel;
+        private ListBox? _settingsNavigation;
+        private Panel? _settingsContentHost;
+        private readonly Dictionary<string, Control> _settingsPages = new(StringComparer.Ordinal);
         internal const string VisualBulkCleanupRiskWarning = "Visual similarity is probabilistic. Enabling this option may propose unreviewed false positives for permanent deletion. Every plan is previewed and requires confirmation, but you must verify each proposed keeper and deletion.";
 
         public SettingsForm(
@@ -131,6 +134,7 @@ namespace MediaFlux
 
             LoadSupportedExtensionsIntoUi();
             RefreshFfmpegStatus();
+            BuildTwoPaneSettingsLayout();
 
             if (focusMediaTools)
             {
@@ -141,6 +145,78 @@ namespace MediaFlux
                 };
             }
         }
+
+        private void BuildTwoPaneSettingsLayout()
+        {
+            Control[] existing = Controls.Cast<Control>().ToArray();
+            var categories = SettingsCategoryCatalog.Names;
+            _settingsNavigation = new ListBox { Name = "SettingsCategoryNavigation", Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, IntegralHeight = false, Font = new Font(Font, FontStyle.Regular) };
+            _settingsNavigation.Items.AddRange(categories.Cast<object>().ToArray());
+            _settingsNavigation.SelectedIndexChanged += (_, _) => ShowSettingsCategory(_settingsNavigation.SelectedItem?.ToString());
+            _settingsContentHost = new Panel { Name = "SettingsCategoryContent", Dock = DockStyle.Fill, AutoScroll = false, Padding = new Padding(8), BackColor = SystemColors.Control };
+
+            var split = new SplitContainer { Name = "SettingsTwoPane", Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1, IsSplitterFixed = false, SplitterWidth = 5 };
+            split.Panel1.Padding = new Padding(8, 8, 4, 8); split.Panel2.Padding = new Padding(4, 8, 8, 8);
+            split.Panel1.Controls.Add(_settingsNavigation); split.Panel2.Controls.Add(_settingsContentHost);
+
+            var footer = new Panel { Name = "SettingsActions", Dock = DockStyle.Bottom, Height = 48, Padding = new Padding(8, 8, 8, 8) };
+            btnCancel.Dock = DockStyle.Right; btnCancel.Margin = new Padding(6, 0, 0, 0); btnOK.Dock = DockStyle.Right; btnOK.Margin = new Padding(0);
+            footer.Controls.Add(btnCancel); footer.Controls.Add(btnOK);
+
+            SuspendLayout();
+            try
+            {
+                Controls.Clear(); AutoScroll = true; FormBorderStyle = FormBorderStyle.Sizable; MaximizeBox = true; MinimumSize = new Size(760, 560); ClientSize = new Size(Math.Max(ClientSize.Width, 980), Math.Max(ClientSize.Height, 700));
+                Controls.Add(split); Controls.Add(footer);
+                foreach (string category in categories)
+                {
+                    var page = new Panel { Name = "SettingsPage" + category.Replace(" ", ""), Dock = DockStyle.Fill, AutoScroll = true, BackColor = SystemColors.Control, Visible = false };
+                    _settingsPages[category] = page;
+                    _settingsContentHost.Controls.Add(page);
+                }
+
+                var assigned = new HashSet<Control>();
+                AddCategory("General", assigned, FindExisting(existing, "lblPattern", "txtPattern", "lblSuffix", "txtSuffix", "chkEnableSuffix", "chkEnableCodecSuffix", "grpExtensions", "chkRememberCheckboxes", "chkPreventSleepDuringEncoding", "chkMinimizeToSystemTray"));
+                AddCategory("Encoding", assigned, FindExisting(existing, "chkLimitGpuEncodingQueueToOneJob", "lblLargeQueueThreshold", "nudLargeQueueThreshold", "chkAutoAnalyzeLargeQueues", "grpIncompleteOutputCleanup"));
+                AddCategory("Encoding", assigned, FindGroup(existing, "DVD Output Naming"));
+                AddCategory("FFmpeg & Tools", assigned, FindExisting(existing, "lblFfmpegPath", "txtFfmpegPath", "btnBrowseFfmpeg", "lblFfmpegStatus", "lblFfprobePath", "txtFfprobePath", "btnBrowseFfprobe", "lblFfprobeStatus", "chkEnablePersistentMediaInfoCache"));
+                AddCategory("Automation", assigned, FindExisting(existing, "grpWatchFolder"));
+                AddCategory("Duplicates", assigned, FindExisting(existing, "grpDuplicateManagement"));
+                AddCategory("Duplicates", assigned, _libraryAnalyzerSettingsPanel);
+                AddCategory("Storage & Cache", assigned, grpSmartRecommendations);
+                AddCategory("Backup & Restore", assigned, FindExisting(existing, "grpBackupRestore"));
+                AddCategory("Integrations", assigned, FindExisting(existing, "grpDiscordNotification"));
+                AddCategory("Integrations", assigned, grpExplorerIntegration);
+                AddCategory("Updates", assigned, FindExisting(existing, "lblUpdateFolder", "txtUpdateFolder", "btnBrowseUpdate"));
+
+                // Preserve any newly-added or less common settings controls by keeping them represented.
+                AddCategory("General", assigned, existing.Where(control => control != btnOK && control != btnCancel && !assigned.Contains(control)).ToArray());
+                _settingsNavigation.SelectedIndex = 0;
+            }
+            finally { ResumeLayout(true); }
+        }
+
+        private void AddCategory(string category, HashSet<Control> assigned, params Control?[] controls)
+        {
+            if (!_settingsPages.TryGetValue(category, out Control? page)) return;
+            foreach (Control? control in controls)
+            {
+                if (control == null || !assigned.Add(control)) continue;
+                control.Parent?.Controls.Remove(control); control.Dock = DockStyle.Top; control.Margin = new Padding(0, 0, 0, 10); control.Width = Math.Max(360, page.ClientSize.Width - 24); page.Controls.Add(control); control.BringToFront();
+            }
+        }
+
+        private void ShowSettingsCategory(string? category)
+        {
+            if (category == null || _settingsContentHost == null || !_settingsPages.TryGetValue(category, out Control? page)) return;
+            foreach (Control candidate in _settingsPages.Values) candidate.Visible = ReferenceEquals(candidate, page);
+            if (page.Parent != _settingsContentHost) _settingsContentHost.Controls.Add(page);
+            page.Dock = DockStyle.Fill;
+            if (page is Panel panel) panel.AutoScrollPosition = Point.Empty;
+        }
+
+        private static Control?[] FindExisting(IEnumerable<Control> controls, params string[] names) => names.Select(name => controls.FirstOrDefault(control => control.Name.Equals(name, StringComparison.OrdinalIgnoreCase))).ToArray();
+        private static Control? FindGroup(IEnumerable<Control> controls, string text) => controls.FirstOrDefault(control => control is GroupBox group && group.Text.Equals(text, StringComparison.Ordinal));
 
         private void InitializeSmartRecommendationControls(Config config)
         {

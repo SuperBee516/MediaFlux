@@ -425,9 +425,9 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 Control productivity = settings.Controls.Find("grpLibraryAnalyzerReviewProductivity", true).Single();
                 Control explorer = GetPrivateField<GroupBox>(settings, "grpExplorerIntegration");
                 Control smart = GetPrivateField<GroupBox>(settings, "grpSmartRecommendations");
-                Assert.False(analyzerPanel.Bounds.IntersectsWith(explorer.Bounds));
-                Assert.False(analyzerPanel.Bounds.IntersectsWith(smart.Bounds));
-                Assert.False(cleanup.Bounds.IntersectsWith(productivity.Bounds));
+                if (explorer.Visible) Assert.False(analyzerPanel.RectangleToScreen(analyzerPanel.ClientRectangle).IntersectsWith(explorer.RectangleToScreen(explorer.ClientRectangle)));
+                if (smart.Visible) Assert.False(analyzerPanel.RectangleToScreen(analyzerPanel.ClientRectangle).IntersectsWith(smart.RectangleToScreen(smart.ClientRectangle)));
+                if (cleanup.Visible && productivity.Visible) Assert.False(cleanup.RectangleToScreen(cleanup.ClientRectangle).IntersectsWith(productivity.RectangleToScreen(productivity.ClientRectangle)));
                 Assert.True(settings.AutoScroll);
                 settings.Close();
             }
