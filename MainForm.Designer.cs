@@ -54,7 +54,6 @@ namespace MediaFlux
         private Label lblInputFolder;
         private ComboBox cmbInputFolder;
         private Button btnBrowseInput;
-        private Button btnClearInput;
         private Label lblEncoderMode;
         private ComboBox comboEncoderMode;
         private Label lblTargetSize;
@@ -62,7 +61,6 @@ namespace MediaFlux
         private Label lblEncodeOutput;
         private ComboBox cmbEncodeOutput;
         private Button btnBrowseOutputEncode;
-        private Button btnClearOutputEncode;
         private Button btnStartEncode;
         private Button btnSampleComparison;
         private Label lblEncodeStatus;
@@ -213,7 +211,6 @@ namespace MediaFlux
             lblInputFolder = new Label();
             cmbInputFolder = new ComboBox();
             btnBrowseInput = new Button();
-            btnClearInput = new Button();
             lblEncoderMode = new Label();
             comboEncoderMode = new ComboBox();
             lblTargetSize = new Label();
@@ -221,7 +218,6 @@ namespace MediaFlux
             lblEncodeOutput = new Label();
             cmbEncodeOutput = new ComboBox();
             btnBrowseOutputEncode = new Button();
-            btnClearOutputEncode = new Button();
             btnStartEncode = new Button();
             btnSampleComparison = new Button();
             lblEncodeStatus = new Label();
@@ -574,12 +570,7 @@ namespace MediaFlux
             btnBrowseInput.AutoSize = true;
             btnBrowseInput.Margin = new Padding(0, 0, 6, 0);
             btnBrowseInput.Click += btnBrowseInput_Click;
-            btnClearInput.Text = "Clear";
-            btnClearInput.AutoSize = true;
-            btnClearInput.Margin = Padding.Empty;
-            btnClearInput.Click += btnClearInput_Click;
             pnlInputFolderButtons.Controls.Add(btnBrowseInput);
-            pnlInputFolderButtons.Controls.Add(btnClearInput);
             pnlFolderSetupCard.Controls.Add(pnlInputFolderButtons, 2, 1);
 
             lblEncodeOutput.Text = "Output folder";
@@ -607,12 +598,7 @@ namespace MediaFlux
             btnBrowseOutputEncode.AutoSize = true;
             btnBrowseOutputEncode.Margin = new Padding(0, 0, 6, 0);
             btnBrowseOutputEncode.Click += btnBrowseOutputEncode_Click;
-            btnClearOutputEncode.Text = "Clear";
-            btnClearOutputEncode.AutoSize = true;
-            btnClearOutputEncode.Margin = Padding.Empty;
-            btnClearOutputEncode.Click += btnClearOutputEncode_Click;
             pnlOutputFolderButtons.Controls.Add(btnBrowseOutputEncode);
-            pnlOutputFolderButtons.Controls.Add(btnClearOutputEncode);
             pnlFolderSetupCard.Controls.Add(pnlOutputFolderButtons, 2, 2);
 
             tlEncode.Controls.Add(pnlFolderSetupCard, 0, 0);

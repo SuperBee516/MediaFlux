@@ -3666,12 +3666,6 @@ namespace MediaFlux
                 replaceExisting: !_encodingActive);
         }
 
-        private void btnClearInput_Click(object? sender, EventArgs e)
-        {
-            ClearEncodeInputFolder();
-            ShowStatusInfo("Input Folder cleared.");
-        }
-
         private void btnBrowseOutputEncode_Click(object sender, EventArgs e)
         {
             using var dlg = new FolderBrowserDialog
@@ -3690,13 +3684,6 @@ namespace MediaFlux
                 RefreshHistoryCombo(cmbEncodeOutput, _config.LastOutputFolders);
                 _config.Save(_configPath);
             }
-        }
-
-        private void btnClearOutputEncode_Click(object? sender, EventArgs e)
-        {
-            cmbEncodeOutput.SelectedIndex = -1;
-            cmbEncodeOutput.Text = string.Empty;
-            ShowStatusInfo("Output Folder cleared.");
         }
 
         private void HandleFfmpegProgressLineForRow(
