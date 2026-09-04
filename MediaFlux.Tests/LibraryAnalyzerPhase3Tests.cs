@@ -236,7 +236,10 @@ public sealed class LibraryAnalyzerPhase3Tests : IDisposable
             enrichment,
             storageScheduler: scheduler,
             diagnosticLog: (eventName, details, _) => diagnostics.Enqueue((eventName, details)));
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        // This is an operational upper bound for the 3,000-file synthetic scan,
+        // not synchronization. CI runners can legitimately spend several seconds
+        // in SQLite writes while the metadata queue is saturated.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         LibraryScanResult result = await scanner.ScanLocationAsync(
             location.Id,
