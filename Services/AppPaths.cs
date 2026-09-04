@@ -64,6 +64,8 @@ namespace MediaFlux.Services
             DvdTempCleanupService.CleanupStaleOperations(
                 TempDirectory,
                 TimeSpan.FromDays(7));
+            // Named generated artifacts only. It runs off the UI thread and never deletes user state.
+            _ = new UserDataStorageManagementService(UserDataDirectory).CleanupAsync(UserDataCleanupScope.ExpiredGeneratedData);
 
             string marker = Path.Combine(UserDataDirectory, MigrationMarkerName);
             if (File.Exists(marker))

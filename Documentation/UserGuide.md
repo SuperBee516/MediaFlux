@@ -117,3 +117,7 @@ Use **File > View Error Log** for application errors and **File > View Duplicate
 If a catalog location is unavailable, its existing catalog data is preserved and maintenance records the condition. If a duplicate or cleanup candidate is missing, changed, protected, or stale, refresh or re-analyze it; MediaFlux will exclude it rather than guessing.
 
 For unexpected encode results, review Encoder Diagnostics, the output validation details, the FFmpeg log, source characteristics, and the selected preset before retrying.
+
+## UserData storage lifecycle
+
+MediaFlux preserves configuration, queue, profiles, catalog, history, and user assets; it does not automatically delete them. Generated previews expire after 30 days and temporary staging after 7 days. Failed AI working directories are retained for up to 7 days, the three newest failures, and a combined 20 GB maximum, preserving useful forensic evidence without permitting unlimited frame-artifact growth. Catalog migration and recovery safety artifacts are retained for 30 days, with the 10 newest kept. Regenerable benchmark reruns, TensorRT engines, tuning data, and old benchmark records are bounded separately from user state. Storage reporting and cleanup run off the UI thread and expose only regenerable categories for future Settings integration. Updater backups exclude generated runtime artifacts without deleting them from a live installation.

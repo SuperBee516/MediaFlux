@@ -9,7 +9,7 @@ public sealed class UpdaterBackupTests : IDisposable
     public UpdaterBackupTests() => Directory.CreateDirectory(_root);
 
     [Fact]
-    public void PersistentManifestExcludesAndCleansOwnedRuntimeArtifacts()
+    public void PersistentManifestExcludesRuntimeArtifactsWithoutDisruptingLiveWork()
     {
         string userData = Path.Combine(_root, "UserData"), data = Path.Combine(userData, "data"), backups = Path.Combine(_root, "Backups");
         Write(Path.Combine(userData, "config.json"), "config");
@@ -29,13 +29,13 @@ public sealed class UpdaterBackupTests : IDisposable
 
         string archive = BackupManager.CreateBackup(userData, backups, 3, progress.Add);
 
-        Assert.False(Directory.Exists(Path.Combine(data, "ai-intermediates")));
-        Assert.False(Directory.Exists(Path.Combine(data, "restoration-previews")));
-        Assert.False(Directory.Exists(Path.Combine(data, "frame-previews")));
-        Assert.False(Directory.Exists(Path.Combine(data, "staging")));
-        Assert.False(Directory.Exists(Path.Combine(userData, "temp")));
-        Assert.False(File.Exists(Path.Combine(data, "leftover.tmp")));
-        Assert.False(File.Exists(Path.Combine(data, "leftover.partial.mkv")));
+        Assert.True(Directory.Exists(Path.Combine(data, "ai-intermediates")));
+        Assert.True(Directory.Exists(Path.Combine(data, "restoration-previews")));
+        Assert.True(Directory.Exists(Path.Combine(data, "frame-previews")));
+        Assert.True(Directory.Exists(Path.Combine(data, "staging")));
+        Assert.True(Directory.Exists(Path.Combine(userData, "temp")));
+        Assert.True(File.Exists(Path.Combine(data, "leftover.tmp")));
+        Assert.True(File.Exists(Path.Combine(data, "leftover.partial.mkv")));
         Assert.True(File.Exists(Path.Combine(data, "restoration-profiles", "Cartoon.json")));
 
         using (ZipArchive zip = ZipFile.OpenRead(archive))
@@ -51,8 +51,7 @@ public sealed class UpdaterBackupTests : IDisposable
         }
 
         Assert.Contains("Preparing backup...", progress);
-        Assert.Contains("Cleaning temporary AI files...", progress);
-        Assert.Contains(progress, message => message.StartsWith("✓ Deleted", StringComparison.Ordinal));
+        Assert.Contains("Excluding regenerable runtime data...", progress);
         Assert.Contains("Backing up persistent settings...", progress);
         Assert.Contains("Backup complete.", progress);
     }
@@ -80,7 +79,7 @@ public sealed class UpdaterBackupTests : IDisposable
         var progress = new List<string>();
         string archive = BackupManager.CreateBackup(userData, backups, 3, progress.Add);
         Assert.True(File.Exists(archive));
-        Assert.Contains("No temporary MediaFlux data found.", progress);
+        Assert.Contains("Excluding regenerable runtime data...", progress);
         Assert.Contains("Backup complete.", progress);
     }
 

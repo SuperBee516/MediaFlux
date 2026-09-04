@@ -12,7 +12,8 @@ namespace MediaFlux
         private static readonly string[] RuntimeDataDirectories =
         {
             "ai-intermediates", "restoration-previews", "frame-previews",
-            "staging", "encode-staging", "temporary-encodes"
+            "duplicate-previews", "staging", "encode-staging", "temporary-encodes",
+            "ai-benchmark-reruns"
         };
         private static readonly string[] PersistentRootFiles = { "config.json" };
         private static readonly string[] PersistentDataRoots = { "data" };
@@ -49,16 +50,9 @@ namespace MediaFlux
 
             Report("Preparing backup...");
             Log("Preparing backup...");
-            Report("Cleaning temporary AI files...");
-            BackupCleanupResult cleanup = CleanupRuntimeArtifacts(source, warning => { Report("Warning: " + warning); Log(warning); });
-            if (cleanup.FilesDeleted == 0 && cleanup.FoldersDeleted == 0)
-                Report("No temporary MediaFlux data found.");
-            else
-            {
-                Report($"✓ Deleted {cleanup.FoldersDeleted:N0} folders");
-                Report($"✓ Deleted {cleanup.FilesDeleted:N0} files");
-                Report($"✓ Reclaimed {FormatBytes(cleanup.BytesReclaimed)}");
-            }
+            Report("Excluding regenerable runtime data...");
+            // A backup must never disrupt an encode or discard useful failure forensics. Runtime
+            // roots are excluded below instead of being deleted from the live installation.
             Report("Backing up persistent settings...");
             Log("Backing up persistent user data...");
 
