@@ -158,6 +158,11 @@ namespace MediaFlux
             var split = new SplitContainer { Name = "SettingsTwoPane", Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1, IsSplitterFixed = false, SplitterWidth = 5 };
             split.Panel1.Padding = new Padding(8, 8, 4, 8); split.Panel2.Padding = new Padding(4, 8, 8, 8);
             split.Panel1.Controls.Add(_settingsNavigation); split.Panel2.Controls.Add(_settingsContentHost);
+            split.Resize += (_, _) =>
+            {
+                if (split.Width >= 760)
+                    split.SplitterDistance = Math.Clamp(220, 150, split.Width - 360);
+            };
 
             var footer = new Panel { Name = "SettingsActions", Dock = DockStyle.Bottom, Height = 48, Padding = new Padding(8, 8, 8, 8) };
             btnCancel.Dock = DockStyle.Right; btnCancel.Margin = new Padding(6, 0, 0, 0); btnOK.Dock = DockStyle.Right; btnOK.Margin = new Padding(0);
@@ -171,6 +176,12 @@ namespace MediaFlux
                 foreach (string category in categories)
                 {
                     var page = new Panel { Name = "SettingsPage" + category.Replace(" ", ""), Dock = DockStyle.Fill, AutoScroll = true, BackColor = SystemColors.Control, Visible = false };
+                    page.Resize += (_, _) =>
+                    {
+                        int width = Math.Max(360, page.ClientSize.Width - page.Padding.Horizontal);
+                        foreach (Control child in page.Controls)
+                            if (child.Dock == DockStyle.Top) child.Width = width;
+                    };
                     _settingsPages[category] = page;
                     _settingsContentHost.Controls.Add(page);
                 }
