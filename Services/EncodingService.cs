@@ -638,6 +638,25 @@ namespace MediaFlux.Services
             VideoOutputResolutionPlan? finalOutputResolution = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0
                 ? VideoRestorationPipeline.ResolveFinalOutputResolution(sourceVideo.Width.Value, sourceVideo.Height.Value, restoration, scaleMode)
                 : null;
+            VideoEncoderSelection requestedEncoder =
+                encoderSelection ??
+                EncoderRegistry.Default.ResolveLegacyCodec(videoCodec).Selection;
+            VideoOutputGeometryPlan? plannedOutputGeometry = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0 && finalOutputResolution is not null
+                ? VideoOutputGeometryPlanner.Resolve(
+                    sourceVideo.Width.Value,
+                    sourceVideo.Height.Value,
+                    finalOutputResolution,
+                    requestedEncoder,
+                    tenBit)
+                : null;
+            if (plannedOutputGeometry is not null)
+            {
+                _log?.Invoke($"[EncodingService] Output geometry plan: source={plannedOutputGeometry.SourceWidth}x{plannedOutputGeometry.SourceHeight}; requested={plannedOutputGeometry.RequestedWidth}x{plannedOutputGeometry.RequestedHeight}; planned={plannedOutputGeometry.Width}x{plannedOutputGeometry.Height}; encoder={requestedEncoder.FfmpegCodec}; pixel-format={plannedOutputGeometry.PixelFormat}; reason={plannedOutputGeometry.Reason}.");
+                if (plannedOutputGeometry.WasNormalized)
+                    _log?.Invoke($"[EncodingService] Output geometry normalized: {plannedOutputGeometry.RequestedWidth}x{plannedOutputGeometry.RequestedHeight} -> {plannedOutputGeometry.Width}x{plannedOutputGeometry.Height}; reason={plannedOutputGeometry.Reason}.");
+            }
+            else
+                _log?.Invoke("[EncodingService] Output geometry plan unavailable because FFprobe did not provide source dimensions.");
             AiIntermediateVideoResult? aiIntermediate = null;
             VideoRestorationPipelinePlan? aiPlan = null;
             if (restoration is { AiMode: not AiRestorationMode.Off } aiSettings)
@@ -656,7 +675,7 @@ namespace MediaFlux.Services
                     .SelectAsync(aiSettings, video.Width.Value, video.Height.Value, cancellationToken).ConfigureAwait(false);
                 finalOutputResolution ??= VideoRestorationPipeline.ResolveFinalOutputResolution(video.Width.Value, video.Height.Value, aiSettings, scaleMode);
                 bool restoreOriginalAfterAi = scaleMode == ScaleMode.None && VideoRestorationPipeline.Effective(aiSettings).Resize == VideoRestorationResize.Original;
-                aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode, restoreOriginalAfterAi ? finalOutputResolution.ScaleFilter : null);
+                aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode, restoreOriginalAfterAi ? plannedOutputGeometry?.ScaleFilter : null);
                 callback("[MediaFlux] Preparing AI restoration.");
                 var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend, log: _log, timing: performance);
                 TimeSpan aiDuration = sampleDuration ?? TimeSpan.FromSeconds(programDuration.DurationSeconds ?? 0);
@@ -723,9 +742,6 @@ namespace MediaFlux.Services
             string output = OutputPathService.CreateEncodeStagingPath(finalOutput);
             outputPathCallback?.Invoke(finalOutput);
             stagingPathCallback?.Invoke(output);
-            VideoEncoderSelection requestedEncoder =
-                encoderSelection ??
-                EncoderRegistry.Default.ResolveLegacyCodec(videoCodec).Selection;
             bool isAsfFamilyInput =
                 inputSource.Kind == EncodingInputKind.File &&
                 IsAsfFamilyInput(inputSource.SourcePath);
@@ -811,7 +827,8 @@ namespace MediaFlux.Services
                 sampleStart,
                 sampleDuration,
                 sourcePixelFormat,
-                restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain);
+                restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                plannedVideoGeometry: plannedOutputGeometry);
             scope.Complete();
             }
 
@@ -876,7 +893,8 @@ namespace MediaFlux.Services
                             qualityValue, encoderSelection, sampleStart, sampleDuration,
                             sourcePixelFormat, disableHardwareDecode: true, restoration: restoration,
                             splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
-                            restorationFilterOverride: aiPlan?.PostAiFilterChain);
+                            restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                            plannedVideoGeometry: plannedOutputGeometry);
                         scope.Complete();
                     }
                     pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
@@ -910,7 +928,8 @@ namespace MediaFlux.Services
                     mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
                     containerDecision, forceMp4CompatibleAudio, totalDuration,
                     qualityValue, encoderSelection, sampleStart, sampleDuration,
-                    sourcePixelFormat, preferNvencGpuResidentFrames: false, restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain);
+                    sourcePixelFormat, preferNvencGpuResidentFrames: false, restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                    plannedVideoGeometry: plannedOutputGeometry);
                 scope.Complete();
                 }
                 pipelineDiagnostic = DescribeVideoPipeline(
@@ -974,8 +993,8 @@ namespace MediaFlux.Services
                         ExpectedVideoFrameCountProvenance = sampleDuration is null && programDuration.PrimaryVideo?.FrameCount is > 0
                             ? FrameCountProvenance.Measured
                             : FrameCountProvenance.Unavailable,
-                        ExpectedVideoWidth = finalOutputResolution?.Width,
-                        ExpectedVideoHeight = finalOutputResolution?.Height,
+                        ExpectedVideoWidth = plannedOutputGeometry?.Width,
+                        ExpectedVideoHeight = plannedOutputGeometry?.Height,
                         PerformanceTiming = performance
                     },
                     finalizationStatusCallback,
@@ -1362,7 +1381,8 @@ namespace MediaFlux.Services
             bool disableHardwareDecode = false,
             VideoRestorationSettings? restoration = null,
             SplitSourceInput? splitSource = null,
-            string? restorationFilterOverride = null)
+            string? restorationFilterOverride = null,
+            VideoOutputGeometryPlan? plannedVideoGeometry = null)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -1441,6 +1461,7 @@ namespace MediaFlux.Services
                 SourcePixelFormat = sourcePixelFormat ?? ""
                 ,SplitSource = splitSource
                 ,RestorationFilterOverride = restorationFilterOverride
+                ,PlannedVideoGeometry = plannedVideoGeometry
             };
 
             var builder = new FfmpegCommandBuilder(

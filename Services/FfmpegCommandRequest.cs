@@ -40,6 +40,7 @@ namespace MediaFlux.Services
         // acceleration for a single device-recovery retry.
         public bool DisableHardwareDecode { get; init; }
         public string SourcePixelFormat { get; init; } = "";
+        public VideoOutputGeometryPlan? PlannedVideoGeometry { get; init; }
         public TimeSpan? SampleStart { get; init; }
         public TimeSpan? SampleDuration { get; init; }
         public SplitSourceInput? SplitSource { get; init; }

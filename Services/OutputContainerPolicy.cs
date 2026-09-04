@@ -14,7 +14,7 @@ namespace MediaFlux.Services
         // MediaFlux. Unknown codecs remain fail-closed rather than assuming
         // the configured FFmpeg can decode them.
         private static readonly HashSet<string> AacTranscodeSourceCodecs = new(
-            new[] { "dts", "dca", "truehd", "mlp", "flac", "opus", "vorbis", "wma", "wmav1", "wmav2", "wmav3", "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le" },
+            new[] { "dts", "dca", "truehd", "mlp", "flac", "opus", "vorbis", "wma", "wmav1", "wmav2", "wmav3", "mp2", "mpa", "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le" },
             StringComparer.OrdinalIgnoreCase);
 
         // FFmpeg's Matroska muxer accepts attachments, but not arbitrary AVMEDIA_TYPE_DATA
@@ -77,25 +77,21 @@ namespace MediaFlux.Services
             {
                 if (audioWillBeTranscoded)
                 {
-                    plans.Add(new(stream.Index, "audio", stream.CodecName,
-                        StreamCompatibilityAction.Transcode,
+                    plans.Add(AudioPlan(stream, StreamCompatibilityAction.Transcode,
                         "Selected audio will be converted to AAC by the requested audio layout.", "aac", "transcode"));
                 }
                 else if (!explicitMp4 || Mp4AudioCodecs.Contains(stream.CodecName))
                 {
-                    plans.Add(new(stream.Index, "audio", stream.CodecName,
-                        StreamCompatibilityAction.Copy, "Selected audio is retained."));
+                    plans.Add(AudioPlan(stream, StreamCompatibilityAction.Copy, "Selected audio is retained."));
                 }
                 else if (AacTranscodeSourceCodecs.Contains(stream.CodecName))
                 {
-                    plans.Add(new(stream.Index, "audio", stream.CodecName,
-                        StreamCompatibilityAction.Transcode,
+                    plans.Add(AudioPlan(stream, StreamCompatibilityAction.Transcode,
                         "MP4 cannot stream-copy this audio codec; MediaFlux will convert it to AAC.", "aac"));
                 }
                 else
                 {
-                    plans.Add(new(stream.Index, "audio", stream.CodecName,
-                        StreamCompatibilityAction.Unsupported,
+                    plans.Add(AudioPlan(stream, StreamCompatibilityAction.Unsupported,
                         "MP4 audio codec cannot be safely copied and MediaFlux has no conservative AAC conversion path."));
                 }
             }
@@ -177,7 +173,18 @@ namespace MediaFlux.Services
         {
             IEnumerable<MediaProbeStreamInfo> streams = source.Streams.Where(s => IsType(s, type));
             if (hasExplicitSelection)
-                streams = streams.Where(s => explicitIndexes.Contains(s.Index));
+            {
+                // FFmpeg maps explicit indexes in the supplied order. Keep the
+                // plan in that exact order so per-output audio metadata and
+                // dispositions target the stream FFmpeg actually produces.
+                return explicitIndexes
+                    .Select(index => source.Streams.FirstOrDefault(stream =>
+                        stream.Index == index && IsType(stream, type)))
+                    .Where(stream => stream is not null)
+                    .Cast<MediaProbeStreamInfo>()
+                    .Take(maximum)
+                    .ToArray();
+            }
             return streams.Take(maximum).ToArray();
         }
 
@@ -189,5 +196,16 @@ namespace MediaFlux.Services
 
         private static string DisplayCodec(string? codec) =>
             string.IsNullOrWhiteSpace(codec) ? "unknown" : codec;
+
+        private static StreamCompatibilityPlan AudioPlan(
+            MediaProbeStreamInfo stream,
+            StreamCompatibilityAction action,
+            string reason,
+            string? targetCodec = null,
+            string requestedAction = "copy") =>
+            new(stream.Index, "audio", stream.CodecName, action, reason, targetCodec,
+                requestedAction, stream.Language,
+                stream.Tags.TryGetValue("title", out string? title) ? title : null,
+                stream.Dispositions);
     }
 }

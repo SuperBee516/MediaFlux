@@ -52,7 +52,7 @@ namespace MediaFlux.Services
             string outputPixelFormat = wantsTenBit
                 ? (provider.Capabilities.IsHardware ? "p010le" : "yuv420p10le")
                 : (provider.Capabilities.IsHardware ? "nv12" : "yuv420p");
-            string scaleExpression = request.ScaleMode switch
+            string scaleExpression = request.PlannedVideoGeometry?.ScaleExpression ?? request.ScaleMode switch
             {
                 EncodingService.ScaleMode.To720p => "-2:720",
                 EncodingService.ScaleMode.To1080p => "-2:1080",
@@ -172,6 +172,7 @@ namespace MediaFlux.Services
             EncoderProviderUtilities.AppendOutputFormatFlags(builder, context);
 
             AppendAudioArguments(builder, request);
+            AppendPlannedAudioMetadataAndDispositions(builder, request.ContainerDecision);
             if (request.ContainerDecision.Resolved == OutputContainer.Mp4)
                 builder.Append("-movflags +faststart ");
             builder.Append($"-f {request.ContainerDecision.MuxerName} ");
@@ -286,6 +287,34 @@ namespace MediaFlux.Services
                 builder.Append("-c:a copy ");
             }
         }
+
+        private static void AppendPlannedAudioMetadataAndDispositions(
+            StringBuilder builder,
+            OutputContainerDecision decision)
+        {
+            int outputIndex = 0;
+            foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(plan =>
+                         plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                         plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
+            {
+                if (!string.IsNullOrWhiteSpace(plan.Language))
+                    builder.Append($"-metadata:s:a:{outputIndex} language={QuoteMetadata(plan.Language)} ");
+                if (!string.IsNullOrWhiteSpace(plan.Title))
+                    builder.Append($"-metadata:s:a:{outputIndex} title={QuoteMetadata(plan.Title)} ");
+
+                // Explicitly reset then restore the supported dispositions so
+                // transcoding does not let FFmpeg synthesize a different default.
+                builder.Append($"-disposition:a:{outputIndex} 0 ");
+                if (plan.IsDispositionSet("default"))
+                    builder.Append($"-disposition:a:{outputIndex} +default ");
+                if (plan.IsDispositionSet("forced"))
+                    builder.Append($"-disposition:a:{outputIndex} +forced ");
+                outputIndex++;
+            }
+        }
+
+        private static string QuoteMetadata(string value) =>
+            $"\"{value.Replace("\"", "\\\"")}\"";
 
         private static void AppendObsoleteVideoStatisticsCleanup(StringBuilder builder)
         {

@@ -18,7 +18,13 @@ namespace MediaFlux.Models
 
     public sealed record StreamCompatibilityPlan(
         int StreamIndex, string StreamType, string Codec, StreamCompatibilityAction Action,
-        string Reason, string? TargetCodec = null, string RequestedAction = "copy");
+        string Reason, string? TargetCodec = null, string RequestedAction = "copy",
+        string? Language = null, string? Title = null,
+        IReadOnlyDictionary<string, bool>? Dispositions = null)
+    {
+        public bool IsDispositionSet(string name) =>
+            Dispositions?.TryGetValue(name, out bool value) == true && value;
+    }
 
     public sealed class OutputContainerDecision
     {

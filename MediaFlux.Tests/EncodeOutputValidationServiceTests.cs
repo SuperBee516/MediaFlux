@@ -93,6 +93,29 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void EncoderAlignedOddSourceGeometryPassesOnlyAtPlannedDimensions()
+    {
+        EncodeOutputValidationRequest request = Request(expectedWidth: 1280, expectedHeight: 702);
+        MediaProbeResult source = Probe("matroska,webm", "h264", 1280, 701, 100, 1, 0, 2, "Validation Test");
+
+        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(request, source, OutputProbe(width: 1280, height: 702)));
+
+        string error = EncodeOutputValidationService.ValidateProbe(request, source, OutputProbe(width: 1280, height: 701));
+        Assert.Contains("1280×702 was expected", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UnexpectedResolutionDoesNotPassPlannedGeometryValidation()
+    {
+        EncodeOutputValidationRequest request = Request(expectedWidth: 1280, expectedHeight: 1068);
+        MediaProbeResult source = Probe("matroska,webm", "h264", 1280, 1067, 100, 1, 0, 2, "Validation Test");
+
+        string error = EncodeOutputValidationService.ValidateProbe(request, source, OutputProbe(width: 1280, height: 1070));
+
+        Assert.Contains("1280×1068 was expected", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CorruptOrUnprobeableOutputFailsClosed()
     {
         var service = CreateService(

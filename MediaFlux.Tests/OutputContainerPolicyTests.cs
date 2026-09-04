@@ -168,6 +168,64 @@ public sealed class OutputContainerPolicyTests
     }
 
     [Fact]
+    public void ExplicitMp4_IntelligentPlanConvertsMp2ToAacAndRetainsAudioMetadata()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"), new MediaProbeStreamInfo
+            {
+                Index = 7,
+                CodecType = "audio",
+                CodecName = "mp2",
+                Language = "deu",
+                Tags = new Dictionary<string, string> { ["title"] = "German Stereo" },
+                Dispositions = new Dictionary<string, bool> { ["default"] = true, ["forced"] = true }
+            });
+
+        StreamCompatibilityPlan plan = Assert.Single(decision.StreamPlans, item => item.StreamIndex == 7);
+        Assert.Equal(StreamCompatibilityAction.Transcode, plan.Action);
+        Assert.Equal("aac", plan.TargetCodec);
+        Assert.Equal("deu", plan.Language);
+        Assert.Equal("German Stereo", plan.Title);
+        Assert.True(plan.IsDispositionSet("default"));
+        Assert.True(plan.IsDispositionSet("forced"));
+        Assert.True(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Intelligent));
+        Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Strict));
+        Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.AlwaysAsk));
+    }
+
+    [Fact]
+    public void ExplicitAudioSelectionPlanUsesFfmpegMappingOrder()
+    {
+        var probe = new MediaProbeResult
+        {
+            Success = true,
+            Streams = new[]
+            {
+                Stream("video", "hevc"),
+                new MediaProbeStreamInfo { Index = 2, CodecType = "audio", CodecName = "mp2" },
+                new MediaProbeStreamInfo { Index = 7, CodecType = "audio", CodecName = "mp2" }
+            }
+        };
+        var input = new EncodingInputSource
+        {
+            InputPath = "source.mkv",
+            SourcePath = "source.mkv",
+            VideoStreamIndexes = new[] { 0 },
+            AudioStreamIndexes = new[] { 7, 2 }
+        };
+
+        OutputContainerDecision decision = OutputContainerPolicy.Decide(
+            OutputContainerSelection.Mp4,
+            probe,
+            input,
+            EncodingService.StreamMapMode.KeepAll);
+
+        Assert.Equal(new[] { 7, 2 }, decision.StreamPlans
+            .Where(plan => plan.StreamType == "audio")
+            .Select(plan => plan.StreamIndex));
+    }
+
+    [Fact]
     public void UnsupportedRequestedStreamIncludesActionableBlockingDiagnostics()
     {
         OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,

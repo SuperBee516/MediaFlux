@@ -60,6 +60,75 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void PlannedMp2AacConversionPreservesAudioMetadataAndDispositions()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(2, "audio", "mp2", StreamCompatibilityAction.Transcode,
+                    "MP4 conversion", "aac", Language: "jpn", Title: "Japanese", Dispositions: new Dictionary<string, bool>
+                    {
+                        ["default"] = true,
+                        ["forced"] = true
+                    })
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-c:a aac -b:a 192k", arguments);
+        Assert.Contains("-metadata:s:a:0 language=\"jpn\"", arguments);
+        Assert.Contains("-metadata:s:a:0 title=\"Japanese\"", arguments);
+        Assert.Contains("-disposition:a:0 0 -disposition:a:0 +default -disposition:a:0 +forced", arguments);
+    }
+
+    [Fact]
+    public void TargetSizeBudgetUsesAacAllowanceForPlannedMp2Conversion()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(2, "audio", "mp2", StreamCompatibilityAction.Transcode,
+                    "MP4 conversion", "aac")
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            targetMb: 100,
+            knownDuration: TimeSpan.FromSeconds(600),
+            knownAudioBitrateKbps: 384,
+            knownAudioStreamCount: 1,
+            containerDecision: decision));
+
+        Assert.Contains("-b:v 1157k", arguments);
+        Assert.Contains("-c:a aac -b:a 192k", arguments);
+    }
+
+    [Fact]
+    public void PlannedGeometryUsesExactEncoderAlignedScale()
+    {
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            plannedVideoGeometry: new VideoOutputGeometryPlan(1280, 701, 1280, 701, 1280, 702,
+                "1280:702", "nv12", 2, "normalized for chroma alignment"));
+
+        string arguments = CreateBuilder().Build(request);
+
+        Assert.Contains("-vf scale=1280:702:flags=lanczos,format=nv12", arguments);
+    }
+
+    [Fact]
     public void RestorationChainIsPrependedBeforeExistingScaleAndFormat()
     {
         var request = CreateRequest("libx265", useGpu: false,
@@ -685,7 +754,8 @@ public sealed class FfmpegCommandBuilderTests
         SplitSourceInput? splitSource = null,
         string? restorationFilterOverride = null,
         bool disableHardwareDecode = false,
-        OutputContainerDecision? containerDecision = null)
+        OutputContainerDecision? containerDecision = null,
+        VideoOutputGeometryPlan? plannedVideoGeometry = null)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -713,7 +783,8 @@ public sealed class FfmpegCommandBuilderTests
              splitSource,
              restorationFilterOverride,
              disableHardwareDecode,
-             containerDecision);
+             containerDecision,
+             plannedVideoGeometry);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -740,7 +811,8 @@ public sealed class FfmpegCommandBuilderTests
         SplitSourceInput? splitSource = null,
         string? restorationFilterOverride = null,
         bool disableHardwareDecode = false,
-        OutputContainerDecision? containerDecision = null)
+        OutputContainerDecision? containerDecision = null,
+        VideoOutputGeometryPlan? plannedVideoGeometry = null)
     {
 
         return new FfmpegCommandRequest
@@ -788,6 +860,7 @@ public sealed class FfmpegCommandBuilderTests
                 nvencHighBitDepthOutputSupported,
             DisableHardwareDecode = disableHardwareDecode,
             SourcePixelFormat = sourcePixelFormat,
+            PlannedVideoGeometry = plannedVideoGeometry,
             SplitSource = splitSource,
             RestorationFilterOverride = restorationFilterOverride
         };
