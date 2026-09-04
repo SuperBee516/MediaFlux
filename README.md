@@ -142,6 +142,6 @@ See [Documentation/UserGuide.md](Documentation/UserGuide.md), [docs/library-cata
 
 ## 📜 Project Status & License
 
-MediaFlux is a public open-source project under active development. It is primarily focused on video encoding, supported by audio processing, library maintenance, duplicate management, monitoring, automation, and diagnostics.
+MediaFlux is stable and under active private development. It is primarily focused on video encoding, supported by audio processing, library maintenance, duplicate management, monitoring, automation, and diagnostics.
 
-MediaFlux is licensed under the MIT License. See [LICENSE](LICENSE) for the full license terms.
+Private / Personal Use Only. This repository is not currently licensed for public redistribution.
