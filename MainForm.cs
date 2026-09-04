@@ -936,9 +936,7 @@ namespace MediaFlux
         private Control CreateRestorationGroup()
         {
             var content = CreateContextPanel(out _restorationContextLabel);
-            var configure = new Button { Text = "Open restoration settings…", AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
-            configure.Click += (_, __) => ShowEncodingConfiguration();
-            content.Controls.Add(configure);
+            AddVideoRestorationControls(content);
             return content;
         }
 
@@ -2827,24 +2825,13 @@ namespace MediaFlux
             };
 
             int startRow = tlOptions.RowCount;
-            tlOptions.RowCount = startRow + 10;
+            tlOptions.RowCount = startRow + 7;
             for (int row = startRow; row < tlOptions.RowCount; row++)
-            {
                 tlOptions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            }
 
             var lblOutputHeader = new Label
             {
                 Text = "Output",
-                AutoSize = true,
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-                ForeColor = Color.FromArgb(45, 62, 80),
-                Margin = new Padding(0, 12, 0, 5)
-            };
-
-            var lblAutomationHeader = new Label
-            {
-                Text = "Automation",
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(45, 62, 80),
@@ -2858,19 +2845,6 @@ namespace MediaFlux
             tlOptions.Controls.Add(chkTenBit, 0, startRow + 4);
             tlOptions.Controls.Add(lblAudioLayout, 0, startRow + 5);
             tlOptions.Controls.Add(comboAudioChannels, 0, startRow + 6);
-            tlOptions.Controls.Add(lblAutomationHeader, 0, startRow + 7);
-            tlOptions.Controls.Add(chkWatchFolder, 0, startRow + 8);
-            tlOptions.Controls.Add(lblWatchFolderStatus, 0, startRow + 9);
-
-            void UpdateWatchStatusWrapWidth()
-            {
-                int availableWidth = Math.Max(160, tlOptions.ClientSize.Width - tlOptions.Padding.Horizontal - 24);
-                lblWatchFolderStatus.MaximumSize = new Size(availableWidth, 0);
-            }
-
-            tlOptions.SizeChanged += (_, __) => UpdateWatchStatusWrapWidth();
-            UpdateWatchStatusWrapWidth();
-            AddVideoRestorationControls(tlOptions);
             SelectOutputContainer(_config.LastOutputContainer);
             SelectContainerCompatibilityPolicy(_config.ContainerCompatibilityPolicy);
             comboContainerCompatibilityPolicy.SelectedIndexChanged += (_, __) =>
