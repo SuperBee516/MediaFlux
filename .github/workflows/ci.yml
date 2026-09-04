@@ -1,0 +1,53 @@
+name: MediaFlux CI
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+    branches:
+      - develop
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mediaflux-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore .\MediaFlux.sln
+
+      - name: Build Release
+        run: dotnet build .\MediaFlux.sln -c Release --no-restore
+
+      - name: Test Release
+        run: dotnet test .\MediaFlux.sln -c Release --no-build --logger "trx;LogFileName=mediaflux-tests.trx"
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaFlux-CI-test-results
+          path: "**/TestResults/**/*.trx"
+          if-no-files-found: ignore
+          retention-days: 7
