@@ -950,6 +950,13 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
         _adjustingSourceSplitter = true;
         try
         {
+            // OnShown can run before the nested auto-sized table has completed
+            // its first measurement (notably on slower CI/DPI configurations).
+            // Force the expanded editor and its parent to settle before using
+            // their preferred height as the persistence invariant.
+            _advancedHost.PerformLayout();
+            _sourceAnalysisContent?.PerformLayout();
+            _sourceWorkspaceSplit.Panel1.PerformLayout();
             _sourceWorkspaceSplit.Panel1MinSize = ScaleForDpi(145);
             int requiredReviewHeight = ScaleForDpi(300) + ScaleForDpi(260) + _workspaceSplit.SplitterWidth + _sourceWorkspaceSplit.Panel2.Padding.Vertical;
             _sourceWorkspaceSplit.Panel2MinSize = Math.Min(requiredReviewHeight, Math.Max(0, available - _sourceWorkspaceSplit.Panel1MinSize));
