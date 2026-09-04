@@ -160,6 +160,8 @@ public sealed class PerformanceTimingService
         }
     }
 
+    internal void RecordElapsedForTesting(PerformanceTimingStage stage, TimeSpan elapsed) => Record(stage, elapsed, completed: true);
+
     private void RecordAiChunkCore(int frameCount, TimeSpan elapsed)
     {
         _aiFrames += frameCount;
