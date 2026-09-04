@@ -766,6 +766,7 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
 
                 DataGridView groups = GetPrivateField<DataGridView>(form, "_visualGroupsGrid");
                 DataGridView members = GetPrivateField<DataGridView>(form, "_visualMembersGrid");
+                PumpUntil(() => groups.Rows.Count == 2);
                 Assert.Equal(2, groups.Rows.Count);
                 PumpUntil(() => members.Rows.Count == 2);
                 long initialGroupId = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
