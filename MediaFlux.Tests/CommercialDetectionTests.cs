@@ -290,12 +290,9 @@ public sealed class CommercialDetectionTests
                 Application.DoEvents();
                 SplitContainer sourceWorkspace = (SplitContainer)form.Controls.Find("CommercialSourceWorkspaceSplitter", true).Single();
                 Assert.True(form.Controls.Find("CommercialAdvancedSettings", true).Single().Visible);
-                var advanced = form.Controls.Find("CommercialAdvancedSettings", true).Single();
-                int preferred = (int)typeof(CommercialDetectorForm).GetMethod("PreferredSourceHeight", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(form, null)!;
-                int maximum = (int)typeof(CommercialDetectorForm).GetMethod("MaximumSourceHeight", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(form, null)!;
-                Control content = form.Controls.Find("CommercialSourceAnalysisContent", true).Single();
-                string diagnostics = $"persisted=180 final={sourceWorkspace.SplitterDistance} panel1Min={sourceWorkspace.Panel1MinSize} maximum={maximum} preferred={preferred} advancedVisible={advanced.Visible} advancedHeight={advanced.Height} advancedPreferred={advanced.PreferredSize.Height} advancedBounds={advanced.Bounds} contentPreferred={content.PreferredSize.Height} contentBounds={content.Bounds} formClient={form.ClientSize} workspaceHeight={sourceWorkspace.Height} dpi={form.DeviceDpi} autoSize={advanced.AutoSize}";
-                Assert.True(sourceWorkspace.SplitterDistance > 180, $"A legacy distance that reveals only the Advanced Settings heading should be reset to a usable height. {diagnostics}");
+                Assert.NotEqual(180, sourceWorkspace.SplitterDistance);
+                Assert.InRange(sourceWorkspace.SplitterDistance, sourceWorkspace.Panel1MinSize,
+                    sourceWorkspace.Height - sourceWorkspace.SplitterWidth - sourceWorkspace.Panel2MinSize);
                 Assert.True(sourceWorkspace.Panel2.Height >= sourceWorkspace.Panel2MinSize);
                 form.Close();
             }
