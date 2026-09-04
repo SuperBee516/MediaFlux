@@ -465,8 +465,8 @@ namespace MediaFlux
             // contextual details rather than competing with the queue for vertical space.
             tlEncode.Controls.Remove(grpOptions);
             tlEncode.Controls.Remove(grpDuplicateFinder);
-            MoveEncodingProfileFieldsToDetails();
             AddQueueCommandSummary();
+            MoveEncodingProfileFieldsToDetails();
 
             _encodeQueueSplit = new SplitContainer
             {
@@ -501,9 +501,11 @@ namespace MediaFlux
 
         private void MoveEncodingProfileFieldsToDetails()
         {
-            if (pnlEncodingProfileCard == null || tlEncodingProfileFields == null)
+            if (pnlQueueControlsCard == null || pnlEncodingProfileCard == null || tlEncodingProfileFields == null)
                 return;
 
+            tlEncode?.Controls.Remove(pnlEncodingProfileCard);
+            pnlQueueControlsCard.SuspendLayout();
             pnlEncodingProfileCard.SuspendLayout();
             try
             {
@@ -544,6 +546,7 @@ namespace MediaFlux
                     ForeColor = SystemColors.ControlText,
                     Margin = new Padding(0, 2, 12, 2)
                 };
+                new ToolTip(components).SetToolTip(_activeConfigurationSummaryLabel, "Current encoding configuration");
                 compactProfile.Controls.Add(_activeConfigurationSummaryLabel, 1, 0);
 
                 var configureButton = new Button
@@ -554,11 +557,22 @@ namespace MediaFlux
                 };
                 configureButton.Click += (_, __) => ShowEncodingConfiguration();
                 compactProfile.Controls.Add(configureButton, 2, 0);
-                pnlEncodingProfileCard.Controls.Add(compactProfile, 0, 0);
+                int statusRow = pnlQueueControlsCard.GetRow(lblEncodeStatus);
+                if (statusRow < 0) statusRow = pnlQueueControlsCard.RowCount - 1;
+                Label? summaryLabel = _queueCommandSummaryLabel;
+                int summaryRow = summaryLabel == null ? -1 : pnlQueueControlsCard.GetRow(summaryLabel);
+                if (summaryRow >= 0)
+                    pnlQueueControlsCard.SetCellPosition(summaryLabel!, new TableLayoutPanelCellPosition(0, summaryRow + 1));
+                pnlQueueControlsCard.RowCount = Math.Max(pnlQueueControlsCard.RowCount + 1, statusRow + 2);
+                pnlQueueControlsCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                pnlQueueControlsCard.SetCellPosition(lblEncodeStatus, new TableLayoutPanelCellPosition(0, statusRow + 1));
+                pnlQueueControlsCard.Controls.Add(compactProfile, 0, summaryRow >= 0 ? summaryRow : statusRow);
+                _activeConfigurationSummaryLabel.AutoEllipsis = true;
             }
             finally
             {
                 pnlEncodingProfileCard.ResumeLayout(true);
+                pnlQueueControlsCard.ResumeLayout(true);
             }
         }
 
@@ -700,8 +714,10 @@ namespace MediaFlux
         private string BuildCurrentOperationMetrics(DataGridViewRow? row)
         {
             var parts = new List<string>();
-            if (_activeEncodeRows.Count > 0 && _activeEncodeMetrics.TryGetValue(_activeEncodeRows[0], out var metrics) && metrics.HasData)
+            DataGridViewRow? metricsRow = row ?? _activeEncodeRows.FirstOrDefault();
+            if (metricsRow != null && _activeEncodeMetrics.TryGetValue(metricsRow, out var metrics) && metrics.HasData)
             {
+                if (metrics.Speed > 0) parts.Add($"Speed {metrics.Speed:0.0}x");
                 if (metrics.Fps > 0) parts.Add($"{metrics.Fps:N0} FPS");
                 if (metrics.Bitrate > 0) parts.Add($"{metrics.Bitrate:F1} kbits/s");
                 if (!string.IsNullOrWhiteSpace(metrics.TimeStr)) parts.Add(metrics.TimeStr + " elapsed");
@@ -1924,13 +1940,19 @@ namespace MediaFlux
             var values = new List<string>();
             AddActiveConfigurationValue(values, comboEncoderMode?.Text);
             AddActiveConfigurationValue(values, comboVideoFormat?.Text);
-            AddActiveConfigurationValue(values, comboCompressionProfile?.Text);
-            if (nudAutoQuality != null)
+            if (chkAutoTargetSize?.Checked == true && nudAutoQuality != null)
                 values.Add($"CQ{nudAutoQuality.Value:0}");
+            else if (!string.IsNullOrWhiteSpace(txtTargetSize?.Text))
+                values.Add($"Target {txtTargetSize.Text.Trim()} MB");
             AddActiveConfigurationValue(values, comboEncoderPreset?.Text);
             if (chkTenBit?.Checked == true)
                 values.Add("10-bit");
             AddActiveConfigurationValue(values, comboOutputContainer?.Text);
+            if (comboResolution?.SelectedIndex > 0 && !string.Equals(comboResolution.Text, "Original", StringComparison.OrdinalIgnoreCase))
+                AddActiveConfigurationValue(values, comboResolution.Text);
+            VideoRestorationSettings effectiveRestoration = VideoRestorationModeResolver.Resolve(_config.VideoRestoration);
+            if (effectiveRestoration.Preset != VideoRestorationPreset.Off)
+                values.Add($"Restoration {effectiveRestoration.Preset}");
 
             _activeConfigurationSummaryLabel.Text = values.Count == 0
                 ? "Current settings"
@@ -3716,24 +3738,8 @@ namespace MediaFlux
             if (cur < 0) cur = 0;
             if (cur > durationSec) cur = durationSec;
 
-            double pct = durationSec > 0 ? (cur / durationSec) : 0;
-
-            // Parse "speed=1.23x" from the same line
             double speedX = ParseSpeedX(line);
-
-            // Compute ETA – account for speed if we have it
-            double remaining = Math.Max(0, durationSec - cur);
-            TimeSpan eta = speedX > 0
-                ? TimeSpan.FromSeconds(remaining / speedX)
-                : TimeSpan.FromSeconds(remaining);
-
-            // Push into the grid
-            if ((row.Cells["colStatus"].Value?.ToString() ?? "").Contains("AI", StringComparison.OrdinalIgnoreCase))
-                row.Cells["colStatus"].Value = "Encoding";
-            row.Cells["colProgress"].Value = $"{pct * 100:0}%";
-            row.Cells["colETA"].Value = eta.ToString(@"hh\:mm\:ss");
-
-            // Color-code ETA cell based on speed
+            ApplyAuthoritativeEncodeProgress(row, seg, speedX);
             SetEtaCellColor(row, speedX);
         }
 
@@ -4441,15 +4447,8 @@ namespace MediaFlux
             if (cur < 0) cur = 0;
             if (cur > durationSec) cur = durationSec;
 
-            double pct = durationSec > 0 ? (cur / durationSec) : 0;
             double speedX = ParseSpeedX(line);
-            double remaining = Math.Max(0, durationSec - cur);
-            TimeSpan eta = speedX > 0
-                ? TimeSpan.FromSeconds(remaining / speedX)
-                : TimeSpan.FromSeconds(remaining);
-
-            _activeEncodeRow.Cells["colProgress"].Value = $"{pct * 100:0}%";
-            _activeEncodeRow.Cells["colETA"].Value = eta.ToString("hh\\:mm\\:ss");
+            ApplyAuthoritativeEncodeProgress(_activeEncodeRow, seg, speedX);
             SetEtaCellColor(_activeEncodeRow, speedX);
         }
 

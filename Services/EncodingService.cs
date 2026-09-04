@@ -686,26 +686,30 @@ namespace MediaFlux.Services
                 copyDataStreams,
                 copyAttachments,
                 audioWillBeTranscoded: audioChannels is > 0);
+            _log?.Invoke($"[EncodingService] {containerDecision.Reason}");
+            containerDecisionCallback?.Invoke(containerDecision);
+            foreach (StreamCompatibilityPlan plan in containerDecision.StreamPlans)
+                _log?.Invoke($"[EncodingService] Stream {plan.StreamIndex} {plan.StreamType}/{plan.Codec}: requested={plan.RequestedAction}; decision={plan.Action}; target={plan.TargetCodec ?? "copy"}; {plan.Reason}");
             if (containerDecision.Resolved == OutputContainer.Mp4 &&
                 compatibilityPolicy == ContainerCompatibilityPolicy.Strict &&
                 !OutputContainerPolicy.CanProceedAutomatically(containerDecision, compatibilityPolicy))
-                throw new InvalidOperationException("Strict container compatibility policy rejected a required stream conversion or omission.");
+                throw new InvalidOperationException($"Strict container compatibility policy rejected the stream plan: {OutputContainerPolicy.DescribeBlockingStreams(containerDecision)}");
             if (containerDecision.Resolved == OutputContainer.Mp4 &&
-                compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent &&
                 containerDecision.HasUnsupportedMeaningfulStreams)
-                throw new InvalidOperationException("Intelligent container compatibility could not safely preserve a requested audio, video, or subtitle stream.");
-            _log?.Invoke($"[EncodingService] {containerDecision.Reason}");
-            containerDecisionCallback?.Invoke(containerDecision);
+                throw new InvalidOperationException($"Container compatibility cannot safely preserve requested streams: {OutputContainerPolicy.DescribeBlockingStreams(containerDecision)}");
+            if (containerDecision.Resolved == OutputContainer.Mp4 &&
+                compatibilityPolicy == ContainerCompatibilityPolicy.AlwaysAsk &&
+                containerDecision.RequiresConfirmation && !containerCompatibilityConfirmed)
+                throw new InvalidOperationException("MP4 compatibility confirmation is required by the Always Ask policy.");
             if (containerDecision.Requested == OutputContainerSelection.Mp4)
             {
                 foreach (string warning in containerDecision.CompatibilityWarnings)
                     _log?.Invoke($"[EncodingService] Container compatibility: {warning}.");
             }
-            foreach (StreamCompatibilityPlan plan in containerDecision.StreamPlans.Where(plan => plan.Action != StreamCompatibilityAction.Copy))
-                _log?.Invoke($"[EncodingService] Stream {plan.StreamIndex} {plan.StreamType}/{plan.Codec}: {plan.Action}; {plan.Reason}");
             if (containerDecision.ConvertSubtitlesToMovText)
                 _log?.Invoke("[EncodingService] ASS/SSA subtitles will be converted to mov_text; language/title/dispositions are retained where MP4 supports them, styling may be lost.");
-            if (containerDecision.RequiresConfirmation && !containerCompatibilityConfirmed)
+            if (containerDecision.RequiresConfirmation && !containerCompatibilityConfirmed &&
+                compatibilityPolicy != ContainerCompatibilityPolicy.AlwaysAsk)
             {
                 _log?.Invoke(
                     "[EncodingService] Explicit MP4 compatibility was not preconfirmed by the caller; " +
@@ -758,11 +762,14 @@ namespace MediaFlux.Services
                 }
             }
 
-            bool forceMp4CompatibleAudio = isAsfFamilyInput &&
-                string.Equals(Path.GetExtension(finalOutput), ".mp4", StringComparison.OrdinalIgnoreCase);
+            bool forceMp4CompatibleAudio = (isAsfFamilyInput &&
+                string.Equals(Path.GetExtension(finalOutput), ".mp4", StringComparison.OrdinalIgnoreCase)) ||
+                containerDecision.TranscodeAudioToAac;
             if (forceMp4CompatibleAudio)
             {
-                _log?.Invoke("[EncodingService] WMV/ASF input detected for MP4 output; transcoding audio to AAC.");
+                _log?.Invoke(isAsfFamilyInput
+                    ? "[EncodingService] WMV/ASF input detected for MP4 output; transcoding audio to AAC."
+                    : "[EncodingService] Container plan requires compatible AAC audio conversion.");
             }
 
             // Total duration once for progress and target bitrate math
@@ -838,7 +845,53 @@ namespace MediaFlux.Services
             FfmpegProcessResult runResult = await RunFfmpegAsync(
                 ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
 
+            string recoveryDiagnostics = "";
+            bool cudaRecoveryAttempted = false;
+            bool cudaRecoveryStarted = false;
+            FfmpegCudaNvdecFailure cudaFailure = FfmpegCudaNvdecFailureClassifier.Classify(runResult.StandardError);
             if (runResult.ExitCode != 0 &&
+                FfmpegCudaNvdecFailureClassifier.ShouldRetryOnce(
+                    requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
+                    ffArgs.Contains("-hwaccel cuda ", StringComparison.Ordinal),
+                    cancellationToken.IsCancellationRequested,
+                    cudaRecoveryAttempted,
+                    cudaFailure))
+            {
+                string failedPipeline = pipelineDiagnostic;
+                cudaRecoveryAttempted = true;
+                recoveryDiagnostics = $"Original NVDEC/CUDA failure: {cudaFailure.DescribeEvidence()}.{Environment.NewLine}";
+                _log?.Invoke($"[EncodingService] GPU decode failure classified: {cudaFailure.DescribeEvidence()}. Attempt 1: {failedPipeline}.");
+                _log?.Invoke("[EncodingService] Retry reason: classified NVDEC/CUDA device failure; removing hardware decode while retaining NVENC.");
+                callback("[MediaFlux] GPU decode failed; retrying once with software decode and NVENC.");
+                if (TryDeleteFailedStagingOutput(output))
+                {
+                    cudaRecoveryStarted = true;
+                    using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                    {
+                        ffArgs = BuildFfmpegArgs(
+                            inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                            encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                            mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                            containerDecision, forceMp4CompatibleAudio, totalDuration,
+                            qualityValue, encoderSelection, sampleStart, sampleDuration,
+                            sourcePixelFormat, disableHardwareDecode: true, restoration: restoration,
+                            splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                            restorationFilterOverride: aiPlan?.PostAiFilterChain);
+                        scope.Complete();
+                    }
+                    pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
+                    _log?.Invoke($"[EncodingService] Attempt 2: software decode -> NVENC; pipeline={pipelineDiagnostic}; ffmpeg arguments: {ffArgs}");
+                    runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                    _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery retry result: exit={runResult.ExitCode}.");
+                }
+                else
+                {
+                    recoveryDiagnostics += "Recovery retry was not started because the failed staged output could not be removed safely." + Environment.NewLine;
+                }
+            }
+
+            if (runResult.ExitCode != 0 &&
+                !cudaRecoveryAttempted &&
                 ShouldRetryWithSoftwareFrames(ffArgs, runResult.StandardError))
             {
                 string failedPipeline = pipelineDiagnostic;
@@ -879,11 +932,17 @@ namespace MediaFlux.Services
                     $"Output     : {output}{Environment.NewLine}" +
                     $"Exit Code  : {runResult.ExitCode}{Environment.NewLine}" +
                     $"Arguments  : {ffArgs}{Environment.NewLine}{Environment.NewLine}" +
+                    recoveryDiagnostics +
                     "FFmpeg Output:" + Environment.NewLine +
                     runResult.StandardError);
 
                 _log?.Invoke($"[EncodingService] ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
-                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
+                string recoverySuffix = string.IsNullOrWhiteSpace(recoveryDiagnostics)
+                    ? ""
+                    : cudaRecoveryStarted
+                        ? " The software-decode NVENC recovery attempt also failed; both attempt diagnostics were recorded."
+                        : " The NVDEC/CUDA recovery retry was not started; diagnostics were recorded.";
+                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{recoverySuffix} See central log: {logPath}");
             }
             encodeScope.Complete();
             encodeScope.Dispose();
@@ -1093,6 +1152,21 @@ namespace MediaFlux.Services
             return string.IsNullOrWhiteSpace(detail) ? "No FFmpeg diagnostic was captured." : detail.Trim();
         }
 
+        private bool TryDeleteFailedStagingOutput(string stagingPath)
+        {
+            try
+            {
+                if (File.Exists(stagingPath))
+                    File.Delete(stagingPath);
+                return !File.Exists(stagingPath);
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery could not remove failed staging output '{stagingPath}': {ex.Message}");
+                return false;
+            }
+        }
+
         private sealed record FfmpegProcessResult(int ExitCode, string StandardError);
 
         private async Task EnsureProcessExitedAfterCancellationAsync(Process proc)
@@ -1285,6 +1359,7 @@ namespace MediaFlux.Services
             TimeSpan? sampleDuration = null,
             string? sourcePixelFormat = null,
             bool preferNvencGpuResidentFrames = true,
+            bool disableHardwareDecode = false,
             VideoRestorationSettings? restoration = null,
             SplitSourceInput? splitSource = null,
             string? restorationFilterOverride = null)
@@ -1362,6 +1437,7 @@ namespace MediaFlux.Services
                     supportsGpuResidentHighBitDepthOutput,
                 PreferNvencGpuResidentFrames =
                     preferNvencGpuResidentFrames,
+                DisableHardwareDecode = disableHardwareDecode,
                 SourcePixelFormat = sourcePixelFormat ?? ""
                 ,SplitSource = splitSource
                 ,RestorationFilterOverride = restorationFilterOverride
@@ -1394,6 +1470,9 @@ namespace MediaFlux.Services
             {
                 return "software decode (WMV/ASF compatibility) -> NVENC";
             }
+
+            if (!ffmpegArguments.Contains("-hwaccel cuda ", StringComparison.Ordinal))
+                return "software decode -> NVENC";
 
             if (ffmpegArguments.Contains(
                     "-hwaccel_output_format cuda",

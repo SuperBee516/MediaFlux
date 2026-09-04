@@ -25,7 +25,8 @@ namespace MediaFlux.Services.LibraryCatalog
                 isEncodingActive,
                 protectedPaths,
                 keeperPreferences: keeperPreferences,
-                integrityFfmpegPath: FfmpegToolResolver.Resolve(applicationDirectory, configuredFfmpegPath).FfmpegPath)
+                integrityFfmpegPath: FfmpegToolResolver.Resolve(applicationDirectory, configuredFfmpegPath).FfmpegPath,
+                startBackgroundWork: true)
         {
         }
 
@@ -44,7 +45,8 @@ namespace MediaFlux.Services.LibraryCatalog
             LibraryStorageScheduler? storageScheduler = null,
             MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null,
             string integrityFfmpegPath = "",
-            IMediaToolProcessRunner? integrityProcessRunner = null)
+            IMediaToolProcessRunner? integrityProcessRunner = null,
+            bool startBackgroundWork = false)
         {
             _catalog = catalog;
             _catalog.Initialize();
@@ -110,8 +112,11 @@ namespace MediaFlux.Services.LibraryCatalog
                     exception: exception,
                     details: details));
             Maintenance = new LibraryMaintenanceCoordinator(_catalog, _catalog, Scanner, _enrichment, _duplicates, _visual, Integrity, isEncodingActive);
-            _ = QueuePendingSafelyAsync();
-            _ = RunMaintenanceSafelyAsync();
+            if (startBackgroundWork)
+            {
+                _ = QueuePendingSafelyAsync();
+                _ = RunMaintenanceSafelyAsync();
+            }
         }
 
         public ILibraryCatalog Catalog => _catalog;

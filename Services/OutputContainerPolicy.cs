@@ -10,6 +10,12 @@ namespace MediaFlux.Services
         private static readonly HashSet<string> Mp4SubtitleCodecs = new(
             new[] { "mov_text", "tx3g", "webvtt" },
             StringComparer.OrdinalIgnoreCase);
+        // These codecs have a well-established FFmpeg decode-to-AAC path in
+        // MediaFlux. Unknown codecs remain fail-closed rather than assuming
+        // the configured FFmpeg can decode them.
+        private static readonly HashSet<string> AacTranscodeSourceCodecs = new(
+            new[] { "dts", "dca", "truehd", "mlp", "flac", "opus", "vorbis", "wma", "wmav1", "wmav2", "wmav3", "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le" },
+            StringComparer.OrdinalIgnoreCase);
 
         // FFmpeg's Matroska muxer accepts attachments, but not arbitrary AVMEDIA_TYPE_DATA
         // streams. Keep this capability explicit so mapping and container selection agree.
@@ -27,6 +33,21 @@ namespace MediaFlux.Services
             ContainerCompatibilityPolicy.Strict => decision.StreamPlans.All(plan => plan.Action == StreamCompatibilityAction.Copy),
             _ => false
         };
+
+        public static string DescribeBlockingStreams(OutputContainerDecision decision)
+        {
+            ArgumentNullException.ThrowIfNull(decision);
+            StreamCompatibilityPlan[] blocking = decision.StreamPlans
+                .Where(plan => plan.Action == StreamCompatibilityAction.Unsupported &&
+                    (plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) ||
+                     plan.StreamType.Equals("video", StringComparison.OrdinalIgnoreCase) ||
+                     plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
+            return blocking.Length == 0
+                ? "No requested meaningful streams are blocked."
+                : string.Join("; ", blocking.Select(plan =>
+                    $"stream={plan.StreamIndex}; type={plan.StreamType}; codec={DisplayCodec(plan.Codec)}; requested={plan.RequestedAction}; target={decision.Resolved}; reason={plan.Reason}; decision={plan.Action}"));
+        }
 
         public static OutputContainerDecision Decide(
             OutputContainerSelection requested,
@@ -49,14 +70,34 @@ namespace MediaFlux.Services
                 : Array.Empty<MediaProbeStreamInfo>();
             int attachmentCount = copyAttachments && !input.HasExplicitStreamSelection ? Count(source, "attachment") : 0;
 
+            bool explicitMp4 = requested == OutputContainerSelection.Mp4;
             var warnings = new List<string>();
             var plans = new List<StreamCompatibilityPlan>();
             foreach (MediaProbeStreamInfo stream in selectedAudio)
             {
-                bool compatible = audioWillBeTranscoded || Mp4AudioCodecs.Contains(stream.CodecName);
-                plans.Add(new(stream.Index, "audio", stream.CodecName,
-                    compatible ? StreamCompatibilityAction.Copy : StreamCompatibilityAction.Unsupported,
-                    compatible ? "Selected audio is retained." : "MP4 audio codec cannot be safely copied and no audio transcode was requested."));
+                if (audioWillBeTranscoded)
+                {
+                    plans.Add(new(stream.Index, "audio", stream.CodecName,
+                        StreamCompatibilityAction.Transcode,
+                        "Selected audio will be converted to AAC by the requested audio layout.", "aac", "transcode"));
+                }
+                else if (!explicitMp4 || Mp4AudioCodecs.Contains(stream.CodecName))
+                {
+                    plans.Add(new(stream.Index, "audio", stream.CodecName,
+                        StreamCompatibilityAction.Copy, "Selected audio is retained."));
+                }
+                else if (AacTranscodeSourceCodecs.Contains(stream.CodecName))
+                {
+                    plans.Add(new(stream.Index, "audio", stream.CodecName,
+                        StreamCompatibilityAction.Transcode,
+                        "MP4 cannot stream-copy this audio codec; MediaFlux will convert it to AAC.", "aac"));
+                }
+                else
+                {
+                    plans.Add(new(stream.Index, "audio", stream.CodecName,
+                        StreamCompatibilityAction.Unsupported,
+                        "MP4 audio codec cannot be safely copied and MediaFlux has no conservative AAC conversion path."));
+                }
             }
             if (!audioWillBeTranscoded)
             {
@@ -66,7 +107,7 @@ namespace MediaFlux.Services
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
                 if (incompatibleAudio.Length > 0)
-                    warnings.Add($"copied audio codec(s) not conservatively supported by MP4: {string.Join(", ", incompatibleAudio)}");
+                    warnings.Add($"audio codec(s) requiring compatible conversion or a decision: {string.Join(", ", incompatibleAudio)}");
             }
 
             string[] incompatibleSubtitles = selectedSubtitles
@@ -76,7 +117,7 @@ namespace MediaFlux.Services
                 .ToArray();
             foreach (MediaProbeStreamInfo stream in selectedSubtitles)
             {
-                bool supported = Mp4SubtitleCodecs.Contains(stream.CodecName);
+                bool supported = !explicitMp4 || Mp4SubtitleCodecs.Contains(stream.CodecName);
                 bool ass = stream.CodecName.Equals("ass", StringComparison.OrdinalIgnoreCase) || stream.CodecName.Equals("ssa", StringComparison.OrdinalIgnoreCase);
                 StreamCompatibilityAction action = supported ? StreamCompatibilityAction.Copy : ass ? StreamCompatibilityAction.Transcode : StreamCompatibilityAction.Unsupported;
                 string streamReason = supported ? "Selected subtitle is MP4-compatible." : ass
@@ -111,7 +152,7 @@ namespace MediaFlux.Services
                     ? "Matroska was selected explicitly for broad stream preservation."
                     : warnings.Count == 0
                         ? "MP4 was selected explicitly and the requested streams are compatible."
-                        : "MP4 was selected explicitly; incompatible streams will be omitted after confirmation.";
+                    : "MP4 was selected explicitly; compatible conversions will be applied and unsupported requested streams will stop before encoding.";
 
             return new OutputContainerDecision
             {
@@ -145,5 +186,8 @@ namespace MediaFlux.Services
 
         private static bool IsType(MediaProbeStreamInfo stream, string type) =>
             stream.CodecType.Equals(type, StringComparison.OrdinalIgnoreCase);
+
+        private static string DisplayCodec(string? codec) =>
+            string.IsNullOrWhiteSpace(codec) ? "unknown" : codec;
     }
 }

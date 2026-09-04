@@ -153,6 +153,36 @@ public sealed class OutputContainerPolicyTests
         Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Strict));
     }
 
+    [Fact]
+    public void ExplicitMp4_IntelligentPlanSafelyConvertsKnownAncillaryAudio()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"), new MediaProbeStreamInfo { Index = 7, CodecType = "audio", CodecName = "dts" });
+
+        StreamCompatibilityPlan plan = Assert.Single(decision.StreamPlans, item => item.StreamIndex == 7);
+        Assert.Equal(StreamCompatibilityAction.Transcode, plan.Action);
+        Assert.Equal("aac", plan.TargetCodec);
+        Assert.True(decision.TranscodeAudioToAac);
+        Assert.True(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Intelligent));
+        Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Strict));
+    }
+
+    [Fact]
+    public void UnsupportedRequestedStreamIncludesActionableBlockingDiagnostics()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"), new MediaProbeStreamInfo { Index = 12, CodecType = "subtitle", CodecName = "hdmv_pgs_subtitle" });
+
+        Assert.True(decision.HasUnsupportedMeaningfulStreams);
+        string diagnostic = OutputContainerPolicy.DescribeBlockingStreams(decision);
+        Assert.Contains("stream=12", diagnostic);
+        Assert.Contains("type=subtitle", diagnostic);
+        Assert.Contains("codec=hdmv_pgs_subtitle", diagnostic);
+        Assert.Contains("requested=copy", diagnostic);
+        Assert.Contains("target=Mp4", diagnostic);
+        Assert.Contains("decision=Unsupported", diagnostic);
+    }
+
     private static OutputContainerDecision Decide(
         OutputContainerSelection selection,
         params MediaProbeStreamInfo[] streams)

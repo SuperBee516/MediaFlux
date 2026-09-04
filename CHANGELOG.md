@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.96] - 2026-09-04
+
+- Fixed inaccurate FFmpeg encode progress, ETA, and Current Operation speed reporting.
+- Improved authoritative duration handling when FFprobe metadata is incomplete.
+- Compacted Encode profile details into Queue Controls.
+- Fixed Family Review WinForms lifecycle instability and cascading UI-test failures.
+- Fixed a Library Analyzer maintenance/background-work race that could duplicate metadata probing.
+
 ## [0.1.95] - 2026-09-03
 
 - Modernized the queue-first Encode workspace with a resizable contextual Details workspace, streamlined Encoding Options, reorganized queue commands/context-menu actions, and a compact Active Encoding Profile.

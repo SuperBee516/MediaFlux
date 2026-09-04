@@ -156,7 +156,13 @@ namespace MediaFlux
                 return;
             }
 
-            TimeSpan eta = TimeSpan.FromSeconds(remainingMediaSeconds / combinedSpeed);
+            double? etaSeconds = EncodeEtaCalculator.CalculateAggregateSeconds(remainingMediaSeconds, combinedSpeed);
+            if (!etaSeconds.HasValue)
+            {
+                _summaryEstimatedCompletionValue.Text = "Calculating...";
+                return;
+            }
+            TimeSpan eta = TimeSpan.FromSeconds(etaSeconds.Value);
             string etaText = eta.TotalDays >= 1
                 ? $"{(int)eta.TotalDays}d {eta.Hours:00}:{eta.Minutes:00}:{eta.Seconds:00}"
                 : eta.ToString(@"hh\:mm\:ss");
@@ -182,7 +188,7 @@ namespace MediaFlux
         private TimeSpan _currentEncodeDuration = TimeSpan.Zero;
         private TimeSpan _currentEncodeTotalDuration = TimeSpan.Zero;
         private static readonly Regex ffmpegProgressRegex = new Regex(
-            @"frame=\s*(\d+)\s+fps=\s*(\d+)\s+q=\s*([\d\.]+)\s+size=\s*(\d+)(kB|KiB)\s+time=\s*(\d{2}:\d{2}:\d{2}\.\d{2})\s+bitrate=\s*([\d\.]+)kbits/s\s+speed=\s*([\d\.]+)x",
+            @"frame=\s*(\d+)\s+fps=\s*([\d\.]+)\s+q=\s*([-\d\.]+)\s+size=\s*(\d+)(kB|KiB)\s+time=\s*(\d{2}:\d{2}:\d{2}\.\d{2})\s+bitrate=\s*([\d\.]+)kbits/s\s+speed=\s*([\d\.]+)x",
             RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         // Audio-only style progress line: size= ... time= ... bitrate= ... speed= ... (no frame/fps/q)
@@ -355,7 +361,7 @@ namespace MediaFlux
             bool singleEncode = _activeEncodeRows.Count <= 1;
             if (singleEncode)
             {
-                UpdateEncodeProgressBar(metrics.TimeStr);
+                ApplyAuthoritativeEncodeProgress(row, metrics.TimeStr, metrics.Speed);
             }
             else
             {
@@ -365,6 +371,28 @@ namespace MediaFlux
                     progressBarEncode.MarqueeAnimationSpeed = 30;
                 }
             }
+        }
+
+        private void ApplyAuthoritativeEncodeProgress(DataGridViewRow row, string timeText, double ffmpegSpeed)
+        {
+            if (row == null || row.DataGridView != dgvEncodeQueue)
+                return;
+            if (!TryGetRowPathAndDuration(row, out _, out double durationSec) || durationSec <= 0)
+                return;
+            double mediaSeconds = ParseFfmpegTimeToSeconds(timeText);
+            if (!double.IsFinite(mediaSeconds) || mediaSeconds < 0)
+                return;
+            string existingText = row.Cells["colProgress"].Value?.ToString() ?? "";
+            int existingPercent = int.TryParse(existingText.TrimEnd('%'), out int parsedPercent) ? parsedPercent : 0;
+            int percent = EncodeProgressCalculator.CalculatePercent(mediaSeconds, durationSec, existingPercent);
+            row.Cells["colProgress"].Value = $"{percent}%";
+            double? etaSeconds = EncodeEtaCalculator.CalculateSeconds(durationSec, mediaSeconds, ffmpegSpeed);
+            row.Cells["colETA"].Value = etaSeconds.HasValue
+                ? TimeSpan.FromSeconds(etaSeconds.Value).ToString(@"hh\:mm\:ss")
+                : "--:--:--";
+            if (ReferenceEquals(_activeEncodeRow, row))
+                SetProgress(progressBarEncode, percent);
+            UpdateCurrentOperationSummary();
         }
 
         // Updates all labels and progress bar (thread-safe)

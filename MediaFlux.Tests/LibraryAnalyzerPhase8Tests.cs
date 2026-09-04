@@ -319,6 +319,9 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
         if (!OperatingSystem.IsWindows()) return;
         Exception? failure = null;
         string stage = "starting";
+        LibraryAnalyzerForm? liveForm = null;
+        var reviewShown = new TaskCompletionSource<Form>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? reviewTask = null;
         var thread = new Thread(() =>
         {
             try
@@ -332,6 +335,7 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
                 VisualFamilyRecord family = Assert.Single(catalog.QueryVisualFamilies(new VisualFamilyQuery()).Families);
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyMetadataProbe(), new FakeVisualExtractor(_ => Array.Empty<ulong>()));
                 using var form = new LibraryAnalyzerForm(runtime);
+                liveForm = form;
                 stage = "showing analyzer";
                 form.Show();
                 TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
@@ -357,6 +361,7 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
                     {
                         Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Family", StringComparison.Ordinal));
                         if (review == null) { stage = "waiting for review dialog"; return; }
+                        reviewShown.TrySetResult(review);
                         DataGridView? grid = Descendants<DataGridView>(review).FirstOrDefault();
                         if (grid?.Rows.Count != 3) { stage = $"waiting for family members ({grid?.Rows.Count ?? -1})"; return; }
                         sawMembers = true;
@@ -374,7 +379,10 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
                 };
                 timer.Start();
                 stage = "reviewing family";
-                PumpTask(InvokePrivateTask(form, "OpenVisualFamilyReviewAsync"), TimeSpan.FromSeconds(10));
+                form.BeginInvoke(new Action(() => reviewTask = InvokePrivateTask(form, "OpenVisualFamilyReviewAsync")));
+                PumpUntil(() => reviewShown.Task.IsCompleted, TimeSpan.FromSeconds(10));
+                PumpUntil(() => reviewTask != null, TimeSpan.FromSeconds(10));
+                PumpTask(reviewTask!, TimeSpan.FromSeconds(10));
                 timer.Stop();
                 stage = "verifying review";
                 Assert.True(sawMembers);
@@ -387,9 +395,23 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        // The review itself has a 10-second pumped wait; allow setup, catalog work,
-        // and teardown headroom when the full UI suite is contending for resources.
-        if (!thread.Join(TimeSpan.FromSeconds(30))) throw new TimeoutException($"Family review UI smoke test did not complete (stage: {stage}).");
+        if (!thread.Join(TimeSpan.FromSeconds(30)))
+        {
+            stage = "timed out; requesting UI cleanup";
+            try
+            {
+                liveForm?.BeginInvoke(new Action(() =>
+                {
+                    foreach (Form open in Application.OpenForms.Cast<Form>().Where(open => open != liveForm).ToArray())
+                        open.Close();
+                    liveForm?.Close();
+                }));
+            }
+            catch { }
+            if (!thread.Join(TimeSpan.FromSeconds(5)))
+                throw new TimeoutException($"Family review UI smoke test did not complete and cleanup did not finish (stage: {stage}).");
+            throw new TimeoutException($"Family review UI smoke test did not complete (stage: {stage}).");
+        }
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 

@@ -72,6 +72,7 @@ namespace MediaFlux.Services
             {
                 Selection = selection,
                 UseGpu = validated.UseGpu,
+                UseHardwareDecode = validated.UseGpu && !request.DisableHardwareDecode,
                 WantsTenBit = wantsTenBit,
                 TenBitPixelFormat = wantsTenBit ? outputPixelFormat : null,
                 OutputPixelFormat = outputPixelFormat,
@@ -95,6 +96,7 @@ namespace MediaFlux.Services
                         VideoEncoderIds.Nvenc,
                         StringComparison.OrdinalIgnoreCase) &&
                     request.PreferNvencGpuResidentFrames &&
+                    !request.DisableHardwareDecode &&
                     // A software format/scale filter must receive software
                     // frames.  Do not make FFmpeg insert an implicit bridge
                     // between CUDA and system-memory filter domains.
@@ -222,7 +224,7 @@ namespace MediaFlux.Services
                     (request.AudioChannels.Value >= 6 ? 384 : 192) *
                     Math.Max(1, request.Input.KnownAudioStreamCount);
             }
-            else if (request.ForceMp4CompatibleAudio)
+            else if (request.ForceMp4CompatibleAudio || request.ContainerDecision.TranscodeAudioToAac)
             {
                 plannedAudioKbps =
                     192 * Math.Max(1, request.Input.KnownAudioStreamCount);
@@ -275,7 +277,7 @@ namespace MediaFlux.Services
                 builder.Append("-c:a aac -b:a 192k ");
                 builder.Append($"-ac {request.AudioChannels.Value} ");
             }
-            else if (request.ForceMp4CompatibleAudio)
+            else if (request.ForceMp4CompatibleAudio || request.ContainerDecision.TranscodeAudioToAac)
             {
                 builder.Append("-c:a aac -b:a 192k ");
             }

@@ -24,6 +24,42 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void NvencSoftwareDecodeRecoveryKeepsNvencSettingsAndRemovesCudaDecode()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, tenBit: true, preset: "p6", targetMb: 1200,
+            disableHardwareDecode: true));
+
+        Assert.DoesNotContain("-hwaccel", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-preset p6", arguments);
+        Assert.Contains("-b:v", arguments);
+        Assert.Contains("-profile:v main10 -pix_fmt p010le", arguments);
+        Assert.Contains("-f mp4", arguments);
+    }
+
+    [Fact]
+    public void PlannedAacCompatibilityConversionIsMappedAsAac()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(2, "audio", "dts", StreamCompatibilityAction.Transcode,
+                    "MP4 conversion", "aac")
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-c:a aac -b:a 192k", arguments);
+    }
+
+    [Fact]
     public void RestorationChainIsPrependedBeforeExistingScaleAndFormat()
     {
         var request = CreateRequest("libx265", useGpu: false,
@@ -647,7 +683,9 @@ public sealed class FfmpegCommandBuilderTests
         OutputContainer outputContainer = OutputContainer.Mp4,
         VideoRestorationSettings? restoration = null,
         SplitSourceInput? splitSource = null,
-        string? restorationFilterOverride = null)
+        string? restorationFilterOverride = null,
+        bool disableHardwareDecode = false,
+        OutputContainerDecision? containerDecision = null)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -673,7 +711,9 @@ public sealed class FfmpegCommandBuilderTests
              outputContainer,
              restoration,
              splitSource,
-             restorationFilterOverride);
+             restorationFilterOverride,
+             disableHardwareDecode,
+             containerDecision);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -698,7 +738,9 @@ public sealed class FfmpegCommandBuilderTests
         OutputContainer outputContainer = OutputContainer.Mp4,
         VideoRestorationSettings? restoration = null,
         SplitSourceInput? splitSource = null,
-        string? restorationFilterOverride = null)
+        string? restorationFilterOverride = null,
+        bool disableHardwareDecode = false,
+        OutputContainerDecision? containerDecision = null)
     {
 
         return new FfmpegCommandRequest
@@ -729,7 +771,7 @@ public sealed class FfmpegCommandBuilderTests
             CopySubtitles = copySubtitles,
             CopyDataStreams = copyDataStreams,
             CopyAttachments = outputContainer == OutputContainer.Matroska,
-            ContainerDecision = new OutputContainerDecision
+            ContainerDecision = containerDecision ?? new OutputContainerDecision
             {
                 Requested = outputContainer == OutputContainer.Matroska
                     ? OutputContainerSelection.Matroska
@@ -744,6 +786,7 @@ public sealed class FfmpegCommandBuilderTests
             KnownDuration = knownDuration ?? TimeSpan.FromMinutes(10),
             NvencHighBitDepthOutputSupported =
                 nvencHighBitDepthOutputSupported,
+            DisableHardwareDecode = disableHardwareDecode,
             SourcePixelFormat = sourcePixelFormat,
             SplitSource = splitSource,
             RestorationFilterOverride = restorationFilterOverride

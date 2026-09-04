@@ -72,7 +72,11 @@ public sealed class LibraryMaintenanceCoordinator : IDisposable
                 if(_scanner.IsScanning)throw new MaintenanceDeferredException("Another Library Analyzer scan is already active.");
                 Report("Scanning",location.Path); LibraryScanResult scan=await _scanner.ScanLocationAsync(profile.LocationId,LibraryEnrichmentCoordinator.CurrentMetadataVersion,new Progress<LibraryScanProgress>(p=>
                     Publish("Scanning",$"{p.DiscoveredFiles:N0} discovered · {p.WrittenFiles:N0} indexed",p.WrittenFiles,0,p.CurrentPath)),linked.Token,
-                    profile.Actions.HasFlag(LibraryMaintenanceActions.Metadata),m=>_catalog.RecordMaintenanceCandidates(runId,m)).ConfigureAwait(false);
+                    // Maintenance claims its durable metadata candidates in the
+                    // dedicated stage below. Do not also enqueue from the scan;
+                    // that creates a timing window where the same file can be
+                    // probed twice when the worker finishes between stages.
+                    false,m=>_catalog.RecordMaintenanceCandidates(runId,m)).ConfigureAwait(false);
                 newFiles=scan.NewFiles;changedFiles=scan.ChangedFiles;missingFiles=scan.MissingFiles;
                 if(scan.Outcome==LibraryScanOutcome.Unavailable){Complete(LibraryMaintenanceOutcome.Unavailable,"Location unavailable; catalog data was preserved.");return;}
                 if(scan.Outcome!=LibraryScanOutcome.Completed)throw new InvalidOperationException(scan.ErrorMessage.Length==0?$"Scan ended as {scan.Outcome}.":scan.ErrorMessage);

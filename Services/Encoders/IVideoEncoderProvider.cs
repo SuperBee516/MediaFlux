@@ -7,6 +7,7 @@ namespace MediaFlux.Services.Encoders
     {
         public required VideoEncoderSelection Selection { get; init; }
         public required bool UseGpu { get; init; }
+        public required bool UseHardwareDecode { get; init; }
         public required bool WantsTenBit { get; init; }
         public required string? TenBitPixelFormat { get; init; }
         public required string ScaleExpression { get; init; }

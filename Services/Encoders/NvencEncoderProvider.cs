@@ -76,7 +76,7 @@ namespace MediaFlux.Services.Encoders
             StringBuilder builder,
             EncoderArgumentContext context)
         {
-            if (!context.UseGpu || context.IsAsfFamilyInput)
+            if (!context.UseGpu || !context.UseHardwareDecode || context.IsAsfFamilyInput)
                 return;
 
             if (context.UseGpuResidentFrames)
