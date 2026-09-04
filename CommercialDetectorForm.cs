@@ -963,12 +963,16 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
             int preferred = PreferredSourceHeight();
             int maximum = MaximumSourceHeight();
             int persisted = _config.CommercialDetectorSourceWorkspaceSplitterDistance;
+            int expandedContentMinimum = _sourceAnalysisContent == null
+                ? _sourceWorkspaceSplit.Panel1MinSize
+                : Math.Max(_sourceWorkspaceSplit.Panel1MinSize,
+                    _advancedHost.Bottom + _advancedHost.Margin.Vertical + _sourceWorkspaceSplit.Panel1.Padding.Vertical);
             int minimumUsablePersisted = _advancedHost.Visible
                 // The expanded editor is a variable-height, DPI-scaled layout.  A
                 // fixed allowance can leave only its heading visible on machines
                 // where fonts/controls measure larger, so use the measured content
                 // height as the usability floor for legacy persisted values.
-                ? Math.Min(maximum, Math.Max(_sourceWorkspaceSplit.Panel1MinSize, preferred))
+                ? Math.Min(maximum, Math.Max(preferred, expandedContentMinimum))
                 : _sourceWorkspaceSplit.Panel1MinSize;
             bool persistedIsUsable = persisted >= minimumUsablePersisted && persisted <= maximum;
             _sourceWorkspaceSplit.SplitterDistance = persistedIsUsable ? persisted : Math.Clamp(preferred, _sourceWorkspaceSplit.Panel1MinSize, maximum);
