@@ -1,5 +1,7 @@
 namespace MediaFlux.Models
 {
+    public enum FrameCountProvenance { Unavailable, InferredFromDurationAndRate, Measured }
+
     public sealed class MediaProbeResult
     {
         public bool Success { get; init; }

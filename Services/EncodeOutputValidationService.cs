@@ -421,9 +421,20 @@ namespace MediaFlux.Services
             if (request.ExpectedVideoFrameCount is > 0)
             {
                 MediaProbeStreamInfo? outputVideoForFrames = FirstStream(output, "video");
-                if (outputVideoForFrames?.FrameCount is > 0 && outputVideoForFrames.FrameCount != request.ExpectedVideoFrameCount)
-                    return $"The encoded output contains {outputVideoForFrames.FrameCount} video frames, but {request.ExpectedVideoFrameCount} were expected from the authoritative source video stream.";
-                log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount}; output={outputVideoForFrames?.FrameCount?.ToString() ?? "unavailable"}; result=accepted.");
+                if (outputVideoForFrames?.FrameCount is > 0)
+                {
+                    long delta = outputVideoForFrames.FrameCount.Value - request.ExpectedVideoFrameCount.Value;
+                    double fps = sourceVideo.FrameRate is > 0 ? sourceVideo.FrameRate.Value : outputVideoForFrames.FrameRate ?? 0;
+                    double deltaSeconds = fps > 0 ? Math.Abs(delta) / fps : double.PositiveInfinity;
+                    double allowedSeconds = request.ExpectedVideoFrameCountProvenance == FrameCountProvenance.Measured
+                        ? Math.Max(0.75, fps > 0 ? 3d / fps : 0.75)
+                        : Math.Max(1.0, fps > 0 ? 4d / fps : 1.0);
+                    log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount} ({request.ExpectedVideoFrameCountProvenance}); output={outputVideoForFrames.FrameCount}; delta={delta}; time-equivalent={deltaSeconds:0.###}s; allowed={allowedSeconds:0.###}s; duration-basis=authoritative; result={(deltaSeconds <= allowedSeconds ? "accepted" : "rejected")}.");
+                    if (deltaSeconds > allowedSeconds)
+                        return $"The encoded output contains {outputVideoForFrames.FrameCount} video frames versus {request.ExpectedVideoFrameCount} expected; the {deltaSeconds:0.###}-second frame deficit exceeds the time-aware {allowedSeconds:0.###}-second boundary allowance.";
+                }
+                else
+                    log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount} ({request.ExpectedVideoFrameCountProvenance}); output=unavailable; duration validation remains authoritative.");
             }
 
             int sourceAudioCount = CountStreams(source, "audio");

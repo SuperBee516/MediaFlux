@@ -15,9 +15,10 @@ public static class ProgramDurationResolver
         MediaProbeStreamInfo? video = probe.Streams.FirstOrDefault(s =>
             s.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
         double? videoDuration = video is null ? null : GetReliableDuration(video);
-        if (videoDuration is not > 0)
+        if (video is null || videoDuration is not > 0)
             return new ProgramDurationDecision(probe.DurationSeconds, false,
-                "No reliable primary video-stream duration was available; using FFprobe container duration.", null);
+                "No reliable primary video-stream duration was available; using FFprobe container duration.", null,
+                FrameCountProvenance.Unavailable);
 
         double primaryVideoDuration = videoDuration.Value;
         bool nonVideoExtendsContainer = probe.DurationSeconds is > 0 && probe.Streams.Any(stream =>
@@ -27,18 +28,21 @@ public static class ProgramDurationResolver
             probe.DurationSeconds.Value - primaryVideoDuration > MaterialDifferenceSeconds)
         {
             return new ProgramDurationDecision(primaryVideoDuration, true,
-                $"Container inflated by non-program stream: {probe.DurationSeconds:0.###}s versus primary video {primaryVideoDuration:0.###}s.", video);
+                $"Container inflated by non-program stream: {probe.DurationSeconds:0.###}s versus primary video {primaryVideoDuration:0.###}s.", video,
+                video.FrameCount is > 0 ? FrameCountProvenance.Measured : FrameCountProvenance.InferredFromDurationAndRate);
         }
 
         if (probe.DurationSeconds is > 0 &&
             Math.Abs(probe.DurationSeconds.Value - primaryVideoDuration) > MaterialDifferenceSeconds)
         {
             return new ProgramDurationDecision(probe.DurationSeconds, false,
-                "Container duration disagrees with video, but no extending non-video program stream was identified.", video);
+                "Container duration disagrees with video, but no extending non-video program stream was identified.", video,
+                video.FrameCount is > 0 ? FrameCountProvenance.Measured : FrameCountProvenance.InferredFromDurationAndRate);
         }
 
         return new ProgramDurationDecision(primaryVideoDuration, false,
-            "Primary video-stream duration agrees with the container timeline.", video);
+            "Primary video-stream duration agrees with the container timeline.", video,
+            video.FrameCount is > 0 ? FrameCountProvenance.Measured : FrameCountProvenance.InferredFromDurationAndRate);
     }
 
     public static double? GetReliableDuration(MediaProbeStreamInfo stream)
@@ -61,4 +65,5 @@ public sealed record ProgramDurationDecision(
     double? DurationSeconds,
     bool UsedVideoFallback,
     string Reason,
-    MediaProbeStreamInfo? PrimaryVideo);
+    MediaProbeStreamInfo? PrimaryVideo,
+    FrameCountProvenance FrameCountProvenance = FrameCountProvenance.Unavailable);

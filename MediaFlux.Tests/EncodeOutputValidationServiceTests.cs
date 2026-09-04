@@ -39,6 +39,38 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         Assert.Contains("decode-integrity", result.Summary);
     }
 
+    [Theory]
+    [InlineData(189871L, 189840L, 59.94)]
+    [InlineData(215130L, 215102L, 59.94)]
+    public void SmallMeasuredFrameBoundaryDeltaWithMatchingDurationPasses(long expected, long actual, double fps)
+    {
+        string error = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(expected, FrameCountProvenance.Measured),
+            FrameProbe(100, expected, fps), FrameProbe(100, actual, fps, output: true));
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
+    public void SameFrameDeltaWithMaterialDurationLossFails()
+    {
+        string error = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(189871, FrameCountProvenance.Measured),
+            FrameProbe(100, 189871, 59.94), FrameProbe(96, 189840, 59.94, output: true));
+
+        Assert.Contains("duration differs", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MaterialMeasuredFrameLossFails()
+    {
+        string error = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(189871, FrameCountProvenance.Measured),
+            FrameProbe(100, 189871, 59.94), FrameProbe(100, 189700, 59.94, output: true));
+
+        Assert.Contains("frame deficit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void SubtitleInflatedMkv_CompleteMappedMp4PassesAgainstVideoTimeline()
     {
@@ -456,6 +488,28 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         CopySubtitles = copySubtitles,
         ExpectedVideoWidth = expectedWidth,
         ExpectedVideoHeight = expectedHeight
+    };
+
+    private static EncodeOutputValidationRequest FrameRequest(long expected, FrameCountProvenance provenance) => new()
+    {
+        Input = EncodingInputSource.FromFile("frame-topology.mkv"),
+        Encoder = new VideoEncoderSelection(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
+        ExpectedVideoFrameCount = expected,
+        ExpectedVideoFrameCountProvenance = provenance,
+        ExpectedDurationSeconds = 100,
+        ContainerDecision = new OutputContainerDecision { Requested = OutputContainerSelection.Mp4, Resolved = OutputContainer.Mp4, Reason = "test" }
+    };
+
+    private static MediaProbeResult FrameProbe(double duration, long frames, double fps, bool output = false) => new()
+    {
+        Success = true,
+        FormatName = output ? "mov,mp4,m4a,3gp,3g2,mj2" : "matroska,webm",
+        DurationSeconds = duration,
+        Streams = new[]
+        {
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = output ? "hevc" : "h264", Width = 1920, Height = 1080, PixelFormat = "yuv420p", DurationSeconds = duration, FrameCount = frames, FrameRate = fps },
+            new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "aac", Channels = 2 }
+        }
     };
 
     private static MediaProbeResult CloneProbe(

@@ -33,6 +33,7 @@ namespace MediaFlux.Models
         public MediaProbeResult? SourceProbe { get; init; }
         public double? ExpectedDurationSeconds { get; init; }
         public long? ExpectedVideoFrameCount { get; init; }
+        public FrameCountProvenance ExpectedVideoFrameCountProvenance { get; init; } = FrameCountProvenance.Unavailable;
         public int? ExpectedVideoWidth { get; init; }
         public int? ExpectedVideoHeight { get; init; }
         public PerformanceTimingService? PerformanceTiming { get; init; }

@@ -912,6 +912,9 @@ namespace MediaFlux.Services
                         SourceProbe = sourceProbe,
                         ExpectedDurationSeconds = sampleDuration?.TotalSeconds ?? programDuration.DurationSeconds,
                         ExpectedVideoFrameCount = sampleDuration is null ? programDuration.PrimaryVideo?.FrameCount : null,
+                        ExpectedVideoFrameCountProvenance = sampleDuration is null && programDuration.PrimaryVideo?.FrameCount is > 0
+                            ? FrameCountProvenance.Measured
+                            : FrameCountProvenance.Unavailable,
                         ExpectedVideoWidth = finalOutputResolution?.Width,
                         ExpectedVideoHeight = finalOutputResolution?.Height,
                         PerformanceTiming = performance

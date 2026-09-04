@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.95] - 2026-09-03
+
+- Modernized the queue-first Encode workspace with a resizable contextual Details workspace, streamlined Encoding Options, reorganized queue commands/context-menu actions, and a compact Active Encoding Profile.
+- Added adaptive current-operation/progress UI with improved layout and state handling.
+- Moved restoration controls to the Restoration tab and moved Watch Folder out of Encoding Options while preserving functionality.
+- Improved stream-aware duration and frame validation so subtitle timing cannot cause false finalization failures, while retaining truncation safeguards.
+
 ## [0.1.94] - 2026-09-03
 
 - Modernized the queue-first Encode workspace with a compact Active Encoding Profile and contextual Details workspace.
