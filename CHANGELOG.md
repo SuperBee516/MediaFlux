@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-05
+
+### Storage Migration Reliability
+
+- Accepted folder-picker-created empty directories as safe migration destinations.
+- Rejected destination files, nonempty folders, links, and races without changing the authoritative root.
+
 ## [1.1.0] - 2026-09-05
 
 ### Configurable Managed Storage

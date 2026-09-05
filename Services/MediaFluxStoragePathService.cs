@@ -45,7 +45,16 @@ public sealed class MediaFluxStoragePathService
         string source = Root;
         if (Same(normalized, source)) { error = "That folder is already the active MediaFlux storage root."; return false; }
         if (IsWithin(normalized, source) || IsWithin(source, normalized)) { error = "The new storage root cannot contain, or be contained by, the current root."; return false; }
-        if (Directory.Exists(normalized) && Directory.EnumerateFileSystemEntries(normalized).Any()) { error = "The destination folder must be empty to prevent collisions."; return false; }
+        if (File.Exists(normalized)) { error = "The destination path is an existing file, not a folder."; return false; }
+        if (Directory.Exists(normalized))
+        {
+            try
+            {
+                if ((File.GetAttributes(normalized) & FileAttributes.ReparsePoint) != 0) { error = "The destination folder cannot be a link or reparse point."; return false; }
+                if (Directory.EnumerateFileSystemEntries(normalized).Any()) { error = "The destination folder must be empty to prevent collisions."; return false; }
+            }
+            catch (Exception ex) { error = "The destination folder cannot be inspected safely: " + ex.Message; return false; }
+        }
         try { string? parent = Path.GetDirectoryName(normalized); if (string.IsNullOrEmpty(parent)) throw new IOException("A parent folder is required."); Directory.CreateDirectory(parent); string probe = Path.Combine(parent, ".mediaflux-write-test-" + Guid.NewGuid().ToString("N")); using (File.Open(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { } File.Delete(probe); }
         catch (Exception ex) { error = "The destination cannot be created or written: " + ex.Message; return false; }
         return true;

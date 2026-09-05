@@ -26,6 +26,8 @@ public sealed class MediaFluxStoragePathServiceTests : IDisposable
         Assert.False(paths.TryValidateNewRoot(Path.Combine(paths.Root, "nested"), out _, out _));
         string occupied = Path.Combine(_root, "occupied"); Directory.CreateDirectory(occupied); File.WriteAllText(Path.Combine(occupied, "x"), "x");
         Assert.False(paths.TryValidateNewRoot(occupied, out _, out _));
+        string file = Path.Combine(_root, "not-a-folder"); File.WriteAllText(file, "x");
+        Assert.False(paths.TryValidateNewRoot(file, out _, out _));
     }
 
     [Fact]
@@ -35,6 +37,24 @@ public sealed class MediaFluxStoragePathServiceTests : IDisposable
         string destination = Path.Combine(_root, "Moved");
         MediaFluxStorageMigrationResult result = await new MediaFluxStorageMigrationService(paths).MigrateAsync(destination);
         Assert.True(result.Succeeded, result.Message); Assert.Equal(destination, paths.Root); Assert.Equal("jobs", File.ReadAllText(Path.Combine(destination, "data", "encode-jobs.json"))); Assert.True(File.Exists(Path.Combine(_root, "UserData", "data", "encode-jobs.json")));
+    }
+
+    [Fact]
+    public async Task MigrationAcceptsAnExistingEmptyDestinationDirectory()
+    {
+        var paths = Paths(); paths.InitializeDirectories(); File.WriteAllText(Path.Combine(paths.Data, "encode-jobs.json"), "jobs");
+        string destination = Path.Combine(_root, "PickerCreated"); Directory.CreateDirectory(destination);
+        MediaFluxStorageMigrationResult result = await new MediaFluxStorageMigrationService(paths).MigrateAsync(destination);
+        Assert.True(result.Succeeded, result.Message); Assert.Equal(destination, paths.Root); Assert.Equal("jobs", File.ReadAllText(Path.Combine(destination, "data", "encode-jobs.json")));
+    }
+
+    [Fact]
+    public async Task MigrationRejectsAnExistingNonEmptyDestinationAndKeepsSourceAuthoritative()
+    {
+        var paths = Paths(); paths.InitializeDirectories(); File.WriteAllText(paths.Config, "{} ");
+        string destination = Path.Combine(_root, "Occupied"); Directory.CreateDirectory(destination); File.WriteAllText(Path.Combine(destination, "keep.txt"), "unrelated");
+        MediaFluxStorageMigrationResult result = await new MediaFluxStorageMigrationService(paths).MigrateAsync(destination);
+        Assert.False(result.Succeeded); Assert.Equal(Path.Combine(_root, "UserData"), paths.Root); Assert.True(File.Exists(Path.Combine(destination, "keep.txt"))); Assert.True(File.Exists(paths.Config));
     }
 
     [Fact]
