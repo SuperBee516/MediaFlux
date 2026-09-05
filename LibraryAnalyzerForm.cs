@@ -66,7 +66,7 @@ namespace MediaFlux
             _layoutController = new LibraryAnalyzerLayoutController(_reviewOptions.UiState);
             _statisticsFileBrowser = new LibraryFileBrowser(query => _runtime.Catalog.QueryFiles(query));
             _generalFileRemoval = new LibraryGeneralFileRemovalService(ResolveGeneralFileSnapshot,
-                new JsonLibraryGeneralFileRemovalAudit(Path.Combine(AppPaths.DataDirectory, "library-file-removal-audit.jsonl")),
+                new JsonLibraryGeneralFileRemovalAudit(AppPaths.LibraryFileRemovalAuditFile),
                 reconcileSuccessfulRemoval: (fileId, path, reason) =>
                     ((ILibraryRecoveryCatalog)_runtime.Catalog).MarkFileRemovedByCleanup(fileId, path, reason));
             _visualKeeperPreferences = (_reviewOptions.KeeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences()).Clone();

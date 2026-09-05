@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-05
+
+### Configurable Managed Storage
+
+- Added a configurable MediaFlux userdata/storage root with backward-compatible defaults.
+- Added safe, verified storage migration with collision, free-space, cancellation, and active-work protection.
+- Added Storage & Cache management UI with categorized usage and drive free-space reporting.
+- Added safe cleanup of explicitly owned inactive temporary and regenerable data while protecting persistent state.
+- Improved AI intermediate and storage lifecycle management to bound abandoned forensic workspaces.
+
 ## [0.1.96] - 2026-09-04
 
 - Fixed inaccurate FFmpeg encode progress, ETA, and Current Operation speed reporting.

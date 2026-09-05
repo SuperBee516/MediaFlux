@@ -113,9 +113,9 @@ public sealed class UserDataStorageManagementService
         }
         if (!active && scope == UserDataCleanupScope.RegenerableRuntimeCache)
         {
-            DeleteFile(AppPaths.NcnnPerformanceTuningCacheFile, result);
-            DeleteFile(Path.Combine(Data, "ai-benchmark-history.json"), result);
-            DeleteDirectory(Path.Combine(Data, "tensorrt-engines"), result);
+            // Runtime tuning and TensorRT engines are persistent state: they may be costly to
+            // rebuild and are part of reproducible diagnostics. Only explicitly disposable
+            // benchmark reruns are handled by the bounded maintenance pass below.
         }
         if (!active && all) PruneRegenerableCaches(now, result, token);
         return new(result.Files, result.Directories, result.Bytes, result.Errors);
@@ -131,7 +131,9 @@ public sealed class UserDataStorageManagementService
         {
             token.ThrowIfCancellationRequested();
             DirectoryInfo candidate = candidates[index];
-            if (AiProductionHardeningService.IsActive(candidate.FullName)) continue;
+            // A timestamp alone is never authority to remove a directory. Failure forensics are
+            // eligible only when they carry the marker created by our AI session.
+            if (AiProductionHardeningService.IsActive(candidate.FullName) || !File.Exists(Path.Combine(candidate.FullName, ".mediaflux-ai-staging"))) continue;
             if (candidate.LastWriteTimeUtc < now - AiForensicsRetention || index >= MaximumRetainedAiForensics) { DeleteDirectory(candidate.FullName, result); continue; }
             (long bytes, _) = Measure(candidate.FullName, token);
             if (bytes > MaximumRetainedAiForensicsBytes - retainedBytes) DeleteDirectory(candidate.FullName, result);
@@ -142,11 +144,12 @@ public sealed class UserDataStorageManagementService
     private void PruneTemporary(DateTime now, MutableResult result, CancellationToken token)
     {
         string temp = Path.Combine(_userDataDirectory, "temp");
-        PruneFiles(temp, TemporaryRetention, result, token);
+        // Top-level temp files have no durable ownership marker; leave them alone. Named
+        // operation directories are safe only when their owner placed our marker inside.
         foreach (DirectoryInfo directory in SafeDirectories(temp, "*"))
         {
             token.ThrowIfCancellationRequested();
-            if (directory.LastWriteTimeUtc < now - TemporaryRetention) DeleteDirectory(directory.FullName, result);
+            if (directory.LastWriteTimeUtc < now - TemporaryRetention && File.Exists(Path.Combine(directory.FullName, ".mediaflux-temporary"))) DeleteDirectory(directory.FullName, result);
         }
         foreach (string root in new[] { Path.Combine(Data, "staging"), Path.Combine(Data, "encode-staging"), Path.Combine(Data, "temporary-encodes") })
             PruneDirectories(root, TemporaryRetention, result, token);
@@ -196,10 +199,10 @@ public sealed class UserDataStorageManagementService
         "staging" or "encode-staging" or "temporary-encodes" => UserDataStorageCategory.TemporaryStaging,
         "logs" => UserDataStorageCategory.Logs,
         "catalog-backups" or "catalog-recovery" => UserDataStorageCategory.CatalogSafetyArtifacts,
-        "ai-benchmark-reruns" or "tensorrt-engines" => UserDataStorageCategory.RegenerableRuntimeCache,
+        "ai-benchmark-reruns" => UserDataStorageCategory.RegenerableRuntimeCache,
         _ => UserDataStorageCategory.PersistentUserData
     };
-    private static bool IsRegenerableFile(string name) => name.Equals("ncnn-performance-tuning.json", StringComparison.OrdinalIgnoreCase) || name.Equals("ai-benchmark-history.json", StringComparison.OrdinalIgnoreCase);
+    private static bool IsRegenerableFile(string name) => false;
     private string Data => Path.Combine(_userDataDirectory, "data");
     private static IEnumerable<FileInfo> SafeFilesTopLevel(string root) { try { return new DirectoryInfo(root).EnumerateFiles().ToArray(); } catch { return Array.Empty<FileInfo>(); } }
     private static IEnumerable<DirectoryInfo> SafeDirectories(string root, string pattern) { try { return new DirectoryInfo(root).EnumerateDirectories(pattern).Where(d => (d.Attributes & FileAttributes.ReparsePoint) == 0).ToArray(); } catch { return Array.Empty<DirectoryInfo>(); } }

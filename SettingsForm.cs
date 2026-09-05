@@ -17,6 +17,7 @@ namespace MediaFlux
         private readonly string _supportedVideoExtsPath;
         private readonly IReadOnlyList<string> _defaultVideoExts;
         private readonly string _currentOutputFolder;
+        private readonly Func<bool> _hasActiveStorageWork;
         private GroupBox grpExplorerIntegration = null!;
         private CheckBox chkExplorerFiles = null!;
         private CheckBox chkExplorerFolders = null!;
@@ -31,6 +32,7 @@ namespace MediaFlux
         private Label lblFfprobeStatus = null!;
         private TextBox txtDvdOutputNamingPattern = null!;
         private GroupBox grpSmartRecommendations = null!;
+        private GroupBox _storageManagementGroup = null!;
         private CheckBox chkSmartRecommendations = null!;
         private NumericUpDown nudMinimumExpectedSavings = null!;
         private CheckBox chkWarnBeforeEncodingRecommendations = null!;
@@ -57,7 +59,8 @@ namespace MediaFlux
             string supportedVideoExtsPath,
             IEnumerable<string> defaultVideoExts,
             string currentOutputFolder,
-            bool focusMediaTools = false)
+            bool focusMediaTools = false,
+            Func<bool>? hasActiveStorageWork = null)
         {
             InitializeComponent();
             AutoScroll = true;
@@ -70,10 +73,12 @@ namespace MediaFlux
             InitializeDvdSettingsControls(cfg);
             _duplicateKeeperPreferences = (cfg.DuplicateKeeperPreferences ?? new DuplicateKeeperPreferences()).Clone();
             InitializeDuplicateKeeperPreferenceControls();
+            InitializeStorageControls();
 
             _supportedVideoExtsPath = supportedVideoExtsPath;
             _defaultVideoExts = (defaultVideoExts ?? Array.Empty<string>()).ToList();
             _currentOutputFolder = currentOutputFolder?.Trim() ?? string.Empty;
+            _hasActiveStorageWork = hasActiveStorageWork ?? (() => false);
 
             txtUpdateFolder.Text = "https://github.com/SuperBee516/MediaFlux/releases";
             txtUpdateFolder.ReadOnly = true;
@@ -194,7 +199,7 @@ namespace MediaFlux
                 AddCategory("Automation", assigned, FindExisting(existing, "grpWatchFolder"));
                 AddCategory("Duplicates", assigned, FindExisting(existing, "grpDuplicateManagement"));
                 AddCategory("Duplicates", assigned, _libraryAnalyzerSettingsPanel);
-                AddCategory("Storage & Cache", assigned, grpSmartRecommendations);
+                AddCategory("Storage & Cache", assigned, _storageManagementGroup, grpSmartRecommendations);
                 AddCategory("Backup & Restore", assigned, FindExisting(existing, "grpBackupRestore"));
                 AddCategory("Integrations", assigned, FindExisting(existing, "grpDiscordNotification"));
                 AddCategory("Integrations", assigned, grpExplorerIntegration);
@@ -228,6 +233,59 @@ namespace MediaFlux
 
         private static Control?[] FindExisting(IEnumerable<Control> controls, params string[] names) => names.Select(name => controls.FirstOrDefault(control => control.Name.Equals(name, StringComparison.OrdinalIgnoreCase))).ToArray();
         private static Control? FindGroup(IEnumerable<Control> controls, string text) => controls.FirstOrDefault(control => control is GroupBox group && group.Text.Equals(text, StringComparison.Ordinal));
+
+        private void InitializeStorageControls()
+        {
+            var paths = AppPaths.StoragePaths;
+            var storage = new UserDataStorageManagementService(paths.Root, () => _hasActiveStorageWork());
+            _storageManagementGroup = new GroupBox { Name = "StorageManagementGroup", Text = "MediaFlux Storage", Location = new Point(820, 610), Size = new Size(560, 185) };
+            var root = new TextBox { Name = "StorageRoot", ReadOnly = true, Location = new Point(14, 24), Width = 530, Text = paths.Root };
+            var usage = new Label { Name = "StorageUsage", AutoSize = false, Location = new Point(14, 53), Size = new Size(530, 42), Text = "Calculating managed storage usage…" };
+            var change = new Button { Name = "ChangeStorageLocation", Text = "Change Location…", Location = new Point(14, 120), Size = new Size(130, 28) };
+            var open = new Button { Name = "OpenStorageFolder", Text = "Open Folder", Location = new Point(151, 120), Size = new Size(100, 28) };
+            var clean = new Button { Name = "CleanTemporaryData", Text = "Clean Temporary Data", Location = new Point(258, 120), Size = new Size(150, 28) };
+            _storageManagementGroup.Controls.AddRange(new Control[] { root, usage, change, open, clean }); Controls.Add(_storageManagementGroup);
+
+            async Task RefreshAsync()
+            {
+                try
+                {
+                    UserDataStorageSnapshot snap = await storage.GetSnapshotAsync();
+                    long free = new DriveInfo(Path.GetPathRoot(paths.Root)!).AvailableFreeSpace;
+                    string categories = string.Join("; ", snap.Items.GroupBy(item => item.Category).OrderByDescending(group => group.Sum(item => item.Bytes)).Take(3).Select(group => $"{group.Key}: {FormatStorageBytes(group.Sum(item => item.Bytes))}"));
+                    usage.Text = $"Used: {FormatStorageBytes(snap.TotalBytes)}   Free: {FormatStorageBytes(free)}{Environment.NewLine}{(categories.Length == 0 ? "No managed files yet." : categories)}";
+                }
+                catch (Exception ex) { usage.Text = "Storage usage is unavailable: " + ex.Message; }
+            }
+            change.Click += async (_, _) =>
+            {
+                using var dialog = new FolderBrowserDialog { Description = "Choose an empty folder for all MediaFlux-managed data." };
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                change.Enabled = false;
+                try
+                {
+                    MediaFluxStorageMigrationResult result = await new MediaFluxStorageMigrationService(paths, () => _hasActiveStorageWork()).MigrateAsync(dialog.SelectedPath);
+                    MessageBox.Show(this, result.Message, "MediaFlux Storage", MessageBoxButtons.OK, result.Succeeded ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                    if (result.Succeeded && result.PreviousRoot is not null && MessageBox.Show(this, "The copy is verified. Delete the previous MediaFlux storage folder now? This cannot be undone.", "Remove previous storage", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                    {
+                        try { Directory.Delete(result.PreviousRoot, true); } catch (Exception ex) { MessageBox.Show(this, "The new root remains active, but the previous folder could not be removed: " + ex.Message, "MediaFlux Storage", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+                    }
+                    if (result.Succeeded) { root.Text = result.NewRoot!; usage.Text = "Migration complete. Restart MediaFlux before further work."; }
+                }
+                finally { change.Enabled = true; }
+            };
+            open.Click += (_, _) => { Directory.CreateDirectory(paths.Root); Process.Start(new ProcessStartInfo("explorer.exe", $"\"{paths.Root}\"") { UseShellExecute = true }); };
+            clean.Click += async (_, _) =>
+            {
+                if (_hasActiveStorageWork()) { MessageBox.Show(this, "Temporary data cannot be cleaned while MediaFlux has active work.", "MediaFlux Storage", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                clean.Enabled = false;
+                try { UserDataCleanupResult result = await storage.CleanupAsync(UserDataCleanupScope.ExpiredGeneratedData); MessageBox.Show(this, $"Removed {result.DeletedFiles + result.DeletedDirectories:N0} inactive, explicitly generated item(s), freeing {FormatStorageBytes(result.FreedBytes)}. Persistent settings, jobs, catalogs, models, engines, and tuning state were kept.", "MediaFlux Storage"); await RefreshAsync(); }
+                finally { clean.Enabled = true; }
+            };
+            Shown += async (_, _) => await RefreshAsync();
+        }
+
+        private static string FormatStorageBytes(long bytes) => bytes >= 1024L * 1024 * 1024 ? $"{bytes / 1024d / 1024d / 1024d:0.0} GB" : bytes >= 1024 * 1024 ? $"{bytes / 1024d / 1024d:0.0} MB" : $"{bytes:N0} B";
 
         private void InitializeSmartRecommendationControls(Config config)
         {

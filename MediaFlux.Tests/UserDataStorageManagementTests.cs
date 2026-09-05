@@ -22,7 +22,7 @@ public sealed class UserDataStorageManagementTests : IDisposable
     [Fact]
     public void ExpiredCleanupRetainsRecentAndActiveFailureForensicsButBoundsOldOnes()
     {
-        string old = DirectoryPath("data/ai-intermediates/ai-intermediate-old"); string active = DirectoryPath("data/ai-intermediates/ai-intermediate-active"); string recent = DirectoryPath("data/ai-intermediates/ai-intermediate-recent");
+        string old = OwnedAiDirectory("data/ai-intermediates/ai-intermediate-old"); string active = OwnedAiDirectory("data/ai-intermediates/ai-intermediate-active"); string recent = OwnedAiDirectory("data/ai-intermediates/ai-intermediate-recent");
         Directory.SetLastWriteTimeUtc(old, DateTime.UtcNow.AddDays(-8)); Directory.SetLastWriteTimeUtc(active, DateTime.UtcNow.AddDays(-8)); AiProductionHardeningService.Register(active);
         try { UserDataCleanupResult result = new UserDataStorageManagementService(_root).CleanupExpiredGeneratedData(); Assert.True(result.DeletedDirectories >= 1); Assert.False(Directory.Exists(old)); Assert.True(Directory.Exists(active)); Assert.True(Directory.Exists(recent)); }
         finally { AiProductionHardeningService.Unregister(active); }
@@ -32,7 +32,7 @@ public sealed class UserDataStorageManagementTests : IDisposable
     public void CleanupPreservesPersistentStateAndPrunesExpiredGeneratedArtifacts()
     {
         Write("config.json", "config"); Write("data/encode-jobs.json", "jobs"); Write("data/restoration-profiles/Film.json", "profile");
-        string preview = FilePath("data/restoration-previews/old.mp4", "preview"); File.SetLastWriteTimeUtc(preview, DateTime.UtcNow.AddDays(-31)); string temp = DirectoryPath("temp/old-operation"); Directory.SetLastWriteTimeUtc(temp, DateTime.UtcNow.AddDays(-8));
+        string preview = FilePath("data/restoration-previews/old.mp4", "preview"); File.SetLastWriteTimeUtc(preview, DateTime.UtcNow.AddDays(-31)); string temp = OwnedTemporaryDirectory("temp/old-operation"); Directory.SetLastWriteTimeUtc(temp, DateTime.UtcNow.AddDays(-8));
         new UserDataStorageManagementService(_root).CleanupExpiredGeneratedData();
         Assert.False(File.Exists(preview)); Assert.False(Directory.Exists(temp)); Assert.True(File.Exists(Path.Combine(_root, "config.json"))); Assert.True(File.Exists(Path.Combine(_root, "data", "encode-jobs.json"))); Assert.True(File.Exists(Path.Combine(_root, "data", "restoration-profiles", "Film.json")));
     }
@@ -46,11 +46,11 @@ public sealed class UserDataStorageManagementTests : IDisposable
     }
 
     [Fact]
-    public async Task ExplicitCacheCleanupDoesNotTouchPersistentState()
+    public async Task CacheCleanupDoesNotTouchPersistentRuntimeOrUserState()
     {
         Write("config.json", "config"); Write("data/encode-jobs.json", "jobs"); Write("data/tensorrt-engines/old.engine", "engine");
         UserDataCleanupResult result = await new UserDataStorageManagementService(_root).CleanupAsync(UserDataCleanupScope.RegenerableRuntimeCache);
-        Assert.True(result.DeletedDirectories >= 1); Assert.False(Directory.Exists(Path.Combine(_root, "data", "tensorrt-engines"))); Assert.True(File.Exists(Path.Combine(_root, "config.json"))); Assert.True(File.Exists(Path.Combine(_root, "data", "encode-jobs.json")));
+        Assert.Equal(0, result.DeletedDirectories); Assert.True(Directory.Exists(Path.Combine(_root, "data", "tensorrt-engines"))); Assert.True(File.Exists(Path.Combine(_root, "config.json"))); Assert.True(File.Exists(Path.Combine(_root, "data", "encode-jobs.json")));
     }
 
     [Fact]
@@ -64,4 +64,6 @@ public sealed class UserDataStorageManagementTests : IDisposable
     private void Write(string relative, string text) => File.WriteAllText(FilePath(relative, text), text);
     private string FilePath(string relative, string text) { string path = Path.Combine(_root, relative.Replace('/', Path.DirectorySeparatorChar)); Directory.CreateDirectory(Path.GetDirectoryName(path)!); if (!File.Exists(path)) File.WriteAllText(path, text); return path; }
     private string DirectoryPath(string relative) { string path = Path.Combine(_root, relative.Replace('/', Path.DirectorySeparatorChar)); Directory.CreateDirectory(path); File.WriteAllText(Path.Combine(path, "artifact.bin"), "x"); return path; }
+    private string OwnedAiDirectory(string relative) { string path = DirectoryPath(relative); File.WriteAllText(Path.Combine(path, ".mediaflux-ai-staging"), string.Empty); return path; }
+    private string OwnedTemporaryDirectory(string relative) { string path = DirectoryPath(relative); File.WriteAllText(Path.Combine(path, ".mediaflux-temporary"), string.Empty); return path; }
 }

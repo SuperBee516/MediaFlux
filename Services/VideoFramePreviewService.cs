@@ -13,7 +13,7 @@ public sealed class VideoFramePreviewService
     {
         _ffmpegPath = FfmpegToolResolver.Resolve(applicationDirectory, configuredFfmpegPath).FfmpegPath;
         _runner = runner ?? new MediaToolProcessRunner();
-        _cacheDirectory = cacheDirectory ?? Path.Combine(AppPaths.DataDirectory, "frame-previews");
+        _cacheDirectory = cacheDirectory ?? AppPaths.FramePreviewsDirectory;
     }
 
     public async Task<Image?> ExtractAsync(string sourcePath, double seconds, double sourceDurationSeconds, double sourceFrameRate = 0, int width = 320, CancellationToken cancellationToken = default)

@@ -6,16 +6,16 @@ namespace MediaFlux.Services
     internal static class AppPaths
     {
         private const string MigrationMarkerName = ".legacy-install-data-migrated-v1";
+        private static readonly MediaFluxStoragePathService Storage = new();
 
         public static string InstallDirectory =>
             Path.GetFullPath(AppContext.BaseDirectory)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-        public static string RootDirectory => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "MediaFlux");
-
-        public static string UserDataDirectory => Path.Combine(RootDirectory, "UserData");
+        // RootDirectory remains the legacy container for callers that need installation-scoped
+        // bootstrap state. All managed user data below is resolved by Storage.
+        public static string RootDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaFlux");
+        public static string UserDataDirectory => Storage.Root;
         public static string DataDirectory => Path.Combine(UserDataDirectory, "data");
         public static string LibraryCatalogFile => Path.Combine(DataDirectory, "library-catalog.db");
         public static string LibraryCatalogBackupDirectory => Path.Combine(DataDirectory, "catalog-backups");
@@ -27,9 +27,24 @@ namespace MediaFlux.Services
         public static string NcnnPerformanceTuningCacheFile => Path.Combine(DataDirectory, "ncnn-performance-tuning.json");
         public static string AiBenchmarkDatabaseFile => Path.Combine(DataDirectory, "ai-benchmarks.db");
         public static string CommercialDetectorAnalysisFile => Path.Combine(DataDirectory, "commercial-detector-analysis.json");
-        public static string TempDirectory => Path.Combine(UserDataDirectory, "temp");
-        public static string ConfigFile => Path.Combine(UserDataDirectory, "config.json");
-        public static string BackupDirectory => Path.Combine(RootDirectory, "Backups");
+        public static string TempDirectory => Storage.Temp;
+        public static string ConfigFile => Storage.Config;
+        public static string BackupDirectory => Storage.Backups;
+        public static string AiIntermediatesDirectory => Storage.AiIntermediates;
+        public static string RestorationPreviewsDirectory => Storage.RestorationPreviews;
+        public static string FramePreviewsDirectory => Storage.FramePreviews;
+        public static string DuplicatePreviewsDirectory => Storage.DuplicatePreviews;
+        public static string TensorRtEnginesDirectory => Storage.TensorRtEngines;
+        public static string AiBenchmarkRerunsDirectory => Storage.AiBenchmarkReruns;
+        public static string LogsDirectory => Storage.Logs;
+        public static string SupportedVideoExtensionsFile => Path.Combine(DataDirectory, "supported_video_extensions.json");
+        public static string EncodingStatisticsFile => Path.Combine(DataDirectory, "encoding-statistics.jsonl");
+        public static string HistoryFile => Path.Combine(DataDirectory, "history.json");
+        public static string EncodingPresetsFile => Path.Combine(DataDirectory, "encoding_presets.json");
+        public static string LibraryFileRemovalAuditFile => Path.Combine(DataDirectory, "library-file-removal-audit.jsonl");
+        public static string DuplicateActionsLogFile => Path.Combine(LogsDirectory, "duplicate-actions.csv");
+        public static string AiBenchmarkHistoryFile => Path.Combine(DataDirectory, "ai-benchmark-history.json");
+        internal static MediaFluxStoragePathService StoragePaths => Storage;
 
         public static string LauncherExecutablePath
         {
@@ -57,10 +72,11 @@ namespace MediaFlux.Services
 
         public static void Initialize()
         {
-            Directory.CreateDirectory(UserDataDirectory);
-            Directory.CreateDirectory(DataDirectory);
-            Directory.CreateDirectory(TempDirectory);
-            Directory.CreateDirectory(BackupDirectory);
+            Storage.InitializeDirectories();
+            // Pre-storage-root installs kept backups next to UserData. Preserve them when
+            // adopting the root-based convention, including installations that already have
+            // the legacy migration marker.
+            CopyDirectoryIfMissing(Path.Combine(RootDirectory, "Backups"), BackupDirectory);
             DvdTempCleanupService.CleanupStaleOperations(
                 TempDirectory,
                 TimeSpan.FromDays(7));

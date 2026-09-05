@@ -20,7 +20,7 @@ namespace MediaFlux
 {
     public partial class MainForm : MediaFluxForm
     {
-        private readonly string _configPath;
+        private string _configPath;
         private Config _config;
 
         private readonly string _supportedVideoExtsPath;
@@ -225,9 +225,9 @@ namespace MediaFlux
             InitializeCompactModeControls();
 
             // supported extension list storage (managed via Settings)
-            _supportedVideoExtsPath = Path.Combine(AppPaths.DataDirectory, "supported_video_extensions.json");
+            _supportedVideoExtsPath = AppPaths.SupportedVideoExtensionsFile;
             _encodingStatisticsService = new EncodingStatisticsService(
-                Path.Combine(AppPaths.DataDirectory, "encoding-statistics.jsonl"));
+                AppPaths.EncodingStatisticsFile);
             _encodingDiagnosticsService = new EncodingDiagnosticsService();
             RepairConfiguredExplorerIntegration();
 
@@ -292,10 +292,10 @@ namespace MediaFlux
                 minimizeToTrayItem);
 
             //History service init
-            var historyPath = Path.Combine(AppPaths.DataDirectory, "history.json");
+            var historyPath = AppPaths.HistoryFile;
             _historyService = new HistoryService(historyPath);
             _presetService = new EncodingPresetService(
-                Path.Combine(AppPaths.DataDirectory, "encoding_presets.json"));
+                AppPaths.EncodingPresetsFile);
             InitializeJobManager();
             InitializeSystemTray();
             var jobManagerToolStripMenuItem = new ToolStripMenuItem("Job Manager…");
@@ -4546,10 +4546,14 @@ namespace MediaFlux
                 _supportedVideoExtsPath,
                 DefaultVideoExts,
                 cmbEncodeOutput.Text,
-                focusMediaTools);
+                focusMediaTools,
+                () => _encodingActive || !_runningEncodeJobs.IsEmpty || _watchCheckInProgress);
             if (dlg.ShowDialog(this) == DialogResult.OK)
             {
                 _config = dlg.Config;
+                // A successful storage migration changes the authoritative root while this dialog
+                // is open. Persist the accepted settings to that verified copy, never the old root.
+                _configPath = AppPaths.ConfigFile;
                 _config.Save(_configPath);
                 RecreateMediaServices();
                 RefreshFfmpegToolAvailability();

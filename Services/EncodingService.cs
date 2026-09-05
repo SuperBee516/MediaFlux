@@ -603,7 +603,7 @@ namespace MediaFlux.Services
             Directory.CreateDirectory(outFolder);
             performance.SetHardwareSnapshot(HardwarePerformanceService.Capture(
                 inputSource.SourcePath,
-                Path.Combine(AppPaths.DataDirectory, "ai-intermediates"),
+                AppPaths.AiIntermediatesDirectory,
                 outFolder,
                 _ffmpegPath));
 
@@ -677,12 +677,12 @@ namespace MediaFlux.Services
                 bool restoreOriginalAfterAi = scaleMode == ScaleMode.None && VideoRestorationPipeline.Effective(aiSettings).Resize == VideoRestorationResize.Original;
                 aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode, restoreOriginalAfterAi ? plannedOutputGeometry?.ScaleFilter : null);
                 callback("[MediaFlux] Preparing AI restoration.");
-                var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend, log: _log, timing: performance);
+                var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, AppPaths.AiIntermediatesDirectory, backend, log: _log, timing: performance);
                 TimeSpan aiDuration = sampleDuration ?? TimeSpan.FromSeconds(programDuration.DurationSeconds ?? 0);
                 int expectedFrames = AiRestorationIntermediateVideoService.ResolveExpectedFrameCount(
                     new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(programDuration.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0, SourceFrameCount: video.FrameCount),
                     aiDuration);
-                string stagingRoot = Path.Combine(AppPaths.DataDirectory, "ai-intermediates");
+                string stagingRoot = AppPaths.AiIntermediatesDirectory;
                 AiTemporaryStorageEstimate planningEstimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, stagingRoot, AiChunkPlanner.MinimumFramesPerChunk);
                 AiChunkPlan plannedChunk = new AiChunkPlanner().Plan(new(video.Width ?? 0, video.Height ?? 0, aiSettings.AiScale, performance.DedicatedGpuVramBytes, planningEstimate, "Pending backend"));
                 AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, stagingRoot, plannedChunk.FrameCount);

@@ -36,7 +36,7 @@ public sealed class VideoRestorationPreviewService
     private readonly Action<string>? _log;
 
     public VideoRestorationPreviewService(string applicationDirectory, string? configuredFfmpegPath = null, string? configuredFfprobePath = null, Action<string>? log = null)
-        : this(FfmpegToolResolver.Resolve(applicationDirectory, configuredFfmpegPath, configuredFfprobePath), new MediaToolProcessRunner(), null, Path.Combine(AppPaths.DataDirectory, "restoration-previews"), log) { }
+        : this(FfmpegToolResolver.Resolve(applicationDirectory, configuredFfmpegPath, configuredFfprobePath), new MediaToolProcessRunner(), null, AppPaths.RestorationPreviewsDirectory, log) { }
 
     private VideoRestorationPreviewService(FfmpegToolPaths tools, IMediaToolProcessRunner runner, FfmpegRestorationCapabilityService? capabilities, string cacheDirectory, Action<string>? log)
         : this(tools.FfmpegPath, tools.FfprobePath, runner, capabilities ?? new FfmpegRestorationCapabilityService(runner, log), cacheDirectory, log) { }

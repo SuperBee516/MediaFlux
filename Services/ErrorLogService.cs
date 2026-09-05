@@ -13,7 +13,7 @@ namespace MediaFlux.Services
 
         public static string GetDefaultLogPath(string applicationDirectory)
         {
-            return Path.Combine(AppPaths.DataDirectory, "logs", "mediaflux-errors.log");
+            return Path.Combine(AppPaths.LogsDirectory, "mediaflux-errors.log");
         }
 
         public static string Append(

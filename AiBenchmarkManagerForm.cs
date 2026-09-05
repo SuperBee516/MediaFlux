@@ -122,7 +122,7 @@ public sealed class AiBenchmarkManagerForm : MediaFluxForm
             AiBenchmarkDatabaseEntry entry = record.Entry;
             var settings = new VideoRestorationSettings { AiMode = AiRestorationMode.General, AiModelId = entry.Key.Model, AiScale = (AiRestorationScale)entry.Key.Scale, AiBackendSelection = AiBackendSelection.NcnnVulkan };
             IAiRestorationBackend backend = await new AiBackendManager(AppPaths.InstallDirectory).SelectAsync(settings);
-            AiBackendBenchmarkResult result = await new AiBackendBenchmarkService(Path.Combine(AppPaths.DataDirectory, "ai-benchmark-reruns")).RunAsync(new(backend, settings, frames, width, height));
+            AiBackendBenchmarkResult result = await new AiBackendBenchmarkService(AppPaths.AiBenchmarkRerunsDirectory).RunAsync(new(backend, settings, frames, width, height));
             _status.Text = $"Re-run completed: {result.EffectiveFramesPerSecond:0.##} FPS."; RefreshRecords();
         }
         catch (Exception ex) { _status.Text = "Re-run failed: " + ex.Message; }

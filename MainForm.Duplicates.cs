@@ -1343,7 +1343,7 @@ namespace MediaFlux
 
         private string GetDuplicateActionAuditPath()
         {
-            return Path.Combine(AppPaths.DataDirectory, "logs", "duplicate-actions.csv");
+            return AppPaths.DuplicateActionsLogFile;
         }
 
         private void ViewDuplicateActionLogToolStripMenuItem_Click(object? sender, EventArgs e)
