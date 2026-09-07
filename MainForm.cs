@@ -96,6 +96,8 @@ namespace MediaFlux
         private bool _applyingEncodeDropdownSettings;
         private bool _refreshingEncoderControls;
         private bool? _encodingOptionsStacked;
+        private bool? _encodingProfileStacked;
+        private bool _applyingEncodingProfileLayout;
         private bool _applyingCheckboxStates;
         private bool _applyingRememberedSort;
         private CompactModeForm? _compactModeForm;
@@ -2729,6 +2731,10 @@ namespace MediaFlux
                 chkAutoTargetSize.CheckedChanged += (_, __) =>
                     nudAutoQuality!.Enabled = chkAutoTargetSize.Checked;
 
+            // This control adds a row participant after the initial table sizing.
+            // Allow the explicit pass below even if an earlier SizeChanged applied
+            // the same responsive mode.
+            _encodingProfileStacked = null;
             UpdateEncodingProfileResponsiveLayout();
         }
 
@@ -2767,6 +2773,10 @@ namespace MediaFlux
                 comboEncoderPreset.Margin = new Padding(0, 2, 0, 3);
                 tlEncodingProfileFields.Controls.Add(lblEncodingSpeed, 0, encodingSpeedRow);
                 tlEncodingProfileFields.Controls.Add(comboEncoderPreset, 1, encodingSpeedRow);
+                // The table may have already received a SizeChanged event while the
+                // remaining profile controls were being created. Force one complete
+                // placement pass now that this row exists.
+                _encodingProfileStacked = null;
                 UpdateEncodingProfileResponsiveLayout();
             }
             InitializeEncoderInformationLabel();
@@ -2925,6 +2935,11 @@ namespace MediaFlux
                 return;
 
             bool stackFields = tlEncodingProfileFields.ClientSize.Width < 720;
+            if (!EncodingOptionsLayoutState.ShouldApply(_encodingProfileStacked, stackFields) ||
+                _applyingEncodingProfileLayout)
+                return;
+
+            _applyingEncodingProfileLayout = true;
             tlEncodingProfileFields.SuspendLayout();
             try
             {
@@ -3002,10 +3017,12 @@ namespace MediaFlux
                     if (lblAutoQuality != null)
                         lblAutoQuality.Margin = new Padding(18, 5, 14, 3);
                 }
+                _encodingProfileStacked = stackFields;
             }
             finally
             {
                 tlEncodingProfileFields.ResumeLayout(true);
+                _applyingEncodingProfileLayout = false;
             }
         }
 
