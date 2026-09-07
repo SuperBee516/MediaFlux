@@ -3014,6 +3014,8 @@ namespace MediaFlux
             if (pnlQueueControlsCard == null || pnlQueueBehavior == null || pnlQueueActionButtons == null)
                 return;
 
+            ApplyQueueControlsCompactLayout(pnlQueueBehavior, pnlQueueActionButtons);
+
             bool wrapControls = pnlQueueControlsCard.ClientSize.Width < 650;
             if (pnlQueueBehavior.WrapContents == wrapControls &&
                 pnlQueueActionButtons.WrapContents == wrapControls)
@@ -3033,6 +3035,15 @@ namespace MediaFlux
             {
                 pnlQueueControlsCard.ResumeLayout(true);
             }
+        }
+
+        internal static void ApplyQueueControlsCompactLayout(FlowLayoutPanel behavior, FlowLayoutPanel actions)
+        {
+            // These panels are AutoSize children of an AutoSize card. Fill docking creates a
+            // circular preferred-height calculation during TableLayoutPanel negotiation and
+            // can inflate the entire Queue Controls region on startup or resize.
+            behavior.Dock = DockStyle.Top;
+            actions.Dock = DockStyle.Top;
         }
 
         private void UpdateEncodingOptionsResponsiveLayout()

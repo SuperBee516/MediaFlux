@@ -759,7 +759,7 @@ namespace MediaFlux
                 Name = "pnlQueueBehavior",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 Margin = new Padding(0, 0, 0, 6)
@@ -808,7 +808,7 @@ namespace MediaFlux
                 Name = "pnlQueueActionButtons",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 Margin = Padding.Empty

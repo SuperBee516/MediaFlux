@@ -1,5 +1,6 @@
 using MediaFlux.Models;
 using MediaFlux.Services;
+using System.Windows.Forms;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -63,6 +64,18 @@ public sealed class UiConfigPersistenceTests : IDisposable
     {
         Assert.Equal(450, MainForm.CalculateStandardEncodeDetailsHeight(1000));
         Assert.Equal(0, MainForm.CalculateStandardEncodeDetailsHeight(0));
+    }
+
+    [Fact]
+    public void QueueControlsChildrenRemainContentSizedInsteadOfFillingTheCard()
+    {
+        using var behavior = new FlowLayoutPanel { Dock = DockStyle.Fill };
+        using var actions = new FlowLayoutPanel { Dock = DockStyle.Fill };
+
+        MainForm.ApplyQueueControlsCompactLayout(behavior, actions);
+
+        Assert.Equal(DockStyle.Top, behavior.Dock);
+        Assert.Equal(DockStyle.Top, actions.Dock);
     }
 
     [Fact]
