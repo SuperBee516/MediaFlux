@@ -338,4 +338,14 @@ namespace MediaFlux.Services.LibraryCatalog
         IReadOnlyList<LibraryFileMembershipRecord> GetMembershipsForFile(long fileId);
         LibraryCatalogCounts GetCounts();
     }
+
+    // This deliberately updates an existing indexed_files row.  Relocation must
+    // not be modeled as a scan because the row owns all analysis and review data.
+    public interface ILibraryFileRelocationCatalog
+    {
+        IndexedFileRecord? GetFile(long fileId);
+        IndexedFileRecord? GetFileByPath(string path);
+        void RelocateFile(long fileId, long destinationAnchorFileId, string expectedSourcePath,
+            string destinationPath, LibraryFileIdentity identity, DateTime lastWriteUtc);
+    }
 }

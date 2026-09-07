@@ -350,6 +350,22 @@ namespace MediaFlux
                                 catalogStateChanged = true;
                                 bool deleted = await PreviewVisualCleanupAsync(new[] { group.GroupId });
                                 if (deleted) await MoveAsync(1); else await LoadCurrentAsync();
+                            },
+                            async () =>
+                            {
+                                VisualSimilarityMemberRecord? other = members.FirstOrDefault(candidate => candidate.FileId != member.FileId);
+                                if (other == null) return;
+                                LibraryFileRelocationPreview proposal;
+                                try { proposal = await Task.Run(() => _runtime.FileRelocation.Preview(member.FileId, other.FileId)); }
+                                catch (Exception ex) { MessageBox.Show(dialog, ex.Message, "Move to other folder", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                                DialogResult confirmed = MessageBox.Show(dialog,
+                                    $"Move this file?\r\n\r\n{proposal.SourcePath}\r\n→\r\n{proposal.DestinationPath}",
+                                    "Move to other folder", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                                if (confirmed != DialogResult.Yes) return;
+                                LibraryFileRelocationResult result = await Task.Run(() => _runtime.FileRelocation.Execute(proposal));
+                                if (!result.Succeeded) { MessageBox.Show(dialog, result.ErrorMessage, "Move to other folder", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                                catalogStateChanged = true;
+                                await LoadCurrentAsync();
                             });
                         body.Controls.Add(card.Panel);
                         _ = LoadVisualReviewThumbnailAsync(card.Picture, card.Status, member, groupPreviewCancellation.Token);
@@ -462,7 +478,8 @@ namespace MediaFlux
             long? suggestedKeeperFileId,
             Func<Task> keepSelected,
             Func<Task> protectSelected,
-            Func<Task> keepAndDeleteOther)
+            Func<Task> keepAndDeleteOther,
+            Func<Task>? moveToOtherFolder = null)
         {
             VisualReviewKeeperPresentation presentation = ResolveVisualReviewKeeperPresentation(
                 member, selectedKeeperFileId, suggestedKeeperFileId);
@@ -471,7 +488,7 @@ namespace MediaFlux
             var panel = new Panel
             {
                 Width = 500,
-                Height = 520,
+                Height = 560,
                 Margin = new Padding(8),
                 BackColor = SystemColors.Window,
                 BorderStyle = BorderStyle.FixedSingle
@@ -503,7 +520,7 @@ namespace MediaFlux
             var actions = new FlowLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 70,
+                Height = 100,
                 Padding = new Padding(6, 4, 6, 2),
                 WrapContents = true
             };
@@ -512,11 +529,13 @@ namespace MediaFlux
             var protect = new Button { Text = member.IsProtected ? "Unprotect" : "Protect", Width = 90 };
             var folder = new Button { Text = "Open folder", Width = 100, Enabled = Directory.Exists(Path.GetDirectoryName(member.FullPath)) };
             var deleteOther = new Button { Text = "Keep this / delete other…", Width = 180, Enabled = decisionsAllowed && CanSelectVisualKeeper(member) };
+            var move = new Button { Text = "Move to other folder…", Width = 180, Enabled = File.Exists(member.FullPath), Visible = moveToOtherFolder != null };
             play.Click += (_, _) => PlayVisualMember(member);
             keep.Click += async (_, _) => await keepSelected();
             protect.Click += async (_, _) => await protectSelected();
             folder.Click += (_, _) => OpenVisualMemberFolder(member);
             deleteOther.Click += async (_, _) => await keepAndDeleteOther();
+            if (moveToOtherFolder != null) move.Click += async (_, _) => await moveToOtherFolder();
             if (selectedKeeper)
             {
                 keep.UseVisualStyleBackColor = false;
@@ -524,7 +543,7 @@ namespace MediaFlux
                 keep.BackColor = Color.FromArgb(46, 125, 50);
                 keep.ForeColor = Color.White;
             }
-            actions.Controls.AddRange(new Control[] { play, keep, deleteOther, protect, folder });
+            actions.Controls.AddRange(new Control[] { play, keep, deleteOther, move, protect, folder });
             var status = new Label
             {
                 Dock = DockStyle.Bottom,

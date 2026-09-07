@@ -81,6 +81,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 keeperPreferences: keeperPreferences);
             DuplicateCleanup = new LibraryDuplicateCleanupService(_catalog, _catalog, keeperPreferences, isEncodingActive);
             VisualDuplicateCleanup = new LibraryVisualDuplicateCleanupService(_catalog, _catalog, _catalog, keeperPreferences, isEncodingActive);
+            FileRelocation = new LibraryFileRelocationService(_catalog, identity: identityProvider);
             MatchEligibility = new LibraryMatchEligibilityService(_catalog, _catalog);
             _reanalysis = new LibraryReanalysisCoordinator(_catalog, _enrichment, _duplicates, _visual);
             Reanalysis = _reanalysis;
@@ -128,6 +129,7 @@ namespace MediaFlux.Services.LibraryCatalog
         public LibraryVisualAnalysisCoordinator VisualSimilarity => _visual;
         public LibraryDuplicateCleanupService DuplicateCleanup { get; }
         public LibraryVisualDuplicateCleanupService VisualDuplicateCleanup { get; }
+        public LibraryFileRelocationService FileRelocation { get; }
         public LibraryMatchEligibilityService MatchEligibility { get; }
         public LibraryReanalysisCoordinator Reanalysis { get; }
         public LibraryDecisionService Decisions { get; }

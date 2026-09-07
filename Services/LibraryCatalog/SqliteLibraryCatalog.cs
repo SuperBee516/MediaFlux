@@ -2,7 +2,7 @@ using Microsoft.Data.Sqlite;
 
 namespace MediaFlux.Services.LibraryCatalog
 {
-    public sealed partial class SqliteLibraryCatalog : ILibraryCatalog, ILibraryAnalysisCatalog,
+    public sealed partial class SqliteLibraryCatalog : ILibraryCatalog, ILibraryAnalysisCatalog, ILibraryFileRelocationCatalog,
         ILibraryVisualCatalog, ILibraryScanAccelerationCatalog
     {
         private const int MaximumPageSize = 10_000;
@@ -329,6 +329,17 @@ namespace MediaFlux.Services.LibraryCatalog
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText = FileSelectSql + " WHERE path_key = $path_key;";
             command.Parameters.AddWithValue("$path_key", pathKey);
+            using SqliteDataReader reader = command.ExecuteReader();
+            return reader.Read() ? ReadFile(reader) : null;
+        }
+
+        public IndexedFileRecord? GetFile(long fileId)
+        {
+            ThrowIfDisposed();
+            using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = FileSelectSql + " WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", fileId);
             using SqliteDataReader reader = command.ExecuteReader();
             return reader.Read() ? ReadFile(reader) : null;
         }
