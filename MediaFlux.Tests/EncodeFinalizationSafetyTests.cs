@@ -79,6 +79,44 @@ public sealed class EncodeFinalizationSafetyTests : IDisposable
     }
 
     [Fact]
+    public async Task PermissionDeniedPromotionPreservesStageAndReportsStorageCause()
+    {
+        string source = CreateFile("source-permission.mkv", 4096);
+        string final = Path.Combine(_root, "permission-final.mp4");
+        string stage = OutputPathService.CreateEncodeStagingPath(final);
+        File.WriteAllBytes(stage, new byte[8192]);
+        var service = new EncodeOutputFinalizationService(
+            new FakeValidationService(),
+            new ThrowingPromoter(new UnauthorizedAccessException("Access is denied.")));
+
+        EncodeFinalizationResult result = await service.FinalizeAsync(Request(source, stage, final));
+
+        Assert.False(result.Success);
+        Assert.Equal(EncodeFinalizationFailureKind.Promotion, result.FailureKind);
+        Assert.Contains("denied write access", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(stage));
+        Assert.True(File.Exists(source));
+        Assert.False(File.Exists(final));
+    }
+
+    [Fact]
+    public async Task MissingStagedOutputReportsDestinationUnavailabilityWithoutCreatingFinal()
+    {
+        string source = CreateFile("source-missing-stage.mkv", 4096);
+        string final = Path.Combine(_root, "missing-stage-final.mp4");
+        string stage = OutputPathService.CreateEncodeStagingPath(final);
+        var service = new EncodeOutputFinalizationService(new FakeValidationService());
+
+        EncodeFinalizationResult result = await service.FinalizeAsync(Request(source, stage, final));
+
+        Assert.False(result.Success);
+        Assert.Equal(EncodeFinalizationFailureKind.Promotion, result.FailureKind);
+        Assert.Contains("became unavailable", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(source));
+        Assert.False(File.Exists(final));
+    }
+
+    [Fact]
     public async Task ValidationFailureLeavesFinalNameUnexposed()
     {
         string source = CreateFile("source.mkv", 4096);
@@ -549,10 +587,10 @@ public sealed class EncodeFinalizationSafetyTests : IDisposable
         }
     }
 
-    private sealed class ThrowingPromoter : IEncodeOutputPromoter
+    private sealed class ThrowingPromoter(Exception? exception = null) : IEncodeOutputPromoter
     {
         public void Promote(string stagingPath, string finalOutputPath) =>
-            throw new IOException("simulated promotion failure");
+            throw exception ?? new IOException("simulated promotion failure");
 
         public string TryRestoreToStaging(
             string finalOutputPath,

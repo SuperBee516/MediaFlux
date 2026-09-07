@@ -49,6 +49,45 @@ namespace MediaFlux.Services
                     $"stream={plan.StreamIndex}; type={plan.StreamType}; codec={DisplayCodec(plan.Codec)}; requested={plan.RequestedAction}; target={decision.Resolved}; reason={plan.Reason}; decision={plan.Action}"));
         }
 
+        /// <summary>Returns the existing plan with one failed text subtitle omitted.</summary>
+        public static OutputContainerDecision ExcludeFailedTextSubtitle(
+            OutputContainerDecision decision, int streamIndex, string diagnostic)
+        {
+            ArgumentNullException.ThrowIfNull(decision);
+            StreamCompatibilityPlan[] plans = decision.StreamPlans.Select(plan =>
+                plan.StreamIndex == streamIndex &&
+                plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
+                plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode &&
+                (IsTextSubtitleCodec(plan.Codec) || string.Equals(plan.TargetCodec, "mov_text", StringComparison.OrdinalIgnoreCase))
+                    ? plan with { Action = StreamCompatibilityAction.Omit, Reason = diagnostic }
+                    : plan).ToArray();
+            if (!plans.Any(plan => plan.StreamIndex == streamIndex && plan.Action == StreamCompatibilityAction.Omit))
+                throw new InvalidOperationException("Only a planned text subtitle may be excluded.");
+            return new OutputContainerDecision
+            {
+                Requested = decision.Requested,
+                Resolved = decision.Resolved,
+                Reason = decision.Reason,
+                CompatibilityWarnings = decision.CompatibilityWarnings
+                    .Append($"subtitle stream {streamIndex} was excluded because its text conversion failed validation")
+                    .ToArray(),
+                StreamPlans = plans,
+                CopySubtitles = plans.Any(plan => plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
+                    plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode),
+                CopyDataStreams = decision.CopyDataStreams,
+                CopyAttachments = decision.CopyAttachments
+            };
+        }
+
+        private static bool IsTextSubtitleCodec(string codec) =>
+            codec.Equals("ass", StringComparison.OrdinalIgnoreCase) ||
+            codec.Equals("ssa", StringComparison.OrdinalIgnoreCase) ||
+            codec.Equals("mov_text", StringComparison.OrdinalIgnoreCase) ||
+            codec.Equals("tx3g", StringComparison.OrdinalIgnoreCase) ||
+            codec.Equals("webvtt", StringComparison.OrdinalIgnoreCase) ||
+            codec.Equals("subrip", StringComparison.OrdinalIgnoreCase) ||
+            codec.Equals("srt", StringComparison.OrdinalIgnoreCase);
+
         public static OutputContainerDecision Decide(
             OutputContainerSelection requested,
             MediaProbeResult source,

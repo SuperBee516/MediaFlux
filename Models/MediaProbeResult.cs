@@ -50,7 +50,13 @@ namespace MediaFlux.Models
         public int? Width { get; init; }
         public int? Height { get; init; }
         public int? Channels { get; init; }
+        /// <summary>Presentation timestamp of the first stream packet, when FFprobe reports one.</summary>
+        public double? StartTimeSeconds { get; init; }
         public double? DurationSeconds { get; init; }
+        /// <summary>Average presentation frame rate reported by FFprobe.</summary>
+        public double? AverageFrameRate { get; init; }
+        /// <summary>Nominal packet/frame rate reported by FFprobe (r_frame_rate).</summary>
+        public double? NominalFrameRate { get; init; }
         public double? FrameRate { get; init; }
         /// <summary>Container-declared frame count when available; null means the container does not provide one.</summary>
         public long? FrameCount { get; init; }

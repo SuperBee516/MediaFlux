@@ -266,8 +266,11 @@ namespace MediaFlux.Services
                     Width = GetInt32(stream, "width"),
                     Height = GetInt32(stream, "height"),
                     Channels = GetInt32(stream, "channels"),
+                    StartTimeSeconds = GetFiniteDouble(stream, "start_time"),
                     DurationSeconds = GetPositiveDouble(stream, "duration"),
                     FrameCount = GetPositiveLong(stream, "nb_frames"),
+                    AverageFrameRate = ParseFrameRate(GetString(stream, "avg_frame_rate"), ""),
+                    NominalFrameRate = ParseFrameRate(GetString(stream, "r_frame_rate"), ""),
                     FrameRate = ParseFrameRate(
                         GetString(stream, "avg_frame_rate"),
                         GetString(stream, "r_frame_rate")),
@@ -378,6 +381,15 @@ namespace MediaFlux.Services
                    number >= 0 &&
                    !double.IsNaN(number) &&
                    !double.IsInfinity(number)
+                ? number
+                : null;
+        }
+
+        private static double? GetFiniteDouble(JsonElement element, string name)
+        {
+            string value = GetString(element, name);
+            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double number) &&
+                   double.IsFinite(number)
                 ? number
                 : null;
         }

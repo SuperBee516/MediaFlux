@@ -72,6 +72,226 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void TimestampNormalizedNominalCadenceWithNonzeroStartPassesDespiteDroppedFrames()
+    {
+        const double duration = 1388.43;
+        const double nominalFps = 30000d / 1001d;
+        string error = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(41648, FrameCountProvenance.Measured, duration),
+            FrameProbe(duration, 41648, 30, averageFps: 30, nominalFps: nominalFps, startTime: 1.062),
+            FrameProbe(duration, 41609, nominalFps, output: true, averageFps: nominalFps, nominalFps: nominalFps));
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
+    public void TimestampNormalizedCadenceDoesNotMaskMaterialPresentationTruncation()
+    {
+        const double duration = 1388.43;
+        const double nominalFps = 30000d / 1001d;
+        string error = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(41648, FrameCountProvenance.Measured, duration),
+            FrameProbe(duration, 41648, 30, averageFps: 30, nominalFps: nominalFps, startTime: 1.062),
+            FrameProbe(duration - 1.3, 41570, nominalFps, output: true, averageFps: nominalFps, nominalFps: nominalFps));
+
+        Assert.Contains("frame deficit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalCfrFrameDeficitRetainsStrictFrameValidation()
+    {
+        string error = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(3000, FrameCountProvenance.Measured, 100),
+            FrameProbe(100, 3000, 30, averageFps: 30, nominalFps: 30),
+            FrameProbe(100, 2961, 30, output: true, averageFps: 30, nominalFps: 30));
+
+        Assert.Contains("frame deficit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SubstantialUndecodableSourceFrameLossFailsEvenWhenOutputDurationMatches()
+    {
+        const double duration = 6522d / 25d;
+        string error = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(6522, FrameCountProvenance.Measured, duration),
+            FrameProbe(duration, 6522, 25, averageFps: 25, nominalFps: 25),
+            FrameProbe(duration, 6164, 25, output: true, averageFps: 25, nominalFps: 25));
+
+        Assert.Contains("frame deficit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void HarmlessContainerDurationDiscrepancyStillUsesThePrimaryVideoTimeline()
+    {
+        MediaProbeResult source = TopologyProbe(102, 100, 3000, includeOutlierSubtitle: false);
+        MediaProbeResult output = TopologyProbe(100, 100, 3000, includeOutlierSubtitle: false, format: "mov,mp4,m4a,3gp,3g2,mj2");
+
+        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(TopologyRequest(100, 3000), source, output));
+    }
+
+    [Fact]
+    public void VerifiedMonotonicVfrToCfrNormalizationPassesDespiteFrameDelta()
+    {
+        const double duration = 100;
+        EncodeOutputValidationRequest request = FrameRequest(1800, FrameCountProvenance.Measured, duration, VfrTiming());
+        string error = EncodeOutputValidationService.ValidateProbe(
+            request,
+            FrameProbe(duration, 1800, 18, averageFps: 18, nominalFps: 30, startTime: 1.062),
+            FrameProbe(duration, 3000, 30, output: true, averageFps: 30, nominalFps: 30));
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
+    public void VfrNormalizationDoesNotMaskTruncatedPresentation()
+    {
+        const double duration = 100;
+        EncodeOutputValidationRequest request = FrameRequest(1800, FrameCountProvenance.Measured, duration, VfrTiming());
+        string error = EncodeOutputValidationService.ValidateProbe(
+            request,
+            FrameProbe(duration, 1800, 18, averageFps: 18, nominalFps: 30),
+            FrameProbe(98.7, 2961, 30, output: true, averageFps: 30, nominalFps: 30));
+
+        Assert.Contains("frame deficit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void OrdinaryCfrDoesNotReceiveTheVfrFrameNormalizationException()
+    {
+        EncodeOutputValidationRequest request = FrameRequest(3000, FrameCountProvenance.Measured, 100,
+            new SourceTimingAnalysis(SourceTimingClassification.Cfr, AiTimingEligibility.EligibleCurrentCfrPipeline, 80, 30, 30, 0, false, false, "stable"));
+        string error = EncodeOutputValidationService.ValidateProbe(
+            request,
+            FrameProbe(100, 3000, 30, averageFps: 30, nominalFps: 30),
+            FrameProbe(100, 2961, 30, output: true, averageFps: 30, nominalFps: 30));
+
+        Assert.Contains("frame deficit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PreExistingSourceAudioVideoDurationMismatchIsPreservedWithoutFalseSyncFailure()
+    {
+        string error = EncodeOutputValidationService.ValidateProbe(FrameRequest(3000, FrameCountProvenance.Measured),
+            AvProbe(100, 92), AvProbe(100, 92, output: true));
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
+    public void OutputIntroducedAudioTruncationFailsAgainstAuthoritativeProgramDuration()
+    {
+        string error = EncodeOutputValidationService.ValidateProbe(FrameRequest(3000, FrameCountProvenance.Measured),
+            AvProbe(100, 100), AvProbe(100, 80, output: true));
+
+        Assert.Contains("output-introduced A/V loss", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void OutputFurtherTruncatedFromPreExistingSourceAudioMismatchStillFails()
+    {
+        string error = EncodeOutputValidationService.ValidateProbe(FrameRequest(3000, FrameCountProvenance.Measured),
+            AvProbe(100, 92), AvProbe(100, 72, output: true));
+
+        Assert.Contains("source stream's pre-existing audio duration", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SynchronizedAudioAndVideoPass()
+    {
+        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(FrameRequest(3000, FrameCountProvenance.Measured),
+            AvProbe(100, 100), AvProbe(100, 100, output: true)));
+    }
+
+    [Fact]
+    public void SmallAudioVideoContainerBoundaryDifferencePasses()
+    {
+        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(FrameRequest(3000, FrameCountProvenance.Measured),
+            AvProbe(100, 100), AvProbe(100, 99.6, output: true)));
+    }
+
+    [Fact]
+    public void SubtitleMetadataAndDispositionsAreRequiredWhenPlanned()
+    {
+        OutputContainerDecision decision = new()
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[] { new StreamCompatibilityPlan(2, "subtitle", "ass", StreamCompatibilityAction.Transcode, "test", "mov_text", Language: "eng", Title: "Signs", Dispositions: new Dictionary<string, bool> { ["default"] = true, ["forced"] = true }) }
+        };
+        EncodeOutputValidationRequest request = FrameRequest(3000, FrameCountProvenance.Measured, copySubtitles: true, containerDecision: decision);
+        MediaProbeResult source = SubtitleProbe(output: false, "eng", "Signs", defaultDisposition: true, forcedDisposition: true);
+        MediaProbeResult output = SubtitleProbe(output: true, "eng", "Signs", defaultDisposition: true, forcedDisposition: true);
+
+        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(request, source, output));
+        string error = EncodeOutputValidationService.ValidateProbe(request, source, SubtitleProbe(output: true, "eng", "Signs", defaultDisposition: false, forcedDisposition: true));
+        Assert.Contains("default disposition", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PlannedConvertedAudioRequiresExactTopologyCodecAndMetadata()
+    {
+        OutputContainerDecision decision = new()
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(4, "audio", "dts", StreamCompatibilityAction.Transcode, "test", "aac",
+                    Language: "eng", Title: "Main", Dispositions: new Dictionary<string, bool> { ["default"] = true })
+            }
+        };
+        MediaProbeResult source = PlannedAudioProbe(output: false, "dts", "eng", "Main", defaultDisposition: true);
+        MediaProbeResult output = PlannedAudioProbe(output: true, "aac", "eng", "Main", defaultDisposition: true);
+        EncodeOutputValidationRequest request = FrameRequest(3000, FrameCountProvenance.Measured, containerDecision: decision);
+
+        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(request, source, output));
+        string error = EncodeOutputValidationService.ValidateProbe(request, source,
+            PlannedAudioProbe(output: true, "ac3", "eng", "Main", defaultDisposition: true));
+        Assert.Contains("requires 'aac'", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void UnexpectedAdditionalAudioStreamFailsTopologyValidation()
+    {
+        MediaProbeResult source = AvProbe(100, 100);
+        MediaProbeResult output = new()
+        {
+            Success = true,
+            FormatName = "mov,mp4,m4a,3gp,3g2,mj2",
+            DurationSeconds = 100,
+            Streams = AvProbe(100, 100, output: true).Streams.Concat(new[]
+            {
+                new MediaProbeStreamInfo { Index = 2, CodecType = "audio", CodecName = "aac", Channels = 2, DurationSeconds = 100 }
+            }).ToArray()
+        };
+
+        string error = EncodeOutputValidationService.ValidateProbe(FrameRequest(3000, FrameCountProvenance.Measured), source, output);
+
+        Assert.Contains("additional stream", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void IntentionallyExcludedSubtitleMayBeAbsent()
+    {
+        OutputContainerDecision decision = new()
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[] { new StreamCompatibilityPlan(2, "subtitle", "ass", StreamCompatibilityAction.Omit, "test") }
+        };
+
+        string error = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(3000, FrameCountProvenance.Measured, copySubtitles: false, containerDecision: decision),
+            SubtitleProbe(output: false, "eng", "Signs", defaultDisposition: true, forcedDisposition: false),
+            AvProbe(100, 100, output: true));
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
     public void SubtitleInflatedMkv_CompleteMappedMp4PassesAgainstVideoTimeline()
     {
         MediaProbeResult source = TopologyProbe(1475.25, 1419.96, 34045, includeOutlierSubtitle: true);
@@ -477,6 +697,16 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
             FfmpegDecodeIntegritySpotCheckService.BuildPositions(null));
     }
 
+    [Fact]
+    public void DecodeIntegritySpotCheckMapsOptionalAudioWithVideo()
+    {
+        IReadOnlyList<string> arguments = FfmpegDecodeIntegritySpotCheckService.BuildArguments("output.mp4", 50);
+
+        Assert.Contains("0:v:0", arguments);
+        Assert.Contains("0:a?", arguments);
+        Assert.DoesNotContain("-an", arguments);
+    }
+
     private IMediaProbeService? serviceProbe;
 
     private EncodeOutputValidationService CreateService(
@@ -513,24 +743,65 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         ExpectedVideoHeight = expectedHeight
     };
 
-    private static EncodeOutputValidationRequest FrameRequest(long expected, FrameCountProvenance provenance) => new()
+    private static EncodeOutputValidationRequest FrameRequest(long expected, FrameCountProvenance provenance, double duration = 100, SourceTimingAnalysis? sourceTiming = null, bool copySubtitles = false, OutputContainerDecision? containerDecision = null) => new()
     {
         Input = EncodingInputSource.FromFile("frame-topology.mkv"),
         Encoder = new VideoEncoderSelection(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
         ExpectedVideoFrameCount = expected,
         ExpectedVideoFrameCountProvenance = provenance,
-        ExpectedDurationSeconds = 100,
-        ContainerDecision = new OutputContainerDecision { Requested = OutputContainerSelection.Mp4, Resolved = OutputContainer.Mp4, Reason = "test" }
+        ExpectedDurationSeconds = duration,
+        SourceTiming = sourceTiming,
+        CopySubtitles = copySubtitles,
+        ContainerDecision = containerDecision ?? new OutputContainerDecision { Requested = OutputContainerSelection.Mp4, Resolved = OutputContainer.Mp4, Reason = "test" }
     };
 
-    private static MediaProbeResult FrameProbe(double duration, long frames, double fps, bool output = false) => new()
+    private static SourceTimingAnalysis VfrTiming() => new(SourceTimingClassification.Vfr, AiTimingEligibility.PotentialFutureTimestampAware, 80, 30, 18, .02, false, false, "verified monotonic VFR");
+
+    private static MediaProbeResult AvProbe(double videoDuration, double audioDuration, bool output = false) => new()
+    {
+        Success = true,
+        FormatName = output ? "mov,mp4,m4a,3gp,3g2,mj2" : "matroska,webm",
+        DurationSeconds = videoDuration,
+        Streams = new[]
+        {
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = output ? "hevc" : "h264", Width = 1920, Height = 1080, PixelFormat = "yuv420p", DurationSeconds = videoDuration, FrameCount = 3000, FrameRate = 30 },
+            new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "aac", Channels = 2, DurationSeconds = audioDuration }
+        }
+    };
+
+    private static MediaProbeResult SubtitleProbe(bool output, string language, string title, bool defaultDisposition, bool forcedDisposition) => new()
+    {
+        Success = true,
+        FormatName = output ? "mov,mp4,m4a,3gp,3g2,mj2" : "matroska,webm",
+        DurationSeconds = 100,
+        Streams = new[]
+        {
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = output ? "hevc" : "h264", Width = 1920, Height = 1080, PixelFormat = "yuv420p", DurationSeconds = 100, FrameCount = 3000, FrameRate = 30 },
+            new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "aac", Channels = 2, DurationSeconds = 100 },
+            new MediaProbeStreamInfo { Index = 2, CodecType = "subtitle", CodecName = output ? "mov_text" : "ass", Language = language, Tags = new Dictionary<string, string> { ["title"] = title }, Dispositions = new Dictionary<string, bool> { ["default"] = defaultDisposition, ["forced"] = forcedDisposition } }
+        }
+    };
+
+    private static MediaProbeResult PlannedAudioProbe(bool output, string codec, string language, string title, bool defaultDisposition) => new()
+    {
+        Success = true,
+        FormatName = output ? "mov,mp4,m4a,3gp,3g2,mj2" : "matroska,webm",
+        DurationSeconds = 100,
+        Streams = new[]
+        {
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = output ? "hevc" : "h264", Width = 1920, Height = 1080, PixelFormat = "yuv420p", DurationSeconds = 100, FrameCount = 3000, FrameRate = 30 },
+            new MediaProbeStreamInfo { Index = 4, CodecType = "audio", CodecName = codec, Channels = 2, DurationSeconds = 100, Language = language, Tags = new Dictionary<string, string> { ["title"] = title }, Dispositions = new Dictionary<string, bool> { ["default"] = defaultDisposition } }
+        }
+    };
+
+    private static MediaProbeResult FrameProbe(double duration, long frames, double fps, bool output = false, double? averageFps = null, double? nominalFps = null, double? startTime = null) => new()
     {
         Success = true,
         FormatName = output ? "mov,mp4,m4a,3gp,3g2,mj2" : "matroska,webm",
         DurationSeconds = duration,
         Streams = new[]
         {
-            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = output ? "hevc" : "h264", Width = 1920, Height = 1080, PixelFormat = "yuv420p", DurationSeconds = duration, FrameCount = frames, FrameRate = fps },
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = output ? "hevc" : "h264", Width = 1920, Height = 1080, PixelFormat = "yuv420p", StartTimeSeconds = startTime, DurationSeconds = duration, FrameCount = frames, FrameRate = fps, AverageFrameRate = averageFps, NominalFrameRate = nominalFps },
             new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "aac", Channels = 2 }
         }
     };
@@ -645,12 +916,12 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         };
     }
 
-    private static EncodeOutputValidationRequest TopologyRequest() => new()
+    private static EncodeOutputValidationRequest TopologyRequest(double expectedDuration = 1419.96, long expectedFrames = 34045) => new()
     {
         Input = EncodingInputSource.FromFile("topology.mkv"),
         Encoder = new VideoEncoderSelection(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
-        ExpectedDurationSeconds = 1419.96,
-        ExpectedVideoFrameCount = 34045,
+        ExpectedDurationSeconds = expectedDuration,
+        ExpectedVideoFrameCount = expectedFrames,
         ContainerDecision = new OutputContainerDecision { Requested = OutputContainerSelection.Mp4, Resolved = OutputContainer.Mp4, Reason = "test" }
     };
 

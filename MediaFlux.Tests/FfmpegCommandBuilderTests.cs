@@ -21,6 +21,8 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Contains("-vf format=nv12 ", arguments);
         Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
         Assert.Contains("-metadata:s:v:0 BPS= ", arguments);
+        Assert.Contains("-xerror -err_detect explode", arguments);
+        Assert.DoesNotContain("ignore_err", arguments, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -83,7 +85,24 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Contains("-c:a aac -b:a 192k", arguments);
         Assert.Contains("-metadata:s:a:0 language=\"jpn\"", arguments);
         Assert.Contains("-metadata:s:a:0 title=\"Japanese\"", arguments);
-        Assert.Contains("-disposition:a:0 0 -disposition:a:0 +default -disposition:a:0 +forced", arguments);
+        Assert.Contains("-disposition:a:0 default+forced", arguments);
+        Assert.Equal(1, arguments.Split("-disposition:a:0", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void PlannedMovTextConversionPreservesSubtitleMetadataAndDispositions()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Mp4, Resolved = OutputContainer.Mp4, Reason = "test",
+            StreamPlans = new[] { new StreamCompatibilityPlan(4, "subtitle", "ass", StreamCompatibilityAction.Transcode, "test", "mov_text", Language: "eng", Title: "Signs", Dispositions: new Dictionary<string, bool> { ["default"] = true, ["forced"] = true }) }
+        };
+        string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-c:s:0 mov_text", arguments);
+        Assert.Contains("-metadata:s:s:0 language=\"eng\"", arguments);
+        Assert.Contains("-metadata:s:s:0 title=\"Signs\"", arguments);
+        Assert.Contains("-disposition:s:0 default+forced", arguments);
     }
 
     [Fact]
@@ -258,7 +277,7 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.StartsWith("-y -hwaccel cuda -i ", arguments);
+        Assert.StartsWith("-y -xerror -err_detect explode -hwaccel cuda -i ", arguments);
         Assert.Contains("-vf format=p010le ", arguments);
         Assert.Contains(
             "-profile:v main10 -pix_fmt p010le ",
@@ -275,7 +294,7 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.Contains("-y -hwaccel qsv ", arguments);
+        Assert.Contains("-y -xerror -err_detect explode -hwaccel qsv ", arguments);
         Assert.Contains(
             "-c:v hevc_qsv -rc_mode icq -global_quality 19 " +
             "-preset slow -mbbrc 1 ",

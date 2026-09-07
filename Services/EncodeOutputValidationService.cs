@@ -14,7 +14,9 @@ namespace MediaFlux.Services
     public sealed class FfmpegDecodeIntegritySpotCheckService :
         IDecodeIntegritySpotCheckService
     {
-        private const double DecodeSeconds = 0.35;
+        // Three short samples cover beginning, middle, and end without adding a
+        // full second of decode work to every otherwise healthy encode.
+        private const double DecodeSeconds = 0.25;
         private readonly string _ffmpegPath;
         private readonly IMediaToolProcessRunner _processRunner;
 
@@ -96,8 +98,9 @@ namespace MediaFlux.Services
                 "-ss", positionSeconds.ToString("0.###", CultureInfo.InvariantCulture),
                 "-i", outputPath,
                 "-map", "0:v:0",
+                "-map", "0:a?",
                 "-t", DecodeSeconds.ToString("0.##", CultureInfo.InvariantCulture),
-                "-an", "-sn", "-dn",
+                "-sn", "-dn",
                 "-f", "null",
                 "-"
             };
@@ -429,13 +432,38 @@ namespace MediaFlux.Services
                     double allowedSeconds = request.ExpectedVideoFrameCountProvenance == FrameCountProvenance.Measured
                         ? Math.Max(0.75, fps > 0 ? 3d / fps : 0.75)
                         : Math.Max(1.0, fps > 0 ? 4d / fps : 1.0);
-                    log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount} ({request.ExpectedVideoFrameCountProvenance}); output={outputVideoForFrames.FrameCount}; delta={delta}; time-equivalent={deltaSeconds:0.###}s; allowed={allowedSeconds:0.###}s; duration-basis=authoritative; result={(deltaSeconds <= allowedSeconds ? "accepted" : "rejected")}.");
-                    if (deltaSeconds > allowedSeconds)
-                        return $"The encoded output contains {outputVideoForFrames.FrameCount} video frames versus {request.ExpectedVideoFrameCount} expected; the {deltaSeconds:0.###}-second frame deficit exceeds the time-aware {allowedSeconds:0.###}-second boundary allowance.";
+                    if (CanExplainFrameDeltaByVerifiedVfr(
+                            request.SourceTiming,
+                            authoritativeDuration,
+                            ProgramDurationResolver.Resolve(output).DurationSeconds,
+                            log))
+                    {
+                        log?.Invoke($"[EncodeOutputValidation] Frame delta={delta} is accepted because bounded FFprobe evidence proves monotonic VFR timing and the output presentation duration remains within the existing 0.75s boundary.");
+                    }
+                    else if (delta < 0 && CanExplainFrameDeficitByTimestampNormalization(
+                            sourceVideo,
+                            outputVideoForFrames,
+                            authoritativeDuration,
+                            ProgramDurationResolver.Resolve(output).DurationSeconds,
+                            request.ExpectedVideoFrameCount.Value,
+                            log))
+                    {
+                        log?.Invoke($"[EncodeOutputValidation] Frame deficit={-delta} is accepted because FFprobe proves nominal-rate timestamp normalization while the output presentation duration remains within the existing 0.75s boundary. source-start={sourceVideo.StartTimeSeconds?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}s.");
+                    }
+                    else
+                    {
+                        log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount} ({request.ExpectedVideoFrameCountProvenance}); output={outputVideoForFrames.FrameCount}; delta={delta}; time-equivalent={deltaSeconds:0.###}s; allowed={allowedSeconds:0.###}s; duration-basis=authoritative; result={(deltaSeconds <= allowedSeconds ? "accepted" : "rejected")}.");
+                        if (deltaSeconds > allowedSeconds)
+                            return $"The encoded output contains {outputVideoForFrames.FrameCount} video frames versus {request.ExpectedVideoFrameCount} expected; the {deltaSeconds:0.###}-second frame deficit exceeds the time-aware {allowedSeconds:0.###}-second boundary allowance.";
+                    }
                 }
                 else
                     log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount} ({request.ExpectedVideoFrameCountProvenance}); output=unavailable; duration validation remains authoritative.");
             }
+
+            string topologyError = ValidatePlannedStreamTopology(request, source, output);
+            if (!string.IsNullOrWhiteSpace(topologyError))
+                return topologyError;
 
             int sourceAudioCount = CountStreams(source, "audio");
             int expectedAudioCount = request.Input.HasExplicitStreamSelection
@@ -450,6 +478,15 @@ namespace MediaFlux.Services
                     $"The encoded output contains {outputAudioCount} audio stream(s), but " +
                     $"{expectedAudioCount} were expected from the selected mapping.";
             }
+
+            string audioDurationError = ValidateAudioDurations(
+                request,
+                source,
+                output,
+                authoritativeDuration,
+                log);
+            if (!string.IsNullOrWhiteSpace(audioDurationError))
+                return audioDurationError;
 
             if (request.AudioChannels is > 0 &&
                 output.Streams
@@ -518,6 +555,203 @@ namespace MediaFlux.Services
             }
 
             return "";
+        }
+
+        private static string ValidatePlannedStreamTopology(
+            EncodeOutputValidationRequest request,
+            MediaProbeResult source,
+            MediaProbeResult output)
+        {
+            int playableVideos = output.Streams.Count(IsPlayableVideo);
+            if (playableVideos != 1)
+                return playableVideos == 0
+                    ? "The encoded output is missing its required playable video stream."
+                    : $"The encoded output contains {playableVideos} playable video streams, but MediaFlux planned exactly one.";
+
+            string audioError = ValidatePlannedType("audio", request, source, output);
+            if (!string.IsNullOrWhiteSpace(audioError))
+                return audioError;
+
+            string subtitleError = ValidatePlannedType("subtitle", request, source, output);
+            if (!string.IsNullOrWhiteSpace(subtitleError))
+                return subtitleError;
+
+            return "";
+        }
+
+        private static string ValidatePlannedType(
+            string type,
+            EncodeOutputValidationRequest request,
+            MediaProbeResult source,
+            MediaProbeResult output)
+        {
+            StreamCompatibilityPlan[] plans = request.ContainerDecision.StreamPlans
+                .Where(plan => plan.StreamType.Equals(type, StringComparison.OrdinalIgnoreCase) &&
+                    plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode)
+                .ToArray();
+            MediaProbeStreamInfo[] actual = output.Streams.Where(stream => IsType(stream, type)).ToArray();
+
+            if (type.Equals("subtitle", StringComparison.OrdinalIgnoreCase) && !request.CopySubtitles)
+            {
+                if (actual.Length > 0)
+                    return $"The encoded output contains {actual.Length} unexpected subtitle stream(s), although subtitle mapping was intentionally disabled.";
+                return "";
+            }
+
+            MediaProbeStreamInfo[] selected = plans.Length == 0
+                ? SelectedStreamsForTopology(source, request, type)
+                : Array.Empty<MediaProbeStreamInfo>();
+            int expectedCount = plans.Length > 0 ? plans.Length : selected.Length;
+            if (actual.Length != expectedCount)
+                return actual.Length < expectedCount
+                    ? $"The encoded output is missing required {type} stream(s): expected {expectedCount}, found {actual.Length}."
+                    : $"The encoded output contains {actual.Length} {type} stream(s), but MediaFlux planned {expectedCount}; the additional stream(s) were not mapped intentionally.";
+
+            for (int index = 0; index < plans.Length; index++)
+            {
+                StreamCompatibilityPlan plan = plans[index];
+                MediaProbeStreamInfo stream = actual[index];
+                string expectedCodec = plan.Action == StreamCompatibilityAction.Transcode &&
+                    !string.IsNullOrWhiteSpace(plan.TargetCodec)
+                    ? plan.TargetCodec
+                    : plan.Codec;
+                if (!string.IsNullOrWhiteSpace(expectedCodec) &&
+                    !string.Equals(expectedCodec, stream.CodecName, StringComparison.OrdinalIgnoreCase))
+                    return $"{type} stream {index + 1} codec is '{stream.CodecName}', but planned stream {plan.StreamIndex} requires '{expectedCodec}'.";
+                if (!string.IsNullOrWhiteSpace(plan.Language) &&
+                    !string.Equals(plan.Language, stream.Language, StringComparison.OrdinalIgnoreCase))
+                    return $"{type} stream {index + 1} language metadata was not preserved from planned stream {plan.StreamIndex}.";
+                if (!string.IsNullOrWhiteSpace(plan.Title) &&
+                    (!stream.Tags.TryGetValue("title", out string? title) || !string.Equals(plan.Title, title, StringComparison.Ordinal)))
+                    return $"{type} stream {index + 1} title metadata was not preserved from planned stream {plan.StreamIndex}.";
+                foreach (string disposition in new[] { "default", "forced" }.Where(plan.IsDispositionSet))
+                    if (!stream.Dispositions.TryGetValue(disposition, out bool set) || !set)
+                        return $"{type} stream {index + 1} {disposition} disposition was not preserved from planned stream {plan.StreamIndex}.";
+            }
+
+            return "";
+        }
+
+        private static MediaProbeStreamInfo[] SelectedStreamsForTopology(
+            MediaProbeResult probe,
+            EncodeOutputValidationRequest request,
+            string type)
+        {
+            IEnumerable<MediaProbeStreamInfo> streams = probe.Streams.Where(stream => IsType(stream, type));
+            if (request.Input.HasExplicitStreamSelection)
+            {
+                IReadOnlyList<int> indexes = type.Equals("audio", StringComparison.OrdinalIgnoreCase)
+                    ? request.Input.AudioStreamIndexes
+                    : request.Input.SubtitleStreamIndexes;
+                return indexes.Select(index => probe.Streams.FirstOrDefault(stream =>
+                        stream.Index == index && IsType(stream, type)))
+                    .Where(stream => stream is not null)
+                    .Cast<MediaProbeStreamInfo>()
+                    .ToArray();
+            }
+            return type.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                request.MapMode == EncodingService.StreamMapMode.FirstAudioOnly
+                ? streams.Take(1).ToArray()
+                : streams.ToArray();
+        }
+
+        private static bool IsPlayableVideo(MediaProbeStreamInfo stream) =>
+            IsType(stream, "video") &&
+            (!stream.Dispositions.TryGetValue("attached_pic", out bool attached) || !attached);
+
+        private static string ValidateAudioDurations(
+            EncodeOutputValidationRequest request,
+            MediaProbeResult source,
+            MediaProbeResult output,
+            double? authoritativeDuration,
+            Action<string>? log)
+        {
+            const double BoundarySeconds = 0.75;
+            if (authoritativeDuration is not > 0)
+                return "";
+            MediaProbeStreamInfo[] expected = SelectedStreams(source, request, "audio");
+            MediaProbeStreamInfo[] actual = output.Streams.Where(stream => IsType(stream, "audio")).ToArray();
+            for (int index = 0; index < Math.Min(expected.Length, actual.Length); index++)
+            {
+                double? sourceDurationValue = expected[index].DurationSeconds;
+                double? outputDurationValue = actual[index].DurationSeconds;
+                if (sourceDurationValue is not > 0 || outputDurationValue is not > 0)
+                    continue;
+                double sourceDuration = sourceDurationValue.GetValueOrDefault();
+                double outputDuration = outputDurationValue.GetValueOrDefault();
+                double sourceDelta = Math.Abs(sourceDuration - authoritativeDuration.Value);
+                double expectedOutputDuration = sourceDelta > BoundarySeconds
+                    ? sourceDuration
+                    : authoritativeDuration.Value;
+                double outputDelta = Math.Abs(outputDuration - expectedOutputDuration);
+                log?.Invoke($"[EncodeOutputValidation] Audio duration stream={index}; source={sourceDuration:0.###}; output={outputDuration:0.###}; expected={expectedOutputDuration:0.###}; source-av-delta={sourceDelta:0.###}; result={(outputDelta <= BoundarySeconds ? "accepted" : "rejected")}.");
+                if (outputDelta > BoundarySeconds)
+                {
+                    string basis = sourceDelta > BoundarySeconds
+                        ? "the source stream's pre-existing audio duration"
+                        : "the authoritative program duration";
+                    return $"Output audio stream {index + 1} duration is {outputDuration:0.###} seconds, but {basis} is {expectedOutputDuration:0.###} seconds; MediaFlux detected material output-introduced A/V loss or desynchronization.";
+                }
+            }
+            return "";
+        }
+
+        private static MediaProbeStreamInfo[] SelectedStreams(MediaProbeResult probe, EncodeOutputValidationRequest request, string type)
+            => SelectedStreamsForTopology(probe, request, type);
+
+        private static bool CanExplainFrameDeltaByVerifiedVfr(
+            SourceTimingAnalysis? timing,
+            double? authoritativeDuration,
+            double? outputPresentationDuration,
+            Action<string>? log)
+        {
+            const double PresentationDurationBoundarySeconds = 0.75;
+            bool accepted = timing?.Classification == SourceTimingClassification.Vfr &&
+                            !timing.HasDiscontinuity &&
+                            !timing.HasNonMonotonicTimestamps &&
+                            authoritativeDuration is > 0 &&
+                            outputPresentationDuration is > 0 &&
+                            Math.Abs(outputPresentationDuration.Value - authoritativeDuration.Value) <= PresentationDurationBoundarySeconds;
+            if (timing is not null)
+                log?.Invoke($"[EncodeOutputValidation] VFR timing evidence: classification={timing.Classification}; discontinuity={timing.HasDiscontinuity}; non-monotonic={timing.HasNonMonotonicTimestamps}; source-duration={authoritativeDuration?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}; output-duration={outputPresentationDuration?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}; result={(accepted ? "accepted" : "rejected")}.");
+            return accepted;
+        }
+
+        // FFmpeg's CFR output synchronization can legitimately discard input packets when
+        // their presentation timeline has more packets than the stream's nominal cadence.
+        // Do not infer this from console text (which is version- and loglevel-dependent).
+        // Instead require FFprobe evidence that both source and output fit that cadence and
+        // that the output presentation duration was not shortened beyond the existing frame
+        // boundary. This remains deliberately narrower than the general duration allowance.
+        private static bool CanExplainFrameDeficitByTimestampNormalization(
+            MediaProbeStreamInfo source,
+            MediaProbeStreamInfo output,
+            double? authoritativeDuration,
+            double? outputPresentationDuration,
+            long sourceFrameCount,
+            Action<string>? log)
+        {
+            const double PresentationDurationBoundarySeconds = 0.75;
+            const double NominalCadenceFrameBoundary = 3;
+            if (authoritativeDuration is not > 0 || outputPresentationDuration is not > 0 ||
+                source.NominalFrameRate is not > 0 || output.NominalFrameRate is not > 0 ||
+                output.FrameCount is not > 0)
+                return false;
+
+            double sourceNominalRate = source.NominalFrameRate.Value;
+            double outputNominalRate = output.NominalFrameRate.Value;
+            if (Math.Abs(sourceNominalRate - outputNominalRate) > 0.001 ||
+                outputPresentationDuration.Value < authoritativeDuration.Value - PresentationDurationBoundarySeconds)
+                return false;
+
+            double sourceNominalFrames = authoritativeDuration.Value * sourceNominalRate;
+            double outputNominalFrames = outputPresentationDuration.Value * outputNominalRate;
+            double sourceExcess = sourceFrameCount - sourceNominalFrames;
+            double outputCadenceDelta = Math.Abs(output.FrameCount.Value - outputNominalFrames);
+            bool accepted = sourceExcess > NominalCadenceFrameBoundary &&
+                            outputCadenceDelta <= NominalCadenceFrameBoundary;
+            log?.Invoke($"[EncodeOutputValidation] Timestamp cadence evidence: source-count={sourceFrameCount}; source-nominal={sourceNominalFrames:0.###}; source-excess={sourceExcess:0.###}; output-count={output.FrameCount}; output-nominal={outputNominalFrames:0.###}; output-cadence-delta={outputCadenceDelta:0.###}; source-rate(avg/nominal)={source.AverageFrameRate?.ToString("0.######", CultureInfo.InvariantCulture) ?? "unknown"}/{sourceNominalRate:0.######}; output-rate(nominal)={outputNominalRate:0.######}; result={(accepted ? "accepted" : "rejected")}.");
+            return accepted;
         }
 
         private static string ValidateChapterPreservation(

@@ -154,6 +154,20 @@ public sealed class OutputContainerPolicyTests
     }
 
     [Fact]
+    public void IntelligentCanExcludeOnlyFailedPlannedMovTextSubtitleWhileStrictCannotProceed()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"), new MediaProbeStreamInfo { Index = 3, CodecType = "subtitle", CodecName = "ass" });
+
+        OutputContainerDecision excluded = OutputContainerPolicy.ExcludeFailedTextSubtitle(decision, 3, "malformed");
+
+        Assert.Equal(StreamCompatibilityAction.Omit, Assert.Single(excluded.StreamPlans).Action);
+        Assert.False(excluded.CopySubtitles);
+        Assert.True(OutputContainerPolicy.CanProceedAutomatically(excluded, ContainerCompatibilityPolicy.Intelligent));
+        Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Strict));
+    }
+
+    [Fact]
     public void ExplicitMp4_IntelligentPlanSafelyConvertsKnownAncillaryAudio()
     {
         OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,

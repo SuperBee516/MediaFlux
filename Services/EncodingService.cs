@@ -600,7 +600,19 @@ namespace MediaFlux.Services
                    Environment.CurrentDirectory)
                 : outputFolder;
 
-            Directory.CreateDirectory(outFolder);
+            try
+            {
+                Directory.CreateDirectory(outFolder);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                FfmpegStorageFailure storageFailure = FfmpegStorageFailureClassifier.Classify(ex, destinationOperation: true);
+                string detail = storageFailure.IsReliable
+                    ? storageFailure.Describe()
+                    : "the output staging directory could not be created";
+                throw new InvalidOperationException(
+                    $"MediaFlux cannot start the encode because {detail}: '{outFolder}'. The original source was retained.", ex);
+            }
             performance.SetHardwareSnapshot(HardwarePerformanceService.Capture(
                 inputSource.SourcePath,
                 AppPaths.AiIntermediatesDirectory,
@@ -635,6 +647,16 @@ namespace MediaFlux.Services
                 ? null
                 : ProgramDurationResolver.GetReliableDuration(programDuration.PrimaryVideo);
             _log?.Invoke($"[EncodingService] Container duration={sourceProbe.DurationSeconds?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; primary video duration={primaryVideoDuration?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; authoritative duration={programDuration.DurationSeconds?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; reason={programDuration.Reason}");
+            SourceTimingAnalysis? sourceTiming = null;
+            if (inputSource.Kind == EncodingInputKind.File)
+            {
+                using PerformanceTimingService.PerformanceScope timingScope = performance.Measure(PerformanceTimingStage.SourceAnalysis);
+                sourceTiming = await new SourceTimingAnalysisService(_ffprobePath, log: _log)
+                    .AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
+                timingScope.Complete();
+                if (sourceTiming.Classification == SourceTimingClassification.IrregularUnsafe)
+                    throw new InvalidOperationException("The source video has materially discontinuous or non-monotonic presentation timestamps. MediaFlux did not start an encode because it cannot prove a complete presentation timeline. The original source was retained.");
+            }
             VideoOutputResolutionPlan? finalOutputResolution = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0
                 ? VideoRestorationPipeline.ResolveFinalOutputResolution(sourceVideo.Width.Value, sourceVideo.Height.Value, restoration, scaleMode)
                 : null;
@@ -664,12 +686,8 @@ namespace MediaFlux.Services
                 MediaProbeStreamInfo? video = sourceVideo;
                 if (video?.FrameRate is not > 0 || video.Width is not > 0 || video.Height is not > 0)
                     throw new AiRestorationValidationException("AI restoration requires a source with a known constant frame rate and resolution.");
-                SourceTimingAnalysis timing;
-                using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.SourceAnalysis))
-                {
-                    timing = await new SourceTimingAnalysisService(_ffprobePath, log: _log).AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
-                    scope.Complete();
-                }
+                SourceTimingAnalysis timing = sourceTiming ?? await new SourceTimingAnalysisService(_ffprobePath, log: _log)
+                    .AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
                 SourceTimingAnalysisService.EnsureCurrentCfrSupported(timing);
                 IAiRestorationBackend backend = await new AiBackendManager(AppPaths.InstallDirectory, log: _log)
                     .SelectAsync(aiSettings, video.Width.Value, video.Height.Value, cancellationToken).ConfigureAwait(false);
@@ -733,6 +751,33 @@ namespace MediaFlux.Services
                 _log?.Invoke(
                     "[EncodingService] Explicit MP4 compatibility was not preconfirmed by the caller; " +
                     "continuing for legacy API compatibility.");
+            }
+
+            SubtitleConversionPreflightResult subtitlePreflight = await new SubtitleConversionPreflightService(_ffmpegPath)
+                .ValidateAsync(inputSource, containerDecision, cancellationToken).ConfigureAwait(false);
+            if (!subtitlePreflight.Success)
+            {
+                if (compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
+                {
+                    containerDecision = OutputContainerPolicy.ExcludeFailedTextSubtitle(
+                        containerDecision, subtitlePreflight.StreamIndex!.Value, subtitlePreflight.ErrorMessage);
+                    _log?.Invoke($"[EncodingService] {subtitlePreflight.ErrorMessage} Excluded only that subtitle stream under Intelligent policy. Diagnostics: {subtitlePreflight.Diagnostics}");
+                }
+                else
+                {
+                    throw new InvalidOperationException(subtitlePreflight.ErrorMessage +
+                        " MediaFlux did not start the encode because the selected subtitle cannot be preserved under the current compatibility policy. The original source was retained.");
+                }
+            }
+
+            SourceAudioDecodePreflightResult audioPreflight =
+                await new SourceAudioDecodePreflightService(_ffmpegPath)
+                    .ValidateCopiedStreamsAsync(inputSource, containerDecision, cancellationToken)
+                    .ConfigureAwait(false);
+            if (!audioPreflight.Success)
+            {
+                _log?.Invoke($"[EncodingService] Audio source preflight failed for stream #{audioPreflight.StreamIndex}: {audioPreflight.ErrorMessage} Diagnostics: {audioPreflight.Diagnostics}");
+                throw new InvalidOperationException(audioPreflight.ErrorMessage + " The original source was retained.");
             }
 
             // Keep the intended final name collision-safe, but write FFmpeg output
@@ -961,6 +1006,26 @@ namespace MediaFlux.Services
                     : cudaRecoveryStarted
                         ? " The software-decode NVENC recovery attempt also failed; both attempt diagnostics were recorded."
                         : " The NVDEC/CUDA recovery retry was not started; diagnostics were recorded.";
+                FfmpegStorageFailure storageFailure =
+                    FfmpegStorageFailureClassifier.Classify(runResult.StandardError, output);
+                if (storageFailure.IsReliable)
+                    throw new InvalidOperationException(
+                        $"FFmpeg stopped because {storageFailure.Describe()}. The partial staged output was not finalized; existing recovery policy controls its retention. The original source was retained. See central log: {logPath}");
+                FfmpegNvencFailure nvencFailure = requestedEncoder.EncoderId.Equals(
+                    VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase)
+                    ? FfmpegNvencFailureClassifier.Classify(runResult.StandardError)
+                    : new FfmpegNvencFailure(FfmpegNvencFailureKind.None, Array.Empty<string>());
+                if (nvencFailure.IsReliable)
+                    throw new InvalidOperationException(
+                        $"FFmpeg stopped because {nvencFailure.Describe()}. MediaFlux did not retry with a different encoder because that would change the requested encoding policy. The partial staged output was not finalized; existing recovery policy controls its retention. The original source was retained. See central log: {logPath}");
+                FfmpegSourceDecodeCorruption sourceDecodeCorruption =
+                    FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
+                FfmpegSourceTruncation sourceTruncation =
+                    FfmpegSourceTruncationClassifier.Classify(runResult.StandardError);
+                if (sourceTruncation.IsReliable)
+                    throw new InvalidOperationException("FFmpeg stopped because the source media appears truncated or incomplete. The original source was retained. See central log: " + logPath);
+                if (sourceDecodeCorruption.IsReliable)
+                    throw new InvalidOperationException("FFmpeg stopped because the source video contains undecodable or corrupt H.264 data. The original source was retained. See central log: " + logPath);
                 throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{recoverySuffix} See central log: {logPath}");
             }
             encodeScope.Complete();
@@ -993,6 +1058,7 @@ namespace MediaFlux.Services
                         ExpectedVideoFrameCountProvenance = sampleDuration is null && programDuration.PrimaryVideo?.FrameCount is > 0
                             ? FrameCountProvenance.Measured
                             : FrameCountProvenance.Unavailable,
+                        SourceTiming = sourceTiming,
                         ExpectedVideoWidth = plannedOutputGeometry?.Width,
                         ExpectedVideoHeight = plannedOutputGeometry?.Height,
                         PerformanceTiming = performance
@@ -1003,6 +1069,23 @@ namespace MediaFlux.Services
             }
             if (!finalization.Success)
             {
+                FfmpegSourceDecodeCorruption sourceDecodeCorruption =
+                    FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
+                if (finalization.FailureKind == EncodeFinalizationFailureKind.Validation &&
+                    IsFrameDeficitValidationFailure(finalization.ErrorMessage) &&
+                    sourceDecodeCorruption.IsReliable)
+                {
+                    _log?.Invoke($"[EncodingService] Source decode corruption was corroborated by rejected output validation: {sourceDecodeCorruption.DescribeEvidence()}.");
+                    finalization = new EncodeFinalizationResult
+                    {
+                        Success = false,
+                        FailureKind = finalization.FailureKind,
+                        ErrorMessage = "Output validation rejected substantial missing video frames. FFmpeg also reported source H.264 bitstream/decode failures, so the source video contains undecodable or corrupt data; MediaFlux did not finalize the output.",
+                        FinalOutputPath = finalization.FinalOutputPath,
+                        StagingPath = finalization.StagingPath,
+                        RecoverableOutputPath = finalization.RecoverableOutputPath
+                    };
+                }
                 _log?.Invoke(
                     $"[EncodingService] Finalization failed: {finalization.ErrorMessage}");
                 throw new EncodeFinalizationException(finalization);
@@ -1170,6 +1253,10 @@ namespace MediaFlux.Services
                     .FirstOrDefault();
             return string.IsNullOrWhiteSpace(detail) ? "No FFmpeg diagnostic was captured." : detail.Trim();
         }
+
+        private static bool IsFrameDeficitValidationFailure(string errorMessage) =>
+            errorMessage.Contains("video frames versus", StringComparison.OrdinalIgnoreCase) &&
+            errorMessage.Contains("frame deficit", StringComparison.OrdinalIgnoreCase);
 
         private bool TryDeleteFailedStagingOutput(string stagingPath)
         {

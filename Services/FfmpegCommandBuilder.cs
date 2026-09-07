@@ -105,7 +105,9 @@ namespace MediaFlux.Services
             };
 
             var builder = new StringBuilder();
-            builder.Append("-y ");
+            // Decode errors must fail the encode rather than allowing FFmpeg to
+            // conceal damaged source packets behind a successful exit code.
+            builder.Append("-y -xerror -err_detect explode ");
 
             provider.AppendInputAcceleration(builder, context);
             if (validated.UseGpu && isAsfFamilyInput)
@@ -173,6 +175,7 @@ namespace MediaFlux.Services
 
             AppendAudioArguments(builder, request);
             AppendPlannedAudioMetadataAndDispositions(builder, request.ContainerDecision);
+            AppendPlannedSubtitleMetadataAndDispositions(builder, request.ContainerDecision);
             if (request.ContainerDecision.Resolved == OutputContainer.Mp4)
                 builder.Append("-movflags +faststart ");
             builder.Append($"-f {request.ContainerDecision.MuxerName} ");
@@ -302,13 +305,32 @@ namespace MediaFlux.Services
                 if (!string.IsNullOrWhiteSpace(plan.Title))
                     builder.Append($"-metadata:s:a:{outputIndex} title={QuoteMetadata(plan.Title)} ");
 
-                // Explicitly reset then restore the supported dispositions so
-                // transcoding does not let FFmpeg synthesize a different default.
-                builder.Append($"-disposition:a:{outputIndex} 0 ");
-                if (plan.IsDispositionSet("default"))
-                    builder.Append($"-disposition:a:{outputIndex} +default ");
-                if (plan.IsDispositionSet("forced"))
-                    builder.Append($"-disposition:a:{outputIndex} +forced ");
+                // A single disposition option replaces the output stream's set.
+                // Repeating -disposition for one stream makes FFmpeg warn and is
+                // unnecessary; the explicit list preserves the supported flags.
+                string dispositions = string.Join('+', new[] { "default", "forced" }
+                    .Where(plan.IsDispositionSet));
+                builder.Append($"-disposition:a:{outputIndex} {(
+                    string.IsNullOrEmpty(dispositions) ? "0" : dispositions)} ");
+                outputIndex++;
+            }
+        }
+
+        private static void AppendPlannedSubtitleMetadataAndDispositions(
+            StringBuilder builder,
+            OutputContainerDecision decision)
+        {
+            int outputIndex = 0;
+            foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(plan =>
+                         plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
+                         plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
+            {
+                if (!string.IsNullOrWhiteSpace(plan.Language))
+                    builder.Append($"-metadata:s:s:{outputIndex} language={QuoteMetadata(plan.Language)} ");
+                if (!string.IsNullOrWhiteSpace(plan.Title))
+                    builder.Append($"-metadata:s:s:{outputIndex} title={QuoteMetadata(plan.Title)} ");
+                string dispositions = string.Join('+', new[] { "default", "forced" }.Where(plan.IsDispositionSet));
+                builder.Append($"-disposition:s:{outputIndex} {(string.IsNullOrEmpty(dispositions) ? "0" : dispositions)} ");
                 outputIndex++;
             }
         }

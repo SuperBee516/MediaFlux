@@ -101,9 +101,14 @@ namespace MediaFlux.Services
             }
             catch (Exception ex)
             {
+                FfmpegStorageFailure storageFailure =
+                    FfmpegStorageFailureClassifier.Classify(ex, destinationOperation: true);
+                string message = storageFailure.IsReliable
+                    ? $"Output promotion failed because {storageFailure.Describe()}: {ex.Message}"
+                    : $"Output promotion failed: {ex.Message}";
                 return Failed(
                     EncodeFinalizationFailureKind.Promotion,
-                    $"Output promotion failed: {ex.Message}",
+                    message,
                     request,
                     File.Exists(request.OutputPath) ? request.OutputPath : "");
             }

@@ -34,6 +34,8 @@ namespace MediaFlux.Models
         public double? ExpectedDurationSeconds { get; init; }
         public long? ExpectedVideoFrameCount { get; init; }
         public FrameCountProvenance ExpectedVideoFrameCountProvenance { get; init; } = FrameCountProvenance.Unavailable;
+        /// <summary>Bounded FFprobe timestamp evidence captured before the encode.</summary>
+        public SourceTimingAnalysis? SourceTiming { get; init; }
         public int? ExpectedVideoWidth { get; init; }
         public int? ExpectedVideoHeight { get; init; }
         public PerformanceTimingService? PerformanceTiming { get; init; }
