@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
 using System.Windows.Forms;
 using MediaFlux.Services;
+using Microsoft.Data.Sqlite;
 using Velopack.Exceptions;
 using Velopack.Sources;
 
@@ -9,6 +12,7 @@ namespace MediaFlux
 {
     internal static class UpdateManager
     {
+        internal enum UpdateFailureKind { LocalData, RepositoryAccess, NetworkOrMetadata, Other }
         public const string RepositoryUrl = "https://github.com/SuperBee516/MediaFlux";
         public const string ReleasesUrl = RepositoryUrl + "/releases";
 
@@ -132,14 +136,48 @@ namespace MediaFlux
                 ErrorLogService.Append(AppPaths.UserDataDirectory, "GitHub update failed", exception: ex);
                 MessageBox.Show(
                     owner,
-                    "MediaFlux could not complete the update check.\r\n\r\n" +
-                    ex.Message +
-                    "\r\n\r\nIf the repository is still private, automatic updates will become available after it is made public.",
+                    BuildFailureMessage(ex),
                     "Update failed",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
                 return false;
             }
+        }
+
+        internal static UpdateFailureKind ClassifyFailure(Exception exception)
+        {
+            for (Exception? current = exception; current != null; current = current.InnerException)
+            {
+                if (current is UnauthorizedAccessException or IOException or SqliteException)
+                    return UpdateFailureKind.LocalData;
+
+                if (current is HttpRequestException http)
+                {
+                    if (http.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.NotFound)
+                        return UpdateFailureKind.RepositoryAccess;
+                    return UpdateFailureKind.NetworkOrMetadata;
+                }
+            }
+
+            return UpdateFailureKind.Other;
+        }
+
+        internal static string BuildFailureMessage(Exception exception)
+        {
+            return ClassifyFailure(exception) switch
+            {
+                UpdateFailureKind.LocalData =>
+                    "MediaFlux could not prepare local user data for the update.\r\n\r\n" +
+                    "A local file is unavailable or in use. No update was installed and your data was not changed. " +
+                    "Finish any MediaFlux work and try again.\r\n\r\n" + exception.Message,
+                UpdateFailureKind.RepositoryAccess =>
+                    "MediaFlux could not access the release information.\r\n\r\n" +
+                    "Verify repository access and release availability. Private repositories require authenticated update access.\r\n\r\n" + exception.Message,
+                UpdateFailureKind.NetworkOrMetadata =>
+                    "MediaFlux could not retrieve update information.\r\n\r\n" +
+                    "Check your network connection and try again.\r\n\r\n" + exception.Message,
+                _ => "MediaFlux could not complete the update.\r\n\r\n" + exception.Message
+            };
         }
 
         private static void OpenReleasesPage()

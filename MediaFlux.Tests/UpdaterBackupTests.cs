@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using Microsoft.Data.Sqlite;
+using MediaFlux.Services;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -95,6 +97,68 @@ public sealed class UpdaterBackupTests : IDisposable
         BackupManager.ExtractUserDataValidated(archive, restored);
         Assert.True(File.Exists(Path.Combine(restored, "config.json")));
         Assert.True(File.Exists(Path.Combine(restored, "data", "encode-jobs.json")));
+    }
+
+    [Fact]
+    public void LiveWalBackupsUseConsistentSqliteSnapshotsAndPreserveBenchmarkData()
+    {
+        string userData = Path.Combine(_root, "UserData");
+        string data = Path.Combine(userData, "data");
+        string benchmarks = Path.Combine(data, "ai-benchmarks.db");
+        string catalog = Path.Combine(data, "library-catalog.db");
+        string backups = Path.Combine(_root, "Backups");
+        Directory.CreateDirectory(data);
+
+        var benchmarkDatabase = new AiBenchmarkDatabase(benchmarks);
+        benchmarkDatabase.Store(new AiBenchmarkDatabaseEntry(
+            new AiBenchmarkDatabaseKey("ncnn", "ncnn-1", "model", "gpu", "driver", "FP32", 2, "1080p"),
+            NcnnRuntimeConfiguration.SafeDefault, 12.5, null, true, DateTimeOffset.UtcNow, "preserve me"));
+        CreateSqliteDatabase(catalog, "catalog_entries", "library value");
+
+        // Keep a pooled WAL reader alive to represent normal AI/runtime activity while the
+        // updater's optional data backup is created.
+        using var active = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = benchmarks,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = true
+        }.ToString());
+        active.Open();
+        using var command = active.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM ai_benchmark_results;";
+        Assert.Equal(1L, (long)command.ExecuteScalar()!);
+        Assert.True(File.Exists(benchmarks + "-wal"));
+
+        string archive = BackupManager.CreateBackup(userData, backups, 3);
+        string restored = Path.Combine(_root, "Restored");
+        BackupManager.ExtractUserDataValidated(archive, restored);
+
+        var restoredBenchmarks = new AiBenchmarkDatabase(Path.Combine(restored, "data", "ai-benchmarks.db"));
+        Assert.Single(restoredBenchmarks.List());
+        Assert.Equal("preserve me", restoredBenchmarks.List()[0].Entry.Summary);
+        Assert.Equal("library value", ReadSqliteValue(Path.Combine(restored, "data", "library-catalog.db"), "catalog_entries"));
+
+        using ZipArchive zip = ZipFile.OpenRead(archive);
+        Assert.DoesNotContain(zip.Entries, entry => entry.FullName.EndsWith("-wal", StringComparison.OrdinalIgnoreCase) || entry.FullName.EndsWith("-shm", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void CreateSqliteDatabase(string path, string table, string value)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString());
+        connection.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA journal_mode=WAL; CREATE TABLE {table}(value TEXT NOT NULL); INSERT INTO {table}(value) VALUES ($value);";
+        command.Parameters.AddWithValue("$value", value);
+        command.ExecuteNonQuery();
+    }
+
+    private static string ReadSqliteValue(string path, string table)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+        connection.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"SELECT value FROM {table};";
+        return (string)command.ExecuteScalar()!;
     }
 
     private static void Write(string path, string value)
