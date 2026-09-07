@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-07
+
+### Encoding Integrity and Reliability
+
+- Hardened encoding validation for incomplete, corrupt, or unexpectedly altered media while preserving safe recovery behavior.
+- Improved timestamp, variable-frame-rate, audio/video, subtitle, hardware, and storage failure diagnostics.
+- Added output stream-topology and staged decode-integrity checks to prevent false-success finalization.
+
 ## [1.2.0] - 2026-09-05
 
 ### Storage Migration Reliability
