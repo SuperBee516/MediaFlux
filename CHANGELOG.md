@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-09-07
+
+### Visual Match Relocation
+
+- Either compared video can now be moved directly into the other video's directory while preserving catalog identity and existing analysis/review information.
+- Visual Match refreshes the displayed path after relocation.
+- Filename collisions are handled safely without silent overwrite, with filesystem/catalog validation and rollback protection.
+
+### Queue Controls
+
+- Fixed responsive Queue Controls layout behavior, preventing circular preferred-height inflation and improving stability during responsive resizing.
+
 ## [1.3.1] - 2026-09-07
 
 ### Encoding and Update Reliability
