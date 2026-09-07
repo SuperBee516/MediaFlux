@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-07
+
+### Encoding and Update Reliability
+
+- Hardened encoding validation for timestamp/VFR normalization, damaged or truncated sources, A/V and stream integrity, subtitles, hardware/storage failures, and output decode validation.
+- Improved diagnostics for corrupt or undecodable media and updater failures.
+- Added SQLite-safe pre-update backups that consistently capture committed WAL data without copying live `-wal` or `-shm` sidecars.
+- Corrected updater error classification so local database/filesystem failures are not reported as private-repository problems.
+
+> **Upgrade note for v1.3.0 users:** Existing v1.3.0 installations contain the older pre-update backup implementation. If an update reports that `ai-benchmarks.db` is being used by another process, temporarily disable **Automatically backup before updates** and retry, or manually install v1.3.1. Do not delete or recreate the database. After v1.3.1 is installed, automatic updates with pre-update backups enabled work with active idle SQLite-backed services.
+
 ## [1.3.0] - 2026-09-07
 
 ### Encoding Integrity and Reliability
