@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-09-07
+
+### Library Analyzer Duplicate Review
+
+- Clarified duplicate-review workflow with grouped Review, Cleanup, Automation, and Advanced actions.
+- Improved labels, guidance, tooltips, dynamic actions, responsive layout, and DPI behavior without internal action scrollbars.
+- Corrected Visual Duplicate selection and splitter-persistence test expectations after refresh and layout changes.
+
 ## [1.3.3] - 2026-09-07
 
 ### Library Analyzer Duplicate Review
