@@ -8,12 +8,20 @@ namespace MediaFlux
     {
         private readonly DataGridView _recommendationsGrid = CreateGrid();
         private readonly Label _recommendationsStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 7, 0, 0) };
+        private readonly AnalyzerMetricCard _recommendationSavingsMetric = new("Potential savings");
+        private readonly AnalyzerMetricCard _recommendationCountMetric = new("Candidates");
+        private readonly AnalyzerMetricCard _recommendationCategoriesMetric = new("Cleanup categories");
+        private readonly AnalyzerMetricCard _recommendationStateMetric = new("Recommendation state");
         private readonly DataGridView _optimizationGrid = CreateGrid();
         private readonly Label _optimizationStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 7, 0, 0) };
         private readonly ComboBox _policySelection = DropDown();
         private readonly ComboBox _policyStateFilter = DropDown();
         private readonly Label _policySummary = new() { Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(8, 4, 0, 0) };
         private readonly Label _policyPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
+        private readonly AnalyzerMetricCard _policyConfiguredMetric = new("Configured policies");
+        private readonly AnalyzerMetricCard _policyCompliantMetric = new("Compliant files");
+        private readonly AnalyzerMetricCard _policyAttentionMetric = new("Attention required");
+        private readonly AnalyzerMetricCard _policySavingsMetric = new("Projected savings");
         private int _policyPage;
         private long _policyFilteredCount;
 
@@ -29,17 +37,19 @@ namespace MediaFlux
                 ForeColor = LibraryAnalyzerAccentColor,
                 Text = "This view estimates reclaimable storage from currently eligible catalog records. It never deletes files; visual suggestions still require separate review and cleanup confirmation."
             };
-            var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, WrapContents = false };
-            AddButton(actions, "Refresh", async (_, _) => await RefreshRecommendationsAsync());
+            var actions = AnalyzerUi.ActionBar();
+            Button refresh = AddButton(actions, "Refresh", async (_, _) => await RefreshRecommendationsAsync());
+            AnalyzerUi.StylePrimary(refresh);
             _recommendationsGrid.Columns.Add("Category", "Category");
             _recommendationsGrid.Columns.Add("Safety", "Status");
             _recommendationsGrid.Columns.Add("Matches", "Files / matches");
             _recommendationsGrid.Columns.Add("Space", "Reclaimable storage");
             _recommendationsGrid.Columns.Add("Details", "What this means");
             _recommendationsGrid.Columns[4].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-            tab.Controls.Add(_recommendationsGrid);
+            tab.Controls.Add(new AnalyzerSectionPanel("Cleanup opportunities", _recommendationsGrid) { Dock = DockStyle.Fill });
             tab.Controls.Add(_recommendationsStatus);
             tab.Controls.Add(intro);
+            tab.Controls.Add(AnalyzerUi.MetricRow(72, _recommendationSavingsMetric, _recommendationCountMetric, _recommendationCategoriesMetric, _recommendationStateMetric));
             tab.Controls.Add(actions);
             _tabs.TabPages.Add(tab);
         }
@@ -58,6 +68,13 @@ namespace MediaFlux
                 _recommendationsGrid.Rows[row].Tag = category;
             }
             _recommendationsStatus.Text = $"Calculated {dashboard.CalculatedUtc.ToLocalTime():g}. Values are non-overlapping cleanup candidates, not actions.";
+            long count = dashboard.Categories.Sum(category => (long)category.MatchCount);
+            long savings = dashboard.Categories.Sum(category => category.ReclaimableBytes);
+            bool hasRecommendations = count > 0;
+            _recommendationSavingsMetric.SetValue(FormatBytes(savings), "Potential reclaimable space");
+            _recommendationCountMetric.SetValue(count.ToString("N0"), "Eligible candidates or matches");
+            _recommendationCategoriesMetric.SetValue(dashboard.Categories.Count.ToString("N0"), "Exact, visual, and policy opportunities");
+            _recommendationStateMetric.SetValue(hasRecommendations ? "Review" : "Clear", hasRecommendations ? "Recommendations are available" : "No eligible cleanup candidates");
         }
 
         private void BuildLibraryPoliciesTab()
@@ -72,7 +89,7 @@ namespace MediaFlux
                 ForeColor = LibraryAnalyzerAccentColor,
                 Text = "Evaluate the catalog against an explicit library policy. Results are advisory: nothing is encoded, remuxed, deleted, or queued until you select eligible rows. Projections use existing catalog metadata only."
             };
-            var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 72, WrapContents = true };
+            var actions = AnalyzerUi.FilterBar();
             actions.Controls.Add(new Label { Text = "Policy:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
             _policySelection.Name = "LibraryPolicySelection";
             _policySelection.Width = 230;
@@ -87,7 +104,8 @@ namespace MediaFlux
             _policyStateFilter.SelectedIndex = 0;
             _policyStateFilter.SelectedIndexChanged += async (_, _) => { _policyPage = 0; await RefreshStorageOptimizationAsync(); };
             actions.Controls.Add(_policyStateFilter);
-            AddButton(actions, "Refresh", async (_, _) => { _runtime.PolicyEvaluation.Invalidate(); await RefreshStorageOptimizationAsync(); });
+            Button refresh = AddButton(actions, "Refresh", async (_, _) => { _runtime.PolicyEvaluation.Invalidate(); await RefreshStorageOptimizationAsync(); });
+            AnalyzerUi.StylePrimary(refresh);
             AddButton(actions, "New…", (_, _) => EditPolicy(null));
             AddButton(actions, "Clone…", (_, _) => CloneSelectedPolicy());
             AddButton(actions, "Edit…", (_, _) => EditSelectedPolicy());
@@ -95,7 +113,8 @@ namespace MediaFlux
             AddButton(actions, "Previous", async (_, _) => { if (_policyPage > 0) { _policyPage--; await RefreshStorageOptimizationAsync(); } });
             AddButton(actions, "Next", async (_, _) => { if ((_policyPage + 1L) * PageSize < _policyFilteredCount) { _policyPage++; await RefreshStorageOptimizationAsync(); } });
             actions.Controls.Add(_policyPageLabel);
-            AddButton(actions, "Add selected candidates to Encode queue", AddOptimizationSelectionToQueue_Click);
+            Button queue = AddButton(actions, "Add selected candidates to Encode queue", AddOptimizationSelectionToQueue_Click);
+            AnalyzerUi.StylePrimary(queue);
             _optimizationGrid.MultiSelect = true;
             _optimizationGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             _optimizationGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Id", Visible = false });
@@ -115,10 +134,11 @@ namespace MediaFlux
             _optimizationGrid.Columns.Add("Path", "Path");
             _optimizationGrid.Columns["Rationale"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             _optimizationGrid.Columns["Path"].Width = 320;
-            tab.Controls.Add(_optimizationGrid);
+            tab.Controls.Add(new AnalyzerSectionPanel("Policy evaluation results", _optimizationGrid) { Dock = DockStyle.Fill });
             tab.Controls.Add(_optimizationStatus);
             tab.Controls.Add(_policySummary);
             tab.Controls.Add(intro);
+            tab.Controls.Add(AnalyzerUi.MetricRow(72, _policyConfiguredMetric, _policyCompliantMetric, _policyAttentionMetric, _policySavingsMetric));
             tab.Controls.Add(actions);
             _tabs.TabPages.Add(tab);
             ReloadPolicyChoices();
@@ -129,6 +149,10 @@ namespace MediaFlux
             if (_policySelection.SelectedItem is not PolicyChoice selected)
             {
                 _optimizationGrid.Rows.Clear();
+                _policyConfiguredMetric.SetValue(_policySelection.Items.Count.ToString("N0"), "Built-in and custom policies");
+                _policyCompliantMetric.SetValue("—", "Select a policy to evaluate");
+                _policyAttentionMetric.SetValue("—", "No evaluation yet");
+                _policySavingsMetric.SetValue("—", "No projection yet");
                 _policySummary.Text = "No policy is active. Select a built-in or custom policy to evaluate the catalog.";
                 _optimizationStatus.Text = "Existing users are not assigned a policy automatically.";
                 _policyPageLabel.Text = "";
@@ -163,6 +187,11 @@ namespace MediaFlux
             long first = result.Page.TotalCount == 0 ? 0 : (long)_policyPage * PageSize + 1;
             long last = Math.Min(result.Page.TotalCount, (long)(_policyPage + 1) * PageSize);
             _policyPageLabel.Text = result.Page.TotalCount == 0 ? "No rows" : $"{first:N0}–{last:N0} of {result.Page.TotalCount:N0}";
+            _policyConfiguredMetric.SetValue(_policySelection.Items.Count.ToString("N0"), selected.Policy.IsBuiltIn ? "Selected built-in policy" : "Selected custom policy");
+            _policyCompliantMetric.SetValue(result.Summary.Compliant.ToString("N0"), $"{result.Summary.FilesEvaluated:N0} files evaluated");
+            long attention = result.Summary.OptimizationCandidates + result.Summary.ReviewRequired + result.Summary.UnableToEvaluate;
+            _policyAttentionMetric.SetValue(attention.ToString("N0"), $"{result.Summary.OptimizationCandidates:N0} candidates · {result.Summary.ReviewRequired:N0} review");
+            _policySavingsMetric.SetValue(FormatBytes(result.Summary.ProjectedReclaimableBytes), "Projected, metadata-only estimate");
             _policySummary.Text = $"Evaluated {result.Summary.FilesEvaluated:N0}: {result.Summary.Compliant:N0} compliant, {result.Summary.OptimizationCandidates:N0} candidates, " +
                 $"{result.Summary.ReviewRequired:N0} review, {result.Summary.NotApplicable:N0} not applicable, {result.Summary.UnableToEvaluate:N0} unavailable. " +
                 $"Candidate reclaimable projection: {FormatBytes(result.Summary.ProjectedReclaimableBytes)}.";

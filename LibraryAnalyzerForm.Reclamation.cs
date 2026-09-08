@@ -16,6 +16,10 @@ public sealed partial class LibraryAnalyzerForm
     private readonly DataGridView _reclamationOpportunitySummary = CreateGrid();
     private readonly Label _reclamationSummary = new() { Dock = DockStyle.Bottom, Height = 72, AutoEllipsis = true, Padding = new Padding(8, 4, 0, 0) };
     private readonly Label _reclamationStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 7, 0, 0) };
+    private readonly AnalyzerMetricCard _reclamationLibraryMetric = new("Planned library size");
+    private readonly AnalyzerMetricCard _reclamationOpportunityMetric = new("Potential savings");
+    private readonly AnalyzerMetricCard _reclamationReadyMetric = new("Ready to reclaim");
+    private readonly AnalyzerMetricCard _reclamationItemsMetric = new("Opportunity items");
     private readonly Label _reclamationPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
     private readonly StorageReclamationPlannerService _reclamationPlanner = new();
     private StorageReclamationPlanStore? _reclamationStore;
@@ -34,7 +38,7 @@ public sealed partial class LibraryAnalyzerForm
             ForeColor = LibraryAnalyzerAccentColor,
             Text = "Find defensible storage opportunities from current catalog evidence. Duplicate savings are exact; re-encode savings are estimates. This view never modifies source files or starts encoding."
         };
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 76, WrapContents = true };
+        var actions = AnalyzerUi.FilterBar();
         actions.Controls.Add(new Label { Text = "Planning target:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
         actions.Controls.Add(_reclamationTarget);
         _reclamationUnit.Width = 70; _reclamationUnit.Items.AddRange(new object[] { "GB", "TB" }); _reclamationUnit.SelectedIndex = 0;
@@ -49,13 +53,15 @@ public sealed partial class LibraryAnalyzerForm
         actions.Controls.Add(_reclamationPolicy);
         actions.Controls.Add(new Label { Text = "Prioritize:", AutoSize = true, Padding = new Padding(8, 7, 0, 0) });
         _reclamationSort.Width=165;_reclamationSort.Items.AddRange(new object[]{"Largest savings","Largest current size","File / group count","Location"});_reclamationSort.SelectedIndex=0;_reclamationSort.SelectedIndexChanged+=(_,_)=>{_reclamationPage=0;RenderStorageReclamationPage();};actions.Controls.Add(_reclamationSort);
-        AddButton(actions, "Refresh Opportunities", async (_, _) => await BuildStorageReclamationPlanAsync());
+        Button refresh = AddButton(actions, "Refresh Opportunities", async (_, _) => await BuildStorageReclamationPlanAsync());
+        AnalyzerUi.StylePrimary(refresh);
         AddButton(actions, "Cancel", (_, _) => _reclamationBuildCancellation?.Cancel());
         AddButton(actions, "Previous", (_, _) => { if (_reclamationPage > 0) { _reclamationPage--; RenderStorageReclamationPage(); } });
         AddButton(actions, "Next", (_, _) => { if (_reclamationPlan != null && (_reclamationPage + 1L) * PageSize < VisibleReclamationItemCount()) { _reclamationPage++; RenderStorageReclamationPage(); } });
         actions.Controls.Add(_reclamationPageLabel);
         AddButton(actions, "Open selected duplicate workflow", async (_, _) => await OpenSelectedOptimizationWorkflowAsync());
-        AddButton(actions, "Add selected encodes to queue", async (_, _) => await QueueSelectedReclamationEncodesAsync());
+        Button queue = AddButton(actions, "Add selected encodes to queue", async (_, _) => await QueueSelectedReclamationEncodesAsync());
+        AnalyzerUi.StyleSecondary(queue);
         AddButton(actions, "Clear category filter", (_, _) => { _reclamationCategoryFilter=null;_reclamationPage=0;RenderStorageReclamationPage(); });
         AddButton(actions, "View breakdown…", (_, _) => ShowReclamationBreakdown());
 
@@ -93,6 +99,7 @@ public sealed partial class LibraryAnalyzerForm
         tab.Controls.Add(_reclamationStatus);
         tab.Controls.Add(_reclamationSummary);
         tab.Controls.Add(intro);
+        tab.Controls.Add(AnalyzerUi.MetricRow(72, _reclamationLibraryMetric, _reclamationOpportunityMetric, _reclamationReadyMetric, _reclamationItemsMetric));
         tab.Controls.Add(actions);
         _tabs.TabPages.Add(tab);
         ReloadReclamationPolicies();
@@ -230,6 +237,11 @@ public sealed partial class LibraryAnalyzerForm
     private void UpdateReclamationSummary()
     {
         if (_reclamationPlan == null) return;
+        long current = _reclamationPlan.Items.Sum(item => item.CurrentSizeBytes);
+        _reclamationLibraryMetric.SetValue(FormatBytes(current), "Current size in this plan");
+        _reclamationOpportunityMetric.SetValue(FormatBytes(_reclamationPlan.ProjectedReclaimBytes), "Calculated opportunity");
+        _reclamationReadyMetric.SetValue(FormatBytes(_reclamationPlan.ReadyReclaimBytes), "Ready after safety checks");
+        _reclamationItemsMetric.SetValue(_reclamationPlan.Items.Count.ToString("N0"), "Persisted opportunity items");
         _reclamationSummary.Text =
             $"Requested {FormatBytes(_reclamationPlan.RequestedReclaimBytes)} · " +
             $"Projected reclaim {FormatBytes(_reclamationPlan.ProjectedReclaimBytes)} · " +

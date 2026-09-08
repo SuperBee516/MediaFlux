@@ -7,19 +7,27 @@ namespace MediaFlux
         private readonly DataGridView _healthGrid = CreateGrid();
         private readonly DataGridView _historyGrid = CreateGrid();
         private readonly Label _healthStatus = new() { AutoSize = true, Padding = new Padding(8, 8, 0, 0) };
+        private readonly AnalyzerStatusBadge _healthBadge = new();
+        private readonly AnalyzerMetricCard _healthOverallMetric = new("Overall health");
+        private readonly AnalyzerMetricCard _healthIssuesMetric = new("Issues requiring attention");
+        private readonly AnalyzerMetricCard _healthMediaMetric = new("Media availability");
+        private readonly AnalyzerMetricCard _healthRecoveryMetric = new("Recovery attention");
         private readonly Button _healthRebuild = new() { Text = "Rebuild catalog…", AutoSize = true, Enabled = false };
         private LibraryHealthSnapshot? _healthSnapshot;
 
         private void BuildHealthTab()
         {
             var tab = new TabPage("Health & Recovery") { Padding = new Padding(8) };
-            var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, WrapContents = false, AutoScroll = true };
-            AddButton(toolbar, "Refresh health", async (_, _) => await RefreshHealthAsync());
+            var toolbar = AnalyzerUi.ActionBar();
+            Button refresh = AddButton(toolbar, "Refresh health", async (_, _) => await RefreshHealthAsync());
+            AnalyzerUi.StylePrimary(refresh);
             AddButton(toolbar, "Queue suggested re-analysis", QueueHealthReanalysis_Click);
             AddButton(toolbar, "Restore selected quarantine", RestoreQuarantine_Click);
             AddButton(toolbar, "Undo selected decision", UndoDecision_Click);
             _healthRebuild.Click += RebuildCatalog_Click;
+            AnalyzerUi.StyleAttention(_healthRebuild);
             toolbar.Controls.Add(_healthRebuild);
+            toolbar.Controls.Add(_healthBadge);
             toolbar.Controls.Add(_healthStatus);
 
             AddHealthColumn("Severity", "Severity", 80);
@@ -40,7 +48,9 @@ namespace MediaFlux
             var historyBox = new GroupBox { Text = "Recent Library Analyzer decisions", Dock = DockStyle.Fill, Padding = new Padding(6) };
             historyBox.Controls.Add(_historyGrid);
             split.Panel1.Controls.Add(issuesBox); split.Panel2.Controls.Add(historyBox);
-            tab.Controls.Add(split); tab.Controls.Add(toolbar);
+            tab.Controls.Add(split);
+            tab.Controls.Add(AnalyzerUi.MetricRow(72, _healthOverallMetric, _healthIssuesMetric, _healthMediaMetric, _healthRecoveryMetric));
+            tab.Controls.Add(toolbar);
             _tabs.TabPages.Add(tab);
         }
 
@@ -68,6 +78,20 @@ namespace MediaFlux
                     _historyGrid.Rows[row].Tag = item;
                 }
                 _healthRebuild.Enabled = !snapshot.Integrity.IsHealthy;
+                int errors = snapshot.Issues.Count(issue => issue.Severity == LibraryHealthSeverity.Error);
+                int warnings = snapshot.Issues.Count(issue => issue.Severity == LibraryHealthSeverity.Warning);
+                int availability = snapshot.Issues.Count(issue => issue.Kind is LibraryHealthIssueKind.SuspectedMissing or LibraryHealthIssueKind.Missing or
+                    LibraryHealthIssueKind.MovedOrRenamed or LibraryHealthIssueKind.UnavailableLocation or LibraryHealthIssueKind.AccessFailure);
+                int recovery = snapshot.Issues.Count(issue => issue.Kind is LibraryHealthIssueKind.UnresolvedCleanup or LibraryHealthIssueKind.RestorableQuarantine or
+                    LibraryHealthIssueKind.CatalogIntegrity or LibraryHealthIssueKind.IntegrityCheckFailed or LibraryHealthIssueKind.IntegrityResultStale);
+                bool healthy = snapshot.Integrity.IsHealthy && errors == 0 && warnings == 0;
+                _healthOverallMetric.SetValue(healthy ? "Healthy" : errors > 0 ? "Problem" : "Attention", healthy ? "No actionable catalog issues" : snapshot.Integrity.IsHealthy ? "Review the highlighted issues" : "Catalog integrity needs recovery");
+                _healthIssuesMetric.SetValue(snapshot.Issues.Count.ToString("N0"), $"{errors:N0} errors · {warnings:N0} warnings");
+                _healthMediaMetric.SetValue(availability.ToString("N0"), availability == 0 ? "No availability issues" : "Missing or inaccessible records");
+                _healthRecoveryMetric.SetValue(recovery.ToString("N0"), recovery == 0 ? "No recovery action pending" : "Recovery attention available");
+                _healthBadge.SetState(healthy ? "Healthy" : errors > 0 ? "Problem" : "Attention",
+                    healthy ? Color.FromArgb(35, 105, 60) : errors > 0 ? Color.Firebrick : Color.FromArgb(128, 78, 0),
+                    healthy ? Color.FromArgb(232, 246, 236) : errors > 0 ? Color.FromArgb(253, 235, 235) : Color.FromArgb(255, 244, 224));
                 _healthStatus.Text = snapshot.Issues.Count == 0 ? "No actionable catalog issues." : $"{snapshot.Issues.Count:N0} actionable issue(s)";
             }
             catch (Exception ex) { ShowError("Library health could not be refreshed.", ex); }

@@ -11,6 +11,10 @@ public sealed partial class LibraryAnalyzerForm
     private readonly TextBox _integritySearch = new() { Width = 220, PlaceholderText = "Filename or path" };
     private readonly Label _integritySummary = new() { Dock = DockStyle.Bottom, Height = 48, Padding = new Padding(8, 5, 0, 0) };
     private readonly Label _integrityStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 7, 0, 0) };
+    private readonly AnalyzerMetricCard _integrityHealthyMetric = new("Healthy media");
+    private readonly AnalyzerMetricCard _integrityAttentionMetric = new("Warnings");
+    private readonly AnalyzerMetricCard _integrityFailureMetric = new("Failures");
+    private readonly AnalyzerMetricCard _integrityPendingMetric = new("Pending / unchecked");
     private readonly Label _integrityPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
     private int _integrityPage;
     private long _integrityTotal;
@@ -24,7 +28,7 @@ public sealed partial class LibraryAnalyzerForm
             ForeColor = LibraryAnalyzerAccentColor,
             Text = "Verify whether the current file version can actually be decoded. Quick Scrub samples representative regions; Full Scrub explicitly decodes complete media streams. Both are diagnostic and never modify media."
         };
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 76, WrapContents = true, AutoScroll = true };
+        var actions = AnalyzerUi.FilterBar();
         actions.Controls.Add(new Label { Text = "Show:", AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
         _integrityState.Name = "IntegrityStateFilter"; _integrityState.Width = 145;
         _integrityState.Items.Add(new IntegrityStateChoice("All files", null));
@@ -37,9 +41,11 @@ public sealed partial class LibraryAnalyzerForm
         _integrityLocation.Name = "IntegrityLocationFilter"; _integrityLocation.Width = 210;
         _integrityLocation.SelectedIndexChanged += async (_, _) => { _integrityPage = 0; await RefreshIntegrityAsync(); };
         actions.Controls.Add(_integrityLocation); actions.Controls.Add(_integritySearch);
-        AddButton(actions, "Search", async (_, _) => { _integrityPage = 0; await RefreshIntegrityAsync(); });
+        Button search = AddButton(actions, "Search", async (_, _) => { _integrityPage = 0; await RefreshIntegrityAsync(); });
+        AnalyzerUi.StylePrimary(search);
         AddButton(actions, "Quick Scrub selected", (_, _) => QueueSelectedIntegrity(LibraryIntegrityScrubType.Quick));
-        AddButton(actions, "Full Scrub selected…", (_, _) => QueueSelectedIntegrity(LibraryIntegrityScrubType.Full));
+        Button fullScrub = AddButton(actions, "Full Scrub selected…", (_, _) => QueueSelectedIntegrity(LibraryIntegrityScrubType.Full));
+        AnalyzerUi.StyleAttention(fullScrub);
         AddButton(actions, "Quick Scrub location", async (_, _) => await QueueIntegrityLocationAsync());
         AddButton(actions, "Quick Scrub stale/unverified", async (_, _) => await QueueIntegrityStaleOrUnverifiedAsync());
         AddButton(actions, "Retry selected", (_, _) => RetrySelectedIntegrity());
@@ -55,7 +61,10 @@ public sealed partial class LibraryAnalyzerForm
         AddIntegrityColumn("Type", "Scrub type", 80); AddIntegrityColumn("Performance", "Verified / performance", 180);
         AddIntegrityColumn("Details", "Result / details", 420, true); AddIntegrityColumn("Path", "Path", 300);
         _integrityGrid.MultiSelect = true;
-        tab.Controls.Add(_integrityGrid); tab.Controls.Add(_integrityStatus); tab.Controls.Add(_integritySummary); tab.Controls.Add(intro); tab.Controls.Add(actions);
+        tab.Controls.Add(new AnalyzerSectionPanel("Integrity results", _integrityGrid) { Dock = DockStyle.Fill });
+        tab.Controls.Add(_integrityStatus); tab.Controls.Add(_integritySummary); tab.Controls.Add(intro);
+        tab.Controls.Add(AnalyzerUi.MetricRow(72, _integrityHealthyMetric, _integrityAttentionMetric, _integrityFailureMetric, _integrityPendingMetric));
+        tab.Controls.Add(actions);
         _tabs.TabPages.Add(tab); ReloadIntegrityLocations();
     }
 
@@ -88,6 +97,10 @@ public sealed partial class LibraryAnalyzerForm
             _integrityPageLabel.Text = page.TotalCount == 0 ? "No rows" : $"{first:N0}–{last:N0} of {page.TotalCount:N0}";
             _integritySummary.Text = $"{summary.Passed:N0} passed · {summary.Warnings:N0} warning · {summary.Failed:N0} failed · {summary.NeverChecked:N0} never checked · " +
                 $"{summary.Stale:N0} stale · {summary.Pending:N0} pending · {summary.Running:N0} running · {summary.Cancelled:N0} cancelled";
+            _integrityHealthyMetric.SetValue(summary.Passed.ToString("N0"), summary.Passed == summary.TotalFiles && summary.TotalFiles > 0 ? "All checked media passed" : "Passed integrity checks");
+            _integrityAttentionMetric.SetValue(summary.Warnings.ToString("N0"), summary.Warnings == 0 ? "No warnings" : "Review warning records");
+            _integrityFailureMetric.SetValue(summary.Failed.ToString("N0"), summary.Failed == 0 ? "No failed checks" : "Repair or retry affected media");
+            _integrityPendingMetric.SetValue((summary.NeverChecked + summary.Pending + summary.Stale).ToString("N0"), "Never checked, pending, or stale");
         }
         catch (Exception ex) { if (!IsDisposed) ShowError("Media Integrity results could not be refreshed.", ex); }
     }

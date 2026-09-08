@@ -274,12 +274,9 @@ public sealed partial class LibraryAnalyzerForm
     }
 }
 
-internal sealed class OverviewMetricCard : Panel
+internal sealed class OverviewMetricCard : AnalyzerMetricCard
 {
-    private readonly Label _value = new() { Dock = DockStyle.Top, Height = 35, Font = new Font("Segoe UI Semibold", 18F), Padding = new Padding(10, 5, 8, 0), AutoEllipsis = true };
-    private readonly Label _secondary = new() { Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(10, 0, 8, 5), AutoEllipsis = true };
-    public OverviewMetricCard(string title) { AccessibleName = title; BorderStyle = BorderStyle.FixedSingle; Margin = new Padding(3); Padding = new Padding(1); BackColor = SystemColors.Window; var heading = new Label { Text = title, Dock = DockStyle.Top, Height = 22, ForeColor = Color.FromArgb(70,70,70), Padding = new Padding(9, 3, 4, 0), AutoEllipsis = true }; Controls.Add(_secondary); Controls.Add(_value); Controls.Add(heading); }
-    public void SetValue(string value, string secondary) { _value.Text = value; _secondary.Text = secondary; }
+    public OverviewMetricCard(string title) : base(title) { }
 }
 
 internal readonly record struct OverviewBarItem(string Label, long Value, string Detail);

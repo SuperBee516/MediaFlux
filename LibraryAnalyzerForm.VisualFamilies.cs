@@ -10,7 +10,13 @@ public sealed partial class LibraryAnalyzerForm
     private readonly ContextMenuStrip _familyMenu = new();
     private readonly ContextMenuStrip _familyMembersMenu = new();
     private readonly Label _familyStatus = new() { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(8, 6, 0, 0) };
+    private readonly AnalyzerMetricCard _familyGroupsMetric = new("Duplicate families");
+    private readonly AnalyzerMetricCard _familyFilesMetric = new("Files involved");
+    private readonly AnalyzerMetricCard _familyReclaimMetric = new("Potential savings");
+    private readonly AnalyzerMetricCard _familyReviewMetric = new("Review state");
     private readonly CheckBox _familyShowIgnored = new() { Text = "Show ignored", AutoSize = true, Margin = new Padding(10, 10, 3, 3) };
+    private Button? _familyReviewButton;
+    private Button? _familyCleanupButton;
     private long _familyTotal;
     private CancellationTokenSource? _familyCleanupCancellation;
     private int _familyMemberLoadVersion;
@@ -19,13 +25,15 @@ public sealed partial class LibraryAnalyzerForm
     private void BuildVisualFamiliesTab()
     {
         var tab = new TabPage("Duplicates — Families") { Padding = new Padding(8) };
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, WrapContents = false };
+        var actions = AnalyzerUi.ActionBar();
         AddButton(actions, "Refresh", async (_, _) => await RefreshVisualFamiliesAsync());
         AddButton(actions, "Rebuild from current pair evidence", async (_, _) => await RebuildVisualFamiliesAsync());
-        AddButton(actions, "Review family…", async (_, _) => await OpenVisualFamilyReviewAsync());
+        _familyReviewButton = AddButton(actions, "Review family…", async (_, _) => await OpenVisualFamilyReviewAsync());
+        AnalyzerUi.StylePrimary(_familyReviewButton);
         AddButton(actions, "Mark selected reviewed", async (_, _) => await SaveSelectedFamiliesStateAsync(reviewed: true));
         AddButton(actions, "Ignore / restore", async (_, _) => await ToggleSelectedFamilyIgnoredAsync());
-        AddButton(actions, "Clean selected…", async (_, _) => await PreviewFamilyCleanupAsync(allReviewedFamilies: false));
+        _familyCleanupButton = AddButton(actions, "Clean selected…", async (_, _) => await PreviewFamilyCleanupAsync(allReviewedFamilies: false));
+        AnalyzerUi.StyleSecondary(_familyCleanupButton);
         AddButton(actions, "Clean all reviewed…", async (_, _) => await PreviewFamilyCleanupAsync(allReviewedFamilies: true));
         AddButton(actions, "Cancel cleanup", (_, _) => _familyCleanupCancellation?.Cancel());
         _familyShowIgnored.CheckedChanged += async (_, _) => await RefreshVisualFamiliesAsync();
@@ -40,7 +48,7 @@ public sealed partial class LibraryAnalyzerForm
         _familyGrid.Columns.Add("Evidence", "Construction");
         _familyGrid.Columns[6].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _familyGrid.MultiSelect = true;
-        _familyGrid.SelectionChanged += async (_, _) => await RefreshVisualFamilyMembersAsync();
+        _familyGrid.SelectionChanged += async (_, _) => { await RefreshVisualFamilyMembersAsync(); UpdateFamilyActionState(); };
         _familyGrid.CellDoubleClick += async (_, e) =>
         {
             if (e.RowIndex < 0) return;
@@ -77,9 +85,11 @@ public sealed partial class LibraryAnalyzerForm
         tab.Controls.Add(split);
         tab.Controls.Add(_familyStatus);
         tab.Controls.Add(notice);
+        tab.Controls.Add(AnalyzerUi.MetricRow(72, _familyGroupsMetric, _familyFilesMetric, _familyReclaimMetric, _familyReviewMetric));
         tab.Controls.Add(actions);
         _tabs.TabPages.Add(tab);
         ConfigureFamilyContextMenus();
+        UpdateFamilyActionState();
     }
 
     private void ConfigureFamilyContextMenus()
@@ -211,8 +221,21 @@ public sealed partial class LibraryAnalyzerForm
             _familyGrid.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
         }
         _familyStatus.Text = $"{page.TotalCount:N0} active non-ambiguous visual families. Internal pairs are preserved but suppressed from normal pair review.";
+        long reviewed = page.Families.LongCount(family => family.Reviewed);
+        _familyGroupsMetric.SetValue(_familyTotal.ToString("N0"), _familyShowIgnored.Checked ? "Including ignored families" : "Active non-ambiguous families");
+        _familyFilesMetric.SetValue(page.Families.Sum(family => (long)family.MemberCount).ToString("N0"), "Files across displayed families");
+        _familyReclaimMetric.SetValue(FormatBytes(page.Families.Sum(family => family.ReclaimableBytes)), "Displayed potential savings");
+        _familyReviewMetric.SetValue(page.Families.Count == 0 ? "No results" : $"{reviewed:N0} reviewed", page.Families.Count == 0 ? "Rebuild or adjust visibility" : $"{page.Families.Count - reviewed:N0} remaining on page");
+        UpdateFamilyActionState();
         await RefreshVisualFamilyMembersAsync();
         QueueOverviewRefresh();
+    }
+
+    private void UpdateFamilyActionState()
+    {
+        bool hasFamily = SelectedVisualFamily() != null;
+        if (_familyReviewButton != null) _familyReviewButton.Enabled = hasFamily;
+        if (_familyCleanupButton != null) _familyCleanupButton.Enabled = hasFamily;
     }
 
     private async Task RefreshVisualFamilyMembersAsync()

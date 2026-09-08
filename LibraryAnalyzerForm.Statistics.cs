@@ -6,10 +6,10 @@ namespace MediaFlux
     public sealed partial class LibraryAnalyzerForm
     {
         private const int StatisticsTopCount = 10;
-        private readonly Label _statisticsFiles = ValueLabel();
-        private readonly Label _statisticsStorage = ValueLabel();
-        private readonly Label _statisticsHealth = ValueLabel();
-        private readonly Label _statisticsDuplicates = ValueLabel();
+        private readonly AnalyzerMetricCard _statisticsFiles = new("Indexed files");
+        private readonly AnalyzerMetricCard _statisticsStorage = new("Indexed storage");
+        private readonly AnalyzerMetricCard _statisticsHealth = new("Metadata health");
+        private readonly AnalyzerMetricCard _statisticsDuplicates = new("Exact duplicates");
         private readonly TabControl _statisticsBreakdowns = new() { Dock = DockStyle.Fill };
         private readonly DataGridView _largestFilesGrid = CreateGrid("LargestFilesGrid");
         private bool _loadingStatistics;
@@ -19,10 +19,10 @@ namespace MediaFlux
             var tab = new TabPage("Statistics") { Padding = new Padding(10) };
             var cards = new TableLayoutPanel { Dock = DockStyle.Top, Height = 76, ColumnCount = 4, Padding = new Padding(0, 0, 0, 8) };
             for (int i = 0; i < 4; i++) cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-            cards.Controls.Add(StatisticCard("Indexed files", _statisticsFiles), 0, 0);
-            cards.Controls.Add(StatisticCard("Indexed storage", _statisticsStorage), 1, 0);
-            cards.Controls.Add(StatisticCard("Metadata health", _statisticsHealth), 2, 0);
-            cards.Controls.Add(StatisticCard("Exact duplicates", _statisticsDuplicates), 3, 0);
+            cards.Controls.Add(_statisticsFiles, 0, 0);
+            cards.Controls.Add(_statisticsStorage, 1, 0);
+            cards.Controls.Add(_statisticsHealth, 2, 0);
+            cards.Controls.Add(_statisticsDuplicates, 3, 0);
 
             _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab("Storage by location"));
             _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab("Codec", LibraryStatisticCategory.Codec));
@@ -58,10 +58,10 @@ namespace MediaFlux
             {
                 LibraryStatistics statistics = await Task.Run(() => _runtime.AnalysisCatalog.GetLibraryStatistics(StatisticsTopCount));
                 if (IsDisposed) return;
-                _statisticsFiles.Text = $"{statistics.TotalFiles:N0} ({statistics.PresentFiles:N0} available)";
-                _statisticsStorage.Text = FormatBytes(statistics.TotalBytes);
-                _statisticsHealth.Text = $"{statistics.ProbeSucceeded:N0} OK · {statistics.ProbeFailed:N0} failed";
-                _statisticsDuplicates.Text = $"{statistics.ExactDuplicateGroups:N0} groups · {FormatBytes(statistics.ExactDuplicateBytes)} total · {FormatBytes(statistics.ReclaimableDuplicateBytes)} reclaimable";
+                _statisticsFiles.SetValue(statistics.TotalFiles.ToString("N0"), $"{statistics.PresentFiles:N0} available");
+                _statisticsStorage.SetValue(FormatBytes(statistics.TotalBytes), "Cataloged media storage");
+                _statisticsHealth.SetValue($"{statistics.ProbeSucceeded:N0} OK", $"{statistics.ProbeFailed:N0} failed");
+                _statisticsDuplicates.SetValue($"{statistics.ExactDuplicateGroups:N0} groups", $"{FormatBytes(statistics.ReclaimableDuplicateBytes)} reclaimable");
                 FillBreakdown((DataGridView)_statisticsBreakdowns.TabPages[0].Controls[0], statistics.ByLocation);
                 FillBreakdown((DataGridView)_statisticsBreakdowns.TabPages[1].Controls[0], statistics.ByCodec);
                 FillBreakdown((DataGridView)_statisticsBreakdowns.TabPages[2].Controls[0], statistics.ByResolution);
@@ -86,19 +86,10 @@ namespace MediaFlux
             }
             catch (Exception ex)
             {
-                ShowError("Statistics could not be refreshed.", ex);
+                if (!IsDisposed && !Disposing)
+                    ShowError("Statistics could not be refreshed.", ex);
             }
             finally { _loadingStatistics = false; }
-        }
-
-        private static Panel StatisticCard(string title, Label value)
-        {
-            var panel = new Panel { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(4) };
-            panel.Controls.Add(value);
-            panel.Controls.Add(new Label { Text = title, Dock = DockStyle.Top, Height = 24, Padding = new Padding(7, 5, 0, 0) });
-            value.Dock = DockStyle.Fill;
-            value.TextAlign = ContentAlignment.MiddleLeft;
-            return panel;
         }
 
         private TabPage CreateBreakdownTab(string title, LibraryStatisticCategory? category = null)

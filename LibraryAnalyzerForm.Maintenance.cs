@@ -11,26 +11,35 @@ public sealed partial class LibraryAnalyzerForm
     private readonly Label _maintenanceActivity=new(){Dock=DockStyle.Fill,AutoEllipsis=true,Padding=new Padding(8,4,8,0),Text="No scheduled job is active."};
     private readonly Label _maintenanceCurrentItem=new(){Dock=DockStyle.Fill,AutoEllipsis=true,Padding=new Padding(8,0,8,4),ForeColor=SystemColors.GrayText};
     private readonly ProgressBar _maintenanceProgress=new(){Dock=DockStyle.Fill,Style=ProgressBarStyle.Marquee,Visible=false};
+    private readonly AnalyzerMetricCard _maintenanceEnabledMetric = new("Enabled schedules");
+    private readonly AnalyzerMetricCard _maintenanceNextMetric = new("Next run");
+    private readonly AnalyzerMetricCard _maintenanceLastMetric = new("Last result");
+    private readonly AnalyzerMetricCard _maintenanceHistoryMetric = new("Run history");
     private long _lastMaintenanceUiUpdateTicks;
 
     private void BuildScheduledMaintenanceTab()
     {
-        var tab=new TabPage("Scheduled Maintenance"){Padding=new Padding(10)};var actions=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42,WrapContents=true};
-        AddButton(actions,"Edit schedule…",(_,_)=>EditSelectedMaintenance());
+        var tab=new TabPage("Scheduled Maintenance"){Padding=new Padding(10)};var actions=AnalyzerUi.ActionBar();
+        Button edit=AddButton(actions,"Edit schedule…",(_,_)=>EditSelectedMaintenance());
+        AnalyzerUi.StylePrimary(edit);
         AddButton(actions,"Remove schedule",async(_,_)=>await RemoveSelectedMaintenanceAsync());
-        AddButton(actions,"Run Now",async(_,_)=>await RunSelectedMaintenanceAsync());
+        Button run=AddButton(actions,"Run Now",async(_,_)=>await RunSelectedMaintenanceAsync());
+        AnalyzerUi.StyleAttention(run);
         AddButton(actions,"Enable / disable",async(_,_)=>await ToggleSelectedMaintenanceAsync());
         AddButton(actions,"Pause / defer current",(_,_)=>_runtime.Maintenance.DeferCurrent());
         AddButton(actions,"Refresh",async(_,_)=>await RefreshMaintenanceAsync());
         AddMaintenanceColumn(_maintenanceGrid,"Location",240);AddMaintenanceColumn(_maintenanceGrid,"Enabled",70);AddMaintenanceColumn(_maintenanceGrid,"Schedule",110);AddMaintenanceColumn(_maintenanceGrid,"Mode",105);AddMaintenanceColumn(_maintenanceGrid,"Conflict",85);AddMaintenanceColumn(_maintenanceGrid,"Window",105);AddMaintenanceColumn(_maintenanceGrid,"Next run",135);AddMaintenanceColumn(_maintenanceGrid,"Last run",135);AddMaintenanceColumn(_maintenanceGrid,"Status",110);AddMaintenanceColumn(_maintenanceGrid,"Actions",360,true);
         AddMaintenanceColumn(_maintenanceHistory,"Started",135);AddMaintenanceColumn(_maintenanceHistory,"Location",220);AddMaintenanceColumn(_maintenanceHistory,"Jobs",230);AddMaintenanceColumn(_maintenanceHistory,"Mode",95);AddMaintenanceColumn(_maintenanceHistory,"Trigger",80);AddMaintenanceColumn(_maintenanceHistory,"Outcome",90);AddMaintenanceColumn(_maintenanceHistory,"Counts",260);AddMaintenanceColumn(_maintenanceHistory,"Details",420,true);
         var split=new SplitContainer{Dock=DockStyle.Fill,Orientation=Orientation.Horizontal,SplitterDistance=360,Panel1MinSize=170,Panel2MinSize=120};
-        split.Panel1.Controls.Add(_maintenanceGrid);split.Panel2.Controls.Add(_maintenanceHistory);
+        split.Panel1.Controls.Add(new AnalyzerSectionPanel("Configured maintenance", _maintenanceGrid) { Dock = DockStyle.Fill });
+        split.Panel2.Controls.Add(new AnalyzerSectionPanel("Maintenance history", _maintenanceHistory) { Dock = DockStyle.Fill });
         var activity=new TableLayoutPanel{Dock=DockStyle.Top,Height=58,ColumnCount=2,RowCount=2,Padding=new Padding(0,2,0,2)};
         activity.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));activity.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,220));
         activity.RowStyles.Add(new RowStyle(SizeType.Percent,50));activity.RowStyles.Add(new RowStyle(SizeType.Percent,50));
         activity.Controls.Add(_maintenanceActivity,0,0);activity.Controls.Add(_maintenanceCurrentItem,0,1);activity.Controls.Add(_maintenanceProgress,1,0);activity.SetRowSpan(_maintenanceProgress,2);
-        tab.Controls.Add(split);tab.Controls.Add(_maintenanceStatus);tab.Controls.Add(activity);tab.Controls.Add(actions);_tabs.TabPages.Add(tab);
+        tab.Controls.Add(split);tab.Controls.Add(_maintenanceStatus);tab.Controls.Add(activity);
+        tab.Controls.Add(AnalyzerUi.MetricRow(72, _maintenanceEnabledMetric, _maintenanceNextMetric, _maintenanceLastMetric, _maintenanceHistoryMetric));
+        tab.Controls.Add(actions);_tabs.TabPages.Add(tab);
     }
 
     private async Task RefreshMaintenanceAsync()
@@ -41,6 +50,13 @@ public sealed partial class LibraryAnalyzerForm
             {var p=_runtime.MaintenanceCatalog.GetMaintenanceProfiles(DateTime.UtcNow);var h=_runtime.MaintenanceCatalog.GetMaintenanceHistory(limit:100);return(p,h,_runtime.Catalog.GetLocations().ToDictionary(x=>x.Id,x=>x.Path));});
             if(IsDisposed)return;_maintenanceGrid.Rows.Clear();foreach(var v in profiles){LibraryMaintenanceProfile p=v.Profile;int row=_maintenanceGrid.Rows.Add(v.LocationPath,p.Enabled?"Yes":"No",p.Cadence,p.AnalysisMode==LibraryMaintenanceAnalysisMode.FullReanalysis?"Full":"Incremental",p.ConflictBehavior==LibraryMaintenanceConflictBehavior.Skip?"Skip":"Wait",$"{p.StartTime:hh\\:mm}–{p.EndTime:hh\\:mm}",v.NextRunUtc?.ToLocalTime().ToString("g")??"—",v.LastRunUtc?.ToLocalTime().ToString("g")??"Never",v.LastOutcome?.ToString()??"Not run",DescribeMaintenanceActions(p));_maintenanceGrid.Rows[row].Tag=v;}
             _maintenanceHistory.Rows.Clear();foreach(var run in history){paths.TryGetValue(run.LocationId,out string? path);string outcome=run.Stage=="Skipped"?"Skipped":run.Outcome.ToString();_maintenanceHistory.Rows.Add(run.StartedUtc.ToLocalTime().ToString("g"),path??$"Location {run.LocationId}",DescribeMaintenanceActions(run.Actions,run.AnalyzeFamilies),run.AnalysisMode==LibraryMaintenanceAnalysisMode.FullReanalysis?"Full":"Incremental",run.Trigger,outcome,$"{run.NewFiles:N0} new · {run.ChangedFiles:N0} changed · {run.MetadataQueued:N0} metadata · {run.ExactProcessed:N0} exact · {run.VisualProcessed:N0} visual",run.Details);}
+            int enabled = profiles.Count(item => item.Profile.Enabled);
+            LibraryMaintenanceProfileView? next = profiles.Where(item => item.NextRunUtc.HasValue).OrderBy(item => item.NextRunUtc).FirstOrDefault();
+            LibraryMaintenanceRun? last = history.OrderByDescending(item => item.StartedUtc).FirstOrDefault();
+            _maintenanceEnabledMetric.SetValue(enabled.ToString("N0"), $"{profiles.Count - enabled:N0} disabled");
+            _maintenanceNextMetric.SetValue(next?.NextRunUtc?.ToLocalTime().ToString("g") ?? "None", next == null ? "No scheduled window" : next.LocationPath);
+            _maintenanceLastMetric.SetValue(last?.Outcome.ToString() ?? "None", last == null ? "No maintenance run yet" : last.Stage);
+            _maintenanceHistoryMetric.SetValue(history.Count.ToString("N0"), "Recent runs retained");
         }catch(Exception ex){if(!IsDisposed)ShowError("Scheduled maintenance could not be refreshed.",ex);}
     }
 

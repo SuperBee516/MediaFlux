@@ -19,6 +19,17 @@ namespace MediaFlux
         private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
         private readonly DataGridView _locationsGrid = CreateGrid("LocationsGrid");
         private readonly DataGridView _filesGrid = CreateGrid("FilesGrid");
+        private readonly AnalyzerMetricCard _locationsSourcesCard = new("Sources");
+        private readonly AnalyzerMetricCard _locationsAvailableCard = new("Availability");
+        private readonly AnalyzerMetricCard _locationsFilesCard = new("Indexed files");
+        private readonly AnalyzerMetricCard _locationsActivityCard = new("Last activity");
+        private readonly Label _filesSummary = new() { Dock = DockStyle.Fill, AutoEllipsis = true, Padding = new Padding(6, 5, 6, 3), ForeColor = SystemColors.GrayText };
+        private Button? _locationRemove;
+        private Button? _locationToggle;
+        private Button? _locationScan;
+        private Button? _locationPause;
+        private Button? _locationResume;
+        private Button? _locationCancel;
         private readonly OverviewMetricCard _overviewVideosCard = new("Videos");
         private readonly OverviewMetricCard _overviewSizeCard = new("Library size");
         private readonly OverviewMetricCard _overviewDuplicatesCard = new("Duplicate sets");
@@ -114,6 +125,11 @@ namespace MediaFlux
             BuildStorageReclamationTab();
             BuildMediaIntegrityTab();
             BuildScheduledMaintenanceTab();
+            foreach (TabPage page in _tabs.TabPages)
+            {
+                page.AccessibleName = $"Library Analyzer {page.Text} tab";
+                page.AccessibleRole = AccessibleRole.PageTab;
+            }
             ConfigurePrimaryContextMenus();
             ConfigurePhase3ContextMenus();
             ConfigureSharedGridLayouts();
@@ -183,21 +199,19 @@ namespace MediaFlux
         private void BuildLocationsTab()
         {
             var tab = new TabPage("Locations") { Padding = new Padding(10) };
-            var buttons = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 40,
-                AutoSize = false,
-                WrapContents = false
-            };
+            var buttons = AnalyzerUi.ActionBar();
             Button add = AddButton(buttons, "Add folder / drive…", AddLocation_Click);
-            Button remove = AddButton(buttons, "Remove", RemoveLocation_Click);
-            Button toggle = AddButton(buttons, "Enable / Disable", ToggleLocation_Click);
-            Button scan = AddButton(buttons, "Scan selected", ScanSelected_Click);
-            Button pause = AddButton(buttons, "Pause", (_, _) => { _runtime.Scanner.Pause(); RefreshActivityDisplay(); });
-            Button resume = AddButton(buttons, "Resume", (_, _) => { _runtime.Scanner.Resume(); RefreshActivityDisplay(); });
-            Button cancel = AddButton(buttons, "Cancel", (_, _) => { _scanTerminalStatus = "Canceling scan…"; _runtime.Scanner.Cancel(); RefreshActivityDisplay(); });
-            _ = add; _ = remove; _ = toggle; _ = scan; _ = pause; _ = resume; _ = cancel;
+            AnalyzerUi.StylePrimary(add);
+            _locationRemove = AddButton(buttons, "Remove", RemoveLocation_Click);
+            _locationToggle = AddButton(buttons, "Enable / Disable", ToggleLocation_Click);
+            _locationScan = AddButton(buttons, "Scan selected", ScanSelected_Click);
+            AnalyzerUi.StylePrimary(_locationScan);
+            _locationPause = AddButton(buttons, "Pause", (_, _) => { _runtime.Scanner.Pause(); RefreshActivityDisplay(); });
+            _locationResume = AddButton(buttons, "Resume", (_, _) => { _runtime.Scanner.Resume(); RefreshActivityDisplay(); });
+            _locationCancel = AddButton(buttons, "Cancel", (_, _) => { _scanTerminalStatus = "Canceling scan…"; _runtime.Scanner.Cancel(); RefreshActivityDisplay(); });
+
+            Control summary = AnalyzerUi.MetricRow(76,
+                _locationsSourcesCard, _locationsAvailableCard, _locationsFilesCard, _locationsActivityCard);
 
             var statusPanel = new TableLayoutPanel
             {
@@ -228,9 +242,11 @@ namespace MediaFlux
             _locationsGrid.Columns.Add("Error", "Status / error");
             _locationsGrid.Columns[1].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             _locationsGrid.Columns[6].Width = 260;
+            _locationsGrid.SelectionChanged += (_, _) => UpdateAnalyzerActionState();
 
-            tab.Controls.Add(_locationsGrid);
+            tab.Controls.Add(new AnalyzerSectionPanel("Library sources", _locationsGrid) { Dock = DockStyle.Fill });
             tab.Controls.Add(statusPanel);
+            tab.Controls.Add(summary);
             tab.Controls.Add(buttons);
             _tabs.TabPages.Add(tab);
         }
@@ -238,13 +254,7 @@ namespace MediaFlux
         private void BuildFilesTab()
         {
             var tab = new TabPage("Files") { Padding = new Padding(10) };
-            var filters = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 72,
-                AutoScroll = true,
-                WrapContents = true
-            };
+            var filters = AnalyzerUi.FilterBar();
             filters.Controls.AddRange(new Control[]
             {
                 Labeled("Search", _search),
@@ -255,11 +265,18 @@ namespace MediaFlux
                 _descending
             });
             var apply = new Button { Text = "Apply", AutoSize = true, Margin = new Padding(8, 19, 3, 3) };
+            AnalyzerUi.StylePrimary(apply);
             apply.Click += async (_, _) => { _page = 0; await RefreshFilesAsync(); };
             filters.Controls.Add(apply);
-            AddButton(filters, "Re-analyze metadata", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.Metadata));
-            AddButton(filters, "Re-analyze exact", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.ExactHash));
-            AddButton(filters, "Re-analyze visual", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.VisualFingerprint));
+            var reanalysis = AnalyzerUi.ActionBar();
+            reanalysis.Dock = DockStyle.None;
+            reanalysis.AutoSize = true;
+            reanalysis.MinimumSize = new Size(0, 0);
+            reanalysis.Controls.Add(new Label { Text = "Re-analysis", AutoSize = true, ForeColor = LibraryAnalyzerAccentColor, Margin = new Padding(8, 10, 3, 0) });
+            Button metadata = AddButton(reanalysis, "Metadata", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.Metadata));
+            Button exact = AddButton(reanalysis, "Exact", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.ExactHash));
+            Button visual = AddButton(reanalysis, "Visual", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.VisualFingerprint));
+            filters.Controls.Add(reanalysis);
             _search.KeyDown += async (_, e) =>
             {
                 if (e.KeyCode == Keys.Enter)
@@ -289,6 +306,7 @@ namespace MediaFlux
             AddFileColumn("Bitrate", "Bitrate", 90);
             AddFileColumn("Duration", "Duration", 90);
             AddFileColumn("Probe", "Probe status", 110);
+            _filesGrid.SelectionChanged += (_, _) => UpdateAnalyzerActionState();
 
             var pager = new FlowLayoutPanel
             {
@@ -303,8 +321,11 @@ namespace MediaFlux
             pager.Controls.Add(_previous);
             pager.Controls.Add(_pageLabel);
 
-            tab.Controls.Add(_filesGrid);
+            tab.Controls.Add(new AnalyzerSectionPanel("Indexed files", _filesGrid) { Dock = DockStyle.Fill });
             tab.Controls.Add(pager);
+            var fileSummaryPanel = new Panel { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(0, 2, 0, 0) };
+            fileSummaryPanel.Controls.Add(_filesSummary);
+            tab.Controls.Add(fileSummaryPanel);
             tab.Controls.Add(filters);
             _tabs.TabPages.Add(tab);
         }
@@ -486,6 +507,13 @@ namespace MediaFlux
                 if (IsDisposed) return;
                 long[] selectedIds = SelectedLocationIds().ToArray();
                 ReconcileLocationRows(snapshot.locations, snapshot.counts, selectedIds, _preferredLocationSelectionId);
+                long indexedFiles = snapshot.counts.Values.Sum();
+                int available = snapshot.locations.Count(location => location.Availability == LibraryLocationAvailability.Available);
+                int unavailable = snapshot.locations.Count - available;
+                _locationsSourcesCard.SetValue(snapshot.locations.Count.ToString("N0"), $"{snapshot.locations.Count(location => location.IsEnabled):N0} enabled");
+                _locationsAvailableCard.SetValue(available.ToString("N0"), unavailable == 0 ? "All sources available" : $"{unavailable:N0} unavailable or errored");
+                _locationsFilesCard.SetValue(indexedFiles.ToString("N0"), "Across configured sources");
+                _locationsActivityCard.SetValue(_scanStatus.Text.StartsWith("Ready", StringComparison.OrdinalIgnoreCase) ? "Idle" : "Active", _scanStatus.Text);
                 _preferredLocationSelectionId = null;
                 RefreshLocationFilter(snapshot.locations);
                 RefreshDuplicateLocationFilter(snapshot.locations);
@@ -575,8 +603,12 @@ namespace MediaFlux
                 long first = _totalFiles == 0 ? 0 : (long)_page * PageSize + 1;
                 long last = Math.Min(_totalFiles, ((long)_page + 1) * PageSize);
                 _pageLabel.Text = $"{first:N0}–{last:N0} of {_totalFiles:N0}";
+                _filesSummary.Text = _totalFiles == 0
+                    ? "No indexed files match the current filters."
+                    : $"Showing {result.Files.Count:N0} on this page · {_totalFiles:N0} total indexed files";
                 _previous.Enabled = _page > 0;
                 _next.Enabled = last < _totalFiles;
+                UpdateAnalyzerActionState();
             }
             finally
             {
@@ -637,6 +669,32 @@ namespace MediaFlux
                 .OfType<LibraryFileViewRecord>().Select(file => file.FileId).Distinct().ToArray();
             if (fileIds.Length == 0) return;
             _runtime.Reanalysis.QueueFiles(fileIds, work);
+        }
+
+        private void UpdateAnalyzerActionState()
+        {
+            bool hasLocations = SelectedLocationIds().Count > 0;
+            bool hasFiles = _filesGrid.SelectedRows.Cast<DataGridViewRow>().Any(row => row.Tag is LibraryFileViewRecord);
+            bool scanning = _scanning || _runtime.Scanner.IsScanning;
+            if (_locationRemove != null) _locationRemove.Enabled = hasLocations && !scanning;
+            if (_locationToggle != null) _locationToggle.Enabled = hasLocations && !scanning;
+            if (_locationScan != null) _locationScan.Enabled = !scanning;
+            if (_locationPause != null) _locationPause.Enabled = scanning && !_runtime.Scanner.IsPaused;
+            if (_locationResume != null) _locationResume.Enabled = scanning && _runtime.Scanner.IsPaused;
+            if (_locationCancel != null) _locationCancel.Enabled = scanning;
+            foreach (Control control in ControlsRecursive(this).Where(control => control is Button button &&
+                         button.Text is "Metadata" or "Exact" or "Visual"))
+                control.Enabled = hasFiles;
+        }
+
+        private static IEnumerable<Control> ControlsRecursive(Control parent)
+        {
+            foreach (Control child in parent.Controls)
+            {
+                yield return child;
+                foreach (Control descendant in ControlsRecursive(child))
+                    yield return descendant;
+            }
         }
 
         private void Enrichment_ProgressChanged(object? sender, LibraryEnrichmentProgress e)
@@ -733,6 +791,8 @@ namespace MediaFlux
         {
             _scanStatus.Text = status;
             _scanDetail.Text = detail;
+            _locationsActivityCard.SetValue(active ? "Active" : "Idle", status);
+            UpdateAnalyzerActionState();
             if (!IsDisposed && IsHandleCreated)
             {
                 _overviewLiveStatus.Text = active
@@ -773,6 +833,20 @@ namespace MediaFlux
             RowHeadersVisible = false,
             BackgroundColor = SystemColors.Window,
             BorderStyle = BorderStyle.FixedSingle,
+            EnableHeadersVisualStyles = false,
+            ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = Color.FromArgb(239, 244, 248),
+                ForeColor = Color.FromArgb(45, 55, 65),
+                SelectionBackColor = Color.FromArgb(220, 232, 242),
+                Font = new Font("Segoe UI Semibold", 9F)
+            },
+            DefaultCellStyle = new DataGridViewCellStyle
+            {
+                SelectionBackColor = Color.FromArgb(210, 229, 242),
+                SelectionForeColor = SystemColors.ControlText
+            },
+            AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(248, 250, 252) },
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             AutoGenerateColumns = false
         };

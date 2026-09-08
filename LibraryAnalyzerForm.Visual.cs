@@ -16,6 +16,10 @@ namespace MediaFlux
         private readonly ComboBox _visualSort = DropDown();
         private readonly NumericUpDown _visualConfidence = new() { Width = 75, Minimum = 0, Maximum = 100, Value = 76 };
         private readonly Label _visualStatus = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0), Text = "Visual similarity analysis has not run." };
+        private readonly AnalyzerMetricCard _visualGroupsMetric = new("Review pairs");
+        private readonly AnalyzerMetricCard _visualFilesMetric = new("Files involved");
+        private readonly AnalyzerMetricCard _visualReclaimMetric = new("Potential savings");
+        private readonly AnalyzerMetricCard _visualReviewMetric = new("Review state");
         private readonly Label _visualPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
         private readonly ProgressBar _visualProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
         private readonly CheckBox _visualComparisonPreviewEnabled = new() { Name = "VisualComparisonPreviewEnabled", Text = "Show Side-by-Side Preview", AutoSize = true };
@@ -51,12 +55,20 @@ namespace MediaFlux
             var tab = new TabPage("Duplicates — Visual") { Padding = new Padding(8) };
             _visualStatus.ForeColor = LibraryAnalyzerAccentColor;
             _visualControlArea.Dock = DockStyle.Top;
-            _visualControlArea.Height = 142;
+            _visualControlArea.Height = 214;
             _visualControlArea.ColumnCount = 1;
-            _visualControlArea.RowCount = 2;
+            _visualControlArea.RowCount = 3;
             _visualControlArea.Margin = Padding.Empty;
+            _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
             _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            _visualGroupsMetric.SetValue("0", "Filtered visual matches");
+            _visualFilesMetric.SetValue("0", "Files across displayed matches");
+            _visualReclaimMetric.SetValue("0 B", "Potential savings");
+            _visualReviewMetric.SetValue("Not run", "Review decisions");
+            _visualControlArea.Controls.Add(AnalyzerUi.MetricRow(72,
+                _visualGroupsMetric, _visualFilesMetric, _visualReclaimMetric, _visualReviewMetric), 0, 0);
 
             var analysis = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false, Padding = new Padding(0, 4, 0, 2) };
             AddButton(analysis, "Analyze Library", AnalyzeVisualSimilarity_Click);
@@ -67,7 +79,7 @@ namespace MediaFlux
             _visualComparisonPreviewEnabled.Checked = _reviewOptions.UiState?.ShowVisualComparisonPreview == true;
             _visualComparisonPreviewEnabled.CheckedChanged += async (_, _) => await ToggleVisualComparisonPreviewAsync();
             analysis.Controls.Add(_visualComparisonPreviewEnabled);
-            _visualControlArea.Controls.Add(analysis, 0, 0);
+            _visualControlArea.Controls.Add(analysis, 0, 1);
 
             var filtersBox = new GroupBox { Text = "Filters", Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 7) };
             var filters = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 2, Margin = Padding.Empty };
@@ -96,7 +108,7 @@ namespace MediaFlux
             filters.Controls.Add(filterActions, 4, 0);
             filters.SetRowSpan(filterActions, 2);
             filtersBox.Controls.Add(filters);
-            _visualControlArea.Controls.Add(filtersBox, 0, 1);
+            _visualControlArea.Controls.Add(filtersBox, 0, 2);
 
             _visualLocation.Items.Add(new LocationChoice(0, "All locations"));
             _visualLocation.SelectedIndex = 0;
@@ -170,11 +182,11 @@ namespace MediaFlux
                 ForeColor = LibraryAnalyzerAccentColor,
                 Padding = new Padding(8, 9, 0, 0)
             };
-            var actions = new TableLayoutPanel { Name = "VisualActionArea", Dock = DockStyle.Bottom, Height = 220, RowCount = 2, ColumnCount = 2, Padding = new Padding(0, 2, 0, 2) };
+            var actions = new TableLayoutPanel { Name = "VisualActionArea", Dock = DockStyle.Bottom, Height = 198, RowCount = 2, ColumnCount = 2, Padding = new Padding(0, 2, 0, 2) };
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 162));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 136));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
 
             GroupBox reviewBox = CreateVisualActionGroup("REVIEW SELECTED MATCH", out TableLayoutPanel reviewLayout);
             reviewLayout.RowCount = 2;
@@ -191,6 +203,7 @@ namespace MediaFlux
                 "Open the Review & Compare window to inspect the matched files side by side before deciding which file to keep.");
             _visualReviewCompareButton.Name = "VisualReviewCompareButton";
             _visualReviewCompareButton.Font = new Font(_visualReviewCompareButton.Font, FontStyle.Bold);
+            AnalyzerUi.StylePrimary(_visualReviewCompareButton);
             _visualKeepButton = AddVisualActionButton(reviewActions, "Keep Selected File", SetVisualKeeper_Click,
                 "Choose the selected file as the keeper for this match. This changes the review decision; it does not delete anything.");
             _visualProtectionButton = AddVisualActionButton(reviewActions, "Protect Selected File", ToggleVisualProtection_Click,
@@ -402,6 +415,11 @@ namespace MediaFlux
                 long first = _visualTotal == 0 ? 0 : (long)_visualPage * VisualPageSize + 1;
                 long last = Math.Min(_visualTotal, ((long)_visualPage + 1) * VisualPageSize);
                 _visualPageLabel.Text = $"{first:N0}–{last:N0} of {_visualTotal:N0}";
+                long reviewed = page.Groups.LongCount(group => group.Reviewed);
+                _visualGroupsMetric.SetValue(_visualTotal.ToString("N0"), "Filtered visual matches");
+                _visualFilesMetric.SetValue((page.Groups.Count * 2L).ToString("N0"), "Files across displayed matches");
+                _visualReclaimMetric.SetValue(FormatBytes(page.Groups.Sum(group => group.ReclaimableBytes)), "Displayed potential savings");
+                _visualReviewMetric.SetValue(page.Groups.Count == 0 ? "No results" : $"{reviewed:N0} reviewed", page.Groups.Count == 0 ? "Adjust filters or analyze" : $"{page.Groups.Count - reviewed:N0} remaining on page");
                 await RefreshVisualMembersAsync();
             }
             finally

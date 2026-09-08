@@ -21,6 +21,10 @@ namespace MediaFlux
         private readonly Label _duplicatePageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
         private readonly ProgressBar _duplicateProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
         private readonly Label _duplicateReclaimByLocation = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0), ForeColor = SystemColors.GrayText };
+        private readonly AnalyzerMetricCard _duplicateGroupsMetric = new("Duplicate sets");
+        private readonly AnalyzerMetricCard _duplicateFilesMetric = new("Files involved");
+        private readonly AnalyzerMetricCard _duplicateReclaimMetric = new("Potential savings");
+        private readonly AnalyzerMetricCard _duplicateReviewMetric = new("Review state");
         private readonly ContextMenuStrip _duplicateGroupsMenu = new();
         private readonly ContextMenuStrip _duplicateMembersMenu = new();
         private readonly Button _duplicateApplyButton = new() { Name = "DuplicateApplyButton", Text = "Apply", Dock = DockStyle.Top, Height = 30 };
@@ -37,12 +41,20 @@ namespace MediaFlux
             var tab = new TabPage("Duplicates — Exact") { Padding = new Padding(8) };
             _duplicateStatus.ForeColor = LibraryAnalyzerAccentColor;
             _duplicateControlArea.Dock = DockStyle.Top;
-            _duplicateControlArea.Height = 142;
+            _duplicateControlArea.Height = 218;
             _duplicateControlArea.ColumnCount = 1;
-            _duplicateControlArea.RowCount = 2;
+            _duplicateControlArea.RowCount = 3;
             _duplicateControlArea.Margin = Padding.Empty;
+            _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
             _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            _duplicateGroupsMetric.SetValue("0", "Filtered duplicate sets");
+            _duplicateFilesMetric.SetValue("0", "Files across displayed sets");
+            _duplicateReclaimMetric.SetValue("0 B", "Potential reclaimable space");
+            _duplicateReviewMetric.SetValue("Not run", "Review decisions");
+            _duplicateControlArea.Controls.Add(AnalyzerUi.MetricRow(76,
+                _duplicateGroupsMetric, _duplicateFilesMetric, _duplicateReclaimMetric, _duplicateReviewMetric), 0, 0);
 
             var analysis = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false, Padding = new Padding(0, 4, 0, 2) };
             AddButton(analysis, "Analyze Library", AnalyzeDuplicates_Click);
@@ -51,7 +63,7 @@ namespace MediaFlux
             AddButton(analysis, "Cancel", (_, _) => _runtime.Duplicates.Cancel());
             AddButton(analysis, "Configure File Selection Rules…", ExactKeeperRules_Click);
             AddButton(analysis, "Cancel Cleanup", (_, _) => _exactCleanupCancellation?.Cancel());
-            _duplicateControlArea.Controls.Add(analysis, 0, 0);
+            _duplicateControlArea.Controls.Add(analysis, 0, 1);
 
             var filtersBox = new GroupBox { Text = "Filters", Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 7) };
             var filters = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 2, Margin = Padding.Empty };
@@ -80,7 +92,7 @@ namespace MediaFlux
             filters.Controls.Add(filterActions, 4, 0);
             filters.SetRowSpan(filterActions, 2);
             filtersBox.Controls.Add(filters);
-            _duplicateControlArea.Controls.Add(filtersBox, 0, 1);
+            _duplicateControlArea.Controls.Add(filtersBox, 0, 2);
 
             _duplicateReviewFilter.Items.AddRange(new object[] { "All", "Unreviewed", "Reviewed", "Ignored" });
             _duplicateReviewFilter.SelectedIndex = 0;
@@ -118,16 +130,20 @@ namespace MediaFlux
             AddDuplicateMemberColumn("Bitrate", "Bitrate", 85);
             AddDuplicateMemberColumn("Identity", "Physical identity", 170);
 
-            var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42, AutoScroll = true, WrapContents = false };
-            AddButton(actions, "Set selected keeper", SetManualKeeper_Click);
+            var actions = AnalyzerUi.ActionBar();
+            Button setKeeper = AddButton(actions, "Set selected keeper", SetManualKeeper_Click);
+            AnalyzerUi.StylePrimary(setKeeper);
             AddButton(actions, "Protect / unprotect file", ToggleProtection_Click);
             AddButton(actions, "Mark reviewed", MarkReviewed_Click);
             AddButton(actions, "Ignore / restore group", ToggleIgnored_Click);
             AddButton(actions, "Re-analyze selected group", QueueSelectedExactGroup_Click);
             AddButton(actions, "Select all except keeper", SelectAllExceptKeeper_Click);
-            AddButton(actions, "Delete Selected Groups…", DeleteSelectedGroups_Click);
-            AddButton(actions, "Delete All Eligible…", DeleteAllEligible_Click);
-            AddButton(actions, $"Preview {CleanupActionLabel(_cleanupOptions.PreferredAction)} cleanup…", PreviewPreferredCleanup_Click);
+            Button deleteSelected = AddButton(actions, "Delete Selected Groups…", DeleteSelectedGroups_Click);
+            Button deleteAll = AddButton(actions, "Delete All Eligible…", DeleteAllEligible_Click);
+            Button previewCleanup = AddButton(actions, $"Preview {CleanupActionLabel(_cleanupOptions.PreferredAction)} cleanup…", PreviewPreferredCleanup_Click);
+            AnalyzerUi.StyleSecondary(deleteSelected);
+            AnalyzerUi.StyleSecondary(deleteAll);
+            AnalyzerUi.StyleSecondary(previewCleanup);
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
             var next = new Button { Text = "Next", AutoSize = true };
@@ -230,6 +246,13 @@ namespace MediaFlux
                 long first = _duplicateTotal == 0 ? 0 : (long)_duplicatePage * DuplicatePageSize + 1;
                 long last = Math.Min(_duplicateTotal, ((long)_duplicatePage + 1) * DuplicatePageSize);
                 _duplicatePageLabel.Text = $"{first:N0}–{last:N0} of {_duplicateTotal:N0}";
+                long displayedFiles = page.Groups.Sum(group => (long)group.MemberCount);
+                long displayedReclaim = page.Groups.Sum(group => group.ReclaimableBytes);
+                long reviewed = page.Groups.LongCount(group => group.Reviewed);
+                _duplicateGroupsMetric.SetValue(_duplicateTotal.ToString("N0"), "Filtered duplicate sets");
+                _duplicateFilesMetric.SetValue(displayedFiles.ToString("N0"), "Files across displayed sets");
+                _duplicateReclaimMetric.SetValue(FormatBytes(displayedReclaim), "Displayed potential savings");
+                _duplicateReviewMetric.SetValue(page.Groups.Count == 0 ? "No results" : $"{reviewed:N0} reviewed", page.Groups.Count == 0 ? "Adjust filters or run analysis" : $"{page.Groups.Count - reviewed:N0} remaining on page");
                 await RefreshExactReclaimByLocationAsync();
                 await RefreshDuplicateMembersAsync();
             }
