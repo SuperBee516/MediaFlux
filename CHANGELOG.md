@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-09-08
+
+### Library Analyzer Review & Compare
+
+- Improved duplicate-review action organization, labels, guidance, tooltips, dynamic actions, and responsive layout.
+- Eliminated clipping and unnecessary internal action-area scrollbars across supported window sizes and DPI scaling.
+- Improved Review & Compare presentation and general Library Analyzer UI stability.
+
 ## [1.3.4] - 2026-09-07
 
 ### Library Analyzer Duplicate Review
