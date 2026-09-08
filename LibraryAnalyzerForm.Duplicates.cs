@@ -45,11 +45,11 @@ namespace MediaFlux
             _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             var analysis = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false, Padding = new Padding(0, 4, 0, 2) };
-            AddButton(analysis, "Run Analysis", AnalyzeDuplicates_Click);
+            AddButton(analysis, "Analyze Library", AnalyzeDuplicates_Click);
             AddButton(analysis, "Pause", (_, _) => _runtime.Duplicates.Pause());
             AddButton(analysis, "Resume", (_, _) => _runtime.Duplicates.Resume());
             AddButton(analysis, "Cancel", (_, _) => _runtime.Duplicates.Cancel());
-            AddButton(analysis, "Keeper rules…", ExactKeeperRules_Click);
+            AddButton(analysis, "Configure File Selection Rules…", ExactKeeperRules_Click);
             AddButton(analysis, "Cancel Cleanup", (_, _) => _exactCleanupCancellation?.Cancel());
             _duplicateControlArea.Controls.Add(analysis, 0, 0);
 

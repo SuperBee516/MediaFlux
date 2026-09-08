@@ -770,6 +770,17 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 Assert.Equal(2, groups.Rows.Count);
                 PumpUntil(() => members.Rows.Count == 2);
                 long initialGroupId = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
+                Control visualActions = Descendants<Control>(form).Single(control => control.Name == "VisualActionArea");
+                foreach (string label in new[]
+                {
+                    "Keep Selected File", "Protect Selected File", "Mark Match as Reviewed", "Ignore This Match",
+                    "Recheck This Match", "Preview Files to Delete…", "Remove Recommended Duplicates…",
+                    "Review Matches Using File Selection Rules…", "Delete Both Files…"
+                })
+                    Assert.Contains(label, Descendants<Button>(visualActions).Select(button => button.Text));
+                Assert.Equal("Cleanup Role", members.Columns["Keeper"].HeaderText);
+                Assert.Contains("Recommended to Keep", string.Join(" ", members.Rows.Cast<DataGridViewRow>().Select(row => row.Cells["Keeper"].Value)));
+                Assert.Contains("Selected:", GetPrivateField<Label>(form, "_visualReviewGuidance").Text);
 
                 ContextMenuStrip groupMenu = GetPrivateField<ContextMenuStrip>(form, "_visualGroupsMenu");
                 ContextMenuStrip memberMenu = GetPrivateField<ContextMenuStrip>(form, "_visualMembersMenu");
@@ -860,8 +871,10 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
 
                 PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualProtectionAsync"));
                 Assert.True(catalog.GetVisualGroupMembers(initialGroupId).Single(member => member.FileId == selectedMember.FileId).IsProtected);
+                Assert.Equal("Remove Protection", Descendants<Button>(visualActions).Single(button => button.Name == "VisualProtectionButton").Text);
                 PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualIgnoredAsync"));
                 Assert.True(catalog.GetVisualGroup(initialGroupId)!.Ignored);
+                Assert.Equal("Restore Ignored Match", Descendants<Button>(visualActions).Single(button => button.Name == "VisualIgnoredButton").Text);
                 PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualIgnoredAsync"));
                 Assert.False(catalog.GetVisualGroup(initialGroupId)!.Ignored);
 
@@ -909,9 +922,12 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 Assert.True(groups.MultiSelect);
                 initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
                 groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-                typeof(Control).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .Invoke(groups, new object[] { new KeyEventArgs(Keys.Control | Keys.A) });
+                foreach (DataGridViewRow row in groups.Rows)
+                    row.Selected = true;
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                Assert.Equal(2, groups.SelectedRows.Count);
                 PumpTask(InvokePrivateTask(form, "MarkSelectedVisualReviewedAsync"));
+                PumpUntil(() => groups.SelectedRows.Count == 2);
                 Assert.All(groups.Rows.Cast<DataGridViewRow>(), row =>
                     Assert.True(catalog.GetVisualGroup(((VisualSimilarityGroupRecord)row.Tag!).GroupId)!.Reviewed));
                 Assert.Equal(2, groups.SelectedRows.Count);
@@ -927,12 +943,22 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 ComboBox reviewFilter = GetPrivateField<ComboBox>(form, "_visualReview");
                 reviewFilter.SelectedIndex = 4;
                 PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpUntil(() => groups.Rows.Count == 1);
                 Assert.Single(groups.Rows.Cast<DataGridViewRow>());
+                initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                groups.ClearSelection();
+                initialRow.Selected = true;
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualNotMatchAsync"));
                 Assert.False(catalog.GetVisualGroup(initialGroupId)!.NotMatch);
                 reviewFilter.SelectedIndex = 0;
                 PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpUntil(() => groups.Rows.Count == 2);
                 Assert.Equal(2, groups.Rows.Count);
+                initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                groups.ClearSelection();
+                initialRow.Selected = true;
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
 
                 long beforeNavigation = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
                 PumpTask(InvokePrivateTask(form, "NavigateVisualSelectionAsync", 1));

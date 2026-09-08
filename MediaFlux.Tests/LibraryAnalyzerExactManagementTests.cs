@@ -315,8 +315,8 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
             TabPage exactTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Exact");
             TabPage visualTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Visual");
-            Assert.Contains(Descendants<Button>(exactTab), button => button.Text == "Run Analysis");
-            Assert.Contains(Descendants<Button>(visualTab), button => button.Text == "Run Analysis");
+            Assert.Contains(Descendants<Button>(exactTab), button => button.Text == "Analyze Library");
+            Assert.Contains(Descendants<Button>(visualTab), button => button.Text == "Analyze Library");
             tabs.SelectedTab = exactTab;
             DataGridView groups = GetPrivateField<DataGridView>(form, "_duplicateGroupsGrid");
             DataGridView members = GetPrivateField<DataGridView>(form, "_duplicateMembersGrid");

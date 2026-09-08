@@ -18,7 +18,18 @@ namespace MediaFlux
         private readonly Label _visualStatus = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0), Text = "Visual similarity analysis has not run." };
         private readonly Label _visualPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
         private readonly ProgressBar _visualProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
-        private readonly CheckBox _visualComparisonPreviewEnabled = new() { Name = "VisualComparisonPreviewEnabled", Text = "Show Comparison Preview", AutoSize = true };
+        private readonly CheckBox _visualComparisonPreviewEnabled = new() { Name = "VisualComparisonPreviewEnabled", Text = "Show Side-by-Side Preview", AutoSize = true };
+        private readonly ToolTip _visualActionToolTip = new();
+        private readonly Label _visualReviewGuidance = new() { Name = "VisualReviewGuidance", AutoSize = true, Text = "Select one of the two files above, then choose what MediaFlux should do with it." };
+        private Button? _visualKeepButton;
+        private Button? _visualProtectionButton;
+        private Button? _visualReviewedButton;
+        private Button? _visualIgnoredButton;
+        private Button? _visualRecheckButton;
+        private Button? _visualPreviewCleanupButton;
+        private Button? _visualBulkCleanupButton;
+        private Button? _visualRulesReviewButton;
+        private Button? _visualDeleteBothButton;
         // The top half of the tab keeps results and the optional preview side-by-side.
         private readonly SplitContainer _visualDetailSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical };
         private readonly SplitContainer _visualResultsMembersSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 240, Panel1MinSize = 140, Panel2MinSize = 140 };
@@ -47,11 +58,11 @@ namespace MediaFlux
             _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             var analysis = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false, Padding = new Padding(0, 4, 0, 2) };
-            AddButton(analysis, "Run Analysis", AnalyzeVisualSimilarity_Click);
+            AddButton(analysis, "Analyze Library", AnalyzeVisualSimilarity_Click);
             AddButton(analysis, "Pause", (_, _) => _runtime.VisualSimilarity.Pause());
             AddButton(analysis, "Resume", (_, _) => _runtime.VisualSimilarity.Resume());
             AddButton(analysis, "Cancel", (_, _) => _runtime.VisualSimilarity.Cancel());
-            AddButton(analysis, "Keeper rules…", VisualKeeperRules_Click);
+            AddButton(analysis, "Configure File Selection Rules…", VisualKeeperRules_Click);
             _visualComparisonPreviewEnabled.Checked = _reviewOptions.UiState?.ShowVisualComparisonPreview == true;
             _visualComparisonPreviewEnabled.CheckedChanged += async (_, _) => await ToggleVisualComparisonPreviewAsync();
             analysis.Controls.Add(_visualComparisonPreviewEnabled);
@@ -107,7 +118,10 @@ namespace MediaFlux
             AddVisualGroupColumn("Review", "Review state", 95);
             AddVisualGroupColumn("Evidence", "Evidence", 430);
             _visualGroupsGrid.MultiSelect = true;
-            _visualGroupsGrid.SelectionChanged += async (_, _) => await RefreshVisualMembersAsync();
+            _visualGroupsGrid.SelectionChanged += async (_, _) =>
+            {
+                await RefreshVisualMembersAsync();
+            };
             _visualGroupsGrid.CellDoubleClick += VisualGroupsGrid_CellDoubleClick;
             _visualGroupsGrid.KeyDown += async (_, e) =>
             {
@@ -126,7 +140,7 @@ namespace MediaFlux
                 await OpenVisualReviewAsync();
             };
 
-            AddVisualMemberColumn("Keeper", "Keeper", 85);
+            AddVisualMemberColumn("Keeper", "Cleanup Role", 135);
             AddVisualMemberColumn("Protected", "Protected", 70);
             AddVisualMemberColumn("Path", "File location", 400);
             AddVisualMemberColumn("Root", "Root", 180);
@@ -137,6 +151,7 @@ namespace MediaFlux
             AddVisualMemberColumn("Duration", "Duration", 85);
             AddVisualMemberColumn("Availability", "Availability", 90);
             _visualMembersGrid.MultiSelect = false;
+            _visualMembersGrid.SelectionChanged += (_, _) => UpdateVisualActionState();
             _visualMembersGrid.CellDoubleClick += (_, e) =>
             {
                 if (e.RowIndex >= 0)
@@ -154,22 +169,56 @@ namespace MediaFlux
                 ForeColor = LibraryAnalyzerAccentColor,
                 Padding = new Padding(8, 9, 0, 0)
             };
-            var actions = new TableLayoutPanel { Name = "VisualActionArea", Dock = DockStyle.Bottom, Height = 78, RowCount = 2, ColumnCount = 1 };
-            actions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            actions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            var reviewActions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false };
-            AddButton(reviewActions, "Set selected keeper", SetVisualKeeper_Click);
-            AddButton(reviewActions, "Protect / unprotect file", ToggleVisualProtection_Click);
-            AddButton(reviewActions, "Mark reviewed", MarkVisualReviewed_Click);
-            AddButton(reviewActions, "Ignore / restore match", ToggleVisualIgnored_Click);
-            AddButton(reviewActions, "Re-analyze selected match", QueueSelectedVisualGroup_Click);
-            var cleanupActions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false };
-            AddButton(cleanupActions, "Review cleanup plan…", ReviewSelectedVisualCleanup_Click);
-            AddButton(cleanupActions, "Delete both…", DeleteBothVisual_Click);
-            AddButton(cleanupActions, "Bulk delete recommended duplicates…", ReviewBulkVisualCleanup_Click);
-            AddButton(cleanupActions, "Mass review by keeper rules…", async (_, _) => await PreviewMassReviewAsync());
-            actions.Controls.Add(reviewActions, 0, 0);
-            actions.Controls.Add(cleanupActions, 0, 1);
+            var actions = new TableLayoutPanel { Name = "VisualActionArea", Dock = DockStyle.Bottom, Height = 132, RowCount = 2, ColumnCount = 2, Padding = new Padding(0, 2, 0, 2) };
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+
+            GroupBox reviewBox = CreateVisualActionGroup("REVIEW SELECTED MATCH", out TableLayoutPanel reviewLayout);
+            reviewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            reviewLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _visualReviewGuidance.ForeColor = SystemColors.GrayText;
+            reviewLayout.Controls.Add(_visualReviewGuidance, 0, 0);
+            var reviewActions = CreateVisualActionFlow();
+            _visualKeepButton = AddVisualActionButton(reviewActions, "Keep Selected File", SetVisualKeeper_Click,
+                "Choose the selected file as the keeper for this match. This changes the review decision; it does not delete anything.");
+            _visualProtectionButton = AddVisualActionButton(reviewActions, "Protect Selected File", ToggleVisualProtection_Click,
+                "Protect or remove protection for the selected file. Protected files are respected by existing cleanup eligibility rules.");
+            _visualProtectionButton.Name = "VisualProtectionButton";
+            _visualReviewedButton = AddVisualActionButton(reviewActions, "Mark Match as Reviewed", MarkVisualReviewed_Click,
+                "Mark this match as reviewed without changing its files or running cleanup.");
+            _visualIgnoredButton = AddVisualActionButton(reviewActions, "Ignore This Match", ToggleVisualIgnored_Click,
+                "Ignore this match in the analyzer. Restoring it makes the match active again; neither action deletes files.");
+            _visualIgnoredButton.Name = "VisualIgnoredButton";
+            _visualRecheckButton = AddVisualActionButton(reviewActions, "Recheck This Match", QueueSelectedVisualGroup_Click,
+                "Queue the files in this match for visual re-analysis. Existing decisions and files are not deleted by this action.");
+            reviewLayout.Controls.Add(reviewActions, 0, 1);
+
+            GroupBox cleanupBox = CreateVisualActionGroup("CLEANUP", out TableLayoutPanel cleanupLayout);
+            var cleanupActions = CreateVisualActionFlow();
+            _visualPreviewCleanupButton = AddVisualActionButton(cleanupActions, "Preview Files to Delete…", ReviewSelectedVisualCleanup_Click,
+                "Open the existing cleanup preview for the selected match. The current preview, confirmation, and revalidation safeguards still apply.");
+            _visualBulkCleanupButton = AddVisualActionButton(cleanupActions, "Remove Recommended Duplicates…", ReviewBulkVisualCleanup_Click,
+                "Review removal of eligible recommended duplicate candidates. Existing cleanup preview, confirmation, and validation safeguards remain in effect.");
+            cleanupLayout.Controls.Add(cleanupActions, 0, 0);
+
+            GroupBox automationBox = CreateVisualActionGroup("AUTOMATION", out TableLayoutPanel automationLayout);
+            var automationActions = CreateVisualActionFlow();
+            _visualRulesReviewButton = AddVisualActionButton(automationActions, "Review Matches Using File Selection Rules…", async (_, _) => await PreviewMassReviewAsync(),
+                "Preview matches selected by the configured file selection rules. Review decisions are shown before they are applied.");
+            automationLayout.Controls.Add(automationActions, 0, 0);
+
+            GroupBox advancedBox = CreateVisualActionGroup("ADVANCED / DESTRUCTIVE", out TableLayoutPanel advancedLayout);
+            var advancedActions = CreateVisualActionFlow();
+            _visualDeleteBothButton = AddVisualActionButton(advancedActions, "Delete Both Files…", DeleteBothVisual_Click,
+                "Open the existing destructive delete-both workflow. The cleanup preview, confirmation, and revalidation safeguards still apply.");
+            advancedLayout.Controls.Add(advancedActions, 0, 0);
+            actions.Controls.Add(reviewBox, 0, 0);
+            actions.Controls.Add(cleanupBox, 1, 0);
+            actions.Controls.Add(automationBox, 0, 1);
+            actions.Controls.Add(advancedBox, 1, 1);
+            UpdateVisualActionState();
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
             var next = new Button { Text = "Next", AutoSize = true };
@@ -204,6 +253,28 @@ namespace MediaFlux
             cell.Controls.Add(control, 0, 1);
             layout.Controls.Add(cell, column, row);
             if (columnSpan > 1) layout.SetColumnSpan(cell, columnSpan);
+        }
+
+        private static GroupBox CreateVisualActionGroup(string title, out TableLayoutPanel layout)
+        {
+            var group = new GroupBox { Text = title, Dock = DockStyle.Fill, Padding = new Padding(7, 4, 7, 2), Margin = new Padding(0, 1, 0, 1) };
+            layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = Padding.Empty };
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            group.Controls.Add(layout);
+            return group;
+        }
+
+        private static FlowLayoutPanel CreateVisualActionFlow() => new()
+        {
+            Dock = DockStyle.Fill, WrapContents = true, AutoScroll = true, FlowDirection = FlowDirection.LeftToRight,
+            Margin = Padding.Empty, Padding = new Padding(0, 0, 0, 1)
+        };
+
+        private Button AddVisualActionButton(FlowLayoutPanel parent, string text, EventHandler handler, string toolTip)
+        {
+            Button button = AddButton(parent, text, handler);
+            _visualActionToolTip.SetToolTip(button, toolTip);
+            return button;
         }
 
         private async void ResetVisualFilters_Click(object? sender, EventArgs e)
@@ -310,10 +381,10 @@ namespace MediaFlux
                         : null;
                     if (selectedRows.Length > 0)
                     {
-                        foreach (DataGridViewRow row in selectedRows)
-                            row.Selected = true;
                         DataGridViewRow currentRow = preferredRow ?? selectedRows[0];
                         _visualGroupsGrid.CurrentCell = currentRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                        foreach (DataGridViewRow row in selectedRows)
+                            row.Selected = true;
                     }
                     else if (preferredRow != null)
                         SelectVisualGroupRow(preferredRow.Index);
@@ -334,7 +405,7 @@ namespace MediaFlux
             {
                 if (loadVersion != Volatile.Read(ref _visualMemberLoadVersion) || IsDisposed || Disposing || _visualMembersGrid.IsDisposed)
                     return;
-                if (SelectedVisualGroup() is not { } selectedGroup) { _visualMembersGrid.Rows.Clear(); return; }
+                if (SelectedVisualGroup() is not { } selectedGroup) { _visualMembersGrid.Rows.Clear(); UpdateVisualActionState(); return; }
                 long groupId = selectedGroup.GroupId;
                 IReadOnlyList<VisualSimilarityMemberRecord> members = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroupMembers(groupId));
                 if (loadVersion != Volatile.Read(ref _visualMemberLoadVersion) || IsDisposed || Disposing || _visualMembersGrid.IsDisposed)
@@ -342,7 +413,7 @@ namespace MediaFlux
                 _visualMembersGrid.Rows.Clear();
                 foreach (VisualSimilarityMemberRecord member in members)
                 {
-                    string keeper = member.IsManualKeeper ? "Manual" : member.IsSuggestedKeeper ? "Suggested" : "Candidate";
+                    string keeper = member.IsManualKeeper ? "Recommended to Keep" : member.IsSuggestedKeeper ? "Recommended to Keep" : "Duplicate Candidate";
                     int row = _visualMembersGrid.Rows.Add(keeper, member.IsProtected ? "Yes" : "No", member.FullPath, member.LocationPath,
                         FormatBytes(member.SizeBytes), member.VideoCodec, member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
                         member.TotalBitRate.HasValue ? $"{member.TotalBitRate / 1_000_000d:0.##} Mbps" : "",
@@ -355,6 +426,7 @@ namespace MediaFlux
                     _visualMembersGrid.CurrentCell = _visualMembersGrid.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 }
                 await UpdateVisualComparisonPreviewAsync(members);
+                UpdateVisualActionState();
             }
             finally { _visualMemberRefreshLock.Release(); }
         }
@@ -466,6 +538,42 @@ namespace MediaFlux
         private VisualSimilarityGroupRecord? SelectedVisualGroup() => (_visualGroupsGrid.CurrentRow is { Selected: true } current ? current.Tag as VisualSimilarityGroupRecord : null)
             ?? SelectedVisualGroups().FirstOrDefault();
         private VisualSimilarityMemberRecord? SelectedVisualMember() => _visualMembersGrid.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault()?.Tag as VisualSimilarityMemberRecord;
+
+        private void UpdateVisualActionState()
+        {
+            VisualSimilarityGroupRecord? group = SelectedVisualGroup();
+            VisualSimilarityMemberRecord? member = SelectedVisualMember();
+            bool hasGroup = group != null;
+            bool hasMember = member != null;
+            if (_visualKeepButton == null) return;
+            Button protectionButton = _visualProtectionButton!;
+            Button reviewedButton = _visualReviewedButton!;
+            Button ignoredButton = _visualIgnoredButton!;
+            Button recheckButton = _visualRecheckButton!;
+            Button previewCleanupButton = _visualPreviewCleanupButton!;
+            Button bulkCleanupButton = _visualBulkCleanupButton!;
+            Button rulesReviewButton = _visualRulesReviewButton!;
+            Button deleteBothButton = _visualDeleteBothButton!;
+            _visualKeepButton.Enabled = hasGroup && hasMember && CanSelectVisualKeeper(member!);
+            protectionButton.Enabled = hasMember;
+            protectionButton.Text = member?.IsProtected == true ? "Remove Protection" : "Protect Selected File";
+            reviewedButton.Enabled = hasGroup && group?.Reviewed == false;
+            ignoredButton.Enabled = hasGroup;
+            ignoredButton.Text = group?.Ignored == true ? "Restore Ignored Match" : "Ignore This Match";
+            recheckButton.Enabled = hasGroup;
+            previewCleanupButton.Enabled = hasGroup && group?.Ignored != true && group?.NotMatch != true;
+            bulkCleanupButton.Enabled = _visualTotal > 0;
+            rulesReviewButton.Enabled = _visualTotal > 0;
+            deleteBothButton.Enabled = hasGroup && group?.Ignored != true && group?.NotMatch != true;
+            _visualReviewGuidance.Text = !hasGroup
+                ? "Select a match above to review its files."
+                : hasMember
+                    ? $"Selected: {Path.GetFileName(member!.FullPath)} — {VisualMemberRole(member)}. Choose an action below."
+                    : "Select one of the two files above, then choose what MediaFlux should do with it.";
+        }
+
+        private static string VisualMemberRole(VisualSimilarityMemberRecord member) =>
+            member.IsManualKeeper || member.IsSuggestedKeeper ? "Recommended to Keep" : "Duplicate Candidate";
         private void AddVisualGroupColumn(string name, string header, int width, bool visible = true) => _visualGroupsGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width, Visible = visible });
         private void AddVisualMemberColumn(string name, string header, int width) => _visualMembersGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width });
     }
