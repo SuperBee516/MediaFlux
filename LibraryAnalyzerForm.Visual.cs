@@ -59,7 +59,7 @@ namespace MediaFlux
             _visualControlArea.ColumnCount = 1;
             _visualControlArea.RowCount = 3;
             _visualControlArea.Margin = Padding.Empty;
-            _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+            _visualControlArea.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 

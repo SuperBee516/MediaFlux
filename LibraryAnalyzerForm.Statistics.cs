@@ -17,12 +17,7 @@ namespace MediaFlux
         private void BuildStatisticsTab()
         {
             var tab = new TabPage("Statistics") { Padding = new Padding(10) };
-            var cards = new TableLayoutPanel { Dock = DockStyle.Top, Height = 76, ColumnCount = 4, Padding = new Padding(0, 0, 0, 8) };
-            for (int i = 0; i < 4; i++) cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-            cards.Controls.Add(_statisticsFiles, 0, 0);
-            cards.Controls.Add(_statisticsStorage, 1, 0);
-            cards.Controls.Add(_statisticsHealth, 2, 0);
-            cards.Controls.Add(_statisticsDuplicates, 3, 0);
+            Control cards = AnalyzerUi.MetricRow(76, _statisticsFiles, _statisticsStorage, _statisticsHealth, _statisticsDuplicates);
 
             _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab("Storage by location"));
             _statisticsBreakdowns.TabPages.Add(CreateBreakdownTab("Codec", LibraryStatisticCategory.Codec));

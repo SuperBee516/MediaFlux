@@ -48,6 +48,12 @@ internal class AnalyzerMetricCard : Panel
         _value.Text = value;
         _secondary.Text = secondary;
     }
+
+    public override Size GetPreferredSize(Size proposedSize)
+    {
+        int contentHeight = 21 + 32 + _secondary.Font.Height + _secondary.Padding.Vertical;
+        return new Size(proposedSize.Width, contentHeight + Padding.Vertical + (BorderStyle == BorderStyle.None ? 0 : 2));
+    }
 }
 
 internal sealed class AnalyzerSectionPanel : Panel
@@ -104,10 +110,16 @@ internal static class AnalyzerUi
 {
     public static TableLayoutPanel MetricRow(int height, params Control[] cards)
     {
+        int cardHeight = cards.Length == 0
+            ? 0
+            : cards.Max(card => card.GetPreferredSize(new Size(0, 0)).Height + card.Margin.Vertical);
         var row = new TableLayoutPanel
         {
+            Name = "AnalyzerMetricRow",
             Dock = DockStyle.Top,
-            Height = height,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(0, Math.Max(height, cardHeight + 8)),
             ColumnCount = cards.Length,
             RowCount = 1,
             Padding = new Padding(0, 2, 0, 6),
@@ -118,8 +130,10 @@ internal static class AnalyzerUi
         for (int i = 0; i < cards.Length; i++)
         {
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / cards.Length));
+            cards[i].Dock = DockStyle.Fill;
             row.Controls.Add(cards[i], i, 0);
         }
+        row.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
         return row;
     }
 

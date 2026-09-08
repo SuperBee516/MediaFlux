@@ -45,7 +45,7 @@ namespace MediaFlux
             _duplicateControlArea.ColumnCount = 1;
             _duplicateControlArea.RowCount = 3;
             _duplicateControlArea.Margin = Padding.Empty;
-            _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
+            _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             _duplicateControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
