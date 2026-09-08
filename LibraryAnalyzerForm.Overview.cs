@@ -9,10 +9,10 @@ public sealed partial class LibraryAnalyzerForm
     {
         var tab = new TabPage("Overview") { Padding = new Padding(12), AutoScroll = true };
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(2), GrowStyle = TableLayoutPanelGrowStyle.FixedSize };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
 
         var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Padding = new Padding(4, 2, 4, 4) };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -39,7 +39,7 @@ public sealed partial class LibraryAnalyzerForm
         panels.Controls.Add(CreateOverviewPanel("Library Insights", _overviewInsights), 1, 2);
         root.Controls.Add(panels, 0, 2);
 
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true, Padding = new Padding(2, 2, 0, 0) };
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true, Padding = new Padding(2, 4, 0, 3), Margin = new Padding(2, 0, 0, 1) };
         Button refresh = AddButton(actions, "Refresh", async (_, _) => await RefreshAllAsync());
         refresh.AccessibleName = "Refresh library overview";
         var more = new Button { Text = "More", AutoSize = true, AccessibleName = "More maintenance actions" };

@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Drawing;
 using System.Windows.Forms;
 using MediaFlux.Models;
 using MediaFlux.Services;
@@ -33,10 +34,13 @@ public sealed class LibraryAnalyzerOverviewUiTests : IDisposable
                 TabPage overview = tabs.TabPages.Cast<TabPage>().Single(x => x.Text == "Overview");
                 Assert.True(overview.AutoScroll);
                 Assert.Contains(overview.Controls.OfType<TableLayoutPanel>(), x => x.RowCount >= 4);
-                ComboBox selector = Field<ComboBox>(form, "_overviewCompositionSelector");
-                Assert.Equal(new[] { "Resolution", "Video codec", "Container" }, selector.Items.Cast<string>());
                 Task refresh = (Task)(form.GetType().GetMethod("RefreshOverviewAsync", BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(form, null) ?? throw new MissingMethodException());
                 Pump(refresh);
+                form.Size = new Size(1100, 700); Application.DoEvents(); AssertOverviewGeometry(form, overview);
+                form.Size = new Size(1360, 840); Application.DoEvents(); AssertOverviewGeometry(form, overview);
+                form.Size = new Size(1800, 1100); Application.DoEvents(); AssertOverviewGeometry(form, overview);
+                ComboBox selector = Field<ComboBox>(form, "_overviewCompositionSelector");
+                Assert.Equal(new[] { "Resolution", "Video codec", "Container" }, selector.Items.Cast<string>());
                 Assert.Equal("No completed scan yet · Add a location and scan to build the catalog", Field<Label>(form, "_overviewHeaderSummary").Text);
                 Assert.Contains("History will appear", Field<Label>(form, "_overviewGrowthEmpty").Text);
                 form.GetType().GetMethod("SetActivity", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form, new object[] { "Scanning: 3 indexed", "Current: movie.mkv", true, 0L, 0L, false });
@@ -100,6 +104,22 @@ public sealed class LibraryAnalyzerOverviewUiTests : IDisposable
     }
     private static T Field<T>(object value, string name) => (T)(value.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(value) ?? throw new MissingFieldException(name));
     private static IEnumerable<Control> AllControls(Control root) => new[] { root }.Concat(root.Controls.Cast<Control>().SelectMany(AllControls));
+    private static void AssertOverviewGeometry(Form form, TabPage overview)
+    {
+        TableLayoutPanel root = overview.Controls.OfType<TableLayoutPanel>().Single();
+        Control header = root.GetControlFromPosition(0, 0)!;
+        Control cards = root.GetControlFromPosition(0, 1)!;
+        Control panels = root.GetControlFromPosition(0, 2)!;
+        Control actions = root.GetControlFromPosition(0, 3)!;
+        Assert.True(header.Bottom <= cards.Top, $"Header overlaps KPI row at {form.Size}: {header.Bounds} / {cards.Bounds}");
+        Assert.True(cards.Bottom <= panels.Top, $"KPI row overlaps dashboard panels at {form.Size}: {cards.Bounds} / {panels.Bounds}");
+        Assert.True(actions.Bottom <= root.ClientSize.Height, $"Actions extend outside root at {form.Size}: {actions.Bounds} / {root.ClientSize}");
+        Assert.All(actions.Controls.Cast<Control>(), control => Assert.True(control.Bottom <= actions.ClientSize.Height, $"Action is clipped at {form.Size}: {control.Bounds} / {actions.ClientSize}"));
+        Assert.All(header.Controls.Cast<Control>(), control => Assert.True(control.Bottom <= header.ClientSize.Height, $"Header content is clipped at {form.Size}: {control.Bounds} / {header.ClientSize}"));
+        Assert.All(cards.Controls.Cast<Control>(), control => Assert.True(control.Bottom <= cards.ClientSize.Height, $"KPI card is clipped at {form.Size}: {control.Bounds} / {cards.ClientSize}"));
+        Assert.All(cards.Controls.Cast<Control>().SelectMany(control => control.Controls.Cast<Control>()), control => Assert.True(control.Bottom <= control.Parent!.ClientSize.Height, $"KPI content is clipped at {form.Size}: {control.Bounds} / {control.Parent.ClientSize}"));
+        Assert.All(root.Controls.Cast<Control>(), control => Assert.True(control.Right <= root.ClientSize.Width && control.Bottom <= root.ClientSize.Height, $"Dashboard row is clipped at {form.Size}: {control.Bounds} / {root.ClientSize}"));
+    }
     private static void Pump(Task task) { DateTime end = DateTime.UtcNow.AddSeconds(20); while (!task.IsCompleted) { if (DateTime.UtcNow >= end) throw new TimeoutException(); Application.DoEvents(); Thread.Sleep(10); } task.GetAwaiter().GetResult(); }
     public void Dispose() { SqliteConnection.ClearAllPools(); if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 }
