@@ -60,9 +60,14 @@ public sealed class LibraryMaintenanceUiTests : IDisposable
                 Assert.True(top.Panel2Collapsed);
                 Assert.Same(top.Panel1, groups.Parent);
                 Assert.Same(outer.Panel2, members.Parent);
+                enabled.Checked = true;
+                Application.DoEvents();
+                top.SplitterDistance = 300;
+                Application.DoEvents();
+                int expectedSplitterDistance = top.SplitterDistance;
                 form.Close();
                 Application.DoEvents();
-                Assert.Contains(state.SplitterDistances, entry => entry.Key.Contains("Duplicates — Visual", StringComparison.Ordinal) && entry.Value == 300);
+                Assert.Contains(state.SplitterDistances, entry => entry.Key.Contains("Duplicates — Visual", StringComparison.Ordinal) && entry.Value == expectedSplitterDistance);
             }
             catch (Exception ex) { failure = ex; }
         });

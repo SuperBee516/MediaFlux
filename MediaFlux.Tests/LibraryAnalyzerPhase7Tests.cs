@@ -388,6 +388,20 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                     AssertCurrentTabContains(visualActions);
                     Assert.False(visualControls.AutoScroll);
                     Assert.All(Descendants<Button>(visualActions), AssertCurrentTabContains);
+                    Assert.False(visualActions.AutoSize);
+                    Assert.All(Descendants<FlowLayoutPanel>(visualActions), flow => Assert.False(flow.AutoScroll));
+                    foreach (Button button in Descendants<Button>(visualActions))
+                    {
+                        GroupBox? group = button.Parent as GroupBox;
+                        for (Control? parent = button.Parent; group == null && parent != null; parent = parent.Parent)
+                            group = parent as GroupBox;
+                        Assert.NotNull(group);
+                        Rectangle groupBounds = group!.RectangleToScreen(group.ClientRectangle);
+                        Rectangle buttonBounds = button.RectangleToScreen(button.ClientRectangle);
+                        Rectangle flowBounds = button.Parent!.RectangleToScreen(button.Parent.ClientRectangle);
+                        Assert.True(groupBounds.Contains(buttonBounds),
+                            $"{button.Text} should fit inside {group.Text}. Group={groupBounds}, Flow={flowBounds}, Button={buttonBounds}.");
+                    }
                 }
 
                 form.Size = form.MinimumSize;

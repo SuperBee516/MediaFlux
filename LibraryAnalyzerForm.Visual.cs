@@ -169,13 +169,15 @@ namespace MediaFlux
                 ForeColor = LibraryAnalyzerAccentColor,
                 Padding = new Padding(8, 9, 0, 0)
             };
-            var actions = new TableLayoutPanel { Name = "VisualActionArea", Dock = DockStyle.Bottom, Height = 132, RowCount = 2, ColumnCount = 2, Padding = new Padding(0, 2, 0, 2) };
+            var actions = new TableLayoutPanel { Name = "VisualActionArea", Dock = DockStyle.Bottom, Height = 220, RowCount = 2, ColumnCount = 2, Padding = new Padding(0, 2, 0, 2) };
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 162));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
 
             GroupBox reviewBox = CreateVisualActionGroup("REVIEW SELECTED MATCH", out TableLayoutPanel reviewLayout);
+            reviewLayout.RowCount = 2;
+            reviewLayout.RowStyles.Clear();
             reviewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             reviewLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             _visualReviewGuidance.ForeColor = SystemColors.GrayText;
@@ -266,7 +268,7 @@ namespace MediaFlux
 
         private static FlowLayoutPanel CreateVisualActionFlow() => new()
         {
-            Dock = DockStyle.Fill, WrapContents = true, AutoScroll = true, FlowDirection = FlowDirection.LeftToRight,
+            Dock = DockStyle.Fill, WrapContents = true, AutoScroll = false, FlowDirection = FlowDirection.LeftToRight,
             Margin = Padding.Empty, Padding = new Padding(0, 0, 0, 1)
         };
 

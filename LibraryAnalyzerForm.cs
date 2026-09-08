@@ -72,8 +72,8 @@ namespace MediaFlux
             _visualKeeperPreferences = (_reviewOptions.KeeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences()).Clone();
             _visualKeeperPreferences.Normalize();
             Text = "Library Analyzer";
-            MinimumSize = new Size(980, 620);
-            Size = new Size(1280, 780);
+            MinimumSize = new Size(1100, 700);
+            Size = new Size(1360, 840);
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
 
