@@ -22,6 +22,7 @@ namespace MediaFlux
         private readonly ToolTip _visualActionToolTip = new();
         private readonly Label _visualReviewGuidance = new() { Name = "VisualReviewGuidance", AutoSize = true, Text = "Select one of the two files above, then choose what MediaFlux should do with it." };
         private Button? _visualKeepButton;
+        private Button? _visualReviewCompareButton;
         private Button? _visualProtectionButton;
         private Button? _visualReviewedButton;
         private Button? _visualIgnoredButton;
@@ -183,6 +184,13 @@ namespace MediaFlux
             _visualReviewGuidance.ForeColor = SystemColors.GrayText;
             reviewLayout.Controls.Add(_visualReviewGuidance, 0, 0);
             var reviewActions = CreateVisualActionFlow();
+            _visualReviewCompareButton = AddVisualActionButton(
+                reviewActions,
+                "Review & Compare…",
+                ReviewAndCompareSelectedVisualMatch_Click,
+                "Open the Review & Compare window to inspect the matched files side by side before deciding which file to keep.");
+            _visualReviewCompareButton.Name = "VisualReviewCompareButton";
+            _visualReviewCompareButton.Font = new Font(_visualReviewCompareButton.Font, FontStyle.Bold);
             _visualKeepButton = AddVisualActionButton(reviewActions, "Keep Selected File", SetVisualKeeper_Click,
                 "Choose the selected file as the keeper for this match. This changes the review decision; it does not delete anything.");
             _visualProtectionButton = AddVisualActionButton(reviewActions, "Protect Selected File", ToggleVisualProtection_Click,
@@ -396,7 +404,10 @@ namespace MediaFlux
                 _visualPageLabel.Text = $"{first:N0}–{last:N0} of {_visualTotal:N0}";
                 await RefreshVisualMembersAsync();
             }
-            finally { _loadingVisualGroups = false; }
+            finally
+            {
+                _loadingVisualGroups = false;
+            }
         }
 
         private async Task RefreshVisualMembersAsync()
@@ -547,7 +558,8 @@ namespace MediaFlux
             VisualSimilarityMemberRecord? member = SelectedVisualMember();
             bool hasGroup = group != null;
             bool hasMember = member != null;
-            if (_visualKeepButton == null) return;
+            if (_visualKeepButton == null || _visualReviewCompareButton == null) return;
+            Button reviewCompareButton = _visualReviewCompareButton;
             Button protectionButton = _visualProtectionButton!;
             Button reviewedButton = _visualReviewedButton!;
             Button ignoredButton = _visualIgnoredButton!;
@@ -556,6 +568,7 @@ namespace MediaFlux
             Button bulkCleanupButton = _visualBulkCleanupButton!;
             Button rulesReviewButton = _visualRulesReviewButton!;
             Button deleteBothButton = _visualDeleteBothButton!;
+            reviewCompareButton.Enabled = hasGroup;
             _visualKeepButton.Enabled = hasGroup && hasMember && CanSelectVisualKeeper(member!);
             protectionButton.Enabled = hasMember;
             protectionButton.Text = member?.IsProtected == true ? "Remove Protection" : "Protect Selected File";

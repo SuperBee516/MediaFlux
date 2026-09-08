@@ -231,7 +231,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 using var timer = new System.Windows.Forms.Timer { Interval = 40 };
                 timer.Tick += (_, _) =>
                 {
-                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Match", StringComparison.Ordinal));
+                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review & Compare", StringComparison.Ordinal));
                     if (review == null) return;
                     sawSelectedKeeper = Descendants<Button>(review).Any(button => button.Text == "Keeper selected" && button.BackColor == Color.FromArgb(46, 125, 50));
                     Assert.DoesNotContain(Descendants<Button>(review), button => button.Text == "Accept + Next");
@@ -313,7 +313,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 using var timer = new System.Windows.Forms.Timer { Interval = 40 };
                 timer.Tick += (_, _) =>
                 {
-                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Match", StringComparison.Ordinal));
+                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review & Compare", StringComparison.Ordinal));
                     if (review == null) return;
                     sawReview = true;
                     sawSemiAutomaticSelection = Descendants<Button>(review).Any(button => button.Text == "Keeper selected" && button.BackColor == Color.FromArgb(46, 125, 50));
