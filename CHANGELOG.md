@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.6] - 2026-09-08
+
+### Library Analyzer Overview
+
+- Redesigned the Library Analyzer Overview dashboard with Videos, Library Size, Duplicate Sets, and estimated reclaimable-space KPIs.
+- Added Exact, Visual, and Family duplicate/review summaries, library health and enrichment status, storage-by-location visualization, and resolution/codec/container composition.
+- Added persisted 30-day library growth history and catalog insights including average bitrate.
+- Added direct navigation into Analyzer workflows with responsive, DPI-aware empty/no-history states.
+- Added asynchronous DB-only aggregation with safe debounced refresh and lifecycle handling.
+
 ## [1.3.5] - 2026-09-08
 
 ### Library Analyzer Review & Compare
