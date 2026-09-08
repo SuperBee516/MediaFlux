@@ -19,12 +19,35 @@ namespace MediaFlux
         private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
         private readonly DataGridView _locationsGrid = CreateGrid("LocationsGrid");
         private readonly DataGridView _filesGrid = CreateGrid("FilesGrid");
-        private readonly Label _overviewFiles = ValueLabel();
-        private readonly Label _overviewSize = ValueLabel();
-        private readonly Label _overviewActivity = ValueLabel();
-        private readonly Label _overviewPending = ValueLabel();
-        private readonly Label _overviewUnavailable = ValueLabel();
-        private readonly Label _overviewLastScan = ValueLabel();
+        private readonly OverviewMetricCard _overviewVideosCard = new("Videos");
+        private readonly OverviewMetricCard _overviewSizeCard = new("Library size");
+        private readonly OverviewMetricCard _overviewDuplicatesCard = new("Duplicate sets");
+        private readonly OverviewMetricCard _overviewReclaimCard = new("Reclaimable space");
+        private readonly Label _overviewHeaderSummary = new() { AutoEllipsis = true, AutoSize = false, Dock = DockStyle.Fill };
+        private readonly Label _overviewHealthState = new() { AutoSize = true, Anchor = AnchorStyles.Right, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(8, 5, 8, 5) };
+        private readonly LinkLabel _overviewExactLink = OverviewLinkLabel();
+        private readonly LinkLabel _overviewVisualLink = OverviewLinkLabel();
+        private readonly LinkLabel _overviewFamilyLink = OverviewLinkLabel();
+        private readonly LinkLabel _overviewDuplicateProgress = OverviewLinkLabel();
+        private readonly Label _overviewHealthSummary = new() { AutoEllipsis = true, Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 4), Enabled = false };
+        private readonly Label _overviewLiveStatus = new() { Text = "Live: Idle", AutoEllipsis = true, Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(0, 0, 4, 0) };
+        private readonly OverviewBarChart _overviewLocationChart = new() { Dock = DockStyle.Fill };
+        private readonly OverviewBarChart _overviewCompositionChart = new() { Dock = DockStyle.Fill };
+        private readonly ComboBox _overviewCompositionSelector = DropDown();
+        private readonly OverviewSparkline _overviewGrowthChart = new() { Dock = DockStyle.Fill };
+        private readonly Label _overviewGrowthEmpty = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = SystemColors.GrayText, Visible = false, Padding = new Padding(12) };
+        private readonly TableLayoutPanel _overviewInsights = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(8) };
+        private LibraryOverviewSnapshot? _overviewSnapshot;
+        private IReadOnlyList<LibraryOverviewScanHistoryEntry> _overviewHistory = Array.Empty<LibraryOverviewScanHistoryEntry>();
+        private bool _loadingOverview;
+        private bool _overviewRefreshQueued;
+        private readonly System.Windows.Forms.Timer _overviewRefreshDebounceTimer = new() { Interval = 250 };
+        private long[] _overviewLocationIds = Array.Empty<long>();
+        private readonly ToolTip _overviewToolTip = new();
+        private readonly CancellationTokenSource _overviewRefreshCancellation = new();
+        private bool _overviewDuplicateWasRunning;
+        private bool _overviewVisualWasRunning;
+        private bool _overviewEnrichmentWasRunning;
         private readonly Label _scanStatus = new() { AutoEllipsis = true, Dock = DockStyle.Fill, Text = "Ready", Padding = new Padding(6, 2, 6, 0) };
         private readonly Label _scanDetail = new() { AutoEllipsis = true, Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(6, 0, 6, 2) };
         private readonly ProgressBar _scanProgress = new() { Dock = DockStyle.Fill, Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 25, Visible = false };
@@ -131,6 +154,11 @@ namespace MediaFlux
             _reclamationBuildCancellation?.Cancel();
             _refreshTimer.Stop();
             _activityTimer.Stop();
+            _overviewRefreshDebounceTimer.Stop();
+            _overviewRefreshQueued = false;
+            _overviewToolTip.Dispose();
+            _overviewRefreshCancellation.Cancel();
+            _overviewRefreshCancellation.Dispose();
             _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
             _runtime.VisualSimilarity.ProgressChanged -= VisualSimilarity_ProgressChanged;
@@ -149,48 +177,7 @@ namespace MediaFlux
 
         private void BuildOverviewTab()
         {
-            var tab = new TabPage("Overview") { Padding = new Padding(18) };
-            var content = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
-                AutoScroll = true
-            };
-            var title = new Label
-            {
-                Text = "Media library catalog",
-                Font = new Font(Font, FontStyle.Bold),
-                AutoSize = true,
-                Margin = new Padding(0, 0, 0, 12)
-            };
-            var table = new TableLayoutPanel
-            {
-                AutoSize = true,
-                ColumnCount = 2,
-                RowCount = 6,
-                Dock = DockStyle.Top,
-                Padding = new Padding(0, 14, 0, 0)
-            };
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            AddOverviewRow(table, 0, "Indexed video files", _overviewFiles);
-            AddOverviewRow(table, 1, "Indexed logical size", _overviewSize);
-            AddOverviewRow(table, 2, "Scanner / enrichment", _overviewActivity);
-            AddOverviewRow(table, 3, "Pending enrichment", _overviewPending);
-            AddOverviewRow(table, 4, "Unavailable locations", _overviewUnavailable);
-            AddOverviewRow(table, 5, "Last completed scan", _overviewLastScan);
-            var refresh = new Button { Text = "Refresh", AutoSize = true, Margin = new Padding(0, 22, 0, 0) };
-            refresh.Click += async (_, _) => await RefreshAllAsync();
-            content.Controls.Add(title);
-            content.Controls.Add(table);
-            content.Controls.Add(refresh);
-            var userData = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 10, 0, 0) };
-            AddButton(userData, "Backup decisions…", BackupUserDecisions_Click);
-            AddButton(userData, "Restore decisions…", RestoreUserDecisions_Click);
-            content.Controls.Add(userData);
-            tab.Controls.Add(content);
-            _tabs.TabPages.Add(tab);
+            BuildOverviewDashboard();
         }
 
         private void BuildLocationsTab()
@@ -429,6 +416,7 @@ namespace MediaFlux
                 _scanning = false;
                 _latestScanProgress = null;
                 RefreshActivityDisplay();
+                QueueOverviewRefresh();
             }
         }
 
@@ -481,24 +469,6 @@ namespace MediaFlux
                 await RefreshIntegrityAsync();
             else if (_tabs.SelectedIndex == 12)
                 await RefreshMaintenanceAsync();
-        }
-
-        private async Task RefreshOverviewAsync()
-        {
-            LibraryOverview overview = await Task.Run(() =>
-                _runtime.Catalog.GetOverview(LibraryEnrichmentCoordinator.CurrentMetadataVersion));
-            if (IsDisposed)
-                return;
-            _overviewFiles.Text = overview.IndexedFiles.ToString("N0");
-            _overviewSize.Text = FormatBytes(overview.LogicalSizeBytes);
-            _overviewActivity.Text = _scanning || overview.ActiveScans > 0
-                ? "Scanning"
-                : _runtime.Enrichment.IsRunning
-                    ? $"Enriching ({_runtime.Enrichment.QueuedCount:N0} queued)"
-                    : "Idle";
-            _overviewPending.Text = overview.PendingEnrichment.ToString("N0");
-            _overviewUnavailable.Text = overview.UnavailableLocations.ToString("N0");
-            _overviewLastScan.Text = overview.LastCompletedScanUtc?.ToLocalTime().ToString("g") ?? "Never";
         }
 
         private async Task RefreshLocationsAsync()
@@ -672,6 +642,9 @@ namespace MediaFlux
         private void Enrichment_ProgressChanged(object? sender, LibraryEnrichmentProgress e)
         {
             _latestEnrichmentProgress = e;
+            bool running = _runtime.Enrichment.IsRunning;
+            if (_overviewEnrichmentWasRunning && !running) QueueOverviewRefresh();
+            _overviewEnrichmentWasRunning = running;
         }
 
         private void RefreshActivityDisplay()
@@ -760,6 +733,14 @@ namespace MediaFlux
         {
             _scanStatus.Text = status;
             _scanDetail.Text = detail;
+            if (!IsDisposed && IsHandleCreated)
+            {
+                _overviewLiveStatus.Text = active
+                    ? $"Live: {status}{(string.IsNullOrWhiteSpace(detail) ? "" : $" · {detail}")}"
+                    : string.IsNullOrWhiteSpace(status) || status == "Ready" ? "Live: Idle" : $"Live: {status}";
+                _overviewLiveStatus.ForeColor = active ? LibraryAnalyzerAccentColor : SystemColors.GrayText;
+                _overviewToolTip.SetToolTip(_overviewLiveStatus, string.IsNullOrWhiteSpace(detail) ? status : detail);
+            }
             ConfigureProgress(_scanProgress, active, completed, total, determinate);
         }
 
@@ -808,13 +789,6 @@ namespace MediaFlux
             Font = new Font("Segoe UI Semibold", 10F),
             Padding = new Padding(4)
         };
-
-        private static void AddOverviewRow(TableLayoutPanel table, int row, string name, Label value)
-        {
-            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            table.Controls.Add(new Label { Text = name, AutoSize = true, Padding = new Padding(4, 6, 4, 4) }, 0, row);
-            table.Controls.Add(value, 1, row);
-        }
 
         private static Button AddButton(Control parent, string text, EventHandler handler)
         {

@@ -212,6 +212,7 @@ public sealed partial class LibraryAnalyzerForm
         }
         _familyStatus.Text = $"{page.TotalCount:N0} active non-ambiguous visual families. Internal pairs are preserved but suppressed from normal pair review.";
         await RefreshVisualFamilyMembersAsync();
+        QueueOverviewRefresh();
     }
 
     private async Task RefreshVisualFamilyMembersAsync()

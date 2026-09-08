@@ -407,6 +407,7 @@ namespace MediaFlux
             finally
             {
                 _loadingVisualGroups = false;
+                QueueOverviewRefresh();
             }
         }
 
@@ -512,6 +513,9 @@ namespace MediaFlux
         private void VisualSimilarity_ProgressChanged(object? sender, LibraryVisualAnalysisProgress e)
         {
             _latestVisualProgress = e;
+            bool running = _runtime.VisualSimilarity.IsRunning;
+            if (_overviewVisualWasRunning && !running) QueueOverviewRefresh();
+            _overviewVisualWasRunning = running;
         }
 
         private void UpdateVisualActivity(string status, string detail, long completed, long total, bool determinate)

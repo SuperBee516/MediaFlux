@@ -3,7 +3,7 @@ using Microsoft.Data.Sqlite;
 namespace MediaFlux.Services.LibraryCatalog
 {
     public sealed partial class SqliteLibraryCatalog : ILibraryCatalog, ILibraryAnalysisCatalog, ILibraryFileRelocationCatalog,
-        ILibraryVisualCatalog, ILibraryScanAccelerationCatalog
+        ILibraryVisualCatalog, ILibraryScanAccelerationCatalog, ILibraryOverviewCatalog
     {
         private const int MaximumPageSize = 10_000;
         private readonly LibraryCatalogDatabase _database;
@@ -268,6 +268,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     locationCommand.Parameters.AddWithValue("$completed", completedTicks);
                     locationCommand.Parameters.AddWithValue("$location_id", scan.LocationId);
                     locationCommand.ExecuteNonQuery();
+                    InsertOverviewHistorySnapshot(connection, transaction, completedTicks);
                 }
 
                 return null;

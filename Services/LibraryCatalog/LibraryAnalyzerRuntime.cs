@@ -87,6 +87,7 @@ namespace MediaFlux.Services.LibraryCatalog
             Reanalysis = _reanalysis;
             Decisions = new LibraryDecisionService(_catalog, _reanalysis);
             Insights = new LibraryInsightsService(_catalog);
+            Overview = new LibraryOverviewQueryService(_catalog);
             KeeperExplanations = new LibraryKeeperExplanationService();
             MassReview = new LibraryMassReviewService(_catalog, MatchEligibility, keeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences());
             Recommendations = new LibraryRecommendationService(_catalog, DuplicateCleanup, VisualDuplicateCleanup, _catalog);
@@ -134,6 +135,7 @@ namespace MediaFlux.Services.LibraryCatalog
         public LibraryReanalysisCoordinator Reanalysis { get; }
         public LibraryDecisionService Decisions { get; }
         public LibraryInsightsService Insights { get; }
+        public LibraryOverviewQueryService Overview { get; }
         public LibraryKeeperExplanationService KeeperExplanations { get; }
         public LibraryMassReviewService MassReview { get; }
         public LibraryRecommendationService Recommendations { get; }
@@ -169,6 +171,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 return;
             _disposed = true;
             Maintenance.Dispose();
+            Overview.Dispose();
             Scanner.CancelAndWait(TimeSpan.FromSeconds(10));
             Integrity.Dispose();
             _reanalysis.Dispose();

@@ -204,6 +204,55 @@ namespace MediaFlux.Services.LibraryCatalog
         DateTime? LastCompletedScanUtc,
         long ActiveScans);
 
+    // This is deliberately a read-only projection of durable catalog facts.  It must
+    // never be used as a trigger for probing, scanning, hashing, or visual analysis.
+    public sealed record LibraryOverviewDistribution(string Label, long FileCount, long LogicalSizeBytes);
+
+    public sealed record LibraryOverviewLocation(
+        long LocationId, string Path, bool IsEnabled, LibraryLocationAvailability Availability,
+        long FileCount, long LogicalSizeBytes, DateTime? LastCompletedScanUtc, string LastError);
+
+    public sealed record LibraryOverviewDuplicateSummary(
+        long ExactGroups, long ExactAffectedFiles, long VisualGroups, long VisualAffectedFiles,
+        long FamilyGroups, long FamilyAffectedFiles, long ReviewedGroups, long UnreviewedGroups,
+        long ExactReclaimableBytes, long VisualReclaimableBytes, long FamilyReclaimableBytes)
+    {
+        // Visual pairs represented by a family are excluded from VisualReclaimableBytes.
+        // Exact and visual evidence can overlap, so their sum is an estimate, not a
+        // deduplicated physical-storage promise.
+        public long EstimatedReclaimableBytes => ExactReclaimableBytes + VisualReclaimableBytes + FamilyReclaimableBytes;
+    }
+
+    public sealed record LibraryOverviewInsight(
+        long? LargestFileId, string LargestFilePath, long? LargestFileBytes,
+        double? AverageFileBytes, long? LongestDurationFileId, string LongestDurationPath,
+        double? LongestDurationSeconds, double? AverageBitrate, string MostCommonCodec,
+        string MostCommonResolution);
+
+    public sealed record LibraryOverviewHealth(
+        long UnavailableLocations, long ErrorLocations, long MissingFiles, long UnavailableFiles,
+        long MetadataFailures, long IntegrityWarnings, long IntegrityFailures);
+
+    public sealed record LibraryOverviewSnapshot(
+        DateTime CapturedUtc, long IndexedVideoCount, long LogicalSizeBytes,
+        long ConfiguredLocationCount, long AvailableLocationCount, long UnavailableLocationCount,
+        long ActiveScanCount, long PendingEnrichmentCount, DateTime? LastCompletedScanUtc,
+        LibraryOverviewDuplicateSummary Duplicates, IReadOnlyList<LibraryOverviewLocation> Locations,
+        IReadOnlyList<LibraryOverviewDistribution> ResolutionDistribution,
+        IReadOnlyList<LibraryOverviewDistribution> VideoCodecDistribution,
+        IReadOnlyList<LibraryOverviewDistribution> ContainerDistribution,
+        LibraryOverviewInsight Insights, LibraryOverviewHealth Health);
+
+    public sealed record LibraryOverviewScanHistoryEntry(
+        DateTime CompletedUtc, long IndexedVideoCount, long LogicalSizeBytes,
+        long DuplicateGroupCount, long ReclaimableBytes);
+
+    public interface ILibraryOverviewCatalog
+    {
+        LibraryOverviewSnapshot GetOverviewSnapshot(int metadataVersion);
+        IReadOnlyList<LibraryOverviewScanHistoryEntry> GetOverviewScanHistory(int limit = 365);
+    }
+
     public sealed record LibraryFileQuery(
         string Search = "",
         long? LocationId = null,

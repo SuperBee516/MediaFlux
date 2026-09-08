@@ -233,7 +233,7 @@ namespace MediaFlux
                 await RefreshExactReclaimByLocationAsync();
                 await RefreshDuplicateMembersAsync();
             }
-            finally { _loadingDuplicateGroups = false; }
+            finally { _loadingDuplicateGroups = false; QueueOverviewRefresh(); }
         }
 
         private async Task RefreshExactReclaimByLocationAsync()
@@ -675,6 +675,9 @@ namespace MediaFlux
         private void Duplicates_ProgressChanged(object? sender, LibraryDuplicateAnalysisProgress e)
         {
             _latestDuplicateProgress = e;
+            bool running = _runtime.Duplicates.IsRunning;
+            if (_overviewDuplicateWasRunning && !running) QueueOverviewRefresh();
+            _overviewDuplicateWasRunning = running;
         }
 
         private void UpdateDuplicateActivity(string status, string detail, long completed, long total)
