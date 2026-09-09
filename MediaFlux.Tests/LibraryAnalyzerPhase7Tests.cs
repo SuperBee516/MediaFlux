@@ -182,6 +182,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         using var stopRequested = new ManualResetEventSlim();
         LibraryAnalyzerForm? activeForm = null;
         System.Windows.Forms.Timer? activeTimer = null;
+        Form? activeReview = null;
         var thread = new Thread(() =>
         {
             try
@@ -238,6 +239,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 {
                     Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review & Compare", StringComparison.Ordinal));
                     if (review == null) return;
+                    activeReview = review;
                     sawSelectedKeeper = Descendants<Button>(review).Any(button => button.Text == "Keeper selected" && button.BackColor == Color.FromArgb(46, 125, 50));
                     Assert.DoesNotContain(Descendants<Button>(review), button => button.Text == "Accept + Next");
                     if (!overrideClicked && Descendants<Button>(review).FirstOrDefault(button => button.Text == "Set as keeper") is { } setKeeper)
@@ -291,6 +293,20 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         if (!thread.Join(TimeSpan.FromSeconds(15)))
         {
             stopRequested.Set();
+            try
+            {
+                if (activeReview is { IsDisposed: false } review)
+                    review.BeginInvoke(new Action(review.Close));
+                else if (activeForm is { IsDisposed: false } form)
+                    form.BeginInvoke(new Action(() =>
+                    {
+                        foreach (Form open in Application.OpenForms.Cast<Form>()
+                            .Where(open => open.Text.StartsWith("Review & Compare", StringComparison.Ordinal))
+                            .ToArray())
+                            open.Close();
+                    }));
+            }
+            catch (InvalidOperationException) { }
             if (!thread.Join(TimeSpan.FromSeconds(5)))
                 throw new TimeoutException("Semi-automatic visual review did not complete and its STA worker could not be joined.");
             throw new TimeoutException("Semi-automatic visual review did not complete.");
