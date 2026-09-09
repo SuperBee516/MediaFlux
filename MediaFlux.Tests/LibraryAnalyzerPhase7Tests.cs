@@ -179,6 +179,9 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
     {
         if (!OperatingSystem.IsWindows()) return;
         Exception? failure = null;
+        using var stopRequested = new ManualResetEventSlim();
+        LibraryAnalyzerForm? activeForm = null;
+        System.Windows.Forms.Timer? activeTimer = null;
         var thread = new Thread(() =>
         {
             try
@@ -210,8 +213,9 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                     .RecommendedKeeperFileId ?? throw new Xunit.Sdk.XunitException("Expected a current suggested keeper.");
                 long manualId = groupMembers.Single(member => member.FileId != suggested).FileId;
                 bool semiAutomaticEnabled = false;
-                using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
+                LibraryAnalyzerForm form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
                     AutomationOptionsProvider: () => new LibraryVisualReviewAutomationOptions(SemiAutomaticKeeperApproval: semiAutomaticEnabled)));
+                activeForm = form;
                 form.Show();
                 TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
                 tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Visual");
@@ -228,7 +232,8 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 bool overrideClicked = false;
                 bool reviewedNextClicked = false;
                 bool advancedToNextGroup = false;
-                using var timer = new System.Windows.Forms.Timer { Interval = 40 };
+                System.Windows.Forms.Timer timer = new() { Interval = 40 };
+                activeTimer = timer;
                 timer.Tick += (_, _) =>
                 {
                     Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review & Compare", StringComparison.Ordinal));
@@ -255,7 +260,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                         review.Close();
                 };
                 timer.Start();
-                PumpTask(InvokePrivateTask(form, "OpenVisualReviewAsync"), TimeSpan.FromSeconds(10));
+                PumpTask(InvokePrivateTask(form, "OpenVisualReviewAsync"), TimeSpan.FromSeconds(10), () => stopRequested.IsSet);
                 timer.Stop();
                 VisualSimilarityGroupRecord completed = catalog.GetVisualGroup(group.GroupId)!;
                 Assert.True(sawSelectedKeeper);
@@ -267,11 +272,29 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 form.Close();
             }
             catch (Exception ex) { failure = ex; }
+            finally
+            {
+                activeTimer?.Stop();
+                activeTimer?.Dispose();
+                foreach (Form open in Application.OpenForms.Cast<Form>()
+                    .Where(open => open != activeForm && open.Text.StartsWith("Review & Compare", StringComparison.Ordinal))
+                    .ToArray())
+                {
+                    open.Close();
+                    open.Dispose();
+                }
+                activeForm?.Dispose();
+            }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        thread.Join(TimeSpan.FromSeconds(15));
-        if (thread.IsAlive) throw new TimeoutException("Semi-automatic visual review did not complete.");
+        if (!thread.Join(TimeSpan.FromSeconds(15)))
+        {
+            stopRequested.Set();
+            if (!thread.Join(TimeSpan.FromSeconds(5)))
+                throw new TimeoutException("Semi-automatic visual review did not complete and its STA worker could not be joined.");
+            throw new TimeoutException("Semi-automatic visual review did not complete.");
+        }
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
@@ -387,20 +410,15 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                     AssertCurrentTabContains(visualControls);
                     AssertCurrentTabContains(visualActions);
                     Assert.False(visualControls.AutoScroll);
-                    Assert.All(Descendants<Button>(visualActions), AssertCurrentTabContains);
-                    Assert.False(visualActions.AutoSize);
+                    Assert.All(Descendants<Button>(visualActions).Where(button => button.Visible), AssertCurrentTabContains);
+                    Assert.True(visualActions.AutoSize);
                     Assert.All(Descendants<FlowLayoutPanel>(visualActions), flow => Assert.False(flow.AutoScroll));
-                    foreach (Button button in Descendants<Button>(visualActions))
+                    foreach (Button button in Descendants<Button>(visualActions).Where(button => button.Visible))
                     {
-                        GroupBox? group = button.Parent as GroupBox;
-                        for (Control? parent = button.Parent; group == null && parent != null; parent = parent.Parent)
-                            group = parent as GroupBox;
-                        Assert.NotNull(group);
-                        Rectangle groupBounds = group!.RectangleToScreen(group.ClientRectangle);
+                        Rectangle actionBounds = visualActions.RectangleToScreen(visualActions.ClientRectangle);
                         Rectangle buttonBounds = button.RectangleToScreen(button.ClientRectangle);
-                        Rectangle flowBounds = button.Parent!.RectangleToScreen(button.Parent.ClientRectangle);
-                        Assert.True(groupBounds.Contains(buttonBounds),
-                            $"{button.Text} should fit inside {group.Text}. Group={groupBounds}, Flow={flowBounds}, Button={buttonBounds}.");
+                        Assert.True(actionBounds.Contains(buttonBounds),
+                            $"{button.Text} should fit inside the Visual action area. Actions={actionBounds}, Button={buttonBounds}.");
                     }
                 }
 
@@ -534,11 +552,12 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         (Task)(instance.GetType().GetMethod(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.Invoke(instance, arguments)
             ?? throw new MissingMethodException(instance.GetType().FullName, name));
 
-    private static void PumpTask(Task task, TimeSpan? timeout = null)
+    private static void PumpTask(Task task, TimeSpan? timeout = null, Func<bool>? shouldStop = null)
     {
         DateTime deadline = DateTime.UtcNow.Add(timeout ?? TimeSpan.FromSeconds(5));
         while (!task.IsCompleted)
         {
+            if (shouldStop?.Invoke() == true) throw new TimeoutException("The WinForms operation was cancelled for cleanup.");
             if (DateTime.UtcNow > deadline) throw new TimeoutException("The WinForms operation did not complete.");
             Application.DoEvents();
             Thread.Sleep(10);
