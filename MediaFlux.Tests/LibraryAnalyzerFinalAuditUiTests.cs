@@ -30,7 +30,7 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 using var form = new LibraryAnalyzerForm(runtime);
                 form.Show();
-                var tabs = form.Controls.OfType<TabControl>().Single();
+                var tabs = AllControls(form).OfType<TabControl>().Single(tab => tab.Name == "LibraryAnalyzerTabs");
                 string[] expected =
                 {
                     "Overview", "Locations", "Files", "Statistics", "Duplicates — Exact", "Duplicates — Visual",
@@ -52,9 +52,9 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                 }
 
                 Assert.Equal(new Size(1100, 700), form.MinimumSize);
-                Assert.Contains(form.Controls.OfType<TabControl>().SelectMany(tab => tab.TabPages.Cast<TabPage>()),
+                Assert.Contains(tabs.TabPages.Cast<TabPage>(),
                     page => page.Controls.OfType<AnalyzerSectionPanel>().Any());
-                Assert.Contains(form.Controls.OfType<TabControl>().SelectMany(tab => tab.TabPages.Cast<TabPage>()),
+                Assert.Contains(tabs.TabPages.Cast<TabPage>(),
                     page => page.Controls.Cast<Control>().SelectMany(AllControls).OfType<FlowLayoutPanel>().Any(panel => panel.AccessibleRole == AccessibleRole.ToolBar));
                 form.Close();
             }

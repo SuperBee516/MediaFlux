@@ -59,6 +59,75 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
+    [Fact]
+    public void NavigationRailPreservesTabOrderAndSynchronizesSelection()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                using var catalog = new SqliteLibraryCatalog(Path.Combine(_root, "navigation.db"), Path.Combine(_root, "navigation-backups"), Path.Combine(_root, "navigation-recovery"));
+                catalog.Initialize();
+                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
+                using var form = new LibraryAnalyzerForm(runtime);
+                form.Show();
+                form.Size = new Size(1100, 700);
+                Application.DoEvents();
+
+                AnalyzerNavigationRail rail = Field<AnalyzerNavigationRail>(form, "_navigationRail");
+                TabControl tabs = Field<TabControl>(form, "_tabs");
+                Assert.Equal(13, rail.Entries.Count);
+                Assert.Equal(new[] { "Overview", "Locations", "Files", "Statistics", "Exact", "Visual", "Families", "Health", "Recommendations", "Policies", "Storage", "Integrity", "Maintenance" }, rail.Entries.Select(entry => entry.Label));
+                Assert.Equal(Enumerable.Range(0, 13), rail.Entries.Select(entry => entry.PageIndex));
+                Assert.Equal(13, tabs.TabPages.Count);
+                Assert.Equal(1, tabs.ItemSize.Height);
+                Assert.Equal(TabSizeMode.Fixed, tabs.SizeMode);
+                Assert.All(tabs.TabPages.Cast<TabPage>(), page => Assert.Equal(AccessibleRole.Pane, page.AccessibleRole));
+                Assert.InRange(rail.Width, 165, 190);
+                foreach (Size size in new[] { new Size(1100, 700), new Size(1360, 840), new Size(1800, 1100) })
+                {
+                    form.Size = size;
+                    Application.DoEvents();
+                    Assert.True(rail.Bounds.Right <= tabs.Bounds.Left);
+                    Assert.True(tabs.Width > 0 && tabs.Height > 0);
+                    Assert.False(rail.VerticalScrollVisible, $"Navigation should fit without scrolling at {size}: rail={rail.Bounds}, tabs={tabs.Bounds}, content={rail.NavigationContentHeight}, viewport={rail.NavigationViewportHeight}.");
+                }
+
+                using var constrainedRail = new AnalyzerNavigationRail { Size = new Size(180, 200) };
+                constrainedRail.SetEntries(rail.Entries);
+                constrainedRail.CreateControl();
+                constrainedRail.PerformLayout();
+                Assert.True(constrainedRail.VerticalScrollVisible);
+
+                AnalyzerNavigationItem visual = AllControls(rail).OfType<AnalyzerNavigationItem>().Single(item => item.Text == "Visual");
+                rail.Activate(5);
+                Application.DoEvents();
+                Assert.Equal(5, tabs.SelectedIndex);
+                Assert.Equal(5, rail.SelectedIndex);
+                Assert.True(visual.Selected);
+
+                tabs.SelectedIndex = 7;
+                Application.DoEvents();
+                Assert.Equal(7, rail.SelectedIndex);
+                Assert.True(AllControls(rail).OfType<AnalyzerNavigationItem>().Single(item => item.Text == "Health").Selected);
+                Assert.Equal(AccessibleRole.PageTab, visual.AccessibleRole);
+                Assert.True(AllControls(rail).OfType<AnalyzerNavigationItem>().All(item => item.TabStop));
+                form.Close();
+                Application.DoEvents();
+                Thread.Sleep(100);
+                Application.DoEvents();
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Analyzer navigation UI test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
     private static Task InvokeTask(object form, string method) =>
         (Task)(form.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(form, null)
             ?? throw new MissingMethodException(method));

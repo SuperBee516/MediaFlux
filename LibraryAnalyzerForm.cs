@@ -16,7 +16,10 @@ namespace MediaFlux
         private readonly LibraryGeneralFileRemovalService _generalFileRemoval;
         private readonly LibraryFileBrowser _statisticsFileBrowser;
         private MediaFlux.Models.DuplicateKeeperPreferences _visualKeeperPreferences;
-        private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
+        private readonly TabControl _tabs = new() { Name = "LibraryAnalyzerTabs", Dock = DockStyle.Fill };
+        private readonly AnalyzerNavigationRail _navigationRail = new();
+        private readonly IReadOnlyList<AnalyzerNavigationEntry> _navigationEntries = CreateNavigationEntries();
+        private bool _synchronizingNavigation;
         private readonly DataGridView _locationsGrid = CreateGrid("LocationsGrid");
         private readonly DataGridView _filesGrid = CreateGrid("FilesGrid");
         private readonly AnalyzerMetricCard _locationsSourcesCard = new("Sources");
@@ -111,7 +114,6 @@ namespace MediaFlux
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
 
-            Controls.Add(_tabs);
             BuildOverviewTab();
             BuildLocationsTab();
             BuildFilesTab();
@@ -128,8 +130,9 @@ namespace MediaFlux
             foreach (TabPage page in _tabs.TabPages)
             {
                 page.AccessibleName = $"Library Analyzer {page.Text} tab";
-                page.AccessibleRole = AccessibleRole.PageTab;
+                page.AccessibleRole = AccessibleRole.Pane;
             }
+            BuildNavigationShell();
             ConfigurePrimaryContextMenus();
             ConfigurePhase3ContextMenus();
             ConfigureSharedGridLayouts();
@@ -139,7 +142,11 @@ namespace MediaFlux
             _runtime.VisualSimilarity.ProgressChanged += VisualSimilarity_ProgressChanged;
             _runtime.Integrity.ProgressChanged += Integrity_ProgressChanged;
             _runtime.Maintenance.ProgressChanged += Maintenance_ProgressChanged;
-            _tabs.SelectedIndexChanged += async (_, _) => await RefreshSelectedTabAsync();
+            _tabs.SelectedIndexChanged += async (_, _) =>
+            {
+                SynchronizeNavigationSelection();
+                await RefreshSelectedTabAsync();
+            };
             _refreshTimer.Tick += async (_, _) => await RefreshCurrentStateAsync();
             _activityTimer.Tick += (_, _) => RefreshActivityDisplay();
             _refreshTimer.Start();
@@ -151,6 +158,83 @@ namespace MediaFlux
                 await RefreshAllAsync();
             };
             FormClosed += (_, _) => CleanupLifecycle();
+        }
+
+        private static IReadOnlyList<AnalyzerNavigationEntry> CreateNavigationEntries() =>
+            new[]
+            {
+                new AnalyzerNavigationEntry("OVERVIEW", "Overview", 0),
+                new AnalyzerNavigationEntry("LIBRARY", "Locations", 1),
+                new AnalyzerNavigationEntry("LIBRARY", "Files", 2),
+                new AnalyzerNavigationEntry("LIBRARY", "Statistics", 3),
+                new AnalyzerNavigationEntry("DUPLICATES", "Exact", 4),
+                new AnalyzerNavigationEntry("DUPLICATES", "Visual", 5),
+                new AnalyzerNavigationEntry("DUPLICATES", "Families", 6),
+                new AnalyzerNavigationEntry("INSIGHTS", "Health", 7),
+                new AnalyzerNavigationEntry("INSIGHTS", "Recommendations", 8),
+                new AnalyzerNavigationEntry("INSIGHTS", "Policies", 9),
+                new AnalyzerNavigationEntry("OPERATIONS", "Storage", 10),
+                new AnalyzerNavigationEntry("OPERATIONS", "Integrity", 11),
+                new AnalyzerNavigationEntry("OPERATIONS", "Maintenance", 12)
+            };
+
+        private void BuildNavigationShell()
+        {
+            _tabs.Appearance = TabAppearance.Buttons;
+            _tabs.SizeMode = TabSizeMode.Fixed;
+            _tabs.ItemSize = new Size(0, 1);
+            _tabs.Multiline = true;
+            _tabs.Padding = new Point(0, 0);
+            _tabs.TabStop = false;
+            _tabs.AccessibleName = "Library Analyzer workspace";
+            _tabs.AccessibleRole = AccessibleRole.Pane;
+
+            _navigationRail.SetEntries(_navigationEntries);
+            _navigationRail.DestinationActivated += NavigationRail_DestinationActivated;
+
+            var shell = new TableLayoutPanel
+            {
+                Name = "LibraryAnalyzerNavigationShell",
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                Padding = new Padding(8),
+                Margin = Padding.Empty,
+                AccessibleName = "Library Analyzer navigation and workspace",
+                AccessibleRole = AccessibleRole.Pane
+            };
+            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            shell.Controls.Add(_navigationRail, 0, 0);
+            shell.Controls.Add(_tabs, 1, 0);
+            Controls.Add(shell);
+            SynchronizeNavigationSelection();
+        }
+
+        private void NavigationRail_DestinationActivated(object? sender, int itemIndex)
+        {
+            if (_synchronizingNavigation || itemIndex < 0 || itemIndex >= _navigationEntries.Count) return;
+            _navigationRail.SelectedIndex = itemIndex;
+            _tabs.SelectedIndex = _navigationEntries[itemIndex].PageIndex;
+        }
+
+        private void SynchronizeNavigationSelection()
+        {
+            int selectedPage = _tabs.SelectedIndex;
+            int itemIndex = -1;
+            for (int i = 0; i < _navigationEntries.Count; i++)
+            {
+                if (_navigationEntries[i].PageIndex == selectedPage)
+                {
+                    itemIndex = i;
+                    break;
+                }
+            }
+            if (itemIndex < 0) return;
+            _synchronizingNavigation = true;
+            try { _navigationRail.SelectedIndex = itemIndex; }
+            finally { _synchronizingNavigation = false; }
         }
 
         protected override void Dispose(bool disposing)
