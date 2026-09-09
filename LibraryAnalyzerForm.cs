@@ -256,8 +256,12 @@ namespace MediaFlux
             _refreshTimer.Stop();
             _activityTimer.Stop();
             _overviewRefreshDebounceTimer.Stop();
+            _refreshTimer.Dispose();
+            _activityTimer.Dispose();
+            _overviewRefreshDebounceTimer.Dispose();
             _overviewRefreshQueued = false;
             _overviewToolTip.Dispose();
+            _visualActionToolTip.Dispose();
             _overviewRefreshCancellation.Cancel();
             _overviewRefreshCancellation.Dispose();
             if (_visualPreviewFocus) RestoreVisualWorkspace();
