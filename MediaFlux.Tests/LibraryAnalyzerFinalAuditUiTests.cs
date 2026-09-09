@@ -48,6 +48,7 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                     Assert.All(tabs.TabPages.Cast<TabPage>(), page =>
                         Assert.True(page.Width > 0 && page.Height > 0, $"{page.Text} should have a client area at {size}."));
                     AssertMetricRowsHaveClearance(form, size);
+                    AssertDuplicateFilterLayout(tabs, "Duplicates — Visual", size);
                 }
 
                 Assert.Equal(new Size(1100, 700), form.MinimumSize);
@@ -67,6 +68,33 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
 
     private static IEnumerable<Control> AllControls(Control root) =>
         new[] { root }.Concat(root.Controls.Cast<Control>().SelectMany(AllControls));
+
+    private static void AssertDuplicateFilterLayout(TabControl tabs, string tabName, Size size)
+    {
+        TabPage tab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == tabName);
+        tabs.SelectedTab = tab;
+        Application.DoEvents();
+        GroupBox filters = AllControls(tab).OfType<GroupBox>().Single(group => group.Text == "Filters");
+        Rectangle filterBounds = filters.RectangleToScreen(filters.ClientRectangle);
+        foreach (Control child in AllControls(filters).Where(control => control != filters))
+        {
+            Assert.True(
+                filterBounds.Contains(child.RectangleToScreen(child.ClientRectangle)),
+                $"{tabName} filter control {(string.IsNullOrWhiteSpace(child.Name) ? child.GetType().Name : child.Name)} is outside the Filters panel at {size}: filter={filterBounds}, child={child.Bounds}.");
+        }
+
+        DataGridView results = AllControls(tab).OfType<DataGridView>().First();
+        Control controlArea = AllControls(tab).Single(control => control.Name == "VisualControlArea");
+        SplitContainer split = AllControls(tab).OfType<SplitContainer>().Single(container => container.Orientation == Orientation.Horizontal);
+        Rectangle resultsBounds = results.RectangleToScreen(results.ClientRectangle);
+        Assert.True(
+            resultsBounds.Top >= filterBounds.Bottom,
+            $"{tabName} Filters intersects the results grid at {size}: filter={filterBounds}, results={resultsBounds}.");
+        Assert.True(controlArea.Height < tab.ClientSize.Height / 2,
+            $"{tabName} top controls consume too much vertical space at {size}: controls={controlArea.Height}, tab={tab.ClientSize.Height}.");
+        Assert.True(split.Height >= tab.ClientSize.Height / 8,
+            $"{tabName} review workspace has insufficient total allocation at {size}: split={split.Height}, tab={tab.ClientSize}.");
+    }
 
     private static void AssertMetricRowsHaveClearance(Control root, Size size)
     {

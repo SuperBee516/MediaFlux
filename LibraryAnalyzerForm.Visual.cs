@@ -16,10 +16,6 @@ namespace MediaFlux
         private readonly ComboBox _visualSort = DropDown();
         private readonly NumericUpDown _visualConfidence = new() { Width = 75, Minimum = 0, Maximum = 100, Value = 76 };
         private readonly Label _visualStatus = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0), Text = "Visual similarity analysis has not run." };
-        private readonly AnalyzerMetricCard _visualGroupsMetric = new("Review pairs");
-        private readonly AnalyzerMetricCard _visualFilesMetric = new("Files involved");
-        private readonly AnalyzerMetricCard _visualReclaimMetric = new("Potential savings");
-        private readonly AnalyzerMetricCard _visualReviewMetric = new("Review state");
         private readonly Label _visualPageLabel = new() { AutoSize = true, Padding = new Padding(8, 7, 8, 0) };
         private readonly ProgressBar _visualProgress = new() { Width = 180, Style = ProgressBarStyle.Marquee, Visible = false };
         private readonly CheckBox _visualComparisonPreviewEnabled = new() { Name = "VisualComparisonPreviewEnabled", Text = "Show Side-by-Side Preview", AutoSize = true };
@@ -35,9 +31,31 @@ namespace MediaFlux
         private Button? _visualBulkCleanupButton;
         private Button? _visualRulesReviewButton;
         private Button? _visualDeleteBothButton;
+        private Button? _visualPreviousMatchButton;
+        private Button? _visualNextMatchButton;
+        private Button? _visualPreviewFocusButton;
+        private ToolStripMenuItem? _visualMoreBulkCleanup;
+        private ToolStripMenuItem? _visualMoreAutomation;
+        private ToolStripMenuItem? _visualMoreDeleteBoth;
+        private readonly Label _visualFocusMatchLabel = new() { AutoSize = true, Padding = new Padding(6, 7, 6, 0), ForeColor = SystemColors.GrayText };
+        private bool _visualPreviewFocus;
+        private int? _visualNormalWorkspaceDistance;
         // The top half of the tab keeps results and the optional preview side-by-side.
-        private readonly SplitContainer _visualDetailSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical };
-        private readonly SplitContainer _visualResultsMembersSplit = new() { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 240, Panel1MinSize = 140, Panel2MinSize = 140 };
+        private const string VisualResultsMembersSplitKey = "Duplicates — Visual.Split0";
+        private const string VisualDetailSplitKey = "Duplicates — Visual.Split1";
+        private readonly SplitContainer _visualDetailSplit = new()
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical
+        };
+        private readonly SplitContainer _visualResultsMembersSplit = new()
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Horizontal,
+            SplitterDistance = 240,
+            Panel1MinSize = 140,
+            Panel2MinSize = 140
+        };
         private readonly Panel _visualComparisonPreview = new() { Dock = DockStyle.Fill, Visible = false };
         private readonly ContextMenuStrip _visualGroupsMenu = new();
         private readonly ContextMenuStrip _visualMembersMenu = new();
@@ -46,6 +64,7 @@ namespace MediaFlux
         private int _visualPage;
         private long _visualTotal;
         private bool _loadingVisualGroups;
+        private bool _suppressVisualGroupSelectionRefresh;
         private DuplicateReviewSelectionAnchor? _visualAdvanceAfterRefresh;
         private int _visualMemberLoadVersion;
         private readonly SemaphoreSlim _visualMemberRefreshLock = new(1, 1);
@@ -55,20 +74,12 @@ namespace MediaFlux
             var tab = new TabPage("Duplicates — Visual") { Padding = new Padding(8) };
             _visualStatus.ForeColor = LibraryAnalyzerAccentColor;
             _visualControlArea.Dock = DockStyle.Top;
-            _visualControlArea.Height = 214;
+            _visualControlArea.AutoSize = false;
             _visualControlArea.ColumnCount = 1;
-            _visualControlArea.RowCount = 3;
+            _visualControlArea.RowCount = 2;
             _visualControlArea.Margin = Padding.Empty;
-            _visualControlArea.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             _visualControlArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-            _visualGroupsMetric.SetValue("0", "Filtered visual matches");
-            _visualFilesMetric.SetValue("0", "Files across displayed matches");
-            _visualReclaimMetric.SetValue("0 B", "Potential savings");
-            _visualReviewMetric.SetValue("Not run", "Review decisions");
-            _visualControlArea.Controls.Add(AnalyzerUi.MetricRow(72,
-                _visualGroupsMetric, _visualFilesMetric, _visualReclaimMetric, _visualReviewMetric), 0, 0);
 
             var analysis = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = false, Padding = new Padding(0, 4, 0, 2) };
             AddButton(analysis, "Analyze Library", AnalyzeVisualSimilarity_Click);
@@ -79,7 +90,7 @@ namespace MediaFlux
             _visualComparisonPreviewEnabled.Checked = _reviewOptions.UiState?.ShowVisualComparisonPreview == true;
             _visualComparisonPreviewEnabled.CheckedChanged += async (_, _) => await ToggleVisualComparisonPreviewAsync();
             analysis.Controls.Add(_visualComparisonPreviewEnabled);
-            _visualControlArea.Controls.Add(analysis, 0, 1);
+            _visualControlArea.Controls.Add(analysis, 0, 0);
 
             var filtersBox = new GroupBox { Text = "Filters", Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 7) };
             var filters = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 2, Margin = Padding.Empty };
@@ -90,13 +101,13 @@ namespace MediaFlux
             filters.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
             filters.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             filters.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            AddVisualFilter(filters, "Search", _visualSearch, 0, 0, 2);
-            AddVisualFilter(filters, "Location", _visualLocation, 2, 0);
-            AddVisualFilter(filters, "Review state", _visualReview, 3, 0);
-            AddVisualFilter(filters, "Minimum confidence", _visualConfidence, 0, 1);
-            AddVisualFilter(filters, "Codec", _visualCodecDifference, 1, 1);
-            AddVisualFilter(filters, "Resolution", _visualResolutionDifference, 2, 1);
-            AddVisualFilter(filters, "Sort", _visualSort, 3, 1);
+            AddVisualFilter(filters, "Search", _visualSearch, 0, 0, 2, measured: true);
+            AddVisualFilter(filters, "Location", _visualLocation, 2, 0, measured: true);
+            AddVisualFilter(filters, "Review state", _visualReview, 3, 0, measured: true);
+            AddVisualFilter(filters, "Minimum confidence", _visualConfidence, 0, 1, measured: true);
+            AddVisualFilter(filters, "Codec", _visualCodecDifference, 1, 1, measured: true);
+            AddVisualFilter(filters, "Resolution", _visualResolutionDifference, 2, 1, measured: true);
+            AddVisualFilter(filters, "Sort", _visualSort, 3, 1, measured: true);
             var filterActions = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = new Padding(5, 0, 0, 0) };
             filterActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             filterActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
@@ -108,7 +119,17 @@ namespace MediaFlux
             filters.Controls.Add(filterActions, 4, 0);
             filters.SetRowSpan(filterActions, 2);
             filtersBox.Controls.Add(filters);
-            _visualControlArea.Controls.Add(filtersBox, 0, 2);
+            int filterControlHeight = new Control[]
+            {
+                _visualSearch, _visualLocation, _visualReview, _visualConfidence,
+                _visualCodecDifference, _visualResolutionDifference, _visualSort,
+                _visualApplyButton, reset
+            }.Max(control => control.PreferredSize.Height);
+            int filterRowHeight = Font.Height + filterControlHeight + 1;
+            int filterAreaHeight = (filterRowHeight * 2) + filtersBox.Padding.Vertical + (SystemInformation.BorderSize.Height * 2);
+            filtersBox.MinimumSize = new Size(0, filterAreaHeight);
+            _visualControlArea.Height = 42 + filterAreaHeight + 4;
+            _visualControlArea.Controls.Add(filtersBox, 0, 1);
 
             _visualLocation.Items.Add(new LocationChoice(0, "All locations"));
             _visualLocation.SelectedIndex = 0;
@@ -133,6 +154,7 @@ namespace MediaFlux
             _visualGroupsGrid.MultiSelect = true;
             _visualGroupsGrid.SelectionChanged += async (_, _) =>
             {
+                if (_suppressVisualGroupSelectionRefresh) return;
                 await RefreshVisualMembersAsync();
             };
             _visualGroupsGrid.CellDoubleClick += VisualGroupsGrid_CellDoubleClick;
@@ -182,65 +204,64 @@ namespace MediaFlux
                 ForeColor = LibraryAnalyzerAccentColor,
                 Padding = new Padding(8, 9, 0, 0)
             };
-            var actions = new TableLayoutPanel { Name = "VisualActionArea", Dock = DockStyle.Bottom, Height = 198, RowCount = 2, ColumnCount = 2, Padding = new Padding(0, 2, 0, 2) };
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 136));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+            var actions = new FlowLayoutPanel
+            {
+                Name = "VisualActionArea", Dock = DockStyle.Bottom, AutoSize = true, WrapContents = true,
+                AutoScroll = false, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(0, 2, 0, 2), Margin = Padding.Empty
+            };
 
-            GroupBox reviewBox = CreateVisualActionGroup("REVIEW SELECTED MATCH", out TableLayoutPanel reviewLayout);
-            reviewLayout.RowCount = 2;
-            reviewLayout.RowStyles.Clear();
-            reviewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-            reviewLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             _visualReviewGuidance.ForeColor = SystemColors.GrayText;
-            reviewLayout.Controls.Add(_visualReviewGuidance, 0, 0);
-            var reviewActions = CreateVisualActionFlow();
+            _visualReviewGuidance.MaximumSize = new Size(420, 0);
+            actions.Controls.Add(_visualReviewGuidance);
             _visualReviewCompareButton = AddVisualActionButton(
-                reviewActions,
+                actions,
                 "Review & Compare…",
                 ReviewAndCompareSelectedVisualMatch_Click,
                 "Open the Review & Compare window to inspect the matched files side by side before deciding which file to keep.");
             _visualReviewCompareButton.Name = "VisualReviewCompareButton";
             _visualReviewCompareButton.Font = new Font(_visualReviewCompareButton.Font, FontStyle.Bold);
             AnalyzerUi.StylePrimary(_visualReviewCompareButton);
-            _visualKeepButton = AddVisualActionButton(reviewActions, "Keep Selected File", SetVisualKeeper_Click,
+            _visualKeepButton = AddVisualActionButton(actions, "Keep Selected File", SetVisualKeeper_Click,
                 "Choose the selected file as the keeper for this match. This changes the review decision; it does not delete anything.");
-            _visualProtectionButton = AddVisualActionButton(reviewActions, "Protect Selected File", ToggleVisualProtection_Click,
+            _visualProtectionButton = AddVisualActionButton(actions, "Protect Selected File", ToggleVisualProtection_Click,
                 "Protect or remove protection for the selected file. Protected files are respected by existing cleanup eligibility rules.");
             _visualProtectionButton.Name = "VisualProtectionButton";
-            _visualReviewedButton = AddVisualActionButton(reviewActions, "Mark Match as Reviewed", MarkVisualReviewed_Click,
+            _visualReviewedButton = AddVisualActionButton(actions, "Mark Match as Reviewed", MarkVisualReviewed_Click,
                 "Mark this match as reviewed without changing its files or running cleanup.");
-            _visualIgnoredButton = AddVisualActionButton(reviewActions, "Ignore This Match", ToggleVisualIgnored_Click,
+            _visualIgnoredButton = AddVisualActionButton(actions, "Ignore This Match", ToggleVisualIgnored_Click,
                 "Ignore this match in the analyzer. Restoring it makes the match active again; neither action deletes files.");
             _visualIgnoredButton.Name = "VisualIgnoredButton";
-            _visualRecheckButton = AddVisualActionButton(reviewActions, "Recheck This Match", QueueSelectedVisualGroup_Click,
+            _visualRecheckButton = AddVisualActionButton(actions, "Recheck This Match", QueueSelectedVisualGroup_Click,
                 "Queue the files in this match for visual re-analysis. Existing decisions and files are not deleted by this action.");
-            reviewLayout.Controls.Add(reviewActions, 0, 1);
 
-            GroupBox cleanupBox = CreateVisualActionGroup("CLEANUP", out TableLayoutPanel cleanupLayout);
-            var cleanupActions = CreateVisualActionFlow();
-            _visualPreviewCleanupButton = AddVisualActionButton(cleanupActions, "Preview Files to Delete…", ReviewSelectedVisualCleanup_Click,
+            _visualPreviewCleanupButton = AddVisualActionButton(actions, "Preview Files to Delete…", ReviewSelectedVisualCleanup_Click,
                 "Open the existing cleanup preview for the selected match. The current preview, confirmation, and revalidation safeguards still apply.");
-            _visualBulkCleanupButton = AddVisualActionButton(cleanupActions, "Remove Recommended Duplicates…", ReviewBulkVisualCleanup_Click,
-                "Review removal of eligible recommended duplicate candidates. Existing cleanup preview, confirmation, and validation safeguards remain in effect.");
-            cleanupLayout.Controls.Add(cleanupActions, 0, 0);
+            _visualPreviousMatchButton = AddVisualActionButton(actions, "Previous match", async (_, _) => await NavigateVisualSelectionAsync(-1),
+                "Move to the previous visual match without leaving the current review workspace.");
+            _visualNextMatchButton = AddVisualActionButton(actions, "Next match", async (_, _) => await NavigateVisualSelectionAsync(1),
+                "Move to the next visual match without leaving the current review workspace.");
+            actions.Controls.Add(_visualFocusMatchLabel);
 
-            GroupBox automationBox = CreateVisualActionGroup("AUTOMATION", out TableLayoutPanel automationLayout);
-            var automationActions = CreateVisualActionFlow();
-            _visualRulesReviewButton = AddVisualActionButton(automationActions, "Review Matches Using File Selection Rules…", async (_, _) => await PreviewMassReviewAsync(),
+            var more = new Button { Text = "More Actions…", AutoSize = true };
+            var moreMenu = new ContextMenuStrip();
+            _visualMoreBulkCleanup = new ToolStripMenuItem("Remove Recommended Duplicates…");
+            _visualMoreAutomation = new ToolStripMenuItem("Review Matches Using File Selection Rules…");
+            _visualMoreDeleteBoth = new ToolStripMenuItem("Delete Both Files…");
+            _visualMoreBulkCleanup.Click += (_, _) => _visualBulkCleanupButton?.PerformClick();
+            _visualMoreAutomation.Click += (_, _) => _visualRulesReviewButton?.PerformClick();
+            _visualMoreDeleteBoth.Click += (_, _) => _visualDeleteBothButton?.PerformClick();
+            moreMenu.Items.AddRange(new ToolStripItem[] { _visualMoreBulkCleanup, _visualMoreAutomation, new ToolStripSeparator(), _visualMoreDeleteBoth });
+            more.Click += (_, _) => moreMenu.Show(more, new Point(0, more.Height));
+            actions.Controls.Add(more);
+
+            var hiddenCommands = new FlowLayoutPanel { Visible = false, Size = new Size(0, 0), Margin = Padding.Empty };
+            _visualBulkCleanupButton = AddVisualActionButton(hiddenCommands, "Remove Recommended Duplicates…", ReviewBulkVisualCleanup_Click,
+                "Review removal of eligible recommended duplicate candidates. Existing cleanup preview, confirmation, and revalidation safeguards remain in effect.");
+            _visualRulesReviewButton = AddVisualActionButton(hiddenCommands, "Review Matches Using File Selection Rules…", async (_, _) => await PreviewMassReviewAsync(),
                 "Preview matches selected by the configured file selection rules. Review decisions are shown before they are applied.");
-            automationLayout.Controls.Add(automationActions, 0, 0);
-
-            GroupBox advancedBox = CreateVisualActionGroup("ADVANCED / DESTRUCTIVE", out TableLayoutPanel advancedLayout);
-            var advancedActions = CreateVisualActionFlow();
-            _visualDeleteBothButton = AddVisualActionButton(advancedActions, "Delete Both Files…", DeleteBothVisual_Click,
+            _visualDeleteBothButton = AddVisualActionButton(hiddenCommands, "Delete Both Files…", DeleteBothVisual_Click,
                 "Open the existing destructive delete-both workflow. The cleanup preview, confirmation, and revalidation safeguards still apply.");
-            advancedLayout.Controls.Add(advancedActions, 0, 0);
-            actions.Controls.Add(reviewBox, 0, 0);
-            actions.Controls.Add(cleanupBox, 1, 0);
-            actions.Controls.Add(automationBox, 0, 1);
-            actions.Controls.Add(advancedBox, 1, 1);
+            actions.Controls.Add(hiddenCommands);
             UpdateVisualActionState();
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
@@ -265,11 +286,67 @@ namespace MediaFlux
             _tabs.TabPages.Add(tab);
         }
 
-        private static void AddVisualFilter(TableLayoutPanel layout, string label, Control control, int column, int row, int columnSpan = 1)
+        private void EnsureVisualWorkspaceLayout()
+        {
+            MediaFlux.Models.LibraryAnalyzerUiState state = _reviewOptions.UiState!;
+            if (_visualComparisonPreviewEnabled.Checked &&
+                _visualResultsMembersSplit.ClientSize.Height >= 80 + 40 + _visualResultsMembersSplit.SplitterWidth)
+            {
+                _visualResultsMembersSplit.Panel1MinSize = 80;
+                _visualResultsMembersSplit.Panel2MinSize = 40;
+            }
+            if (_visualComparisonPreviewEnabled.Checked && _visualResultsMembersSplit.ClientSize.Height > 0 &&
+                !state.SplitterDistances.ContainsKey(VisualResultsMembersSplitKey))
+            {
+                int available = _visualResultsMembersSplit.ClientSize.Height - _visualResultsMembersSplit.SplitterWidth;
+                state.SplitterDistances[VisualResultsMembersSplitKey] = Math.Clamp(
+                    (int)Math.Round(available * 0.58),
+                    _visualResultsMembersSplit.Panel1MinSize,
+                    Math.Max(_visualResultsMembersSplit.Panel1MinSize,
+                        available - _visualResultsMembersSplit.Panel2MinSize));
+            }
+
+            if (_visualComparisonPreviewEnabled.Checked && _visualDetailSplit.ClientSize.Width > 0 &&
+                !state.SplitterDistances.ContainsKey(VisualDetailSplitKey))
+            {
+                int available = _visualDetailSplit.ClientSize.Width - _visualDetailSplit.SplitterWidth;
+                state.SplitterDistances[VisualDetailSplitKey] = Math.Clamp(
+                    (int)Math.Round(available * 0.52),
+                    _visualDetailSplit.Panel1MinSize,
+                    Math.Max(_visualDetailSplit.Panel1MinSize,
+                        available - _visualDetailSplit.Panel2MinSize));
+            }
+
+            ApplyVisualWorkspaceSplitterLayouts();
+        }
+
+        private void ApplyVisualWorkspaceSplitterLayouts()
+        {
+            ApplyVisualSplitterLayout(_visualResultsMembersSplit, VisualResultsMembersSplitKey);
+            if (_visualComparisonPreviewEnabled.Checked)
+                ApplyVisualSplitterLayout(_visualDetailSplit, VisualDetailSplitKey);
+        }
+
+        private void ApplyVisualSplitterLayout(SplitContainer splitter, string key)
+        {
+            if (!_reviewOptions.UiState!.SplitterDistances.TryGetValue(key, out int distance)) return;
+            int dimension = splitter.Orientation == Orientation.Horizontal ? splitter.ClientSize.Height : splitter.ClientSize.Width;
+            if (dimension < splitter.Panel1MinSize + splitter.Panel2MinSize + splitter.SplitterWidth) return;
+            int available = dimension - splitter.SplitterWidth;
+            int maximum = available - splitter.Panel2MinSize;
+            if (maximum < splitter.Panel1MinSize)
+            {
+                if (available > 0) splitter.SplitterDistance = Math.Max(0, maximum);
+                return;
+            }
+            splitter.SplitterDistance = Math.Clamp(distance, splitter.Panel1MinSize, maximum);
+        }
+
+        private static void AddVisualFilter(TableLayoutPanel layout, string label, Control control, int column, int row, int columnSpan = 1, bool measured = false)
         {
             var cell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = new Padding(3, 0, 6, 0) };
             cell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            cell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            cell.RowStyles.Add(new RowStyle(measured ? SizeType.AutoSize : SizeType.Percent, measured ? 0 : 100));
             cell.Controls.Add(new Label { Text = label, AutoSize = true, Margin = new Padding(0, 0, 0, 1) }, 0, 0);
             control.Dock = DockStyle.Fill;
             control.Margin = Padding.Empty;
@@ -375,6 +452,7 @@ namespace MediaFlux
                     if (IsDisposed || Disposing || _visualGroupsGrid.IsDisposed) return;
                 }
                 _visualTotal = page.TotalCount;
+                _suppressVisualGroupSelectionRefresh = true;
                 _visualGroupsGrid.Rows.Clear();
                 foreach (VisualSimilarityGroupRecord group in page.Groups)
                 {
@@ -415,15 +493,11 @@ namespace MediaFlux
                 long first = _visualTotal == 0 ? 0 : (long)_visualPage * VisualPageSize + 1;
                 long last = Math.Min(_visualTotal, ((long)_visualPage + 1) * VisualPageSize);
                 _visualPageLabel.Text = $"{first:N0}–{last:N0} of {_visualTotal:N0}";
-                long reviewed = page.Groups.LongCount(group => group.Reviewed);
-                _visualGroupsMetric.SetValue(_visualTotal.ToString("N0"), "Filtered visual matches");
-                _visualFilesMetric.SetValue((page.Groups.Count * 2L).ToString("N0"), "Files across displayed matches");
-                _visualReclaimMetric.SetValue(FormatBytes(page.Groups.Sum(group => group.ReclaimableBytes)), "Displayed potential savings");
-                _visualReviewMetric.SetValue(page.Groups.Count == 0 ? "No results" : $"{reviewed:N0} reviewed", page.Groups.Count == 0 ? "Adjust filters or analyze" : $"{page.Groups.Count - reviewed:N0} remaining on page");
                 await RefreshVisualMembersAsync();
             }
             finally
             {
+                _suppressVisualGroupSelectionRefresh = false;
                 _loadingVisualGroups = false;
                 QueueOverviewRefresh();
             }
@@ -602,6 +676,16 @@ namespace MediaFlux
             bulkCleanupButton.Enabled = _visualTotal > 0;
             rulesReviewButton.Enabled = _visualTotal > 0;
             deleteBothButton.Enabled = hasGroup && group?.Ignored != true && group?.NotMatch != true;
+            bool canNavigate = hasGroup && _visualTotal > 1;
+            if (_visualPreviousMatchButton != null) _visualPreviousMatchButton.Enabled = canNavigate;
+            if (_visualNextMatchButton != null) _visualNextMatchButton.Enabled = canNavigate;
+            int matchIndex = _visualGroupsGrid.CurrentRow?.Index ?? -1;
+            _visualFocusMatchLabel.Text = hasGroup && matchIndex >= 0
+                ? $"Match {((long)_visualPage * VisualPageSize + matchIndex + 1):N0} of {_visualTotal:N0}"
+                : "No match selected";
+            if (_visualMoreBulkCleanup != null) _visualMoreBulkCleanup.Enabled = bulkCleanupButton.Enabled;
+            if (_visualMoreAutomation != null) _visualMoreAutomation.Enabled = rulesReviewButton.Enabled;
+            if (_visualMoreDeleteBoth != null) _visualMoreDeleteBoth.Enabled = deleteBothButton.Enabled;
             _visualReviewGuidance.Text = !hasGroup
                 ? "Select a match above to review its files."
                 : hasMember

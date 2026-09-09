@@ -146,6 +146,7 @@ namespace MediaFlux
             _activityTimer.Start();
             Shown += async (_, _) =>
             {
+                EnsureVisualWorkspaceLayout();
                 _layoutController.ApplySplitterLayouts();
                 await RefreshAllAsync();
             };
@@ -175,6 +176,7 @@ namespace MediaFlux
             _overviewToolTip.Dispose();
             _overviewRefreshCancellation.Cancel();
             _overviewRefreshCancellation.Dispose();
+            if (_visualPreviewFocus) RestoreVisualWorkspace();
             _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
             _runtime.VisualSimilarity.ProgressChanged -= VisualSimilarity_ProgressChanged;

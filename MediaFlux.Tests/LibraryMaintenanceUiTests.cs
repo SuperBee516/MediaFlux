@@ -1,5 +1,6 @@
 using System.Reflection;
 using MediaFlux.Models;
+using System.Drawing;
 using System.Windows.Forms;
 using MediaFlux.Services.LibraryCatalog;
 using Microsoft.Data.Sqlite;
@@ -76,8 +77,143 @@ public sealed class LibraryMaintenanceUiTests : IDisposable
         Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
+    [Fact]
+    public void VisualPreviewWorkspaceUsesSafeResizableBoundsAndRestoresBothSplitters()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                using var catalog = new SqliteLibraryCatalog(Path.Combine(_root, "visual-workspace.db"), Path.Combine(_root, "b4"), Path.Combine(_root, "r4"));
+                catalog.Initialize();
+                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new Probe(), new Visual());
+                var state = new LibraryAnalyzerUiState { ShowVisualComparisonPreview = true };
+                using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(UiState: state));
+                form.Show();
+                TabControl tabs = Field<TabControl>(form, "_tabs");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Duplicates — Visual");
+                Application.DoEvents();
+                SplitContainer details = Field<SplitContainer>(form, "_visualDetailSplit");
+                SplitContainer outer = Field<SplitContainer>(form, "_visualResultsMembersSplit");
+                Panel preview = Field<Panel>(form, "_visualComparisonPreview");
+                PictureBox left = Field<PictureBox>(form, "_visualPreviewLeft");
+                PictureBox right = Field<PictureBox>(form, "_visualPreviewRight");
+                Label leftStatus = Field<Label>(form, "_visualPreviewLeftStatus");
+                Label rightStatus = Field<Label>(form, "_visualPreviewRightStatus");
+                Label previewStatus = Field<Label>(form, "_visualPreviewStatus");
+                Assert.Equal(PictureBoxSizeMode.Zoom, left.SizeMode);
+                Assert.Equal(PictureBoxSizeMode.Zoom, right.SizeMode);
+                Assert.True(leftStatus.Visible && rightStatus.Visible && previewStatus.Visible);
+
+                foreach (Size size in new[] { new Size(1100, 700), new Size(1360, 840), new Size(1800, 1100) })
+                {
+                    form.Size = size;
+                    Application.DoEvents();
+                    Assert.False(details.Panel2Collapsed);
+                    Assert.True(details.Panel2.Width >= details.Panel2MinSize);
+                    Assert.InRange(details.SplitterDistance, details.Panel1MinSize,
+                        details.ClientSize.Width - details.SplitterWidth - details.Panel2MinSize);
+                    Assert.InRange(outer.SplitterDistance, outer.Panel1MinSize,
+                        outer.ClientSize.Height - outer.SplitterWidth - outer.Panel2MinSize);
+                    Assert.True(preview.Visible);
+                    Assert.True(preview.ClientSize.Height > 0);
+                }
+
+                int initialPreviewHeight = preview.ClientSize.Height;
+                int maximumOuterDistance = outer.ClientSize.Height - outer.SplitterWidth - outer.Panel2MinSize;
+                outer.SplitterDistance = Math.Min(maximumOuterDistance, outer.SplitterDistance + 120);
+                Application.DoEvents();
+                Assert.True(preview.ClientSize.Height > initialPreviewHeight);
+
+                int savedDetail = details.SplitterDistance;
+                int savedOuter = outer.SplitterDistance;
+                Size persistedSize = form.Size;
+                form.Close();
+                Application.DoEvents();
+                Assert.Contains(state.SplitterDistances, entry => entry.Key.EndsWith(".Split1", StringComparison.Ordinal) && entry.Value == savedDetail);
+                Assert.Contains(state.SplitterDistances, entry => entry.Key.EndsWith(".Split0", StringComparison.Ordinal) && entry.Value == savedOuter);
+
+                using var restored = new LibraryAnalyzerForm(runtime,
+                    reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(UiState: state));
+                restored.Show();
+                TabControl restoredTabs = Field<TabControl>(restored, "_tabs");
+                restoredTabs.SelectedTab = restoredTabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Duplicates — Visual");
+                restored.Size = persistedSize;
+                Application.DoEvents();
+                SplitContainer restoredDetails = Field<SplitContainer>(restored, "_visualDetailSplit");
+                SplitContainer restoredOuter = Field<SplitContainer>(restored, "_visualResultsMembersSplit");
+                Assert.InRange(restoredDetails.SplitterDistance, restoredDetails.Panel1MinSize,
+                    restoredDetails.ClientSize.Width - restoredDetails.SplitterWidth - restoredDetails.Panel2MinSize);
+                Assert.Contains(state.SplitterDistances, entry => entry.Key.EndsWith(".Split1", StringComparison.Ordinal) && entry.Value == restoredDetails.SplitterDistance);
+                Assert.InRange(restoredOuter.SplitterDistance, restoredOuter.Panel1MinSize,
+                    restoredOuter.ClientSize.Height - restoredOuter.SplitterWidth - restoredOuter.Panel2MinSize);
+                Assert.Contains(state.SplitterDistances, entry => entry.Key.EndsWith(".Split0", StringComparison.Ordinal) && entry.Value == restoredOuter.SplitterDistance);
+                CheckBox enabled = Field<CheckBox>(restored, "_visualComparisonPreviewEnabled");
+                enabled.Checked = false;
+                Application.DoEvents();
+                Assert.True(restoredDetails.Panel2Collapsed);
+                Assert.Equal(restoredDetails.Panel1.ClientSize.Width, restoredDetails.ClientSize.Width);
+                restored.Close();
+                Application.DoEvents();
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+    [Fact]
+    public void VisualPreviewFocusKeepsReviewCommandsAndRestoresWorkspace()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                using var catalog = new SqliteLibraryCatalog(Path.Combine(_root, "visual-focus.db"), Path.Combine(_root, "b5"), Path.Combine(_root, "r5"));
+                catalog.Initialize();
+                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new Probe(), new Visual());
+                var state = new LibraryAnalyzerUiState { ShowVisualComparisonPreview = true };
+                using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(UiState: state));
+                form.Show();
+                TabControl tabs = Field<TabControl>(form, "_tabs");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Duplicates — Visual");
+                Application.DoEvents();
+                SplitContainer workspace = Field<SplitContainer>(form, "_visualResultsMembersSplit");
+                Button focus = Field<Button>(form, "_visualPreviewFocusButton");
+                Control actionArea = form.Controls.Cast<Control>().SelectMany(Descendants).First(control => control.Name == "VisualActionArea");
+                foreach (string text in new[] { "Review & Compare…", "Keep Selected File", "Protect Selected File", "Mark Match as Reviewed", "Ignore This Match", "Recheck This Match", "Preview Files to Delete…", "Previous match", "Next match" })
+                    Assert.Contains(text, Descendants(actionArea).OfType<Button>().Select(button => button.Text));
+                Assert.True(actionArea.Height < 140);
+                int normal = workspace.SplitterDistance;
+                focus.PerformClick();
+                Application.DoEvents();
+                Assert.Equal("Restore Workspace", focus.Text);
+                Assert.True(workspace.SplitterDistance >= normal);
+                Assert.Contains("match", Field<Label>(form, "_visualFocusMatchLabel").Text, StringComparison.OrdinalIgnoreCase);
+                focus.PerformClick();
+                Application.DoEvents();
+                Assert.Equal("Expand Preview", focus.Text);
+                Assert.Equal(normal, workspace.SplitterDistance);
+                form.Close();
+                Application.DoEvents();
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
     private sealed class Probe:ILibraryMetadataProbe{public string ToolVersion=>"test";public Task<MediaProbeResult> ProbeAsync(string p,CancellationToken t)=>Task.FromResult(new MediaProbeResult{Success=false});}
     private sealed class Visual:ILibraryVisualFingerprintExtractor{public string ToolVersion=>"test";public Task<IReadOnlyList<ulong>> ExtractAsync(VisualFingerprintCandidate c,CancellationToken t)=>Task.FromResult<IReadOnlyList<ulong>>(Array.Empty<ulong>());}
     private static T Field<T>(object o,string n)=>(T)(o.GetType().GetField(n,BindingFlags.Instance|BindingFlags.NonPublic)?.GetValue(o)??throw new MissingFieldException(n));private static Task Invoke(object o,string n)=>(Task)(o.GetType().GetMethod(n,BindingFlags.Instance|BindingFlags.NonPublic)?.Invoke(o,null)??throw new MissingMethodException(n));private static void Pump(Task t){while(!t.IsCompleted){Application.DoEvents();Thread.Sleep(10);}t.GetAwaiter().GetResult();}
+    private static IEnumerable<Control> Descendants(Control root){foreach(Control child in root.Controls){yield return child;foreach(Control descendant in Descendants(child))yield return descendant;}}
     public void Dispose(){SqliteConnection.ClearAllPools();if(Directory.Exists(_root))Directory.Delete(_root,true);}
 }

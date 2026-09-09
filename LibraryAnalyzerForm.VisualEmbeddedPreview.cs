@@ -15,7 +15,12 @@ public sealed partial class LibraryAnalyzerForm
     private void BuildVisualComparisonPreview()
     {
         _visualComparisonPreview.Padding = new Padding(6);
-        var title = new Label { Dock = DockStyle.Top, Height = 28, Padding = new Padding(2, 4, 2, 0), Text = "Comparison preview", Font = new Font(Font, FontStyle.Bold) };
+        var titleBar = new Panel { Dock = DockStyle.Top, Height = 32 };
+        var title = new Label { Dock = DockStyle.Fill, Padding = new Padding(2, 4, 2, 0), Text = "Comparison preview", Font = new Font(Font, FontStyle.Bold) };
+        _visualPreviewFocusButton = new Button { Text = "Expand Preview", AutoSize = true, Dock = DockStyle.Right, Margin = new Padding(4, 0, 0, 0) };
+        _visualPreviewFocusButton.Click += (_, _) => ToggleVisualPreviewFocus();
+        titleBar.Controls.Add(title);
+        titleBar.Controls.Add(_visualPreviewFocusButton);
         var cards = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
         cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -23,7 +28,7 @@ public sealed partial class LibraryAnalyzerForm
         cards.Controls.Add(CreatePreviewCard(_visualPreviewRight, _visualPreviewRightStatus), 1, 0);
         _visualComparisonPreview.Controls.Add(cards);
         _visualComparisonPreview.Controls.Add(_visualPreviewStatus);
-        _visualComparisonPreview.Controls.Add(title);
+        _visualComparisonPreview.Controls.Add(titleBar);
         ApplyVisualComparisonPreviewLayout();
     }
 
@@ -52,9 +57,49 @@ public sealed partial class LibraryAnalyzerForm
     private void ApplyVisualComparisonPreviewLayout()
     {
         bool enabled = _visualComparisonPreviewEnabled.Checked;
+        if (!enabled && _visualPreviewFocus)
+            RestoreVisualWorkspace();
         _visualComparisonPreview.Visible = enabled;
         _visualDetailSplit.Panel2Collapsed = !enabled;
+        if (_visualPreviewFocusButton != null)
+            _visualPreviewFocusButton.Visible = enabled;
+        EnsureVisualWorkspaceLayout();
         if (!enabled) ClearVisualComparisonPreview();
+    }
+
+    private void ToggleVisualPreviewFocus()
+    {
+        if (!_visualComparisonPreviewEnabled.Checked) return;
+        if (_visualPreviewFocus)
+        {
+            RestoreVisualWorkspace();
+            return;
+        }
+
+        _visualNormalWorkspaceDistance = _visualResultsMembersSplit.SplitterDistance;
+        _visualPreviewFocus = true;
+        int memberMinimum = Math.Max(120, _visualResultsMembersSplit.Panel2MinSize);
+        int maximum = _visualResultsMembersSplit.ClientSize.Height - _visualResultsMembersSplit.SplitterWidth - memberMinimum;
+        if (maximum >= _visualResultsMembersSplit.Panel1MinSize)
+            _visualResultsMembersSplit.SplitterDistance = maximum;
+        _visualPreviewFocusButton!.Text = "Restore Workspace";
+        _visualReviewGuidance.Text = "Preview Focus — review the selected match, then use Previous match or Next match to continue.";
+        UpdateVisualActionState();
+    }
+
+    private void RestoreVisualWorkspace()
+    {
+        _visualPreviewFocus = false;
+        if (_visualNormalWorkspaceDistance is int distance)
+        {
+            int maximum = _visualResultsMembersSplit.ClientSize.Height - _visualResultsMembersSplit.SplitterWidth - _visualResultsMembersSplit.Panel2MinSize;
+            if (maximum >= _visualResultsMembersSplit.Panel1MinSize)
+                _visualResultsMembersSplit.SplitterDistance = Math.Clamp(distance, _visualResultsMembersSplit.Panel1MinSize, maximum);
+        }
+        _visualNormalWorkspaceDistance = null;
+        if (_visualPreviewFocusButton != null)
+            _visualPreviewFocusButton.Text = "Expand Preview";
+        UpdateVisualActionState();
     }
 
     private async Task UpdateVisualComparisonPreviewAsync(IReadOnlyList<VisualSimilarityMemberRecord> members)
