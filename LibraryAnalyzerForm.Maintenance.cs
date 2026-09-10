@@ -48,7 +48,7 @@ public sealed partial class LibraryAnalyzerForm
         {
             (IReadOnlyList<LibraryMaintenanceProfileView> profiles,IReadOnlyList<LibraryMaintenanceRun> history,IReadOnlyDictionary<long,string> paths)=await Task.Run(()=>
             {var p=_runtime.MaintenanceCatalog.GetMaintenanceProfiles(DateTime.UtcNow);var h=_runtime.MaintenanceCatalog.GetMaintenanceHistory(limit:100);return(p,h,_runtime.Catalog.GetLocations().ToDictionary(x=>x.Id,x=>x.Path));});
-            if(IsDisposed)return;_maintenanceGrid.Rows.Clear();foreach(var v in profiles){LibraryMaintenanceProfile p=v.Profile;int row=_maintenanceGrid.Rows.Add(v.LocationPath,p.Enabled?"Yes":"No",p.Cadence,p.AnalysisMode==LibraryMaintenanceAnalysisMode.FullReanalysis?"Full":"Incremental",p.ConflictBehavior==LibraryMaintenanceConflictBehavior.Skip?"Skip":"Wait",$"{p.StartTime:hh\\:mm}–{p.EndTime:hh\\:mm}",v.NextRunUtc?.ToLocalTime().ToString("g")??"—",v.LastRunUtc?.ToLocalTime().ToString("g")??"Never",v.LastOutcome?.ToString()??"Not run",DescribeMaintenanceActions(p));_maintenanceGrid.Rows[row].Tag=v;}
+            if(_lifecycleCleanupCompleted || IsDisposed || Disposing || _maintenanceGrid.IsDisposed)return;_maintenanceGrid.Rows.Clear();foreach(var v in profiles){LibraryMaintenanceProfile p=v.Profile;int row=_maintenanceGrid.Rows.Add(v.LocationPath,p.Enabled?"Yes":"No",p.Cadence,p.AnalysisMode==LibraryMaintenanceAnalysisMode.FullReanalysis?"Full":"Incremental",p.ConflictBehavior==LibraryMaintenanceConflictBehavior.Skip?"Skip":"Wait",$"{p.StartTime:hh\\:mm}–{p.EndTime:hh\\:mm}",v.NextRunUtc?.ToLocalTime().ToString("g")??"—",v.LastRunUtc?.ToLocalTime().ToString("g")??"Never",v.LastOutcome?.ToString()??"Not run",DescribeMaintenanceActions(p));_maintenanceGrid.Rows[row].Tag=v;}
             _maintenanceHistory.Rows.Clear();foreach(var run in history){paths.TryGetValue(run.LocationId,out string? path);string outcome=run.Stage=="Skipped"?"Skipped":run.Outcome.ToString();_maintenanceHistory.Rows.Add(run.StartedUtc.ToLocalTime().ToString("g"),path??$"Location {run.LocationId}",DescribeMaintenanceActions(run.Actions,run.AnalyzeFamilies),run.AnalysisMode==LibraryMaintenanceAnalysisMode.FullReanalysis?"Full":"Incremental",run.Trigger,outcome,$"{run.NewFiles:N0} new · {run.ChangedFiles:N0} changed · {run.MetadataQueued:N0} metadata · {run.ExactProcessed:N0} exact · {run.VisualProcessed:N0} visual",run.Details);}
             int enabled = profiles.Count(item => item.Profile.Enabled);
             LibraryMaintenanceProfileView? next = profiles.Where(item => item.NextRunUtc.HasValue).OrderBy(item => item.NextRunUtc).FirstOrDefault();
@@ -92,13 +92,13 @@ public sealed partial class LibraryAnalyzerForm
     private static string ActionLabel(LibraryMaintenanceActions action)=>action switch{LibraryMaintenanceActions.IncrementalScan=>"Refresh / scan library catalog",LibraryMaintenanceActions.Metadata=>"Refresh missing or changed metadata",LibraryMaintenanceActions.ExactDuplicates=>"Analyze Exact Duplicates",LibraryMaintenanceActions.VisualDuplicates=>"Analyze Visual Duplicates",LibraryMaintenanceActions.QuickScrubNew=>"Quick Scrub new files",LibraryMaintenanceActions.QuickScrubNeverChecked=>"Quick Scrub never checked",LibraryMaintenanceActions.QuickScrubStale=>"Quick Scrub stale",LibraryMaintenanceActions.QuickScrubFailed=>"Retry failed/interrupted Quick Scrubs",_=>action.ToString()};
     private void Maintenance_ProgressChanged(LibraryMaintenanceProgress p)
     {
-        if(IsDisposed||!IsHandleCreated)return;
+        if(!CanUseFormUi)return;
         long now=Stopwatch.GetTimestamp();
         if(p.IsActive&&p.Outcome==null&&_lastMaintenanceUiUpdateTicks!=0&&Stopwatch.GetElapsedTime(_lastMaintenanceUiUpdateTicks,now)<TimeSpan.FromMilliseconds(150))return;
         _lastMaintenanceUiUpdateTicks=now;
-        BeginInvoke(() =>
+        PostToFormUi(() =>
         {
-            if(IsDisposed)return;
+            if(_maintenanceActivity.IsDisposed)return;
             string state=p.Outcome?.ToString()??(p.IsActive?"Running":"Idle");
             _maintenanceActivity.Text=$"{state}: {p.JobName} · {p.Stage}".Trim(' ','·');
             _maintenanceCurrentItem.Text=string.IsNullOrWhiteSpace(p.CurrentItem)?p.Details:$"{p.Details} · {p.CurrentItem}".Trim(' ','·');

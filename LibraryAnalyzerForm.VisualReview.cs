@@ -146,6 +146,39 @@ namespace MediaFlux
             Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
                 new VisualGroupDecision(group.GroupId, member.FileId, true, group.Ignored, group.NotMatch)));
 
+        // Shared command path for the modal and deterministic UI coverage.  Keeping
+        // persistence, navigation, and the refresh together prevents tests (and other
+        // callers) from having to discover or drive the modal window itself.
+        internal async Task<VisualSimilarityGroupRecord?> CompleteVisualReviewReviewedNextAsync(
+            long groupId, long? keeperId, bool semiAutomaticApproval, bool refreshUi = true)
+        {
+            VisualSimilarityGroupRecord? group = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroup(groupId));
+            if (group == null)
+                return null;
+
+            await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
+                new VisualGroupDecision(group.GroupId, keeperId, true, group.Ignored, group.NotMatch,
+                    Source: semiAutomaticApproval ? "semi-automatic-review" : "library-analyzer")));
+            if (refreshUi)
+            {
+                await NavigateVisualSelectionAsync(1);
+                await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
+            }
+            else if (_visualTotal > 1 && _visualGroupsGrid.SelectedRows.Count > 0)
+            {
+                int target = (_visualGroupsGrid.SelectedRows[0].Index + 1) % _visualGroupsGrid.Rows.Count;
+                SelectVisualGroupRow(target);
+            }
+            else if (!refreshUi)
+            {
+                VisualSimilarityGroupRecord[] groups = await Task.Run(() =>
+                    _runtime.VisualCatalog.QueryVisualGroups(new VisualGroupQuery()).Groups.ToArray());
+                return groups.SkipWhile(candidate => candidate.GroupId != groupId).Skip(1).FirstOrDefault()
+                    ?? groups.FirstOrDefault(candidate => candidate.GroupId != groupId);
+            }
+            return SelectedVisualGroup();
+        }
+
         private Task SaveVisualProtectionAsync(VisualSimilarityMemberRecord member) =>
             Task.Run(() => _runtime.AnalysisCatalog.SetFileProtection(
                 member.FileId,
@@ -215,7 +248,10 @@ namespace MediaFlux
         // Both visible entry points and both context menus intentionally use this
         // one command path so review eligibility and observational behavior stay
         // identical.
-        private Task ReviewAndCompareSelectedVisualMatchAsync() => OpenVisualReviewAsync();
+        internal Func<Task>? VisualReviewCommandOverride { get; set; }
+
+        private Task ReviewAndCompareSelectedVisualMatchAsync() =>
+            VisualReviewCommandOverride?.Invoke() ?? OpenVisualReviewAsync();
 
         private async Task OpenVisualReviewAsync()
         {
@@ -280,11 +316,24 @@ namespace MediaFlux
 
             bool loading = false;
             bool catalogStateChanged = false;
+            bool dialogClosing = false;
             bool currentReviewEligible = false;
             VisualSimilarityGroupRecord? currentReviewGroup = null;
             long? currentSelectedKeeperFileId = null;
             long? pendingKeeperGroupId = null;
             CancellationTokenSource? groupPreviewCancellation = null;
+            void StartPreview(PictureBox picture, Label status, VisualSimilarityMemberRecord member, CancellationToken token)
+            {
+                Task preview = LoadVisualReviewThumbnailAsync(picture, status, member, token);
+                _ = preview.ContinueWith(completed =>
+                {
+                    ErrorLogService.Append(Application.StartupPath,
+                        "Library Analyzer visual preview failed",
+                        member.FullPath,
+                        completed.Exception);
+                }, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+
             async Task LoadCurrentAsync()
             {
                 if (loading || SelectedVisualGroup() is not { } selected)
@@ -293,7 +342,7 @@ namespace MediaFlux
                 try
                 {
                     VisualSimilarityGroupRecord? group = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroup(selected.GroupId));
-                    if (group == null || dialog.IsDisposed)
+                    if (group == null || dialogClosing || dialog.IsDisposed || dialog.Disposing)
                         return;
                     // Opening review is observational. Use the catalog's existing lifecycle
                     // snapshot; authoritative scans and explicit action validation own
@@ -302,7 +351,7 @@ namespace MediaFlux
                     currentReviewEligible = eligibility.IsActive;
                     currentReviewGroup = group;
                     IReadOnlyList<VisualSimilarityMemberRecord> members = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroupMembers(group.GroupId));
-                    if (dialog.IsDisposed)
+                    if (dialogClosing || dialog.IsDisposed || dialog.Disposing)
                         return;
                     groupPreviewCancellation?.Cancel();
                     groupPreviewCancellation?.Dispose();
@@ -391,11 +440,16 @@ namespace MediaFlux
                             movePresentation,
                             cardToolTip);
                         body.Controls.Add(card.Panel);
-                        _ = LoadVisualReviewThumbnailAsync(card.Picture, card.Status, member, groupPreviewCancellation.Token);
+                        // Previews are cancelable, dialog-owned best-effort work.  Do not
+                        // make completion of the modal workflow depend on an FFmpeg process
+                        // or an STA continuation that is being torn down with the dialog.
+                        StartPreview(card.Picture, card.Status, member, groupPreviewCancellation.Token);
                     }
                 }
                 catch (Exception ex)
                 {
+                    if (dialogClosing || dialog.IsDisposed || dialog.Disposing)
+                        return;
                     ErrorLogService.Append(Application.StartupPath, "Library Analyzer visual review failed", exception: ex);
                     MessageBox.Show(dialog, "The visual match could not be loaded.\r\n\r\n" + ex.Message, "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
@@ -454,13 +508,10 @@ namespace MediaFlux
                 if (currentReviewGroup is not { } group)
                     return;
                 long? keeperId = semiAutomaticApproval ? currentSelectedKeeperFileId : group.ManualKeeperFileId;
-                await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                    new VisualGroupDecision(group.GroupId, keeperId, true, group.Ignored, group.NotMatch,
-                        Source: semiAutomaticApproval ? "semi-automatic-review" : "library-analyzer")));
                 catalogStateChanged = true;
                 pendingKeeperGroupId = null;
-                await MoveAsync(1);
-                await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
+                await CompleteVisualReviewReviewedNextAsync(group.GroupId, keeperId, semiAutomaticApproval);
+                await LoadCurrentAsync();
             };
             dialog.KeyDown += async (_, e) =>
             {
@@ -471,6 +522,12 @@ namespace MediaFlux
                 await MoveAsync(e.KeyCode == Keys.Left ? -1 : 1);
             };
             dialog.Shown += async (_, _) => await LoadCurrentAsync();
+            dialog.FormClosing += (_, _) =>
+            {
+                dialogClosing = true;
+                groupPreviewCancellation?.Cancel();
+                previewCancellation.Cancel();
+            };
             dialog.FormClosed += (_, _) =>
             {
                 groupPreviewCancellation?.Cancel();

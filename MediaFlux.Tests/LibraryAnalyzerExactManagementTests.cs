@@ -535,6 +535,7 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
                 action();
             }
             catch (Exception ex) { failure = ex; }
+            finally { SynchronizationContext.SetSynchronizationContext(null); }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();

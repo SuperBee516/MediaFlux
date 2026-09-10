@@ -59,7 +59,7 @@ namespace MediaFlux
             LibraryVisualReviewAutomationOptions options = (_reviewOptions.AutomationOptions ?? new LibraryVisualReviewAutomationOptions()).Normalize();
             LibraryCleanupRecommendationDashboard dashboard = await Task.Run(() =>
                 _runtime.Recommendations.GetCleanupDashboard(options.MinimumVisualConfidence));
-            if (IsDisposed) return;
+            if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
             _recommendationsGrid.Rows.Clear();
             foreach (LibraryCleanupRecommendationCategory category in dashboard.Categories)
             {
@@ -163,7 +163,7 @@ namespace MediaFlux
             var query = new LibraryPolicyResultQuery(State: state, Offset: _policyPage * PageSize, Limit: PageSize);
             (LibraryPolicyEvaluationPage Page, LibraryPolicyEvaluationSummary Summary) result = await Task.Run(() =>
                 _runtime.PolicyEvaluation.Evaluate(selected.Policy, query, capabilities));
-            if (IsDisposed) return;
+            if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
             _optimizationGrid.Rows.Clear();
             foreach (LibraryPolicyEvaluationResult candidate in result.Page.Results)
             {
@@ -237,11 +237,11 @@ namespace MediaFlux
             try
             {
                 await _reviewOptions.AddPolicyCandidatesToEncodeQueue!(items);
-                if (!IsDisposed) _optimizationStatus.Text = $"Added {items.Count:N0} selected candidate(s) to the normal Encode queue with isolated policy settings. Encoding was not started.";
+                if (!_lifecycleCleanupCompleted && !IsDisposed && !Disposing) _optimizationStatus.Text = $"Added {items.Count:N0} selected candidate(s) to the normal Encode queue with isolated policy settings. Encoding was not started.";
             }
             catch (Exception ex)
             {
-                if (!IsDisposed) ShowError("Library policy queue handoff failed. No encode was started.", ex);
+                if (!_lifecycleCleanupCompleted && !IsDisposed && !Disposing) ShowError("Library policy queue handoff failed. No encode was started.", ex);
             }
         }
 

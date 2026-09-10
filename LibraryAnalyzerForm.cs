@@ -38,17 +38,20 @@ namespace MediaFlux
         private readonly OverviewMetricCard _overviewDuplicatesCard = new("Duplicate sets");
         private readonly OverviewMetricCard _overviewReclaimCard = new("Reclaimable space");
         private readonly Label _overviewHeaderSummary = new() { AutoEllipsis = true, AutoSize = false, Dock = DockStyle.Fill };
-        private readonly Label _overviewHealthState = new() { AutoSize = true, Anchor = AnchorStyles.Right, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(8, 5, 8, 5) };
+        private readonly OverviewStatusBadge _overviewHealthState = new();
         private readonly LinkLabel _overviewExactLink = OverviewLinkLabel();
         private readonly LinkLabel _overviewVisualLink = OverviewLinkLabel();
         private readonly LinkLabel _overviewFamilyLink = OverviewLinkLabel();
         private readonly LinkLabel _overviewDuplicateProgress = OverviewLinkLabel();
-        private readonly Label _overviewHealthSummary = new() { AutoEllipsis = true, Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 4), Enabled = false };
+        private readonly OverviewProgressBar _overviewDuplicateProgressBar = new() { Dock = DockStyle.Fill, Height = 6 };
+        private readonly TableLayoutPanel _overviewHealthSummary = new() { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(4), AccessibleRole = AccessibleRole.Grouping };
         private readonly Label _overviewLiveStatus = new() { Text = "Live: Idle", AutoEllipsis = true, Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(0, 0, 4, 0) };
         private readonly OverviewBarChart _overviewLocationChart = new() { Dock = DockStyle.Fill };
         private readonly OverviewBarChart _overviewCompositionChart = new() { Dock = DockStyle.Fill };
         private readonly ComboBox _overviewCompositionSelector = DropDown();
         private readonly OverviewSparkline _overviewGrowthChart = new() { Dock = DockStyle.Fill };
+        private readonly ComboBox _overviewGrowthMetricSelector = DropDown();
+        private readonly Label _overviewGrowthSummary = new() { Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = SystemColors.GrayText, Padding = new Padding(4, 2, 4, 0) };
         private readonly Label _overviewGrowthEmpty = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = SystemColors.GrayText, Visible = false, Padding = new Padding(12) };
         private readonly TableLayoutPanel _overviewInsights = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(8) };
         private LibraryOverviewSnapshot? _overviewSnapshot;
@@ -88,6 +91,9 @@ namespace MediaFlux
         private volatile LibraryVisualAnalysisProgress? _latestVisualProgress;
         private string _scanTerminalStatus = "Ready";
         private DateTime _scanTerminalStatusUntilUtc;
+        // This becomes true at the beginning of a real close, before WinForms starts
+        // tearing down handles.  It is the single boundary for form-owned callbacks.
+        private bool _lifecycleClosing;
         private bool _lifecycleCleanupCompleted;
 
         public LibraryAnalyzerForm(
@@ -243,9 +249,72 @@ namespace MediaFlux
             base.Dispose(disposing);
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // Raise FormClosing first so a caller may still cancel the close.  Once it
+            // is accepted, close the lifetime gate before any child handles are torn
+            // down; FormClosed/Dispose are too late for queued WinForms callbacks.
+            base.OnFormClosing(e);
+            if (e.Cancel)
+                return;
+
+            _lifecycleClosing = true;
+            CleanupLifecycle();
+        }
+
+        private bool CanUseFormUi =>
+            !_lifecycleClosing &&
+            !_lifecycleCleanupCompleted &&
+            !IsDisposed &&
+            !Disposing;
+
+        private void PostToFormUi(Action action)
+        {
+            if (!CanUseFormUi || !IsHandleCreated)
+                return;
+
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    if (CanUseFormUi)
+                        action();
+                });
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
+        private void InvokeOnFormUi(Action action)
+        {
+            if (!CanUseFormUi)
+                return;
+
+            if (!InvokeRequired)
+            {
+                action();
+                return;
+            }
+
+            if (!IsHandleCreated)
+                return;
+
+            try
+            {
+                Invoke(() =>
+                {
+                    if (CanUseFormUi)
+                        action();
+                });
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
         private void CleanupLifecycle()
         {
             if (_lifecycleCleanupCompleted) return;
+            _lifecycleClosing = true;
             _lifecycleCleanupCompleted = true;
             Interlocked.Increment(ref _visualMemberLoadVersion);
             Interlocked.Increment(ref _duplicateMemberLoadVersion);
@@ -584,7 +653,7 @@ namespace MediaFlux
 
         private async Task RefreshLocationsAsync()
         {
-            if (_loadingLocations || IsDisposed) return;
+            if (_loadingLocations || _lifecycleCleanupCompleted || IsDisposed || Disposing) return;
             _loadingLocations = true;
             try
             {
@@ -594,7 +663,7 @@ namespace MediaFlux
                     IReadOnlyDictionary<long, long> counts = _runtime.Catalog.GetLocationFileCounts();
                     return (locations, counts);
                 });
-                if (IsDisposed) return;
+                if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
                 long[] selectedIds = SelectedLocationIds().ToArray();
                 ReconcileLocationRows(snapshot.locations, snapshot.counts, selectedIds, _preferredLocationSelectionId);
                 long indexedFiles = snapshot.counts.Values.Sum();
@@ -660,14 +729,14 @@ namespace MediaFlux
 
         private async Task RefreshFilesAsync()
         {
-            if (_loadingFiles || IsDisposed)
+            if (_loadingFiles || _lifecycleCleanupCompleted || IsDisposed || Disposing)
                 return;
             _loadingFiles = true;
             try
             {
                 LibraryFileQuery query = BuildFileQuery();
                 LibraryFilePage result = await Task.Run(() => _runtime.Catalog.QueryFiles(query));
-                if (IsDisposed)
+                if (_lifecycleCleanupCompleted || IsDisposed || Disposing)
                     return;
                 _totalFiles = result.TotalCount;
                 _filesGrid.Rows.Clear();

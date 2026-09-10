@@ -67,6 +67,7 @@ namespace MediaFlux
         private bool _suppressVisualGroupSelectionRefresh;
         private DuplicateReviewSelectionAnchor? _visualAdvanceAfterRefresh;
         private int _visualMemberLoadVersion;
+        private readonly SemaphoreSlim _visualGroupsRefreshLock = new(1, 1);
         private readonly SemaphoreSlim _visualMemberRefreshLock = new(1, 1);
 
         private void BuildVisualSimilarityTab()
@@ -433,7 +434,13 @@ namespace MediaFlux
 
         private async Task RefreshVisualGroupsAsync(long? preferredGroupId = null)
         {
-            if (_loadingVisualGroups || IsDisposed) return;
+            if (_loadingVisualGroups || _lifecycleCleanupCompleted || IsDisposed || Disposing) return;
+            if (!await _visualGroupsRefreshLock.WaitAsync(0)) return;
+            if (_lifecycleCleanupCompleted || IsDisposed || Disposing || !_visualGroupsGrid.IsHandleCreated || _visualGroupsGrid.Columns.Count == 0)
+            {
+                _visualGroupsRefreshLock.Release();
+                return;
+            }
             _loadingVisualGroups = true;
             try
             {
@@ -443,13 +450,13 @@ namespace MediaFlux
                 long[] selectedGroupIds = SelectedVisualGroups().Select(group => group.GroupId).ToArray();
                 VisualGroupQuery query = BuildVisualQuery();
                 VisualSimilarityGroupPage page = await Task.Run(() => _runtime.VisualCatalog.QueryVisualGroups(query));
-                if (IsDisposed || Disposing || _visualGroupsGrid.IsDisposed) return;
+                if (IsDisposed || Disposing || _visualGroupsGrid.IsDisposed || !_visualGroupsGrid.IsHandleCreated || _visualGroupsGrid.Columns.Count == 0) return;
                 if (page.TotalCount > 0 && page.Groups.Count == 0 && _visualPage > 0)
                 {
                     _visualPage = (int)((page.TotalCount - 1) / VisualPageSize);
                     query = BuildVisualQuery();
                     page = await Task.Run(() => _runtime.VisualCatalog.QueryVisualGroups(query));
-                    if (IsDisposed || Disposing || _visualGroupsGrid.IsDisposed) return;
+                    if (IsDisposed || Disposing || _visualGroupsGrid.IsDisposed || !_visualGroupsGrid.IsHandleCreated || _visualGroupsGrid.Columns.Count == 0) return;
                 }
                 _visualTotal = page.TotalCount;
                 _suppressVisualGroupSelectionRefresh = true;
@@ -500,6 +507,7 @@ namespace MediaFlux
                 _suppressVisualGroupSelectionRefresh = false;
                 _loadingVisualGroups = false;
                 QueueOverviewRefresh();
+                _visualGroupsRefreshLock.Release();
             }
         }
 
@@ -532,6 +540,8 @@ namespace MediaFlux
                     _visualMembersGrid.CurrentCell = _visualMembersGrid.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 }
                 await UpdateVisualComparisonPreviewAsync(members);
+                if (loadVersion != Volatile.Read(ref _visualMemberLoadVersion) || _lifecycleCleanupCompleted || IsDisposed || Disposing || _visualMembersGrid.IsDisposed)
+                    return;
                 UpdateVisualActionState();
             }
             finally { _visualMemberRefreshLock.Release(); }
@@ -650,6 +660,13 @@ namespace MediaFlux
 
         private void UpdateVisualActionState()
         {
+            if (!CanUseFormUi || _visualGroupsGrid.IsDisposed || _visualMembersGrid.IsDisposed)
+                return;
+            if (InvokeRequired)
+            {
+                InvokeOnFormUi(UpdateVisualActionState);
+                return;
+            }
             VisualSimilarityGroupRecord? group = SelectedVisualGroup();
             VisualSimilarityMemberRecord? member = SelectedVisualMember();
             bool hasGroup = group != null;

@@ -189,9 +189,11 @@ public sealed partial class LibraryAnalyzerForm
 
     private async Task RefreshVisualFamiliesAsync()
     {
+        if (_lifecycleCleanupCompleted || IsDisposed || Disposing)
+            return;
         VisualFamilyPage page = await Task.Run(() => _runtime.FamilyCatalog.QueryVisualFamilies(
             new VisualFamilyQuery(Ignored: _familyShowIgnored.Checked ? null : false, Limit: 500)));
-        if (IsDisposed) return;
+        if (_lifecycleCleanupCompleted || IsDisposed || Disposing || _familyGrid.IsDisposed) return;
         _familyTotal = page.TotalCount;
         long[] selectedIds = SelectedVisualFamilies().Select(family => family.FamilyId).ToArray();
         long? currentId = SelectedVisualFamily()?.FamilyId;
@@ -227,6 +229,7 @@ public sealed partial class LibraryAnalyzerForm
         _familyReclaimMetric.SetValue(FormatBytes(page.Families.Sum(family => family.ReclaimableBytes)), "Displayed potential savings");
         _familyReviewMetric.SetValue(page.Families.Count == 0 ? "No results" : $"{reviewed:N0} reviewed", page.Families.Count == 0 ? "Rebuild or adjust visibility" : $"{page.Families.Count - reviewed:N0} remaining on page");
         UpdateFamilyActionState();
+        if (_lifecycleCleanupCompleted || IsDisposed || Disposing || _familyGrid.IsDisposed) return;
         await RefreshVisualFamilyMembersAsync();
         QueueOverviewRefresh();
     }
@@ -244,7 +247,7 @@ public sealed partial class LibraryAnalyzerForm
         await _familyMemberRefreshLock.WaitAsync();
         try
         {
-            if (version != Volatile.Read(ref _familyMemberLoadVersion) || IsDisposed) return;
+            if (version != Volatile.Read(ref _familyMemberLoadVersion) || _lifecycleCleanupCompleted || IsDisposed || Disposing || _familyMembersGrid.IsDisposed) return;
             VisualFamilyRecord? family = SelectedVisualFamily();
             if (family == null)
             {
@@ -253,7 +256,7 @@ public sealed partial class LibraryAnalyzerForm
             }
             IReadOnlyList<VisualFamilyMemberRecord> members = await Task.Run(() =>
                 _runtime.FamilyCatalog.GetVisualFamilyMembers(family.FamilyId));
-            if (version != Volatile.Read(ref _familyMemberLoadVersion) || IsDisposed) return;
+            if (version != Volatile.Read(ref _familyMemberLoadVersion) || _lifecycleCleanupCompleted || IsDisposed || Disposing || _familyMembersGrid.IsDisposed) return;
             _familyMembersGrid.Rows.Clear();
             foreach (VisualFamilyMemberRecord member in members)
             {

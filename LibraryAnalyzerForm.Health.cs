@@ -60,7 +60,7 @@ namespace MediaFlux
             {
                 (LibraryHealthSnapshot snapshot, IReadOnlyList<LibraryDecisionEvent> history) = await Task.Run(() =>
                     (_runtime.Insights.GetHealth(), _runtime.Decisions.GetRecent()));
-                if (IsDisposed) return;
+                if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
                 _healthSnapshot = snapshot;
                 _healthGrid.Rows.Clear();
                 foreach (LibraryHealthIssue issue in snapshot.Issues)

@@ -143,7 +143,7 @@ public sealed partial class LibraryAnalyzerForm
                     runtimeEstimator: _reviewOptions.RuntimeEstimator), token);
             StorageReclamationPlan plan = await Task.Run(() => _reclamationPlanner.BuildPlan(
                 requested, strategy, opportunities, CurrentReclamationRevision(policy, capabilities), policy?.Id ?? ""), token);
-            if (IsDisposed) return;
+            if (_lifecycleCleanupCompleted || IsDisposed || Disposing || _reclamationGrid.IsDisposed) return;
             _reclamationPlan = plan;
             _reclamationPage = 0;
             _reclamationStore?.Save(plan);
@@ -152,9 +152,9 @@ public sealed partial class LibraryAnalyzerForm
         }
         catch (OperationCanceledException)
         {
-            if (!IsDisposed) _reclamationStatus.Text = "Plan generation canceled. No files or decisions were changed.";
+            if (!_lifecycleCleanupCompleted && !IsDisposed && !Disposing) _reclamationStatus.Text = "Plan generation canceled. No files or decisions were changed.";
         }
-        catch (Exception ex) { if (!IsDisposed) ShowError("The reclamation plan could not be built. No files or decisions were changed.", ex); }
+        catch (Exception ex) { if (!_lifecycleCleanupCompleted && !IsDisposed && !Disposing) ShowError("The reclamation plan could not be built. No files or decisions were changed.", ex); }
         finally { _reclamationBuildCancellation?.Dispose(); _reclamationBuildCancellation = null; }
     }
 

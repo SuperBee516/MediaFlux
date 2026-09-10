@@ -213,7 +213,7 @@ namespace MediaFlux
             try
             {
                 ExactDuplicateGroupPage page = await Task.Run(() => _runtime.AnalysisCatalog.QueryDuplicateGroups(BuildDuplicateQuery()));
-                if (IsDisposed) return;
+                if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
                 long[] selectedGroupIds = SelectedGroups().Select(group => group.GroupId).ToArray();
                 bool hadSelection = selectedGroupIds.Length > 0;
                 _duplicateTotal = page.TotalCount;
@@ -262,7 +262,7 @@ namespace MediaFlux
         private async Task RefreshExactReclaimByLocationAsync()
         {
             IReadOnlyList<ExactDuplicateReclaimLocation> locations = await Task.Run(() => _runtime.AnalysisCatalog.GetExactDuplicateReclaimByLocation());
-            if (IsDisposed) return;
+            if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
             _duplicateReclaimByLocation.Text = locations.Count == 0
                 ? "No reclaimable exact copies"
                 : string.Join("  ·  ", locations.Take(3).Select(item => $"{CompactLocation(item.LocationPath)}: {FormatBytes(item.ReclaimableBytes)}")) +

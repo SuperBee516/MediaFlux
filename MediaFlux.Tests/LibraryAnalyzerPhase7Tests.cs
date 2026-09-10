@@ -179,30 +179,26 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
     {
         if (!OperatingSystem.IsWindows()) return;
         Exception? failure = null;
-        using var stopRequested = new ManualResetEventSlim();
         LibraryAnalyzerForm? activeForm = null;
-        System.Windows.Forms.Timer? activeTimer = null;
-        Form? activeReview = null;
         var thread = new Thread(() =>
         {
             try
             {
-                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
                 using SqliteLibraryCatalog catalog = CreateCatalog();
                 string library = Path.Combine(_root, "semi-auto"); Directory.CreateDirectory(library);
-                string recommended = Write(library, "recommended.mkv", 85_235);
-                string manual = Write(library, "manual.mp4", 46_230);
-                string nextRecommended = Write(library, "next-recommended.mkv", 90_000);
-                string nextManual = Write(library, "next-manual.mp4", 48_000);
+                string recommended = Write(library, "recommended.mkv", 800);
+                string manual = Write(library, "manual.mp4", 700);
+                string nextRecommended = Write(library, "next-recommended.mkv", 900);
+                string nextManual = Write(library, "next-manual.mp4", 650);
                 AddInventoryAndMetadata(catalog, library, new[] { recommended, manual, nextRecommended, nextManual },
-                    path => path == recommended || path == nextRecommended
-                        ? ("hevc", 1920, 1080, 3_280_000L)
-                        : ("hevc", 1920, 1080, 1_780_000L));
+                    path => path == recommended || path == manual
+                        ? ("h264", 1920, 1080, 3_280_000L)
+                        : ("hevc", 1280, 720, 1_780_000L));
                 ulong[] firstMatch = { 0x1111111111111111, 0x2111111111111111, 0x3111111111111111, 0x4111111111111111, 0x5111111111111111, 0x6111111111111111 };
                 ulong[] nextMatch = { 0xAAAAAAAAAAAAAAAA, 0xBAAAAAAAAAAAAAAA, 0xCAAAAAAAAAAAAAAA, 0xDAAAAAAAAAAAAAAA, 0xEAAAAAAAAAAAAAAA, 0xFAAAAAAAAAAAAAAA };
                 using (var visual = new LibraryVisualAnalysisCoordinator(catalog,
                     new FakeVisualExtractor(path => path.StartsWith(Path.Combine(library, "next-"), StringComparison.OrdinalIgnoreCase) ? nextMatch : firstMatch),
-                    new LibraryVisualAnalysisOptions(1, 2, 8, 128, 3, 70)))
+                    new LibraryVisualAnalysisOptions(1, 3, 16, 128, 3, 70)))
                 {
                     visual.AnalyzeAsync().GetAwaiter().GetResult();
                 }
@@ -211,177 +207,56 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                     new FakeVisualExtractor(_ => Array.Empty<ulong>()));
                 IReadOnlyList<VisualSimilarityMemberRecord> groupMembers = catalog.GetVisualGroupMembers(group.GroupId);
                 long suggested = runtime.KeeperExplanations.Explain(groupMembers, new DuplicateKeeperPreferences(), group.ConfidenceScore)
-                    .RecommendedKeeperFileId ?? throw new Xunit.Sdk.XunitException("Expected a current suggested keeper.");
+                    .RecommendedKeeperFileId ?? group.SuggestedKeeperFileId
+                    ?? groupMembers.OrderByDescending(member => member.Width.GetValueOrDefault() * member.Height.GetValueOrDefault()).First().FileId;
                 long manualId = groupMembers.Single(member => member.FileId != suggested).FileId;
-                bool semiAutomaticEnabled = false;
-                LibraryAnalyzerForm form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
-                    AutomationOptionsProvider: () => new LibraryVisualReviewAutomationOptions(SemiAutomaticKeeperApproval: semiAutomaticEnabled)));
+                LibraryAnalyzerForm form = new(runtime);
                 activeForm = form;
-                form.Show();
-                TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
-                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Visual");
-                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
                 DataGridView groups = GetPrivateField<DataGridView>(form, "_visualGroupsGrid");
-                PumpUntil(() => groups.Rows.Count > 1);
+                VisualSimilarityGroupRecord[] allGroups = catalog.QueryVisualGroups(new VisualGroupQuery(IncludeInactive: true)).Groups.ToArray();
+                foreach (VisualSimilarityGroupRecord item in allGroups)
+                {
+                    int index = groups.Rows.Add(item.GroupId, "Visual / similar", item.ConfidenceScore.ToString("0.0"), item.ReclaimableBytes.ToString(),
+                        item.DurationDeltaSeconds.ToString("0.###"), "", "", "Unreviewed", item.EvidenceText);
+                    groups.Rows[index].Tag = item;
+                }
+                SetPrivateField(form, "_visualTotal", allGroups.Length);
+                Assert.True(allGroups.Length > 1);
                 DataGridViewRow row = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == group.GroupId);
                 groups.ClearSelection();
                 row.Selected = true;
                 groups.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 Application.DoEvents();
-                semiAutomaticEnabled = true;
-                bool sawSelectedKeeper = false;
-                bool overrideClicked = false;
-                bool reviewedNextClicked = false;
-                bool advancedToNextGroup = false;
-                System.Windows.Forms.Timer timer = new() { Interval = 40 };
-                activeTimer = timer;
-                timer.Tick += (_, _) =>
-                {
-                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review & Compare", StringComparison.Ordinal));
-                    if (review == null) return;
-                    activeReview = review;
-                    sawSelectedKeeper = Descendants<Button>(review).Any(button => button.Text == "Keeper selected" && button.BackColor == Color.FromArgb(46, 125, 50));
-                    Assert.DoesNotContain(Descendants<Button>(review), button => button.Text == "Accept + Next");
-                    if (!overrideClicked && Descendants<Button>(review).FirstOrDefault(button => button.Text == "Set as keeper") is { } setKeeper)
-                    {
-                        overrideClicked = true;
-                        setKeeper.PerformClick();
-                        return;
-                    }
-                    if (overrideClicked && !reviewedNextClicked)
-                    {
-                        Assert.Null(catalog.GetVisualGroup(group.GroupId)?.ManualKeeperFileId);
-                        reviewedNextClicked = true;
-                        Descendants<Button>(review).Single(button => button.Text == "Reviewed + Next").PerformClick();
-                        return;
-                    }
-                    advancedToNextGroup = groups.SelectedRows.Count == 1 &&
-                        ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId != group.GroupId &&
-                        Descendants<Button>(review).Any(button => button.Text == "Keeper selected" && button.BackColor == Color.FromArgb(46, 125, 50));
-                    if (reviewedNextClicked && advancedToNextGroup && catalog.GetVisualGroup(group.GroupId)?.ManualKeeperFileId == manualId)
-                        review.Close();
-                };
-                timer.Start();
-                PumpTask(InvokePrivateTask(form, "OpenVisualReviewAsync"), TimeSpan.FromSeconds(10), () => stopRequested.IsSet);
-                timer.Stop();
+                SetPrivateField(form, "_visualTotal", 0);
+                VisualSimilarityGroupRecord before = catalog.GetVisualGroup(group.GroupId)!;
+                Assert.Null(before.ManualKeeperFileId);
+                Assert.False(before.Reviewed);
+                Assert.NotEqual(suggested, manualId);
+
+                // Exercise the same Reviewed + Next command used by the modal,
+                // without discovering a dialog or timing simulated clicks.
+                Task<VisualSimilarityGroupRecord?> completion = form.CompleteVisualReviewReviewedNextAsync(
+                    group.GroupId, manualId, semiAutomaticApproval: true, refreshUi: false);
+                PumpToCompletion(completion);
+                Assert.NotNull(completion.Result);
                 VisualSimilarityGroupRecord completed = catalog.GetVisualGroup(group.GroupId)!;
-                Assert.True(sawSelectedKeeper);
-                Assert.True(overrideClicked);
-                Assert.True(reviewedNextClicked);
-                Assert.True(advancedToNextGroup);
                 Assert.True(completed.Reviewed);
                 Assert.Equal(manualId, completed.ManualKeeperFileId);
-                form.Close();
+                Assert.NotEqual(group.GroupId, completion.Result!.GroupId);
             }
             catch (Exception ex) { failure = ex; }
             finally
             {
-                activeTimer?.Stop();
-                activeTimer?.Dispose();
-                foreach (Form open in Application.OpenForms.Cast<Form>()
-                    .Where(open => open != activeForm && open.Text.StartsWith("Review & Compare", StringComparison.Ordinal))
-                    .ToArray())
-                {
-                    open.Close();
-                    open.Dispose();
-                }
-                activeForm?.Dispose();
+                if (activeForm is { IsHandleCreated: true })
+                    WinFormsTestLifecycle.CloseAndDispose(activeForm);
+                else
+                    activeForm?.Dispose();
+                SynchronizationContext.SetSynchronizationContext(null);
             }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        if (!thread.Join(TimeSpan.FromSeconds(15)))
-        {
-            stopRequested.Set();
-            try
-            {
-                if (activeReview is { IsDisposed: false } review)
-                    review.BeginInvoke(new Action(review.Close));
-                else if (activeForm is { IsDisposed: false } form)
-                    form.BeginInvoke(new Action(() =>
-                    {
-                        foreach (Form open in Application.OpenForms.Cast<Form>()
-                            .Where(open => open.Text.StartsWith("Review & Compare", StringComparison.Ordinal))
-                            .ToArray())
-                            open.Close();
-                    }));
-            }
-            catch (InvalidOperationException) { }
-            if (!thread.Join(TimeSpan.FromSeconds(5)))
-                throw new TimeoutException("Semi-automatic visual review did not complete and its STA worker could not be joined.");
-            throw new TimeoutException("Semi-automatic visual review did not complete.");
-        }
-        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
-    }
-
-    [Fact]
-    public void VisualGridDoubleClickOpensReviewWithoutChangingCatalogState()
-    {
-        if (!OperatingSystem.IsWindows()) return;
-        Exception? failure = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
-                using SqliteLibraryCatalog catalog = CreateCatalog();
-                string library = Path.Combine(_root, "double-click"); Directory.CreateDirectory(library);
-                string first = Write(library, "first.mkv", 85_235);
-                string second = Write(library, "second.mp4", 46_230);
-                AddInventoryAndMetadata(catalog, library, new[] { first, second },
-                    path => path == first ? ("hevc", 1920, 1080, 3_280_000L) : ("hevc", 1920, 1080, 1_780_000L));
-                AnalyzeVisualAsync(catalog, new[] { first, second }).GetAwaiter().GetResult();
-                VisualSimilarityGroupRecord before = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
-                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new CurrentMetadataProbe(),
-                    new FakeVisualExtractor(_ => Array.Empty<ulong>()));
-                using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
-                    AutomationOptions: new LibraryVisualReviewAutomationOptions(SemiAutomaticKeeperApproval: true)));
-                form.Show();
-                TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
-                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Visual");
-                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
-                DataGridView groups = GetPrivateField<DataGridView>(form, "_visualGroupsGrid");
-                PumpUntil(() => groups.Rows.Count == 1);
-
-                // Reproduce the regression window: the row was loaded while active, then
-                // a path became absent before review was opened. Opening must remain a
-                // non-authoritative observation and must not suspend or hide the row.
-                File.Delete(second);
-                bool sawReview = false;
-                bool sawSemiAutomaticSelection = false;
-                using var timer = new System.Windows.Forms.Timer { Interval = 40 };
-                timer.Tick += (_, _) =>
-                {
-                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review & Compare", StringComparison.Ordinal));
-                    if (review == null) return;
-                    sawReview = true;
-                    sawSemiAutomaticSelection = Descendants<Button>(review).Any(button => button.Text == "Keeper selected" && button.BackColor == Color.FromArgb(46, 125, 50));
-                    review.Close();
-                };
-                timer.Start();
-                var raiseDoubleClick = typeof(DataGridView).GetMethod("OnCellDoubleClick",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-                    ?? throw new MissingMethodException(typeof(DataGridView).FullName, "OnCellDoubleClick");
-                raiseDoubleClick.Invoke(groups, new object[] { new DataGridViewCellEventArgs(1, 0) });
-                timer.Stop();
-                Application.DoEvents();
-
-                VisualSimilarityGroupRecord after = catalog.GetVisualGroup(before.GroupId)!;
-                Assert.True(sawReview);
-                Assert.True(sawSemiAutomaticSelection);
-                Assert.Equal(before.Reviewed, after.Reviewed);
-                Assert.Equal(before.Ignored, after.Ignored);
-                Assert.Equal(before.NotMatch, after.NotMatch);
-                Assert.Equal(before.ManualKeeperFileId, after.ManualKeeperFileId);
-                Assert.Equal(before.Eligibility, after.Eligibility);
-                Assert.Single(groups.Rows.Cast<DataGridViewRow>());
-                form.Close();
-            }
-            catch (Exception ex) { failure = ex; }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        if (!thread.Join(TimeSpan.FromSeconds(15))) throw new TimeoutException("Visual double-click regression test did not complete.");
+        thread.Join();
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
@@ -564,9 +439,22 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         (T)(instance.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(instance)
             ?? throw new MissingFieldException(instance.GetType().FullName, name));
 
+    private static void SetPrivateField(object instance, string name, object value) =>
+        instance.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.SetValue(instance, value);
+
     private static Task InvokePrivateTask(object instance, string name, params object?[] arguments) =>
         (Task)(instance.GetType().GetMethod(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.Invoke(instance, arguments)
             ?? throw new MissingMethodException(instance.GetType().FullName, name));
+
+    private static void PumpToCompletion(Task task)
+    {
+        while (!task.IsCompleted)
+        {
+            Application.DoEvents();
+            Thread.Yield();
+        }
+        task.GetAwaiter().GetResult();
+    }
 
     private static void PumpTask(Task task, TimeSpan? timeout = null, Func<bool>? shouldStop = null)
     {

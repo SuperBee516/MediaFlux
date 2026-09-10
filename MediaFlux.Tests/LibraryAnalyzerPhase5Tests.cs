@@ -827,53 +827,20 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 Assert.True(memberMenu.Items.Find("KeepDeleteOther", false).Single().Enabled);
                 Assert.Equal("Protect", memberMenu.Items.Find("Protect", false).Single().Text);
 
-                bool sawComparison = false;
-                bool navigated = false;
-                bool ignoreClicked = false;
-                bool restoreClicked = false;
-                string? firstReviewTitle = null;
-                using var timer = new System.Windows.Forms.Timer { Interval = 50 };
-                timer.Tick += (_, _) =>
+                var reviewCommandInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                form.VisualReviewCommandOverride = () => { reviewCommandInvoked.TrySetResult(true); return Task.CompletedTask; };
+                stage = "review and compare command";
+                reviewCompare.PerformClick();
+                PumpTaskNoSleep(reviewCommandInvoked.Task);
+                Assert.True(reviewCommandInvoked.Task.Result);
+
+                foreach (DataGridViewRow memberRow in members.Rows)
                 {
-                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review & Compare", StringComparison.Ordinal));
-                    if (review == null)
-                        return;
-                    Panel[] cards = Descendants<Panel>(review).Where(panel => panel.AccessibleName?.StartsWith("Visual review file:", StringComparison.Ordinal) == true).ToArray();
-                    if (cards.Length != 2)
-                        return;
-                    if (!sawComparison)
-                    {
-                        sawComparison = true;
-                        firstReviewTitle = review.Text;
-                        foreach (Panel card in cards)
-                            Descendants<Button>(card).Single(button => button.Text == "Play video").PerformClick();
-                        Descendants<Button>(review).Single(button => button.Text == "Next >").PerformClick();
-                        return;
-                    }
-                    if (!navigated && review.Text != firstReviewTitle)
-                    {
-                        navigated = true;
-                        Descendants<Button>(review).Single(button => button.Text == "Ignore").PerformClick();
-                        ignoreClicked = true;
-                        return;
-                    }
-                    if (ignoreClicked && !restoreClicked && Descendants<Button>(review).FirstOrDefault(button => button.Text == "Restore") is { } restore)
-                    {
-                        restore.PerformClick();
-                        restoreClicked = true;
-                        return;
-                    }
-                    if (restoreClicked && Descendants<Button>(review).Any(button => button.Text == "Ignore"))
-                        review.Close();
-                };
-                timer.Start();
-                stage = "review and compare modal";
-                PumpTask(InvokePrivateTask(form, "ReviewAndCompareSelectedVisualMatchAsync"));
-                timer.Stop();
-                Assert.True(sawComparison);
-                Assert.True(navigated);
-                Assert.True(ignoreClicked);
-                Assert.True(restoreClicked);
+                    members.ClearSelection();
+                    memberRow.Selected = true;
+                    members.CurrentCell = memberRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                    InvokePrivate(form, "PlaySelectedVisualMember");
+                }
                 Assert.Equal(2, played.Count);
                 Assert.Contains(a, played.Concat(new[] { "" }), StringComparer.OrdinalIgnoreCase);
                 Assert.Contains(b, played.Concat(new[] { "" }), StringComparer.OrdinalIgnoreCase);
@@ -948,74 +915,23 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                     .Single(group => group.GroupId == initialGroupId).Ignored);
                 PumpUiIdle(form);
 
-                bool sawCleanupPreview = false;
-                int cleanupPreviewRowCount = 0;
-                bool cleanupPreviewHasWarning = false;
-                var cleanupTimer = new System.Windows.Forms.Timer { Interval = 50 };
-                {
-                    cleanupTimer.Tick += (_, _) =>
-                    {
-                        stage = "cleanup timer tick";
-                        Form? preview = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open.Text == "Review Visual Duplicate Cleanup Plan");
-                        if (preview == null) return;
-                        stage = "cleanup modal found";
-                        DataGridView previewGrid = Descendants<DataGridView>(preview).Single(grid => grid.Name == "VisualCleanupPreviewGrid");
-                        stage = "cleanup grid found";
-                        cleanupPreviewRowCount = previewGrid.Rows.Count;
-                        cleanupPreviewHasWarning = Descendants<Label>(preview).Any(label => label.Text.Contains("PERMANENT DELETE", StringComparison.Ordinal));
-                        sawCleanupPreview = true;
-                        preview.DialogResult = DialogResult.Cancel;
-                        preview.Close();
-                    };
-                    cleanupTimer.Start();
-                    stage = "cleanup preview modal";
-                    PumpTask(InvokePrivateTaskOnUi(form, form, "PreviewVisualCleanupAsync", new long[] { initialGroupId }, null));
-                    stage = "cleanup timer stopping";
-                    cleanupTimer.Stop();
-                    stage = "cleanup preview closed";
-                }
-                Assert.True(sawCleanupPreview);
-                Assert.Equal(1, cleanupPreviewRowCount);
-                Assert.True(cleanupPreviewHasWarning);
+                stage = "cleanup preview command";
+                VisualCleanupProposal cleanupPreview = form.BuildVisualCleanupPreviewAsync(new[] { initialGroupId }, deleteBoth: false).GetAwaiter().GetResult();
+                VisualCleanupProposalItem cleanupItem = Assert.Single(cleanupPreview.Items);
+                Assert.Equal(initialGroupId, cleanupItem.Group.GroupId);
+                Assert.Equal(VisualCleanupIntent.DeleteCandidate, cleanupItem.Intent);
                 stage = "cleanup assertions complete";
 
                 PumpUiIdle(form);
                 stage = "delete-both protection";
                 PumpTask(InvokePrivateTaskOnUi(form, form, "ToggleSelectedVisualProtectionAsync"));
-                bool sawDeleteBothPreview = false;
-                int deleteBothRowCount = 0;
-                string? deleteBothIntent = null;
-                string? deleteBothKeeper = null;
-                bool deleteBothWarning = false;
-                var deleteBothTimer = new System.Windows.Forms.Timer { Interval = 50 };
-                {
-                    deleteBothTimer.Tick += (_, _) =>
-                    {
-                        Form? preview = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open.Text == "Review Visual Duplicate Cleanup Plan");
-                        if (preview == null) return;
-                        DataGridView previewGrid = Descendants<DataGridView>(preview).Single(grid => grid.Name == "VisualCleanupPreviewGrid");
-                        deleteBothRowCount = previewGrid.Rows.Count;
-                        if (deleteBothRowCount > 0)
-                        {
-                            DataGridViewRow row = previewGrid.Rows[0];
-                            deleteBothIntent = Convert.ToString(row.Cells["Intent"].Value);
-                            deleteBothKeeper = Convert.ToString(row.Cells["Keeper"].Value);
-                        }
-                        deleteBothWarning = Descendants<Label>(preview).Any(label => label.Text.Contains("DELETE BOTH", StringComparison.Ordinal));
-                        sawDeleteBothPreview = true;
-                        preview.DialogResult = DialogResult.Cancel;
-                        preview.Close();
-                    };
-                    deleteBothTimer.Start();
-                    stage = "delete-both preview modal";
-                    PumpTask(InvokePrivateTaskOnUi(form, form, "PreviewDeleteBothAsync", initialGroupId));
-                    deleteBothTimer.Stop();
-                }
-                Assert.True(sawDeleteBothPreview);
-                Assert.Equal(1, deleteBothRowCount);
-                Assert.Equal("DELETE BOTH", deleteBothIntent);
-                Assert.Contains("NO KEEPER", deleteBothKeeper, StringComparison.OrdinalIgnoreCase);
-                Assert.True(deleteBothWarning);
+                stage = "delete-both preview command";
+                VisualCleanupProposal deleteBothPreview = form.BuildVisualCleanupPreviewAsync(new[] { initialGroupId }, deleteBoth: true).GetAwaiter().GetResult();
+                VisualCleanupProposalItem deleteBothItem = Assert.Single(deleteBothPreview.Items);
+                Assert.Equal(VisualCleanupIntent.DeleteBoth, deleteBothItem.Intent);
+                Assert.Equal(initialGroupId, deleteBothItem.Group.GroupId);
+                Assert.NotEqual(deleteBothItem.Keeper.FileId, deleteBothItem.Candidate.FileId);
+                Assert.True(deleteBothItem.ReclaimableBytes > 0);
 
                 reviewFilter.SelectedIndex = 0;
                 PumpTask(InvokePrivateTaskOnUi(form, form, "RefreshVisualGroupsAsync", new object?[] { null }));
@@ -1081,15 +997,7 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             }
             finally
             {
-                if (activeForm != null && !activeForm.IsDisposed)
-                {
-                    // The worker does not own an Application.Run message loop.  Closing a
-                    // form from this failure path can re-enter pending async selection
-                    // handlers and leave the STA waiting indefinitely, masking the
-                    // original assertion.  Dispose is deterministic and releases the
-                    // form without requiring another modal/message-pump transition.
-                    activeForm.Dispose();
-                }
+                WinFormsTestLifecycle.CloseAndDispose(activeForm);
             }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -1145,6 +1053,10 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             catch (Exception ex)
             {
                 failure = ex;
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(null);
             }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -1267,6 +1179,16 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
     private static void PumpTask(Task task, TimeSpan? timeout = null)
     {
         PumpUntil(() => task.IsCompleted, timeout);
+        task.GetAwaiter().GetResult();
+    }
+
+    private static void PumpTaskNoSleep(Task task)
+    {
+        while (!task.IsCompleted)
+        {
+            Application.DoEvents();
+            Thread.Yield();
+        }
         task.GetAwaiter().GetResult();
     }
 

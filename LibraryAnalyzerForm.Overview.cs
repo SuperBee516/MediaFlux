@@ -55,6 +55,10 @@ public sealed partial class LibraryAnalyzerForm
         _overviewCompositionSelector.SelectedIndexChanged += (_, _) => RenderOverviewComposition(_overviewSnapshot);
         _overviewCompositionSelector.AccessibleName = "Library composition measure";
         _overviewCompositionSelector.TabIndex = 0;
+        _overviewGrowthMetricSelector.Items.AddRange(new object[] { "Files", "Size" });
+        _overviewGrowthMetricSelector.SelectedIndex = 0;
+        _overviewGrowthMetricSelector.AccessibleName = "Library growth metric";
+        _overviewGrowthMetricSelector.SelectedIndexChanged += (_, _) => _overviewGrowthChart.Metric = _overviewGrowthMetricSelector.SelectedIndex == 1 ? OverviewGrowthMetric.Size : OverviewGrowthMetric.Files;
         _overviewLocationChart.IsInteractive = true;
         _overviewLocationChart.ItemClicked += (_, index) => NavigateToOverviewLocation(index);
         _overviewToolTip.SetToolTip(_overviewVideosCard, "Indexed video records in the catalog.");
@@ -67,7 +71,7 @@ public sealed partial class LibraryAnalyzerForm
         _overviewVisualLink.Click += (_, _) => NavigateToOverviewTab(5);
         _overviewFamilyLink.Click += (_, _) => NavigateToOverviewTab(6);
         _overviewDuplicateProgress.Click += (_, _) => NavigateToOverviewTab(4);
-        _overviewHealthSummary.Click += (_, _) => NavigateToOverviewTab(7);
+        MakeOverviewInteractive(_overviewHealthSummary, () => NavigateToOverviewTab(7));
         _overviewToolTip.SetToolTip(_overviewExactLink, "Open Exact Duplicates.");
         _overviewToolTip.SetToolTip(_overviewVisualLink, "Open Visual Duplicates.");
         _overviewToolTip.SetToolTip(_overviewFamilyLink, "Open Duplicate Families.");
@@ -88,10 +92,10 @@ public sealed partial class LibraryAnalyzerForm
 
     private Control BuildDuplicatePanel()
     {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(4) };
-        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 33)); panel.RowStyles.Add(new RowStyle(SizeType.Percent, 33)); panel.RowStyles.Add(new RowStyle(SizeType.Percent, 34)); panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 25)); panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
-        panel.Controls.Add(_overviewExactLink, 0, 0); panel.Controls.Add(_overviewVisualLink, 0, 1); panel.Controls.Add(_overviewFamilyLink, 0, 2); panel.Controls.Add(_overviewDuplicateProgress, 0, 3);
-        panel.Controls.Add(new Label { Text = "Reclaimable space follows existing keeper and review decisions.", AutoEllipsis = true, Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(8, 2, 8, 2) }, 0, 4);
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(4) };
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 22)); panel.RowStyles.Add(new RowStyle(SizeType.Percent, 22)); panel.RowStyles.Add(new RowStyle(SizeType.Percent, 22)); panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 23)); panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 8)); panel.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
+        panel.Controls.Add(_overviewExactLink, 0, 0); panel.Controls.Add(_overviewVisualLink, 0, 1); panel.Controls.Add(_overviewFamilyLink, 0, 2); panel.Controls.Add(_overviewDuplicateProgress, 0, 3); panel.Controls.Add(_overviewDuplicateProgressBar, 0, 4);
+        panel.Controls.Add(new Label { Text = "Reclaimable space follows existing keeper and review decisions.", AutoEllipsis = true, Dock = DockStyle.Fill, ForeColor = DashboardVisuals.MutedText, Padding = new Padding(8, 2, 8, 2) }, 0, 5);
         return panel;
     }
 
@@ -100,7 +104,7 @@ public sealed partial class LibraryAnalyzerForm
         var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(4) };
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
         panel.Controls.Add(_overviewHealthSummary, 0, 0);
-        panel.Controls.Add(new Label { Text = "Detailed recovery and decision history remain in Health & Recovery.", Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(8, 2, 8, 2), AutoEllipsis = true }, 0, 1);
+        panel.Controls.Add(new Label { Text = "Detailed recovery and decision history remain in Health & Recovery.", Dock = DockStyle.Fill, ForeColor = DashboardVisuals.MutedText, Padding = new Padding(8, 2, 8, 2), AutoEllipsis = true }, 0, 1);
         return panel;
     }
 
@@ -117,20 +121,22 @@ public sealed partial class LibraryAnalyzerForm
 
     private Control BuildGrowthPanel()
     {
-        var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4) };
-        panel.Controls.Add(_overviewGrowthChart); panel.Controls.Add(_overviewGrowthEmpty); return panel;
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(4) };
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 21));
+        var header = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(4, 0, 0, 0) };
+        _overviewGrowthMetricSelector.Width = 86;
+        header.Controls.Add(_overviewGrowthMetricSelector);
+        panel.Controls.Add(header, 0, 0);
+        var chartHost = new Panel { Dock = DockStyle.Fill };
+        chartHost.Controls.Add(_overviewGrowthChart); chartHost.Controls.Add(_overviewGrowthEmpty);
+        panel.Controls.Add(chartHost, 0, 1); panel.Controls.Add(_overviewGrowthSummary, 0, 2); return panel;
     }
 
-    private static Control CreateOverviewPanel(string title, Control content)
-    {
-        var panel = new Panel { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Padding = new Padding(1), Margin = new Padding(3), BackColor = SystemColors.Window };
-        var heading = new Label { Text = title, Dock = DockStyle.Top, Height = 27, Font = new Font("Segoe UI Semibold", 9F), ForeColor = LibraryAnalyzerAccentColor, Padding = new Padding(8, 5, 4, 2), AutoEllipsis = true };
-        panel.Controls.Add(content); panel.Controls.Add(heading); return panel;
-    }
+    private static Control CreateOverviewPanel(string title, Control content) => new OverviewDashboardPanel(title, content);
 
     private async Task RefreshOverviewAsync()
     {
-        if (_loadingOverview || IsDisposed) return;
+        if (_loadingOverview || _lifecycleCleanupCompleted || IsDisposed || Disposing) return;
         _loadingOverview = true;
         try
         {
@@ -140,7 +146,7 @@ public sealed partial class LibraryAnalyzerForm
             await Task.WhenAll(snapshotTask, historyTask);
             LibraryOverviewSnapshot snapshot = await snapshotTask;
             IReadOnlyList<LibraryOverviewScanHistoryEntry> history = await historyTask;
-            if (IsDisposed) return;
+            if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
             _overviewSnapshot = snapshot; _overviewHistory = history;
             RenderOverview(snapshot, history);
         }
@@ -164,34 +170,40 @@ public sealed partial class LibraryAnalyzerForm
         bool scanning = _scanning || snapshot.ActiveScanCount > 0;
         bool enriching = !scanning && (snapshot.PendingEnrichmentCount > 0 || _runtime.Enrichment.IsRunning);
         bool warning = snapshot.Health.UnavailableLocations > 0 || snapshot.Health.ErrorLocations > 0 || snapshot.Health.MissingFiles > 0 || snapshot.Health.MetadataFailures > 0 || snapshot.Health.IntegrityWarnings > 0 || snapshot.Health.IntegrityFailures > 0;
-        string state = scanning ? "Scanning" : enriching ? "Enriching" : warning ? "Attention needed" : "Healthy · Idle";
-        _overviewHealthState.Text = state; _overviewHealthState.ForeColor = scanning ? LibraryAnalyzerAccentColor : warning ? Color.DarkOrange : Color.SeaGreen;
+        OverviewStatusPresentation presentation = GetOverviewStatusPresentation(scanning, enriching, warning);
+        _overviewHealthState.SetState(presentation.Text, presentation.Kind);
         _overviewHeaderSummary.Text = snapshot.LastCompletedScanUtc.HasValue ? $"{snapshot.IndexedVideoCount:N0} indexed videos · Last completed scan {snapshot.LastCompletedScanUtc.Value.ToLocalTime():g}" : "No completed scan yet · Add a location and scan to build the catalog";
         _overviewVideosCard.SetValue(snapshot.IndexedVideoCount.ToString("N0"), $"{snapshot.Locations.Count(x => x.FileCount > 0):N0} locations with files");
         _overviewSizeCard.SetValue(FormatBytes(snapshot.LogicalSizeBytes), snapshot.IndexedVideoCount == 0 ? "No indexed media" : $"{FormatBytes(snapshot.LogicalSizeBytes / Math.Max(1, snapshot.IndexedVideoCount))} average");
         long duplicateSets = snapshot.Duplicates.ExactGroups + snapshot.Duplicates.VisualGroups + snapshot.Duplicates.FamilyGroups;
         long affectedFiles = snapshot.Duplicates.ExactAffectedFiles + snapshot.Duplicates.VisualAffectedFiles + snapshot.Duplicates.FamilyAffectedFiles;
         _overviewDuplicatesCard.SetValue(duplicateSets.ToString("N0"), $"{affectedFiles:N0} category totals · overlap possible");
-        _overviewReclaimCard.SetValue(FormatBytes(snapshot.Duplicates.EstimatedReclaimableBytes), snapshot.LogicalSizeBytes > 0 ? $"{snapshot.Duplicates.EstimatedReclaimableBytes * 100d / snapshot.LogicalSizeBytes:0.#}% of library" : "No reclaimable estimate");
-        _overviewExactLink.Text = $"Exact duplicates  ·  {snapshot.Duplicates.ExactGroups:N0} sets · {snapshot.Duplicates.ExactAffectedFiles:N0} affected files";
-        _overviewVisualLink.Text = $"Visual duplicates  ·  {snapshot.Duplicates.VisualGroups:N0} groups · {snapshot.Duplicates.VisualAffectedFiles:N0} affected files";
-        _overviewFamilyLink.Text = $"Duplicate families  ·  {snapshot.Duplicates.FamilyGroups:N0} groups · {snapshot.Duplicates.FamilyAffectedFiles:N0} affected files";
+        double reclaimablePercent = snapshot.LogicalSizeBytes > 0 ? snapshot.Duplicates.EstimatedReclaimableBytes * 100d / snapshot.LogicalSizeBytes : 0;
+        _overviewReclaimCard.SetValue(FormatBytes(snapshot.Duplicates.EstimatedReclaimableBytes), snapshot.LogicalSizeBytes > 0 ? $"{reclaimablePercent:0.#}% of library" : "No reclaimable estimate");
+        _overviewReclaimCard.ProgressPercent = reclaimablePercent;
+        _overviewExactLink.Text = $"Exact duplicates      {snapshot.Duplicates.ExactGroups:N0} sets · {snapshot.Duplicates.ExactAffectedFiles:N0} files";
+        _overviewVisualLink.Text = $"Visual duplicates     {snapshot.Duplicates.VisualGroups:N0} groups · {snapshot.Duplicates.VisualAffectedFiles:N0} files";
+        _overviewFamilyLink.Text = $"Duplicate families    {snapshot.Duplicates.FamilyGroups:N0} groups · {snapshot.Duplicates.FamilyAffectedFiles:N0} files";
         SetOverviewLinkState(_overviewExactLink, snapshot.Duplicates.ExactGroups > 0);
         SetOverviewLinkState(_overviewVisualLink, snapshot.Duplicates.VisualGroups > 0);
         SetOverviewLinkState(_overviewFamilyLink, snapshot.Duplicates.FamilyGroups > 0);
-        long reviewed = snapshot.Duplicates.ReviewedGroups, totalReviewed = reviewed + snapshot.Duplicates.UnreviewedGroups;
-        _overviewDuplicateProgress.Text = totalReviewed == 0 ? "Review Duplicates  ·  No duplicate groups are available yet" : $"Review Duplicates  ·  Reviewed {reviewed:N0} of {totalReviewed:N0} category sets ({reviewed * 100d / totalReviewed:0.#}%)";
-        SetOverviewLinkState(_overviewDuplicateProgress, totalReviewed > 0);
-        _overviewHealthSummary.Text = $"Locations  {snapshot.ConfiguredLocationCount:N0} configured · {snapshot.AvailableLocationCount:N0} available · {snapshot.UnavailableLocationCount:N0} unavailable\r\nEnrichment  {snapshot.PendingEnrichmentCount:N0} pending · {snapshot.Health.MetadataFailures:N0} failed\r\nCatalog attention  {snapshot.Health.MissingFiles:N0} missing · {snapshot.Health.IntegrityWarnings + snapshot.Health.IntegrityFailures:N0} integrity warnings/errors";
-        SetOverviewLinkState(_overviewHealthSummary, warning);
+        OverviewReviewProgress review = CalculateReviewProgress(snapshot.Duplicates.ReviewedGroups, snapshot.Duplicates.UnreviewedGroups);
+        _overviewDuplicateProgress.Text = review.Total == 0 ? "Review duplicates  ·  No duplicate groups are available yet" : $"Review duplicates  ·  Reviewed {review.Reviewed:N0} / {review.Total:N0} ({review.Percent:0.#}%)";
+        _overviewDuplicateProgressBar.Percent = review.Percent;
+        SetOverviewLinkState(_overviewDuplicateProgress, review.Total > 0);
+        RenderOverviewHealth(snapshot);
+        _overviewHealthSummary.Cursor = warning ? Cursors.Hand : Cursors.Default;
         _overviewHealthSummary.TabStop = warning;
         _overviewLocationIds = snapshot.Locations.Select(x => x.LocationId).ToArray();
-        _overviewLocationChart.SetData(snapshot.Locations.Select(x => new OverviewBarItem(Path.GetFileName(x.Path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), x.LogicalSizeBytes, $"{x.FileCount:N0} files · {FormatBytes(x.LogicalSizeBytes)}")).ToArray());
+        _overviewLocationChart.SetData(snapshot.Locations.Select(x => new OverviewBarItem(Path.GetFileName(x.Path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), x.LogicalSizeBytes, $"{x.FileCount:N0} files · {FormatBytes(x.LogicalSizeBytes)}", x.FileCount == 0 ? x.Path : $"{x.Path} · {FormatBytes(x.LogicalSizeBytes / x.FileCount)} average file")).ToArray());
         RenderOverviewComposition(snapshot);
         IReadOnlyList<LibraryOverviewScanHistoryEntry> recentHistory = history.Where(x => x.CompletedUtc >= DateTime.UtcNow.AddDays(-30)).OrderBy(x => x.CompletedUtc).ToArray();
-        _overviewGrowthChart.SetData(recentHistory.Select(x => new OverviewPoint(x.CompletedUtc, x.IndexedVideoCount, x.LogicalSizeBytes)).ToArray());
+        OverviewPoint[] growthPoints = recentHistory.Select(x => new OverviewPoint(x.CompletedUtc, x.IndexedVideoCount, x.LogicalSizeBytes)).ToArray();
+        _overviewGrowthChart.SetData(growthPoints);
         _overviewGrowthChart.Visible = recentHistory.Count > 1; _overviewGrowthEmpty.Visible = recentHistory.Count <= 1;
         _overviewGrowthEmpty.Text = history.Count == 0 ? "History will appear after completed scans." : recentHistory.Count == 0 ? "No completed scans in the last 30 days." : "Run another completed scan to show the 30-day trend.";
+        _overviewGrowthSummary.Text = BuildGrowthSummary(growthPoints);
+        _overviewToolTip.SetToolTip(_overviewGrowthChart, BuildGrowthSummary(growthPoints));
         RenderOverviewInsights(snapshot.Insights);
     }
 
@@ -265,52 +277,189 @@ public sealed partial class LibraryAnalyzerForm
         _overviewCompositionChart.SetData(data.Select(x => new OverviewBarItem(x.Label, x.FileCount, $"{x.FileCount:N0} files · {FormatBytes(x.LogicalSizeBytes)}")).ToArray());
     }
 
+    private static string BuildGrowthSummary(IReadOnlyList<OverviewPoint> points)
+    {
+        if (points.Count == 0) return "No completed scan history is available.";
+        OverviewPoint current = points[^1];
+        if (points.Count == 1) return $"{current.When.ToLocalTime():g}: {current.Files:N0} files · {FormatBytes(current.Bytes)}";
+        OverviewPoint previous = points[^2];
+        return $"{current.When.ToLocalTime():g}: {current.Files:N0} files · {FormatBytes(current.Bytes)} | {current.Files - previous.Files:+#;-#;0} files · {FormatBytes(Math.Abs(current.Bytes - previous.Bytes))} {(current.Bytes >= previous.Bytes ? "added" : "removed")} since previous scan";
+    }
+
     private void RenderOverviewInsights(LibraryOverviewInsight insight)
     {
-        _overviewInsights.SuspendLayout(); _overviewInsights.Controls.Clear(); _overviewInsights.RowStyles.Clear(); _overviewInsights.RowCount = 0;
-        string[][] rows = { new[] { "Largest file", insight.LargestFileBytes.HasValue ? $"{FormatBytes(insight.LargestFileBytes.Value)}\r\n{Path.GetFileName(insight.LargestFilePath)}" : "Unavailable", }, new[] { "Average size", insight.AverageFileBytes.HasValue ? FormatBytes((long)insight.AverageFileBytes.Value) : "Unavailable" }, new[] { "Longest video", insight.LongestDurationSeconds.HasValue ? $"{FormatDuration(insight.LongestDurationSeconds.Value)}\r\n{Path.GetFileName(insight.LongestDurationPath)}" : "Unavailable" }, new[] { "Average bitrate", insight.AverageBitrate.HasValue ? $"{insight.AverageBitrate.Value / 1_000_000d:0.##} Mbps" : "Unavailable" }, new[] { "Typical media", string.IsNullOrWhiteSpace(insight.MostCommonCodec) ? "Unavailable" : $"{insight.MostCommonCodec} · {insight.MostCommonResolution}" } };
-        for (int i = 0; i < rows.Length; i++) { _overviewInsights.RowStyles.Add(new RowStyle(SizeType.Percent, 25)); _overviewInsights.Controls.Add(new Label { Text = rows[i][0], Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(2, 4, 2, 2), AutoEllipsis = true }, 0, i); _overviewInsights.Controls.Add(new Label { Text = rows[i][1], Dock = DockStyle.Fill, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(2, 4, 2, 2), AutoEllipsis = true }, 1, i); }
-        _overviewInsights.RowCount = rows.Length; _overviewInsights.ResumeLayout();
+        _overviewInsights.SuspendLayout();
+        foreach (Control child in _overviewInsights.Controls.Cast<Control>().ToArray()) child.Dispose();
+        _overviewInsights.Controls.Clear(); _overviewInsights.RowStyles.Clear(); _overviewInsights.RowCount = 5; _overviewInsights.ColumnCount = 2;
+        _overviewInsights.ColumnStyles.Clear(); _overviewInsights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34)); _overviewInsights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 66));
+        AddInsightMetric(0, "Largest file", insight.LargestFileBytes.HasValue ? FormatBytes((long)insight.LargestFileBytes.Value) : "Unavailable", insight.LargestFileBytes.HasValue ? insight.LargestFilePath : null);
+        AddInsightMetric(1, "Average size", insight.AverageFileBytes.HasValue ? FormatBytes((long)insight.AverageFileBytes.Value) : "Unavailable", null);
+        AddInsightMetric(2, "Longest video", insight.LongestDurationSeconds.HasValue ? FormatDuration(insight.LongestDurationSeconds.Value) : "Unavailable", insight.LongestDurationSeconds.HasValue ? insight.LongestDurationPath : null);
+        AddInsightMetric(3, "Average bitrate", insight.AverageBitrate.HasValue ? $"{insight.AverageBitrate.Value / 1_000_000d:0.##} Mbps" : "Unavailable", null);
+        AddInsightMetric(4, "Typical media", string.IsNullOrWhiteSpace(insight.MostCommonCodec) ? "Unavailable" : insight.MostCommonCodec, string.IsNullOrWhiteSpace(insight.MostCommonResolution) ? null : insight.MostCommonResolution);
+        _overviewInsights.ResumeLayout(true);
+    }
+
+    private void AddInsightMetric(int row, string label, string value, string? secondary)
+    {
+        _overviewInsights.RowStyles.Add(new RowStyle(SizeType.Percent, 20));
+        _overviewInsights.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, ForeColor = DashboardVisuals.MutedText, Padding = new Padding(2, 4, 4, 2), AutoEllipsis = true, AutoSize = false }, 0, row);
+        bool hasSecondary = !string.IsNullOrWhiteSpace(secondary);
+        var valuePanel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = false, ColumnCount = 1, RowCount = hasSecondary ? 2 : 1, Padding = new Padding(2, 2, 2, 1), Margin = Padding.Empty };
+        valuePanel.RowStyles.Clear();
+        valuePanel.RowStyles.Add(new RowStyle(SizeType.Percent, hasSecondary ? 55 : 100));
+        if (hasSecondary) valuePanel.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+        var primary = new Label { Text = value, Dock = DockStyle.Fill, AutoSize = false, Font = new Font(Font, FontStyle.Bold), AutoEllipsis = true, UseMnemonic = false, TextAlign = ContentAlignment.MiddleLeft };
+        valuePanel.Controls.Add(primary, 0, 0);
+        if (hasSecondary)
+        {
+            var secondaryLabel = new Label { Text = Path.GetFileName(secondary!), Dock = DockStyle.Fill, AutoSize = false, ForeColor = DashboardVisuals.MutedText, AutoEllipsis = true, UseMnemonic = false, TextAlign = ContentAlignment.MiddleLeft };
+            _overviewToolTip.SetToolTip(secondaryLabel, secondary); valuePanel.Controls.Add(secondaryLabel, 0, 1); _overviewToolTip.SetToolTip(primary, $"{value} · {secondary}");
+        }
+        _overviewInsights.Controls.Add(valuePanel, 1, row);
+    }
+
+    private void RenderOverviewHealth(LibraryOverviewSnapshot snapshot)
+    {
+        _overviewHealthSummary.SuspendLayout();
+        foreach (Control child in _overviewHealthSummary.Controls.Cast<Control>().ToArray())
+            child.Dispose();
+        _overviewHealthSummary.Controls.Clear(); _overviewHealthSummary.RowStyles.Clear(); _overviewHealthSummary.RowCount = 3;
+        _overviewHealthSummary.RowStyles.Add(new RowStyle(SizeType.Percent, 33)); _overviewHealthSummary.RowStyles.Add(new RowStyle(SizeType.Percent, 33)); _overviewHealthSummary.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
+        bool locationWarning = snapshot.UnavailableLocationCount > 0;
+        bool enrichmentWarning = snapshot.PendingEnrichmentCount > 0 || snapshot.Health.MetadataFailures > 0;
+        bool catalogWarning = snapshot.Health.MissingFiles > 0 || snapshot.Health.IntegrityWarnings > 0 || snapshot.Health.IntegrityFailures > 0;
+        AddHealthRow(0, "Locations", locationWarning ? $"⚠ {snapshot.AvailableLocationCount:N0} available · {snapshot.UnavailableLocationCount:N0} unavailable" : $"✓ {snapshot.AvailableLocationCount:N0} available");
+        AddHealthRow(1, "Enrichment", enrichmentWarning ? $"⚠ {snapshot.PendingEnrichmentCount:N0} pending · {snapshot.Health.MetadataFailures:N0} failed" : "✓ No pending work");
+        AddHealthRow(2, "Catalog", catalogWarning ? $"⚠ {snapshot.Health.MissingFiles:N0} missing · {snapshot.Health.IntegrityWarnings + snapshot.Health.IntegrityFailures:N0} integrity warnings" : "✓ No integrity warnings");
+        _overviewHealthSummary.ResumeLayout();
+    }
+
+    private void AddHealthRow(int row, string label, string value)
+    {
+        var line = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(4, 1, 4, 1) };
+        line.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34)); line.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 66));
+        line.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, ForeColor = DashboardVisuals.MutedText, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+        bool warning = value.Contains('⚠'); var status = new Label { Text = value, Dock = DockStyle.Fill, ForeColor = warning ? DashboardVisuals.Warning : Color.SeaGreen, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, AccessibleName = $"{label}: {value}" };
+        line.Controls.Add(status, 1, 0); _overviewHealthSummary.Controls.Add(line, 0, row);
+    }
+
+    internal static OverviewReviewProgress CalculateReviewProgress(long reviewed, long unreviewed) => new(Math.Max(0, reviewed), Math.Max(0, reviewed) + Math.Max(0, unreviewed));
+    internal static OverviewStatusPresentation GetOverviewStatusPresentation(bool scanning, bool enriching, bool warning) => scanning ? new("◷ Scanning", OverviewStatusKind.Info) : enriching ? new("• Enriching", OverviewStatusKind.Info) : warning ? new("⚠ Attention needed", OverviewStatusKind.Warning) : new("✓ Library healthy", OverviewStatusKind.Success);
+}
+
+internal sealed class OverviewMetricCard : Panel
+{
+    private readonly string _title;
+    private readonly Label _label;
+    private readonly Label _value;
+    private readonly Label _secondary;
+    private double _progressPercent;
+
+    public OverviewMetricCard(string title)
+    {
+        _title = title; AccessibleName = title; AccessibleRole = AccessibleRole.Grouping; TabStop = false;
+        Margin = new Padding(3); Padding = new Padding(10, 8, 10, 8); BackColor = SystemColors.Window;
+        _label = new Label { Text = title, Dock = DockStyle.Top, Height = 19, ForeColor = DashboardVisuals.MutedText, Font = DashboardVisuals.LabelFont, AutoEllipsis = true };
+        _value = new Label { Dock = DockStyle.Top, Height = 34, ForeColor = DashboardVisuals.PrimaryText, Font = DashboardVisuals.MetricFont, AutoEllipsis = true };
+        _secondary = new Label { Dock = DockStyle.Fill, ForeColor = DashboardVisuals.MutedText, Padding = new Padding(0, 2, 0, 0), AutoEllipsis = true };
+        Controls.Add(_secondary); Controls.Add(_value); Controls.Add(_label);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+    }
+
+    public double ProgressPercent { get => _progressPercent; set { _progressPercent = Math.Clamp(value, 0, 100); Invalidate(); } }
+    public void SetValue(string value, string secondary) { _value.Text = value; _secondary.Text = secondary; }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        DashboardVisuals.DrawCard(e.Graphics, ClientRectangle, _title == "Reclaimable space" ? DashboardVisuals.Warning : DashboardVisuals.Accent);
+        if (_title == "Reclaimable space") DashboardVisuals.DrawProgress(e.Graphics, new Rectangle(10, Height - 12, Math.Max(0, Width - 20), 4), _progressPercent, DashboardVisuals.Warning);
     }
 }
 
-internal sealed class OverviewMetricCard : AnalyzerMetricCard
-{
-    public OverviewMetricCard(string title) : base(title) { }
-}
-
-internal readonly record struct OverviewBarItem(string Label, long Value, string Detail);
+internal readonly record struct OverviewBarItem(string Label, long Value, string Detail, string? ExtraDetail = null);
 internal readonly record struct OverviewPoint(DateTime When, long Files, long Bytes);
+internal enum OverviewGrowthMetric { Files, Size }
+internal readonly record struct OverviewReviewProgress(long Reviewed, long Total)
+{
+    public double Percent => Total <= 0 ? 0 : Reviewed * 100d / Total;
+}
+internal readonly record struct OverviewStatusPresentation(string Text, OverviewStatusKind Kind);
 
 internal sealed class OverviewBarChart : Control
 {
     private IReadOnlyList<OverviewBarItem> _items = Array.Empty<OverviewBarItem>();
     private readonly ToolTip _toolTip = new();
-    private int _keyboardIndex;
+    private int _keyboardIndex = -1;
+    private int _hoverIndex = -1;
     private bool _isInteractive;
     public event EventHandler<int>? ItemClicked;
     public bool IsInteractive { get => _isInteractive; set { _isInteractive = value; TabStop = value; if (!value) _keyboardIndex = 0; } }
-    public OverviewBarChart() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); BackColor = SystemColors.Window; }
+    public OverviewBarChart() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); BackColor = SystemColors.Window; AccessibleRole = AccessibleRole.Graphic; }
     public void SetData(IReadOnlyList<OverviewBarItem> items)
     {
         _items = items ?? Array.Empty<OverviewBarItem>();
         _keyboardIndex = Math.Clamp(_keyboardIndex, 0, Math.Max(0, _items.Count - 1));
         Invalidate();
     }
-    protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); int index = HitTest(e.Location); Cursor = IsInteractive && index >= 0 ? Cursors.Hand : Cursors.Default; _toolTip.SetToolTip(this, index >= 0 ? $"{_items[index].Label}: {_items[index].Detail}" : ""); }
-    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); Cursor = Cursors.Default; }
+    protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); int index = HitTest(e.Location); if (_hoverIndex != index) { _hoverIndex = index; Invalidate(); } Cursor = IsInteractive && index >= 0 ? Cursors.Hand : Cursors.Default; _toolTip.SetToolTip(this, index >= 0 ? BuildToolTip(_items[index]) : ""); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hoverIndex = -1; Cursor = Cursors.Default; Invalidate(); }
     protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); if (e.Button == MouseButtons.Left && IsInteractive) { int index = HitTest(e.Location); if (index >= 0) ItemClicked?.Invoke(this, index); } }
-    protected override void OnKeyDown(KeyEventArgs e) { base.OnKeyDown(e); if (!IsInteractive || _items.Count == 0) return; if (e.KeyCode == Keys.Up) { _keyboardIndex = Math.Max(0, _keyboardIndex - 1); e.SuppressKeyPress = true; } else if (e.KeyCode == Keys.Down) { _keyboardIndex = Math.Min(_items.Count - 1, _keyboardIndex + 1); e.SuppressKeyPress = true; } else if (e.KeyCode is Keys.Enter or Keys.Space) { ItemClicked?.Invoke(this, _keyboardIndex); e.SuppressKeyPress = true; } }
-    private int HitTest(Point location) { if (_items.Count == 0) return -1; int rowHeight = Math.Max(22, Height / Math.Max(1, _items.Count)); int index = (location.Y - 3) / rowHeight; return index >= 0 && index < Math.Min(_items.Count, Math.Max(1, Height / rowHeight)) ? index : -1; }
+    protected override void OnKeyDown(KeyEventArgs e) { base.OnKeyDown(e); if (!IsInteractive || _items.Count == 0) return; if (e.KeyCode == Keys.Up) { _keyboardIndex = Math.Max(0, _keyboardIndex - 1); e.SuppressKeyPress = true; Invalidate(); } else if (e.KeyCode == Keys.Down) { _keyboardIndex = Math.Min(_items.Count - 1, _keyboardIndex + 1); e.SuppressKeyPress = true; Invalidate(); } else if (e.KeyCode is Keys.Enter or Keys.Space) { ItemClicked?.Invoke(this, _keyboardIndex); e.SuppressKeyPress = true; } }
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); if (_keyboardIndex < 0 && _items.Count > 0) _keyboardIndex = 0; Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+    private int HitTest(Point location) { if (_items.Count == 0) return -1; int rowHeight = GetRowHeight(); int index = (location.Y - 4) / rowHeight; return index >= 0 && index < Math.Min(_items.Count, Math.Max(1, (Height - 4) / rowHeight)) ? index : -1; }
     protected override void Dispose(bool disposing) { if (disposing) _toolTip.Dispose(); base.Dispose(disposing); }
-    protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; if (_items.Count == 0) { using var empty = new SolidBrush(SystemColors.GrayText); e.Graphics.DrawString("No catalog data yet", Font, empty, new PointF(8, Math.Max(4, Height / 2f - Font.Height / 2f))); return; } long max = Math.Max(1, _items.Max(x => x.Value)); int rowHeight = Math.Max(22, Height / Math.Max(1, _items.Count)); int visible = Math.Min(_items.Count, Math.Max(1, Height / rowHeight)); for (int i = 0; i < visible; i++) { OverviewBarItem item = _items[i]; int y = i * rowHeight + 3; using var text = new SolidBrush(ForeColor); e.Graphics.DrawString(item.Label, Font, text, new RectangleF(4, y, Math.Max(65, Width / 3f), rowHeight - 3)); int left = Math.Max(70, Width / 3); int width = Math.Max(2, Width - left - 8); using var bar = new SolidBrush(Color.FromArgb(80, 145, 195)); e.Graphics.FillRectangle(bar, left, y + 3, (int)(width * (double)item.Value / max), Math.Max(8, rowHeight - 10)); e.Graphics.DrawString(item.Detail, Font, text, new RectangleF(left + 5, y + 3, Math.Max(0, width - 5), rowHeight - 5)); } }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        if (_items.Count == 0) { DashboardVisuals.DrawEmptyState(e.Graphics, ClientRectangle, "No catalog data yet"); return; }
+        long max = Math.Max(1, _items.Max(x => x.Value)); int rowHeight = GetRowHeight(); int visible = Math.Min(_items.Count, Math.Max(1, (Height - 4) / rowHeight));
+        for (int i = 0; i < visible; i++)
+        {
+            OverviewBarItem item = _items[i]; int y = i * rowHeight + 4; bool selected = Focused && _keyboardIndex == i; bool hovered = _hoverIndex == i;
+            if (selected || hovered) DashboardVisuals.DrawRoundedFill(e.Graphics, new Rectangle(1, y - 2, Width - 2, rowHeight - 2), selected ? DashboardVisuals.FocusBackground : DashboardVisuals.HoverBackground, 5);
+            int labelWidth = Math.Max(78, Width * 34 / 100); int barLeft = labelWidth + 6; int barWidth = Math.Max(20, Width - barLeft - 8);
+            using var title = new SolidBrush(DashboardVisuals.PrimaryText); using var detail = new SolidBrush(DashboardVisuals.MutedText);
+            e.Graphics.DrawString(item.Label, DashboardVisuals.LabelFont, title, new RectangleF(5, y + 1, labelWidth - 8, Font.Height + 2), DashboardVisuals.NearStringFormat);
+            e.Graphics.DrawString(item.Detail, DashboardVisuals.DetailFont, detail, new RectangleF(5, y + Font.Height + 2, labelWidth - 8, Font.Height + 2), DashboardVisuals.NearStringFormat);
+            Rectangle track = new(barLeft, y + 6, barWidth, 9); DashboardVisuals.DrawProgress(e.Graphics, track, item.Value * 100d / max, DashboardVisuals.ChartColor(i));
+            string percent = max == 0 ? "0%" : $"{item.Value * 100d / max:0.#}%";
+            e.Graphics.DrawString(percent, DashboardVisuals.DetailFont, detail, new RectangleF(barLeft, y + 18, barWidth, Font.Height), DashboardVisuals.FarStringFormat);
+        }
+    }
+    private int GetRowHeight() => Math.Max(31, Math.Min(48, Math.Max(31, (Height - 4) / Math.Max(1, _items.Count))));
+    private static string BuildToolTip(OverviewBarItem item) => string.IsNullOrWhiteSpace(item.ExtraDetail) ? $"{item.Label}: {item.Detail}" : $"{item.Label}: {item.Detail} · {item.ExtraDetail}";
 }
 
 internal sealed class OverviewSparkline : Control
 {
     private IReadOnlyList<OverviewPoint> _points = Array.Empty<OverviewPoint>();
-    public OverviewSparkline() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); BackColor = SystemColors.Window; }
+    private readonly ToolTip _toolTip = new();
+    private int _hoverIndex = -1;
+    private OverviewGrowthMetric _metric;
+    public OverviewGrowthMetric Metric { get => _metric; set { if (_metric == value) return; _metric = value; Invalidate(); } }
+    public OverviewSparkline() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); BackColor = SystemColors.Window; AccessibleRole = AccessibleRole.Graphic; }
     public void SetData(IReadOnlyList<OverviewPoint> points) { _points = points ?? Array.Empty<OverviewPoint>(); Invalidate(); }
-    protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); if (_points.Count < 2) return; e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; long minFiles = _points.Min(x => x.Files), maxFiles = Math.Max(_points.Max(x => x.Files), minFiles + 1); long minBytes = _points.Min(x => x.Bytes), maxBytes = Math.Max(_points.Max(x => x.Bytes), minBytes + 1); float left = 8, top = 8, width = Math.Max(1, Width - 16), height = Math.Max(1, Height - 30); PointF At(int i, long value, long min, long max) => new(left + width * i / (float)(_points.Count - 1), top + height - height * (value - min) / (float)(max - min)); PointF[] files = _points.Select((p, i) => At(i, p.Files, minFiles, maxFiles)).ToArray(); PointF[] bytes = _points.Select((p, i) => At(i, p.Bytes, minBytes, maxBytes)).ToArray(); using var filePen = new Pen(Color.FromArgb(0, 92, 160), 2f); using var sizePen = new Pen(Color.FromArgb(46, 125, 80), 2f); e.Graphics.DrawLines(filePen, files); e.Graphics.DrawLines(sizePen, bytes); using var text = new SolidBrush(SystemColors.GrayText); e.Graphics.DrawString($"Files {minFiles:N0}–{maxFiles:N0}   Size {FormatOverviewBytes(minBytes)}–{FormatOverviewBytes(maxBytes)}", Font, text, new PointF(8, Height - Font.Height - 2)); }
+    protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); int index = HitTest(e.Location); if (_hoverIndex != index) { _hoverIndex = index; Invalidate(); } _toolTip.SetToolTip(this, index >= 0 ? TooltipFor(_points[index]) : ""); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hoverIndex = -1; Invalidate(); }
+    protected override void Dispose(bool disposing) { if (disposing) _toolTip.Dispose(); base.Dispose(disposing); }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e); if (_points.Count < 2) return; e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        RectangleF plot = new(8, 8, Math.Max(1, Width - 16), Math.Max(1, Height - 32));
+        long[] values = _points.Select(p => Metric == OverviewGrowthMetric.Size ? p.Bytes : p.Files).ToArray(); long min = values.Min(), max = Math.Max(values.Max(), min + 1); float range = max - min;
+        for (int i = 1; i < 4; i++) { float y = plot.Top + plot.Height * i / 4f; using var grid = new Pen(DashboardVisuals.Grid, 1); e.Graphics.DrawLine(grid, plot.Left, y, plot.Right, y); }
+        PointF At(int i) => new(plot.Left + plot.Width * i / (_points.Count - 1f), plot.Bottom - plot.Height * (values[i] - min) / range);
+        PointF[] points = Enumerable.Range(0, _points.Count).Select(At).ToArray();
+        using var fill = new SolidBrush(Color.FromArgb(38, DashboardVisuals.Accent)); using var area = new GraphicsPath(); area.AddLines(points); area.AddLine(points[^1].X, points[^1].Y, points[^1].X, plot.Bottom); area.AddLine(points[^1].X, plot.Bottom, points[0].X, plot.Bottom); area.CloseFigure(); e.Graphics.FillPath(fill, area);
+        using var pen = new Pen(DashboardVisuals.Accent, 2f); e.Graphics.DrawLines(pen, points);
+        for (int i = 0; i < points.Length; i++) if (i == 0 || i == points.Length - 1 || i == _hoverIndex) { using var marker = new SolidBrush(i == _hoverIndex ? DashboardVisuals.Warning : DashboardVisuals.Accent); e.Graphics.FillEllipse(marker, points[i].X - 3, points[i].Y - 3, 6, 6); }
+        using var text = new SolidBrush(DashboardVisuals.MutedText); string low = Metric == OverviewGrowthMetric.Size ? FormatOverviewBytes(min) : min.ToString("N0"); string high = Metric == OverviewGrowthMetric.Size ? FormatOverviewBytes(max) : max.ToString("N0");
+        e.Graphics.DrawString(low, DashboardVisuals.DetailFont, text, new PointF(plot.Left, plot.Bottom + 3)); e.Graphics.DrawString(high, DashboardVisuals.DetailFont, text, new PointF(plot.Right - 54, plot.Top));
+        if (plot.Width >= 220) { e.Graphics.DrawString(_points[0].When.ToLocalTime().ToString("M/d"), DashboardVisuals.DetailFont, text, new PointF(plot.Left, plot.Bottom + 3)); string end = _points[^1].When.ToLocalTime().ToString("M/d"); e.Graphics.DrawString(end, DashboardVisuals.DetailFont, text, new PointF(plot.Right - e.Graphics.MeasureString(end, DashboardVisuals.DetailFont).Width, plot.Bottom + 3)); }
+    }
+    private int HitTest(Point point) { if (_points.Count < 2 || Width <= 16) return -1; int index = (int)Math.Round((point.X - 8) * (_points.Count - 1d) / Math.Max(1, Width - 16)); return Math.Clamp(index, 0, _points.Count - 1); }
+    private string TooltipFor(OverviewPoint point) { int index = Enumerable.Range(0, _points.Count).FirstOrDefault(i => _points[i].Equals(point)); OverviewPoint? previous = index > 0 ? _points[index - 1] : null; string delta = previous.HasValue ? $" | {point.Files - previous.Value.Files:+#;-#;0} files · {FormatOverviewBytes(Math.Abs(point.Bytes - previous.Value.Bytes))} {(point.Bytes >= previous.Value.Bytes ? "added" : "removed")}" : ""; return $"{point.When.ToLocalTime():g}: {point.Files:N0} files · {FormatOverviewBytes(point.Bytes)}{delta}"; }
     private static string FormatOverviewBytes(long bytes) { double value = Math.Max(0, bytes); string[] units = { "B", "KB", "MB", "GB", "TB" }; int unit = 0; while (value >= 1024 && unit < units.Length - 1) { value /= 1024; unit++; } return $"{value:0.#} {units[unit]}"; }
 }

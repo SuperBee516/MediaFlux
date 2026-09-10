@@ -77,7 +77,7 @@ public sealed partial class LibraryAnalyzerForm
             var query = new LibraryIntegrityQuery(state, location, _integritySearch.Text, _integrityPage * PageSize, PageSize);
             (LibraryIntegrityPage page, LibraryIntegritySummary summary) = await Task.Run(() =>
                 (_runtime.IntegrityCatalog.QueryIntegrity(query), _runtime.IntegrityCatalog.GetIntegritySummary()));
-            if (IsDisposed) return;
+            if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
             _integrityGrid.Rows.Clear();
             foreach (LibraryIntegrityResult item in page.Results)
             {
@@ -102,7 +102,7 @@ public sealed partial class LibraryAnalyzerForm
             _integrityFailureMetric.SetValue(summary.Failed.ToString("N0"), summary.Failed == 0 ? "No failed checks" : "Repair or retry affected media");
             _integrityPendingMetric.SetValue((summary.NeverChecked + summary.Pending + summary.Stale).ToString("N0"), "Never checked, pending, or stale");
         }
-        catch (Exception ex) { if (!IsDisposed) ShowError("Media Integrity results could not be refreshed.", ex); }
+        catch (Exception ex) { if (!_lifecycleCleanupCompleted && !IsDisposed && !Disposing) ShowError("Media Integrity results could not be refreshed.", ex); }
     }
 
     private void QueueSelectedIntegrity(LibraryIntegrityScrubType type)
@@ -126,7 +126,7 @@ public sealed partial class LibraryAnalyzerForm
             _runtime.Integrity.QueueFiles(ids, LibraryIntegrityScrubType.Quick);
             return ids.Count;
         });
-        if (!IsDisposed) _integrityStatus.Text = $"Queued Quick Scrub for {count:N0} file(s) in the selected location.";
+        if (!_lifecycleCleanupCompleted && !IsDisposed && !Disposing) _integrityStatus.Text = $"Queued Quick Scrub for {count:N0} file(s) in the selected location.";
     }
 
     private async Task QueueIntegrityStaleOrUnverifiedAsync()
@@ -139,7 +139,7 @@ public sealed partial class LibraryAnalyzerForm
             _runtime.Integrity.QueueFiles(ids, LibraryIntegrityScrubType.Quick);
             return ids.Length;
         });
-        if (!IsDisposed) _integrityStatus.Text = $"Queued Quick Scrub for {count:N0} stale or unverified file(s).";
+        if (!_lifecycleCleanupCompleted && !IsDisposed && !Disposing) _integrityStatus.Text = $"Queued Quick Scrub for {count:N0} stale or unverified file(s).";
     }
 
     private void RetrySelectedIntegrity()
@@ -161,11 +161,14 @@ public sealed partial class LibraryAnalyzerForm
 
     private void Integrity_ProgressChanged(LibraryIntegrityProgress progress)
     {
-        if (IsDisposed || !IsHandleCreated) return;
-        BeginInvoke(() => _integrityStatus.Text = progress.Percent.HasValue
-            ? $"{progress.ScrubType} Scrub · {Path.GetFileName(progress.FullPath)} · {progress.Percent:0.#}% · elapsed {progress.Elapsed:g}" +
-              (progress.EstimatedRemaining.HasValue ? $" · remaining {progress.EstimatedRemaining:g}" : "")
-            : $"{progress.ScrubType} Scrub · {Path.GetFileName(progress.FullPath)} · {progress.Status}");
+        PostToFormUi(() =>
+        {
+            if (_integrityStatus.IsDisposed) return;
+            _integrityStatus.Text = progress.Percent.HasValue
+                ? $"{progress.ScrubType} Scrub · {Path.GetFileName(progress.FullPath)} · {progress.Percent:0.#}% · elapsed {progress.Elapsed:g}" +
+                  (progress.EstimatedRemaining.HasValue ? $" · remaining {progress.EstimatedRemaining:g}" : "")
+                : $"{progress.ScrubType} Scrub · {Path.GetFileName(progress.FullPath)} · {progress.Status}";
+        });
     }
 
     private void ReloadIntegrityLocations()

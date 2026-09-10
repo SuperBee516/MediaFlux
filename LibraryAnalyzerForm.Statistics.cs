@@ -52,7 +52,7 @@ namespace MediaFlux
             try
             {
                 LibraryStatistics statistics = await Task.Run(() => _runtime.AnalysisCatalog.GetLibraryStatistics(StatisticsTopCount));
-                if (IsDisposed) return;
+                if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
                 _statisticsFiles.SetValue(statistics.TotalFiles.ToString("N0"), $"{statistics.PresentFiles:N0} available");
                 _statisticsStorage.SetValue(FormatBytes(statistics.TotalBytes), "Cataloged media storage");
                 _statisticsHealth.SetValue($"{statistics.ProbeSucceeded:N0} OK", $"{statistics.ProbeFailed:N0} failed");
