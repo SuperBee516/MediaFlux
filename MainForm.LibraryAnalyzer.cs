@@ -127,6 +127,7 @@ namespace MediaFlux
                 UpdateRowCustomFlag(row);
             }
             SafeRefreshEstimates();
+            ScheduleEncodingPlanRefresh();
         }
 
         private static EncodingService.ScaleMode PolicyScaleMode(LibraryPolicyQueueItem item)

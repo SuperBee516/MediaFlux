@@ -1,0 +1,118 @@
+using MediaFlux.Models;
+using MediaFlux.Services;
+using Xunit;
+
+namespace MediaFlux.Tests;
+
+public sealed class EncodingPlanServiceTests
+{
+    [Fact]
+    public void Mp4PlanSurfacesAuthoritativeConversionsAndGeometryCorrection()
+    {
+        MediaProbeResult source = new()
+        {
+            Success = true,
+            Streams = new MediaProbeStreamInfo[]
+            {
+                new()
+                {
+                    Index = 0,
+                    CodecType = "video",
+                    CodecName = "h264",
+                    Width = 1280,
+                    Height = 701
+                },
+                new()
+                {
+                    Index = 1,
+                    CodecType = "audio",
+                    CodecName = "mp2"
+                },
+                new()
+                {
+                    Index = 2,
+                    CodecType = "subtitle",
+                    CodecName = "ass"
+                }
+            }
+        };
+
+        EncodingPlan plan = EncodingPlanService.Resolve(
+            new EncodingPlanService.Request(
+                source,
+                EncodingInputSource.FromFile("source.mkv"),
+                new VideoEncoderSelection(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
+                UseGpu: false,
+                TenBit: false,
+                AudioChannels: null,
+                EncodingService.ScaleMode.None,
+                new VideoRestorationSettings(),
+                OutputContainerSelection.Mp4));
+
+        Assert.True(plan.IsAvailable);
+        EncodingPlanSection video = Assert.Single(plan.Sections, section => section.Title == "Video");
+        Assert.Contains("H.264 1280×701 → HEVC 1280×702", video.Items[0].Value);
+
+        EncodingPlanSection audio = Assert.Single(plan.Sections, section => section.Title == "Audio");
+        Assert.Contains("MP2 → AAC 192 kbps", audio.Items[0].Value);
+        Assert.Contains("MP4", audio.Items[0].Reason);
+
+        EncodingPlanSection subtitles = Assert.Single(plan.Sections, section => section.Title == "Subtitles");
+        Assert.Equal("ASS → mov_text", subtitles.Items[0].Value);
+        Assert.Contains("converted", subtitles.Items[0].Reason, StringComparison.OrdinalIgnoreCase);
+
+        EncodingPlanSection corrections = Assert.Single(
+            plan.Sections,
+            section => section.Title == "Compatibility corrections");
+        Assert.Contains(corrections.Items, item => item.Label == "Geometry" &&
+            item.Value == "1280×701 → 1280×702");
+        Assert.Contains(corrections.Items, item => item.Label == "audio");
+        Assert.Contains(corrections.Items, item => item.Label == "subtitle");
+    }
+
+    [Fact]
+    public void RestorationPlanUsesResolvedPresetAndAiSettings()
+    {
+        MediaProbeResult source = new()
+        {
+            Success = true,
+            Streams = new[]
+            {
+                new MediaProbeStreamInfo
+                {
+                    Index = 0,
+                    CodecType = "video",
+                    CodecName = "mpeg2video",
+                    Width = 720,
+                    Height = 480
+                }
+            }
+        };
+        var restoration = new VideoRestorationSettings
+        {
+            Mode = VideoRestorationMode.Custom,
+            Preset = VideoRestorationPreset.VhsTvCaptureRestore,
+            AiMode = AiRestorationMode.General,
+            AiModelId = "general-x2",
+            AiScale = AiRestorationScale.X2
+        };
+
+        EncodingPlan plan = EncodingPlanService.Resolve(
+            new EncodingPlanService.Request(
+                source,
+                EncodingInputSource.FromFile("source.mpg"),
+                new VideoEncoderSelection(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"),
+                UseGpu: true,
+                TenBit: false,
+                AudioChannels: null,
+                EncodingService.ScaleMode.None,
+                restoration,
+                OutputContainerSelection.Matroska));
+
+        EncodingPlanSection processing = Assert.Single(
+            plan.Sections,
+            section => section.Title == "Processing");
+        Assert.Contains(processing.Items, item => item.Value == "VHS / TV capture restore");
+        Assert.Contains(processing.Items, item => item.Value.Contains("General · general-x2 · 2×"));
+    }
+}

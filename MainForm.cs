@@ -918,6 +918,7 @@ namespace MediaFlux
             };
 
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Details", CreateContextualDetailsGroup()));
+            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Encoding Plan", CreateEncodingPlanGroup()));
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Preview", CreateEncodePreviewGroup()));
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Streams", CreateStreamsGroup()));
             _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Restoration", CreateRestorationGroup()));
@@ -1807,6 +1808,7 @@ namespace MediaFlux
         private void UpdateEncodePreview()
         {
             UpdateActiveConfigurationSummary();
+            ScheduleEncodingPlanRefresh();
             if (_previewValueLabels.Count == 0 || dgvEncodeQueue == null)
                 return;
 
