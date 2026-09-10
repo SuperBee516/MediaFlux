@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.9] - 2026-09-10
+
+### Queue Details and Encoding Diagnostics
+
+- Added a read-only Pre-Encode Encoding Plan showing resolved video, audio, subtitle, restoration, geometry, encoder, and compatibility decisions.
+- Added deterministic Encode Failure Analysis with likely failure stage/cause, conservative corrective guidance, bounded FFmpeg evidence, and relevant Encoding Plan context.
+- Distinguished user cancellation from actual encode failure without changing encode settings or adding automatic remediation.
+
+### Library Analyzer
+
+- Corrected Library Insights card layout behavior after the Overview dashboard update.
+
 ## [1.3.6] - 2026-09-08
 
 ### Library Analyzer Overview
