@@ -291,6 +291,7 @@ public sealed partial class LibraryAnalyzerForm
         _overviewInsights.SuspendLayout();
         foreach (Control child in _overviewInsights.Controls.Cast<Control>().ToArray()) child.Dispose();
         _overviewInsights.Controls.Clear(); _overviewInsights.RowStyles.Clear(); _overviewInsights.RowCount = 5; _overviewInsights.ColumnCount = 2;
+        _overviewInsights.AutoScroll = true;
         _overviewInsights.ColumnStyles.Clear(); _overviewInsights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34)); _overviewInsights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 66));
         AddInsightMetric(0, "Largest file", insight.LargestFileBytes.HasValue ? FormatBytes((long)insight.LargestFileBytes.Value) : "Unavailable", insight.LargestFileBytes.HasValue ? insight.LargestFilePath : null);
         AddInsightMetric(1, "Average size", insight.AverageFileBytes.HasValue ? FormatBytes((long)insight.AverageFileBytes.Value) : "Unavailable", null);
@@ -302,13 +303,15 @@ public sealed partial class LibraryAnalyzerForm
 
     private void AddInsightMetric(int row, string label, string value, string? secondary)
     {
-        _overviewInsights.RowStyles.Add(new RowStyle(SizeType.Percent, 20));
-        _overviewInsights.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, ForeColor = DashboardVisuals.MutedText, Padding = new Padding(2, 4, 4, 2), AutoEllipsis = true, AutoSize = false }, 0, row);
         bool hasSecondary = !string.IsNullOrWhiteSpace(secondary);
-        var valuePanel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = false, ColumnCount = 1, RowCount = hasSecondary ? 2 : 1, Padding = new Padding(2, 2, 2, 1), Margin = Padding.Empty };
+        int lineHeight = TextRenderer.MeasureText("Ag", Font).Height;
+        int secondaryHeight = hasSecondary ? TextRenderer.MeasureText("Ag", Font).Height : 0;
+        _overviewInsights.RowStyles.Add(new RowStyle(SizeType.Absolute, lineHeight + secondaryHeight + 3));
+        _overviewInsights.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, ForeColor = DashboardVisuals.MutedText, Padding = new Padding(2, 0, 4, 0), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, AutoSize = false }, 0, row);
+        var valuePanel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = false, ColumnCount = 1, RowCount = hasSecondary ? 2 : 1, Padding = new Padding(2, 1, 2, 2), Margin = Padding.Empty };
         valuePanel.RowStyles.Clear();
-        valuePanel.RowStyles.Add(new RowStyle(SizeType.Percent, hasSecondary ? 55 : 100));
-        if (hasSecondary) valuePanel.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+        valuePanel.RowStyles.Add(new RowStyle(SizeType.Absolute, lineHeight));
+        if (hasSecondary) valuePanel.RowStyles.Add(new RowStyle(SizeType.Absolute, secondaryHeight));
         var primary = new Label { Text = value, Dock = DockStyle.Fill, AutoSize = false, Font = new Font(Font, FontStyle.Bold), AutoEllipsis = true, UseMnemonic = false, TextAlign = ContentAlignment.MiddleLeft };
         valuePanel.Controls.Add(primary, 0, 0);
         if (hasSecondary)
