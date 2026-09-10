@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.10] - 2026-09-10
+
+### Library Analyzer Visual Duplicates
+
+- Repaired the Visual duplicate keeper workflow with explicit manual and suggested keeper presentation.
+- Restored the reviewed `Review Files to Delete` workflow with global scope independent of the current page or filter.
+- Repaired file-selection-rules review and More Actions command execution.
+- Strengthened cleanup eligibility and keeper/candidate revalidation safeguards.
+
 ## [1.3.9] - 2026-09-10
 
 ### Queue Details and Encoding Diagnostics
