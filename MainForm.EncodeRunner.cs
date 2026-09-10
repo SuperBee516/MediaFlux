@@ -369,6 +369,8 @@ namespace MediaFlux
                 return;
 
             RowMeta meta = EnsureRowMeta(row);
+            meta.FailureAnalysis = null;
+            meta.CurrentProcessingStage = "Queued";
             if (string.IsNullOrWhiteSpace(meta.StatisticsOperationId))
                 meta.StatisticsOperationId = Guid.NewGuid().ToString("N");
             DvdImportOptions? dvdOptions = meta.IsDvdEncode
@@ -527,6 +529,11 @@ namespace MediaFlux
             string videoCodec =
                 encoderSnapshot.Validated.Resolved.Selection.FfmpegCodec;
             bool useGpu = encoderSnapshot.Validated.UseGpu;
+            string analysisEncoderId = encoderSnapshot.Validated.Resolved.Selection.EncoderId;
+            string analysisEncoderPreset = encoderSnapshot.Validated.Preset;
+            bool analysisTenBit = encoderSnapshot.Validated.TenBit;
+            string analysisOutputContainer = PolicyOutputContainer(policyIntent).ToString();
+            string analysisRestoration = _config.VideoRestoration?.Preset.ToString() ?? "Off";
 
             // ==== TARGET SIZE (MB) ====
             double? targetMb = null;
@@ -743,7 +750,7 @@ namespace MediaFlux
                     UseGpu = useGpu,
                     TargetMb = targetMb,
                     ScaleMode = scaleMode,
-                    Restoration = _config.VideoRestoration.Clone(),
+                    Restoration = _config.VideoRestoration!.Clone(),
                     EncoderPreset = encoderPreset,
                     QualityValue =
                         estimateQuality,
@@ -965,6 +972,28 @@ namespace MediaFlux
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (attemptEndUtc - jobStartUtc).TotalSeconds);
                 bool isCanceled = _cancelEncode || ex is OperationCanceledException;
+                if (!isCanceled)
+                {
+                    meta.FailureAnalysis = EncodeFailureAnalysisService.Analyze(
+                        new EncodeFailureAnalysisContext(
+                            ex,
+                            jobLog.ToString(),
+                            meta.CurrentProcessingStage,
+                            IsCanceled: false,
+                            logicalSourcePath,
+                            string.IsNullOrWhiteSpace(attemptedOutputPath) ? stagedOutputPath : attemptedOutputPath,
+                            analysisEncoderId,
+                            encoderText,
+                            videoCodec,
+                            analysisEncoderPreset,
+                            analysisTenBit,
+                            analysisOutputContainer,
+                            analysisRestoration));
+                }
+                else
+                {
+                    meta.FailureAnalysis = null;
+                }
                 EncodeFinalizationException? finalizationFailure =
                     ex as EncodeFinalizationException;
                 EncodeFinalizationResult? finalizationResult =

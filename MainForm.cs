@@ -71,6 +71,13 @@ namespace MediaFlux
         private Label? _activeConfigurationSummaryLabel;
         private Label? _queueCommandSummaryLabel;
         private Label? _detailsContextLabel;
+        private GroupBox? _failureAnalysisGroup;
+        private Label? _failureAnalysisStageLabel;
+        private Label? _failureAnalysisSummaryLabel;
+        private Label? _failureAnalysisCauseLabel;
+        private Label? _failureAnalysisActionLabel;
+        private Label? _failureAnalysisTechnicalLabel;
+        private Label? _failureAnalysisPlanLabel;
         private Label? _streamsContextLabel;
         private Label? _restorationContextLabel;
         private Label? _currentOperationSummaryLabel;
@@ -945,7 +952,56 @@ namespace MediaFlux
         {
             var content = CreateContextPanel(out _detailsContextLabel);
             content.Controls.Add(CreateQueueSummaryGroup());
+            content.Controls.Add(CreateFailureAnalysisGroup());
+            UpdateContextualDetails();
             return content;
+        }
+
+        private Control CreateFailureAnalysisGroup()
+        {
+            _failureAnalysisGroup = new GroupBox
+            {
+                Text = "Failure Analysis",
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                Padding = new Padding(10, 8, 10, 10),
+                Margin = new Padding(0, 8, 0, 0),
+                Visible = false
+            };
+
+            var table = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2,
+                RowCount = 6,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112F));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+
+            _failureAnalysisStageLabel = AddFailureAnalysisField(table, 0, "Stage");
+            _failureAnalysisSummaryLabel = AddFailureAnalysisField(table, 1, "What failed");
+            _failureAnalysisCauseLabel = AddFailureAnalysisField(table, 2, "Likely cause");
+            _failureAnalysisActionLabel = AddFailureAnalysisField(table, 3, "Recommended action");
+            _failureAnalysisTechnicalLabel = AddFailureAnalysisField(table, 4, "Technical detail");
+            _failureAnalysisPlanLabel = AddFailureAnalysisField(table, 5, "Encoding Plan");
+            _failureAnalysisGroup.Controls.Add(table);
+            return _failureAnalysisGroup;
+        }
+
+        private static Label AddFailureAnalysisField(TableLayoutPanel table, int row, string caption)
+        {
+            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            table.Controls.Add(CreateInfoCaption(caption.ToUpperInvariant()), 0, row);
+            var value = CreateInfoValue("", bold: false);
+            value.AutoSize = true;
+            value.MaximumSize = new Size(900, 0);
+            value.Margin = new Padding(0, 2, 0, 5);
+            table.Controls.Add(value, 1, row);
+            return value;
         }
 
         private Control CreateStreamsGroup()
@@ -1041,8 +1097,68 @@ namespace MediaFlux
             if (_detailsContextLabel != null) _detailsContextLabel.Text = details;
             if (_streamsContextLabel != null) _streamsContextLabel.Text = streams;
             if (_restorationContextLabel != null) _restorationContextLabel.Text = restoration;
+            UpdateFailureAnalysis(rows);
             UpdateDetailsHeaderContext();
             UpdateCurrentOperationSummary();
+        }
+
+        private void UpdateFailureAnalysis(IReadOnlyList<DataGridViewRow> rows)
+        {
+            if (_failureAnalysisGroup == null ||
+                _failureAnalysisStageLabel == null ||
+                _failureAnalysisSummaryLabel == null ||
+                _failureAnalysisCauseLabel == null ||
+                _failureAnalysisActionLabel == null ||
+                _failureAnalysisTechnicalLabel == null ||
+                _failureAnalysisPlanLabel == null)
+            {
+                return;
+            }
+
+            _failureAnalysisGroup.Visible = false;
+            if (rows.Count != 1 || rows[0].Tag is not RowMeta meta)
+                return;
+
+            string status = rows[0].Cells["colStatus"]?.Value?.ToString() ?? "";
+            if (status.Equals("Canceled", StringComparison.OrdinalIgnoreCase))
+            {
+                _failureAnalysisGroup.Text = "Cancellation";
+                _failureAnalysisStageLabel.Text = "Cancellation";
+                _failureAnalysisSummaryLabel.Text = "The encode was canceled.";
+                _failureAnalysisCauseLabel.Text = "The encode was canceled by the user.";
+                _failureAnalysisActionLabel.Text = "Review the queue item and start it again when ready. MediaFlux does not retry canceled work automatically.";
+                _failureAnalysisTechnicalLabel.Text = "The source was retained. Any incomplete-output handling follows the existing cancellation policy.";
+                _failureAnalysisPlanLabel.Text = "No failure classification was created.";
+                _failureAnalysisGroup.Visible = true;
+                return;
+            }
+
+            EncodeFailureAnalysis? analysis = meta.FailureAnalysis;
+            if (analysis == null ||
+                (!status.Contains("Failed", StringComparison.OrdinalIgnoreCase) &&
+                 !status.Equals("Retry Queued", StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            _failureAnalysisGroup.Text = "Failure Analysis";
+            _failureAnalysisStageLabel.Text = analysis.FailureStage;
+            _failureAnalysisSummaryLabel.Text = analysis.Summary;
+            _failureAnalysisCauseLabel.Text = analysis.LikelyCause;
+            _failureAnalysisActionLabel.Text = analysis.RecommendedAction;
+            _failureAnalysisTechnicalLabel.Text =
+                $"{analysis.TechnicalDetail} Confidence: {analysis.Confidence}.";
+            _failureAnalysisPlanLabel.Text = FormatFailurePlanContext(analysis.PlanContext);
+            _failureAnalysisGroup.Visible = true;
+        }
+
+        private static string FormatFailurePlanContext(EncodeFailurePlanContext? plan)
+        {
+            if (plan == null)
+                return "Unavailable.";
+
+            return $"Encoder: {plan.Encoder} · Codec: {plan.VideoCodec} · Preset: {plan.EncoderPreset} · " +
+                   $"Bit depth: {plan.BitDepth} · Container: {plan.OutputContainer} · Restoration: {plan.Restoration}";
         }
 
         private void UpdateDetailsHeaderContext()
@@ -2267,6 +2383,8 @@ namespace MediaFlux
             public LibraryPolicyQueueItem? LibraryPolicyIntent = null;
             public DateTime StatisticsStartUtc;
             public double StatisticsProcessingSeconds;
+            public string CurrentProcessingStage = "Queued";
+            public EncodeFailureAnalysis? FailureAnalysis;
 
             public bool HasCustomSettings =>
                 CustomTargetMb.HasValue ||
@@ -5348,6 +5466,15 @@ namespace MediaFlux
 
             if (tooltip != null && dgvEncodeQueue.Columns.Contains("colStatus"))
                 row.Cells["colStatus"].ToolTipText = tooltip;
+
+            if (row.Tag is RowMeta meta &&
+                !status.Equals("Done", StringComparison.OrdinalIgnoreCase) &&
+                !status.Equals("Failed", StringComparison.OrdinalIgnoreCase) &&
+                !status.Equals("Canceled", StringComparison.OrdinalIgnoreCase) &&
+                !status.Equals("Retry Queued", StringComparison.OrdinalIgnoreCase))
+            {
+                meta.CurrentProcessingStage = status;
+            }
 
             ApplyEncodeRowVisualState(row);
         }
