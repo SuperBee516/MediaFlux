@@ -79,18 +79,9 @@ namespace MediaFlux.Services.LibraryCatalog
                     IReadOnlyList<VisualSimilarityMemberRecord> members=_visual.GetVisualGroupMembers(group.GroupId);
                     if(members.Count!=2) { excluded++; continue; }
                     VisualSimilarityMemberRecord? keeper=members.FirstOrDefault(x=>x.IsManualKeeper)
-                        ?? members.FirstOrDefault(x=>x.IsProtected)
                         ?? members.FirstOrDefault(x=>x.IsSuggestedKeeper);
-                    string reason=keeper?.IsManualKeeper==true?"Manual keeper selection":keeper?.IsProtected==true?"Protected keeper":"Keeper recommendation";
-                    if(keeper==null)
-                    {
-                        DuplicateKeeperPreferences preferences; lock (_preferencesSync) preferences=_preferences.Clone();
-                        DuplicateKeeperEvaluation score=DuplicateKeeperScoringService.Evaluate(members.Select(ToLegacyItem).ToArray(),preferences,DuplicateKeeperScoringContext.Visual,group.ConfidenceScore);
-                        if(score.RequiresReview || score.Keeper==null) { excluded++; continue; }
-                        keeper=members.First(x=>string.Equals(x.FullPath,score.Keeper.Path,StringComparison.OrdinalIgnoreCase));
-                        reason=score.Explanation;
-                        _visual.SetVisualSuggestedKeeper(group.GroupId,keeper.FileId);
-                    }
+                    if(keeper==null) { excluded++; continue; }
+                    string reason=keeper.IsManualKeeper?"Manual keeper selection":"Suggested keeper selection";
                     VisualSimilarityMemberRecord candidate=members.Single(x=>x.FileId!=keeper.FileId);
                     if(!Eligible(keeper,false) || !Eligible(candidate,true) || SamePhysicalFile(keeper,candidate)) { excluded++; continue; }
                     LibraryFileHashFact? kh=_analysis.GetFileHashFact(keeper.FileId), ch=_analysis.GetFileHashFact(candidate.FileId);
@@ -372,6 +363,7 @@ namespace MediaFlux.Services.LibraryCatalog
             IReadOnlyList<VisualSimilarityMemberRecord> members=_visual.GetVisualGroupMembers(group.GroupId);
             VisualSimilarityMemberRecord? keeper=members.FirstOrDefault(x=>x.FileId==item.KeeperFileId), candidate=members.FirstOrDefault(x=>x.FileId==item.FileId);
             if(keeper==null||candidate==null) return "The files are no longer members of the visual match.";
+            if(keeper.FileId==candidate.FileId) return "Keeper and candidate must be different files.";
             if(candidate.IsProtected) return "The candidate is protected.";
             if(item.Intent == VisualCleanupIntent.DeleteBoth && keeper.IsProtected) return "Delete Both is blocked because one or more files are protected.";
             string? keeperError=ValidateSnapshot(keeper,item.KeeperPath,item.KeeperSizeBytes,item.KeeperLastWriteUtc,item.KeeperVolumeId,item.KeeperFileIdentity);

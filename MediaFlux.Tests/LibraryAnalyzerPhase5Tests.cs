@@ -123,6 +123,121 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
 
         catalog.SetFileProtection(catalog.GetFileByPath(candidatePath)!.Id, true, "test");
         Assert.Empty(cleanup.BuildProposal().Items);
+
+        catalog.SetFileProtection(catalog.GetFileByPath(candidatePath)!.Id, false, "");
+        VisualSimilarityGroupRecord currentGroup = catalog.GetVisualGroup(group.GroupId)!;
+        VisualSimilarityMemberRecord currentKeeper = catalog.GetVisualGroupMembers(group.GroupId)
+            .Single(member => member.FileId == currentGroup.ManualKeeperFileId);
+        var malformed = new VisualCleanupProposalItem(currentGroup, currentKeeper, currentKeeper,
+            "malformed same-file plan", false, null);
+        VisualCleanupPlanRecord malformedPlan = cleanup.CreatePlan(new[] { malformed }, DuplicateCleanupAction.PermanentDelete);
+        DuplicateCleanupExecutionResult malformedResult = await cleanup.ExecutePlanAsync(malformedPlan.PlanId);
+        Assert.Equal(0, malformedResult.Succeeded);
+        Assert.Equal(1, malformedResult.Excluded);
+        Assert.True(File.Exists(currentKeeper.FullPath));
+    }
+
+    [Fact]
+    public async Task ReviewedVisualCleanupRequiresPersistedKeeperAndExcludesIgnoredProtectedAndMissingCandidates()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "reviewed-visual-cleanup"); Directory.CreateDirectory(library);
+        string first = Write(library, "first.mkv", 1_200), second = Write(library, "second.mp4", 800);
+        AddInventoryAndMetadata(catalog, library, new[] { first, second }, path =>
+            path == first ? ("hevc", 1920, 1080, 60d) : ("h264", 1280, 720, 60d));
+        ulong[] hashes = Enumerable.Range(0, 6).Select(i => 0x2222222222222222UL + (ulong)i).ToArray();
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog, new FakeVisualExtractor(_ => hashes),
+                   new LibraryVisualAnalysisOptions(1, 2, 8, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+
+        VisualSimilarityGroupRecord group = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
+        IReadOnlyList<VisualSimilarityMemberRecord> members = catalog.GetVisualGroupMembers(group.GroupId);
+        long manualKeeperId = members.Single(member => member.FileId != group.SuggestedKeeperFileId).FileId;
+        long candidateId = members.Single(member => member.FileId != manualKeeperId).FileId;
+        string candidatePath = members.Single(member => member.FileId == candidateId).FullPath;
+        var cleanup = new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, manualKeeperId, true, false));
+        VisualCleanupProposalItem manual = Assert.Single(cleanup.BuildProposal().Items);
+        Assert.Equal(manualKeeperId, manual.Keeper.FileId);
+        Assert.Equal(candidateId, manual.Candidate.FileId);
+        Assert.Equal("Manual keeper selection", manual.KeeperReason);
+
+        catalog.SetVisualSuggestedKeeper(group.GroupId, null);
+        VisualSimilarityGroupRecord manualWithoutSuggestion = catalog.GetVisualGroup(group.GroupId)!;
+        Assert.Equal(manualKeeperId, manualWithoutSuggestion.ManualKeeperFileId);
+        Assert.Null(manualWithoutSuggestion.SuggestedKeeperFileId);
+        Assert.Single(catalog.GetVisualGroupMembers(group.GroupId), member => member.IsManualKeeper && !member.IsSuggestedKeeper);
+        Assert.Equal(manualKeeperId, Assert.Single(cleanup.BuildProposal().Items).Keeper.FileId);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, candidateId, true, false));
+        VisualCleanupProposalItem swapped = Assert.Single(cleanup.BuildProposal().Items);
+        Assert.Equal(candidateId, swapped.Keeper.FileId);
+        Assert.Equal(manualKeeperId, swapped.Candidate.FileId);
+        Assert.NotEqual(swapped.Keeper.FileId, swapped.Candidate.FileId);
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, manualKeeperId, true, false));
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, manualKeeperId, true, true));
+        Assert.Equal(manualKeeperId, catalog.GetVisualGroup(group.GroupId)!.ManualKeeperFileId);
+        Assert.Empty(cleanup.BuildProposal().Items);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, manualKeeperId, true, false));
+        catalog.SetFileProtection(candidateId, true, "test candidate protection");
+        Assert.Empty(cleanup.BuildProposal().Items);
+        catalog.SetFileProtection(candidateId, false, "");
+
+        File.Delete(candidatePath);
+        Assert.Empty(cleanup.BuildProposal().Items);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, null, true, false));
+        Assert.Empty(cleanup.BuildProposal().Items);
+    }
+
+    [Fact]
+    public async Task GlobalReviewedVisualCleanupIgnoresCurrentUiPageSelectionAndFilters()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "global-reviewed-cleanup"); Directory.CreateDirectory(library);
+        var paths = new List<string>();
+        var fingerprints = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase);
+        var random = new Random(61723);
+        for (int pair = 0; pair < 101; pair++)
+        {
+            var hashes = new ulong[6];
+            for (int index = 0; index < hashes.Length; index++)
+                hashes[index] = ((ulong)(uint)random.Next() << 32) | (uint)random.Next();
+            string keeper = Write(library, $"pair-{pair:D3}-keeper.mkv", 160);
+            string candidate = Write(library, $"pair-{pair:D3}-candidate.mp4", 120);
+            paths.Add(keeper); paths.Add(candidate);
+            fingerprints[keeper] = hashes;
+            fingerprints[candidate] = hashes;
+        }
+        AddInventoryAndMetadata(catalog, library, paths, path =>
+            path.EndsWith("keeper.mkv", StringComparison.OrdinalIgnoreCase)
+                ? ("hevc", 1920, 1080, 60d)
+                : ("h264", 1280, 720, 60d));
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog, new FakeVisualExtractor(path => fingerprints[path]),
+                   new LibraryVisualAnalysisOptions(1, paths.Count, 16, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+        VisualSimilarityGroupRecord[] groups = catalog.QueryVisualGroups(new VisualGroupQuery(Limit: 500)).Groups.ToArray();
+        Assert.Equal(101, groups.Length);
+        foreach (VisualSimilarityGroupRecord group in groups)
+            catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, group.SuggestedKeeperFileId, true, false));
+
+        using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new EmptyMetadataProbe(),
+            new FakeVisualExtractor(_ => Array.Empty<ulong>()));
+        using var form = new LibraryAnalyzerForm(runtime);
+        SetPrivateField(form, "_visualPage", 1);
+        GetPrivateField<TextBox>(form, "_visualSearch").Text = "filter-that-matches-nothing";
+        GetPrivateField<ComboBox>(form, "_visualReview").SelectedIndex = 1;
+
+        VisualCleanupProposal proposal = await form.BuildVisualCleanupPreviewAsync(null, deleteBoth: false);
+
+        Assert.Equal(101, proposal.Items.Count);
+        Assert.Contains(proposal.Items, item => item.Group.GroupId == groups[0].GroupId);
+        Assert.Contains(proposal.Items, item => item.Group.GroupId == groups[^1].GroupId);
+        HashSet<long> keeperIds = proposal.Items.Select(item => item.Keeper.FileId).ToHashSet();
+        Assert.DoesNotContain(proposal.Items, item => keeperIds.Contains(item.Candidate.FileId));
     }
 
     [Fact]
@@ -778,12 +893,71 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 foreach (string label in new[]
                 {
                     "Review & Compare…", "Keep Selected File", "Protect Selected File", "Mark Match as Reviewed", "Ignore This Match",
-                    "Recheck This Match", "Preview Files to Delete…", "Remove Recommended Duplicates…",
-                    "Review Matches Using File Selection Rules…", "Delete Both Files…"
+                    "Recheck This Match", "Preview Files to Delete…", "Review Files to Delete…"
                 })
                     Assert.Contains(label, Descendants<Button>(visualActions).Select(button => button.Text));
-                Assert.Equal("Cleanup Role", members.Columns["Keeper"].HeaderText);
-                Assert.Contains("Recommended to Keep", string.Join(" ", members.Rows.Cast<DataGridViewRow>().Select(row => row.Cells["Keeper"].Value)));
+                Assert.DoesNotContain("Remove Recommended Duplicates…", Descendants<Button>(visualActions).Select(button => button.Text));
+                Assert.Equal("Keeper decision", groups.Columns["Decision"].HeaderText);
+                Assert.Equal("Keeper / cleanup state", members.Columns["Keeper"].HeaderText);
+                Assert.Contains("Suggested Keeper", string.Join(" ", members.Rows.Cast<DataGridViewRow>().Select(row => row.Cells["Keeper"].Value)));
+                Assert.Equal("Suggested keeper only", groups.SelectedRows[0].Cells["Decision"].Value);
+                Assert.Equal("Review Matches Using File Selection Rules…", GetPrivateField<ToolStripMenuItem>(form, "_visualMoreAutomation").Text);
+                Assert.Equal("Delete Both Files…", GetPrivateField<ToolStripMenuItem>(form, "_visualMoreDeleteBoth").Text);
+                Button reviewFiles = Descendants<Button>(visualActions).Single(button => button.Name == "VisualReviewFilesToDeleteButton");
+                Assert.True(reviewFiles.Visible);
+                Assert.True(reviewFiles.Enabled);
+                var cleanupCommandInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                form.VisualBulkCleanupCommandOverride = () =>
+                {
+                    cleanupCommandInvoked.TrySetResult(true);
+                    return Task.FromResult(false);
+                };
+                reviewFiles.PerformClick();
+                PumpTaskNoSleep(cleanupCommandInvoked.Task);
+                Assert.True(cleanupCommandInvoked.Task.Result);
+                var rulesCommandInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                form.VisualRulesReviewCommandOverride = () =>
+                {
+                    rulesCommandInvoked.TrySetResult(true);
+                    return Task.CompletedTask;
+                };
+                GetPrivateField<ToolStripMenuItem>(form, "_visualMoreAutomation").PerformClick();
+                PumpTaskNoSleep(rulesCommandInvoked.Task);
+                Assert.True(rulesCommandInvoked.Task.Result);
+
+                var releaseCleanupCommand = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                int cleanupInvocationCount = 0;
+                form.VisualBulkCleanupCommandOverride = async () =>
+                {
+                    cleanupInvocationCount++;
+                    await releaseCleanupCommand.Task;
+                    return false;
+                };
+                Task<bool> firstCleanupCommand = form.ReviewBulkVisualCleanupAsync();
+                Task<bool> duplicateCleanupCommand = form.ReviewBulkVisualCleanupAsync();
+                Assert.True(duplicateCleanupCommand.IsCompletedSuccessfully);
+                Assert.False(duplicateCleanupCommand.Result);
+                Assert.Equal(1, cleanupInvocationCount);
+                Assert.False(reviewFiles.Enabled);
+                releaseCleanupCommand.SetResult(true);
+                PumpTaskNoSleep(firstCleanupCommand);
+                Assert.True(reviewFiles.Enabled);
+
+                var releaseRulesCommand = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                int rulesInvocationCount = 0;
+                form.VisualRulesReviewCommandOverride = async () =>
+                {
+                    rulesInvocationCount++;
+                    await releaseRulesCommand.Task;
+                };
+                Task firstRulesCommand = form.ReviewMatchesUsingFileSelectionRulesAsync();
+                Task duplicateRulesCommand = form.ReviewMatchesUsingFileSelectionRulesAsync();
+                Assert.True(duplicateRulesCommand.IsCompletedSuccessfully);
+                Assert.Equal(1, rulesInvocationCount);
+                Assert.False(GetPrivateField<ToolStripMenuItem>(form, "_visualMoreAutomation").Enabled);
+                releaseRulesCommand.SetResult(true);
+                PumpTaskNoSleep(firstRulesCommand);
+                Assert.True(GetPrivateField<ToolStripMenuItem>(form, "_visualMoreAutomation").Enabled);
                 Assert.Contains("Selected:", GetPrivateField<Label>(form, "_visualReviewGuidance").Text);
                 Button reviewCompare = Descendants<Button>(visualActions).Single(button => button.Name == "VisualReviewCompareButton");
                 Assert.True(reviewCompare.Enabled);
@@ -884,6 +1058,11 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 initialRow.Selected = true;
                 groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 PumpTask(InvokePrivateTask(form, "RefreshVisualMembersAsync"));
+                Assert.Equal("Manual keeper selected", initialRow.Cells["Decision"].Value);
+                Assert.Equal("Manual Keeper", members.Rows.Cast<DataGridViewRow>()
+                    .Single(row => ((VisualSimilarityMemberRecord)row.Tag!).FileId == selectedMember.FileId).Cells["Keeper"].Value);
+                Assert.Equal("Delete Candidate", members.Rows.Cast<DataGridViewRow>()
+                    .Single(row => ((VisualSimilarityMemberRecord)row.Tag!).FileId != selectedMember.FileId).Cells["Keeper"].Value);
 
                 stage = "protection command";
                 PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualProtectionAsync"));
@@ -905,6 +1084,8 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 Assert.True(groups.Rows.Cast<DataGridViewRow>()
                     .Select(row => (VisualSimilarityGroupRecord)row.Tag!)
                     .Single(group => group.GroupId == initialGroupId).Ignored);
+                Assert.Equal(selectedMember.FileId, catalog.GetVisualGroup(initialGroupId)!.ManualKeeperFileId);
+                Assert.Empty(form.BuildVisualCleanupPreviewAsync(new[] { initialGroupId }, deleteBoth: false).GetAwaiter().GetResult().Items);
                 stage = "ignore button assertion";
                 Assert.Equal("Restore Ignored Match", Descendants<Button>(visualActions).Single(button => button.Name == "VisualIgnoredButton").Text);
                 stage = "restore ignore command";
@@ -960,6 +1141,8 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 stage = "not-match refresh";
                 PumpTask(InvokePrivateTaskOnUi(form, form, "ToggleSelectedVisualNotMatchAsync"));
                 Assert.True(catalog.GetVisualGroup(initialGroupId)!.NotMatch);
+                Assert.Equal(selectedMember.FileId, catalog.GetVisualGroup(initialGroupId)!.ManualKeeperFileId);
+                Assert.Empty(form.BuildVisualCleanupPreviewAsync(new[] { initialGroupId }, deleteBoth: false).GetAwaiter().GetResult().Items);
                 Assert.Single(groups.Rows.Cast<DataGridViewRow>());
                 reviewFilter.SelectedIndex = 4;
                 PumpTask(InvokePrivateTaskOnUi(form, form, "RefreshVisualGroupsAsync", new object?[] { initialGroupId }));
@@ -1146,6 +1329,13 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
     private static T GetPrivateField<T>(object instance, string name) =>
         (T)(instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(instance)
             ?? throw new MissingFieldException(instance.GetType().FullName, name));
+
+    private static void SetPrivateField<T>(object instance, string name, T value)
+    {
+        FieldInfo field = instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(instance.GetType().FullName, name);
+        field.SetValue(instance, value);
+    }
 
     private static object? InvokePrivate(object instance, string name, params object?[] arguments)
     {

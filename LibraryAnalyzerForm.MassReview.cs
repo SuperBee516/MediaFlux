@@ -4,14 +4,21 @@ namespace MediaFlux
 {
     public sealed partial class LibraryAnalyzerForm
     {
+        internal Task<LibraryMassReviewPreview> BuildMassReviewPreviewAsync()
+        {
+            LibraryVisualReviewAutomationOptions options = (_reviewOptions.AutomationOptionsProvider?.Invoke()
+                ?? _reviewOptions.AutomationOptions
+                ?? new LibraryVisualReviewAutomationOptions()).Normalize();
+            return Task.Run(() => _runtime.MassReview.CreatePreview(options));
+        }
+
         private async Task PreviewMassReviewAsync()
         {
-            LibraryVisualReviewAutomationOptions options = (_reviewOptions.AutomationOptions ?? new LibraryVisualReviewAutomationOptions()).Normalize();
             LibraryMassReviewPreview preview;
             try
             {
                 UseWaitCursor = true;
-                preview = await Task.Run(() => _runtime.MassReview.CreatePreview(options));
+                preview = await BuildMassReviewPreviewAsync();
             }
             catch (Exception ex)
             {
@@ -21,6 +28,14 @@ namespace MediaFlux
             finally
             {
                 UseWaitCursor = false;
+            }
+
+            LibraryVisualReviewAutomationOptions options = preview.Options;
+            if (preview.EligibleItems.Count == 0)
+            {
+                MessageBox.Show(this, BuildMassReviewEmptyMessage(preview), "File Selection Rules Review",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
             }
 
             using var dialog = new MediaFluxForm
@@ -37,7 +52,7 @@ namespace MediaFlux
                 Padding = new Padding(10, 8, 10, 0),
                 ForeColor = Color.DarkOrange,
                 Text = $"Preview only: up to {options.MaximumMassReviewMatches:N0} unreviewed pair matches with confidence ≥ {options.MinimumVisualConfidence:0.0}% and automation margin ≥ {options.MinimumAutomationMargin:0.0}. " +
-                       "Applying records keeper and reviewed decisions only; it never deletes files. Each included match will be revalidated."
+                       "Applying records proposed keeper and reviewed decisions only; it never deletes files. Existing manual keeper decisions are not overwritten. Each included match will be revalidated."
             };
             var grid = CreateGrid();
             grid.Dock = DockStyle.Fill;
@@ -46,7 +61,7 @@ namespace MediaFlux
             grid.Columns.Add("Group", "Match");
             grid.Columns.Add("Confidence", "Confidence");
             grid.Columns.Add("Margin", "Margin");
-            grid.Columns.Add("Keeper", "Recommended keeper");
+            grid.Columns.Add("Keeper", "Proposed keeper");
             grid.Columns.Add("Explanation", "Why it qualifies");
             grid.Columns[5].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             foreach (LibraryMassReviewPreviewItem item in preview.EligibleItems)
@@ -106,6 +121,22 @@ namespace MediaFlux
             };
             dialog.ShowDialog(this);
             await RefreshVisualGroupsAsync();
+        }
+
+        internal static string BuildMassReviewEmptyMessage(LibraryMassReviewPreview preview)
+        {
+            string[] reasons = preview.ExcludedItems
+                .Select(item => item.ExclusionReason)
+                .Where(reason => !string.IsNullOrWhiteSpace(reason))
+                .GroupBy(reason => reason, StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(group => group.Count())
+                .Take(3)
+                .Select(group => $"• {group.Key} ({group.Count():N0})")
+                .ToArray();
+            string detail = reasons.Length == 0
+                ? "There are no unresolved visual matches that meet the configured confidence and review requirements."
+                : string.Join(Environment.NewLine, reasons);
+            return "The configured file-selection rules produced no eligible deterministic keeper decisions. No decisions were changed.\r\n\r\n" + detail;
         }
     }
 }

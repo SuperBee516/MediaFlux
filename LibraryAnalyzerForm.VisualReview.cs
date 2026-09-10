@@ -438,7 +438,8 @@ namespace MediaFlux
                                 await LoadCurrentAsync();
                             },
                             movePresentation,
-                            cardToolTip);
+                            cardToolTip,
+                            group);
                         body.Controls.Add(card.Panel);
                         // Previews are cancelable, dialog-owned best-effort work.  Do not
                         // make completion of the modal workflow depend on an FFmpeg process
@@ -583,10 +584,11 @@ namespace MediaFlux
             Func<Task> keepAndDeleteOther,
             Func<Task>? moveToOtherFolder = null,
             VisualReviewMovePresentation? movePresentation = null,
-            ToolTip? actionToolTip = null)
+            ToolTip? actionToolTip = null,
+            VisualSimilarityGroupRecord? group = null)
         {
             VisualReviewKeeperPresentation presentation = ResolveVisualReviewKeeperPresentation(
-                member, selectedKeeperFileId, suggestedKeeperFileId);
+                member, selectedKeeperFileId, suggestedKeeperFileId, group);
             bool selectedKeeper = presentation.SelectedKeeper;
             bool suggestedKeeper = presentation.SuggestedKeeper;
             var panel = new Panel
@@ -691,7 +693,8 @@ namespace MediaFlux
         internal static VisualReviewKeeperPresentation ResolveVisualReviewKeeperPresentation(
             VisualSimilarityMemberRecord member,
             long? selectedKeeperFileId,
-            long? suggestedKeeperFileId)
+            long? suggestedKeeperFileId,
+            VisualSimilarityGroupRecord? group = null)
         {
             bool selectedKeeper = member.IsManualKeeper || selectedKeeperFileId == member.FileId;
             bool suggestedKeeper = !selectedKeeper && suggestedKeeperFileId == member.FileId;
@@ -699,7 +702,11 @@ namespace MediaFlux
                 ? "MANUAL KEEPER"
                 : selectedKeeper
                     ? "SELECTED KEEPER"
-                    : suggestedKeeper ? "Suggested keeper" : "Candidate";
+                    : suggestedKeeper
+                        ? "Suggested Keeper"
+                        : group == null
+                            ? "Candidate"
+                            : VisualMemberRole(group, member, selectedKeeperFileId ?? suggestedKeeperFileId);
             string action = selectedKeeper
                 ? "Keeper selected"
                 : suggestedKeeper ? "Keep (suggested)" : "Set as keeper";

@@ -29,12 +29,9 @@ namespace MediaFlux
         private Button? _visualRecheckButton;
         private Button? _visualPreviewCleanupButton;
         private Button? _visualBulkCleanupButton;
-        private Button? _visualRulesReviewButton;
-        private Button? _visualDeleteBothButton;
         private Button? _visualPreviousMatchButton;
         private Button? _visualNextMatchButton;
         private Button? _visualPreviewFocusButton;
-        private ToolStripMenuItem? _visualMoreBulkCleanup;
         private ToolStripMenuItem? _visualMoreAutomation;
         private ToolStripMenuItem? _visualMoreDeleteBoth;
         private readonly Label _visualFocusMatchLabel = new() { AutoSize = true, Padding = new Padding(6, 7, 6, 0), ForeColor = SystemColors.GrayText };
@@ -64,6 +61,7 @@ namespace MediaFlux
         private int _visualPage;
         private long _visualTotal;
         private bool _loadingVisualGroups;
+        private bool _visualGlobalCommandRunning;
         private bool _suppressVisualGroupSelectionRefresh;
         private DuplicateReviewSelectionAnchor? _visualAdvanceAfterRefresh;
         private int _visualMemberLoadVersion;
@@ -151,6 +149,7 @@ namespace MediaFlux
             AddVisualGroupColumn("Codec", "Codec", 75);
             AddVisualGroupColumn("Resolution", "Resolution", 85);
             AddVisualGroupColumn("Review", "Review state", 95);
+            AddVisualGroupColumn("Decision", "Keeper decision", 155);
             AddVisualGroupColumn("Evidence", "Evidence", 430);
             _visualGroupsGrid.MultiSelect = true;
             _visualGroupsGrid.SelectionChanged += async (_, _) =>
@@ -176,7 +175,7 @@ namespace MediaFlux
                 await OpenVisualReviewAsync();
             };
 
-            AddVisualMemberColumn("Keeper", "Cleanup Role", 135);
+            AddVisualMemberColumn("Keeper", "Keeper / cleanup state", 185);
             AddVisualMemberColumn("Protected", "Protected", 70);
             AddVisualMemberColumn("Path", "File location", 400);
             AddVisualMemberColumn("Root", "Root", 180);
@@ -237,6 +236,9 @@ namespace MediaFlux
 
             _visualPreviewCleanupButton = AddVisualActionButton(actions, "Preview Files to Delete…", ReviewSelectedVisualCleanup_Click,
                 "Open the existing cleanup preview for the selected match. The current preview, confirmation, and revalidation safeguards still apply.");
+            _visualBulkCleanupButton = AddVisualActionButton(actions, "Review Files to Delete…", async (_, _) => await ReviewBulkVisualCleanupAsync(),
+                "Review all eligible non-keeper files from reviewed visual matches. This always opens a preview and never deletes files without explicit confirmation and revalidation.");
+            _visualBulkCleanupButton.Name = "VisualReviewFilesToDeleteButton";
             _visualPreviousMatchButton = AddVisualActionButton(actions, "Previous match", async (_, _) => await NavigateVisualSelectionAsync(-1),
                 "Move to the previous visual match without leaving the current review workspace.");
             _visualNextMatchButton = AddVisualActionButton(actions, "Next match", async (_, _) => await NavigateVisualSelectionAsync(1),
@@ -245,24 +247,14 @@ namespace MediaFlux
 
             var more = new Button { Text = "More Actions…", AutoSize = true };
             var moreMenu = new ContextMenuStrip();
-            _visualMoreBulkCleanup = new ToolStripMenuItem("Remove Recommended Duplicates…");
             _visualMoreAutomation = new ToolStripMenuItem("Review Matches Using File Selection Rules…");
             _visualMoreDeleteBoth = new ToolStripMenuItem("Delete Both Files…");
-            _visualMoreBulkCleanup.Click += (_, _) => _visualBulkCleanupButton?.PerformClick();
-            _visualMoreAutomation.Click += (_, _) => _visualRulesReviewButton?.PerformClick();
-            _visualMoreDeleteBoth.Click += (_, _) => _visualDeleteBothButton?.PerformClick();
-            moreMenu.Items.AddRange(new ToolStripItem[] { _visualMoreBulkCleanup, _visualMoreAutomation, new ToolStripSeparator(), _visualMoreDeleteBoth });
+            _visualMoreAutomation.Click += async (_, _) => await ReviewMatchesUsingFileSelectionRulesAsync();
+            _visualMoreDeleteBoth.Click += async (_, _) => await DeleteBothSelectedVisualAsync();
+            moreMenu.Items.AddRange(new ToolStripItem[] { _visualMoreAutomation, new ToolStripSeparator(), _visualMoreDeleteBoth });
             more.Click += (_, _) => moreMenu.Show(more, new Point(0, more.Height));
             actions.Controls.Add(more);
 
-            var hiddenCommands = new FlowLayoutPanel { Visible = false, Size = new Size(0, 0), Margin = Padding.Empty };
-            _visualBulkCleanupButton = AddVisualActionButton(hiddenCommands, "Remove Recommended Duplicates…", ReviewBulkVisualCleanup_Click,
-                "Review removal of eligible recommended duplicate candidates. Existing cleanup preview, confirmation, and revalidation safeguards remain in effect.");
-            _visualRulesReviewButton = AddVisualActionButton(hiddenCommands, "Review Matches Using File Selection Rules…", async (_, _) => await PreviewMassReviewAsync(),
-                "Preview matches selected by the configured file selection rules. Review decisions are shown before they are applied.");
-            _visualDeleteBothButton = AddVisualActionButton(hiddenCommands, "Delete Both Files…", DeleteBothVisual_Click,
-                "Open the existing destructive delete-both workflow. The cleanup preview, confirmation, and revalidation safeguards still apply.");
-            actions.Controls.Add(hiddenCommands);
             UpdateVisualActionState();
 
             var pager = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
@@ -465,7 +457,8 @@ namespace MediaFlux
                 {
                     int row = _visualGroupsGrid.Rows.Add(group.GroupId, "Visual / similar", $"{group.ConfidenceScore:0.0}%", FormatBytes(group.ReclaimableBytes),
                         $"{group.DurationDeltaSeconds:0.###} s", group.CodecDiffers ? "Different" : "Same", group.ResolutionDiffers ? "Different" : "Same",
-                        group.NotMatch ? "Not a match" : group.Ignored ? "Ignored" : group.Reviewed ? "Reviewed" : "Unreviewed", group.EvidenceText);
+                        group.NotMatch ? "Not a match" : group.Ignored ? "Ignored" : group.Reviewed ? "Reviewed" : "Unreviewed",
+                        VisualGroupDecisionText(group), group.EvidenceText);
                     _visualGroupsGrid.Rows[row].Tag = group;
                 }
                 if (advanceAfter is { } anchor)
@@ -527,7 +520,7 @@ namespace MediaFlux
                 _visualMembersGrid.Rows.Clear();
                 foreach (VisualSimilarityMemberRecord member in members)
                 {
-                    string keeper = member.IsManualKeeper ? "Recommended to Keep" : member.IsSuggestedKeeper ? "Recommended to Keep" : "Duplicate Candidate";
+                    string keeper = VisualMemberRole(selectedGroup, member);
                     int row = _visualMembersGrid.Rows.Add(keeper, member.IsProtected ? "Yes" : "No", member.FullPath, member.LocationPath,
                         FormatBytes(member.SizeBytes), member.VideoCodec, member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
                         member.TotalBitRate.HasValue ? $"{member.TotalBitRate / 1_000_000d:0.##} Mbps" : "",
@@ -604,12 +597,34 @@ namespace MediaFlux
             await PreviewVisualCleanupAsync(groupIds);
         }
 
-        private async void ReviewBulkVisualCleanup_Click(object? sender, EventArgs e) => await PreviewVisualCleanupAsync(null);
+        internal Func<Task<bool>>? VisualBulkCleanupCommandOverride { get; set; }
+        internal Func<Task>? VisualRulesReviewCommandOverride { get; set; }
 
-        private async void DeleteBothVisual_Click(object? sender, EventArgs e)
+        internal async Task<bool> ReviewBulkVisualCleanupAsync()
         {
-            if (SelectedVisualGroup() is not { } group) return;
-            await PreviewDeleteBothAsync(group.GroupId);
+            if (_visualGlobalCommandRunning) return false;
+            _visualGlobalCommandRunning = true;
+            UpdateVisualActionState();
+            try { return await (VisualBulkCleanupCommandOverride?.Invoke() ?? PreviewVisualCleanupAsync(null)); }
+            finally { _visualGlobalCommandRunning = false; UpdateVisualActionState(); }
+        }
+
+        internal async Task ReviewMatchesUsingFileSelectionRulesAsync()
+        {
+            if (_visualGlobalCommandRunning) return;
+            _visualGlobalCommandRunning = true;
+            UpdateVisualActionState();
+            try { await (VisualRulesReviewCommandOverride?.Invoke() ?? PreviewMassReviewAsync()); }
+            finally { _visualGlobalCommandRunning = false; UpdateVisualActionState(); }
+        }
+
+        private async Task DeleteBothSelectedVisualAsync()
+        {
+            if (_visualGlobalCommandRunning || SelectedVisualGroup() is not { } group) return;
+            _visualGlobalCommandRunning = true;
+            UpdateVisualActionState();
+            try { await PreviewDeleteBothAsync(group.GroupId); }
+            finally { _visualGlobalCommandRunning = false; UpdateVisualActionState(); }
         }
 
         private void VisualSimilarity_ProgressChanged(object? sender, LibraryVisualAnalysisProgress e)
@@ -679,8 +694,6 @@ namespace MediaFlux
             Button recheckButton = _visualRecheckButton!;
             Button previewCleanupButton = _visualPreviewCleanupButton!;
             Button bulkCleanupButton = _visualBulkCleanupButton!;
-            Button rulesReviewButton = _visualRulesReviewButton!;
-            Button deleteBothButton = _visualDeleteBothButton!;
             reviewCompareButton.Enabled = hasGroup;
             _visualKeepButton.Enabled = hasGroup && hasMember && CanSelectVisualKeeper(member!);
             protectionButton.Enabled = hasMember;
@@ -690,9 +703,9 @@ namespace MediaFlux
             ignoredButton.Text = group?.Ignored == true ? "Restore Ignored Match" : "Ignore This Match";
             recheckButton.Enabled = hasGroup;
             previewCleanupButton.Enabled = hasGroup && group?.Ignored != true && group?.NotMatch != true;
-            bulkCleanupButton.Enabled = _visualTotal > 0;
-            rulesReviewButton.Enabled = _visualTotal > 0;
-            deleteBothButton.Enabled = hasGroup && group?.Ignored != true && group?.NotMatch != true;
+            bulkCleanupButton.Enabled = !_visualGlobalCommandRunning;
+            bool rulesReviewEnabled = !_visualGlobalCommandRunning;
+            bool deleteBothEnabled = !_visualGlobalCommandRunning && hasGroup && group?.Ignored != true && group?.NotMatch != true;
             bool canNavigate = hasGroup && _visualTotal > 1;
             if (_visualPreviousMatchButton != null) _visualPreviousMatchButton.Enabled = canNavigate;
             if (_visualNextMatchButton != null) _visualNextMatchButton.Enabled = canNavigate;
@@ -700,18 +713,50 @@ namespace MediaFlux
             _visualFocusMatchLabel.Text = hasGroup && matchIndex >= 0
                 ? $"Match {((long)_visualPage * VisualPageSize + matchIndex + 1):N0} of {_visualTotal:N0}"
                 : "No match selected";
-            if (_visualMoreBulkCleanup != null) _visualMoreBulkCleanup.Enabled = bulkCleanupButton.Enabled;
-            if (_visualMoreAutomation != null) _visualMoreAutomation.Enabled = rulesReviewButton.Enabled;
-            if (_visualMoreDeleteBoth != null) _visualMoreDeleteBoth.Enabled = deleteBothButton.Enabled;
+            if (_visualMoreAutomation != null) _visualMoreAutomation.Enabled = rulesReviewEnabled;
+            if (_visualMoreDeleteBoth != null) _visualMoreDeleteBoth.Enabled = deleteBothEnabled;
             _visualReviewGuidance.Text = !hasGroup
                 ? "Select a match above to review its files."
                 : hasMember
-                    ? $"Selected: {Path.GetFileName(member!.FullPath)} — {VisualMemberRole(member)}. Choose an action below."
+                    ? $"Selected: {Path.GetFileName(member!.FullPath)} — {VisualMemberRole(group!, member!)}. Choose an action below."
                     : "Select one of the two files above, then choose what MediaFlux should do with it.";
         }
 
-        private static string VisualMemberRole(VisualSimilarityMemberRecord member) =>
-            member.IsManualKeeper || member.IsSuggestedKeeper ? "Recommended to Keep" : "Duplicate Candidate";
+        internal static string VisualGroupDecisionText(VisualSimilarityGroupRecord group)
+        {
+            string keeper = group.ManualKeeperFileId.HasValue
+                ? "Manual keeper selected"
+                : group.SuggestedKeeperFileId.HasValue ? "Suggested keeper only" : "No keeper selected";
+            return group.NotMatch
+                ? "Not a match"
+                : group.Ignored ? $"Ignored — {keeper.ToLowerInvariant()}" : keeper;
+        }
+
+        internal static string VisualMemberRole(
+            VisualSimilarityGroupRecord group,
+            VisualSimilarityMemberRecord member,
+            long? effectiveKeeperFileId = null)
+        {
+            bool effectiveKeeper = effectiveKeeperFileId == member.FileId;
+            bool effectiveDecisionProvided = effectiveKeeperFileId.HasValue;
+            if (member.IsManualKeeper || effectiveKeeper && group.ManualKeeperFileId == member.FileId)
+                return member.Availability == IndexedFileAvailability.Present ? "Manual Keeper" : "Manual Keeper (Unavailable)";
+            if (!group.ManualKeeperFileId.HasValue && (member.IsSuggestedKeeper || effectiveKeeper))
+                return member.Availability == IndexedFileAvailability.Present ? "Suggested Keeper" : "Suggested Keeper (Unavailable)";
+            if (!effectiveDecisionProvided && !group.ManualKeeperFileId.HasValue && !group.SuggestedKeeperFileId.HasValue)
+                return "No Keeper Selected";
+            if (group.NotMatch)
+                return "Excluded — Not a Match";
+            if (group.Ignored)
+                return "Excluded — Ignored";
+            if (group.Eligibility != LibraryMatchEligibilityState.Active)
+                return string.IsNullOrWhiteSpace(group.EligibilityReason) ? "Excluded — Inactive" : $"Excluded — {group.EligibilityReason}";
+            if (member.IsProtected)
+                return "Protected — Not Deletable";
+            if (member.Availability != IndexedFileAvailability.Present || !File.Exists(member.FullPath))
+                return "Unavailable — Not Deletable";
+            return group.Reviewed ? "Delete Candidate" : "Delete Candidate (Review Required)";
+        }
         private void AddVisualGroupColumn(string name, string header, int width, bool visible = true) => _visualGroupsGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width, Visible = visible });
         private void AddVisualMemberColumn(string name, string header, int width) => _visualMembersGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width });
     }

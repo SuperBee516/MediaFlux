@@ -38,6 +38,22 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         Assert.Contains(catalog.GetDecisionHistory(), x => x.BatchId == preview.BatchId && x.Source == "mass-review");
 
         catalog.SaveVisualDecision(new VisualGroupDecision(updated.GroupId, null, false, false));
+        LibraryMassReviewPreview manualChangePreview = service.CreatePreview(new LibraryVisualReviewAutomationOptions(false, 1, 0, 70));
+        long explicitManualKeeper = catalog.GetVisualGroupMembers(updated.GroupId)
+            .Single(member => member.FileId != manualChangePreview.EligibleItems.Single().KeeperFileId).FileId;
+        catalog.SaveVisualDecision(new VisualGroupDecision(updated.GroupId, explicitManualKeeper, true, false));
+        LibraryMassReviewApplyResult manualChangeSkipped = service.Apply(manualChangePreview);
+        Assert.Equal(0, manualChangeSkipped.Applied);
+        Assert.Equal(1, manualChangeSkipped.Excluded);
+        Assert.Equal(explicitManualKeeper, catalog.GetVisualGroup(updated.GroupId)!.ManualKeeperFileId);
+
+        LibraryMassReviewPreview noEligible = service.CreatePreview(new LibraryVisualReviewAutomationOptions(false, 1, 0, 70));
+        Assert.Empty(noEligible.EligibleItems);
+        string noEligibleMessage = LibraryAnalyzerForm.BuildMassReviewEmptyMessage(noEligible);
+        Assert.Contains("no eligible deterministic keeper decisions", noEligibleMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("No decisions were changed", noEligibleMessage, StringComparison.OrdinalIgnoreCase);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(updated.GroupId, null, false, false));
         LibraryMassReviewPreview stalePreview = service.CreatePreview(new LibraryVisualReviewAutomationOptions(false, 1, 0, 70));
         using (FileStream changed = new(b, FileMode.Append, FileAccess.Write, FileShare.None))
             changed.WriteByte(1);
@@ -148,7 +164,7 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
             LibraryAnalyzerForm.ResolveVisualReviewKeeperPresentation(efficientMember, null, currentSuggestion);
         Assert.Equal("Candidate", largerPresentation.StatusText);
         Assert.Equal("Set as keeper", largerPresentation.ActionText);
-        Assert.Equal("Suggested keeper", efficientPresentation.StatusText);
+        Assert.Equal("Suggested Keeper", efficientPresentation.StatusText);
         Assert.Equal("Keep (suggested)", efficientPresentation.ActionText);
 
         runtime.UpdateVisualKeeperPreferences(preferences);
@@ -158,7 +174,28 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
         {
             VisualKeeperStrategy = DuplicateKeeperPreferences.PreserveMaximumQuality
         });
-        Assert.Equal(efficientMember.FileId, catalog.GetVisualGroup(group.GroupId)!.ManualKeeperFileId);
+        VisualSimilarityGroupRecord decided = catalog.GetVisualGroup(group.GroupId)!;
+        Assert.Equal(efficientMember.FileId, decided.ManualKeeperFileId);
+        IReadOnlyList<VisualSimilarityMemberRecord> decidedMembers = catalog.GetVisualGroupMembers(group.GroupId);
+        VisualSimilarityMemberRecord manualKeeper = decidedMembers.Single(member => member.FileId == efficientMember.FileId);
+        VisualSimilarityMemberRecord deleteCandidate = decidedMembers.Single(member => member.FileId != efficientMember.FileId);
+        Assert.Equal("Manual keeper selected", LibraryAnalyzerForm.VisualGroupDecisionText(decided));
+        Assert.Equal("Manual Keeper", LibraryAnalyzerForm.VisualMemberRole(decided, manualKeeper));
+        Assert.Equal("Delete Candidate", LibraryAnalyzerForm.VisualMemberRole(decided, deleteCandidate));
+        Assert.Equal("MANUAL KEEPER", LibraryAnalyzerForm.ResolveVisualReviewKeeperPresentation(
+            manualKeeper, decided.ManualKeeperFileId, null, decided).StatusText);
+        Assert.Equal("Delete Candidate", LibraryAnalyzerForm.ResolveVisualReviewKeeperPresentation(
+            deleteCandidate, decided.ManualKeeperFileId, null, decided).StatusText);
+        Assert.Equal("Protected — Not Deletable", LibraryAnalyzerForm.ResolveVisualReviewKeeperPresentation(
+            deleteCandidate with { IsProtected = true }, decided.ManualKeeperFileId, null, decided).StatusText);
+        Assert.Equal("Excluded — Ignored", LibraryAnalyzerForm.VisualMemberRole(decided with { Ignored = true }, deleteCandidate));
+        Assert.Equal("Excluded — Not a Match", LibraryAnalyzerForm.VisualMemberRole(decided with { NotMatch = true }, deleteCandidate));
+        Assert.Equal("Protected — Not Deletable", LibraryAnalyzerForm.VisualMemberRole(decided, deleteCandidate with { IsProtected = true }));
+        Assert.Equal("Unavailable — Not Deletable", LibraryAnalyzerForm.VisualMemberRole(decided,
+            deleteCandidate with { Availability = IndexedFileAvailability.Missing }));
+        Assert.Equal("No Keeper Selected", LibraryAnalyzerForm.VisualMemberRole(
+            decided with { ManualKeeperFileId = null, SuggestedKeeperFileId = null },
+            deleteCandidate with { IsSuggestedKeeper = false, IsManualKeeper = false }));
     }
 
     [Fact]
