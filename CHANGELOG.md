@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.11] - 2026-09-10
+
+### Library Analyzer
+
+- Repaired Visual Duplicates keeper and cleanup workflow with clear Manual Keeper, Suggested Keeper, and Delete Candidate states.
+- Restored Review Files to Delete and file-selection-rules review; fixed More Actions commands.
+- Strengthened cleanup validation and destructive-operation safeguards; global reviewed cleanup no longer depends on the current page or filter.
+- Fixed Library Analyzer navigation so Exact, Visual, and Families remain accessible when no results exist.
+
 ## [1.3.10] - 2026-09-10
 
 ### Library Analyzer Visual Duplicates
