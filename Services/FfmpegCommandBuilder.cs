@@ -107,9 +107,14 @@ namespace MediaFlux.Services
             var builder = new StringBuilder();
             // Decode errors must fail the encode rather than allowing FFmpeg to
             // conceal damaged source packets behind a successful exit code.
-            builder.Append(request.RelaxSourceDecodeErrors
-                ? "-y -err_detect ignore_err "
-                : "-y -xerror -err_detect explode ");
+            builder.Append(request.SourceDecodeMode switch
+            {
+                FfmpegSourceDecodeMode.RecoverAudio => "-y -err_detect ignore_err ",
+                // FFmpeg's ordinary decoder behavior permits localized packet
+                // concealment without globally selecting ignore_err.
+                FfmpegSourceDecodeMode.RecoverVideo => "-y ",
+                _ => "-y -xerror -err_detect explode "
+            });
 
             provider.AppendInputAcceleration(builder, context);
             if (validated.UseGpu && isAsfFamilyInput)

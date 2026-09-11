@@ -48,6 +48,28 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void VideoDecodeRecoveryRelaxesOnlyStrictDecodeFailureHandling()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, preset: "p6",
+            sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideo));
+
+        Assert.Contains("-y -hwaccel cuda", arguments);
+        Assert.DoesNotContain("-xerror", arguments);
+        Assert.DoesNotContain("-err_detect", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-preset p6", arguments);
+    }
+
+    [Fact]
+    public void StrictDecodeModeRemainsTheDefault()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false));
+
+        Assert.Contains("-xerror -err_detect explode", arguments);
+    }
+
+    [Fact]
     public void NvencSoftwareDecodeRecoveryKeepsNvencSettingsAndRemovesCudaDecode()
     {
         string arguments = CreateBuilder().Build(CreateRequest(
@@ -796,6 +818,7 @@ public sealed class FfmpegCommandBuilderTests
         string? restorationFilterOverride = null,
         bool disableHardwareDecode = false,
         OutputContainerDecision? containerDecision = null,
+        FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
         VideoOutputGeometryPlan? plannedVideoGeometry = null)
     {
         ResolvedVideoEncoder encoder =
@@ -825,6 +848,7 @@ public sealed class FfmpegCommandBuilderTests
              restorationFilterOverride,
              disableHardwareDecode,
              containerDecision,
+             sourceDecodeMode,
              plannedVideoGeometry);
     }
 
@@ -853,6 +877,7 @@ public sealed class FfmpegCommandBuilderTests
         string? restorationFilterOverride = null,
         bool disableHardwareDecode = false,
         OutputContainerDecision? containerDecision = null,
+        FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
         VideoOutputGeometryPlan? plannedVideoGeometry = null)
     {
 
@@ -900,6 +925,7 @@ public sealed class FfmpegCommandBuilderTests
             NvencHighBitDepthOutputSupported =
                 nvencHighBitDepthOutputSupported,
             DisableHardwareDecode = disableHardwareDecode,
+            SourceDecodeMode = sourceDecodeMode,
             SourcePixelFormat = sourcePixelFormat,
             PlannedVideoGeometry = plannedVideoGeometry,
             SplitSource = splitSource,

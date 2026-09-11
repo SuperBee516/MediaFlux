@@ -900,9 +900,13 @@ namespace MediaFlux.Services
                 $"using '{input}' -> staged '{output}' (final '{finalOutput}')");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
 
-            using PerformanceTimingService.PerformanceScope encodeScope = performance.Measure(PerformanceTimingStage.FinalEncode);
-            FfmpegProcessResult runResult = await RunFfmpegAsync(
-                ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+            FfmpegProcessResult runResult;
+            using (PerformanceTimingService.PerformanceScope initialEncodeScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+            {
+                runResult = await RunFfmpegAsync(
+                    ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                initialEncodeScope.Complete();
+            }
 
             string recoveryDiagnostics = "";
             bool cudaRecoveryAttempted = false;
@@ -941,7 +945,11 @@ namespace MediaFlux.Services
                     }
                     pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
                     _log?.Invoke($"[EncodingService] Attempt 2: software decode -> NVENC; pipeline={pipelineDiagnostic}; ffmpeg arguments: {ffArgs}");
-                    runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                    using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                    {
+                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                        retryScope.Complete();
+                    }
                     _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery retry result: exit={runResult.ExitCode}.");
                 }
                 else
@@ -979,12 +987,18 @@ namespace MediaFlux.Services
                 _log?.Invoke(
                     $"[EncodingService] Pipeline fallback: {failedPipeline} -> " +
                     $"{pipelineDiagnostic}. ffmpeg arguments: {ffArgs}");
-                runResult = await RunFfmpegAsync(
-                    ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                {
+                    runResult = await RunFfmpegAsync(
+                        ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                    retryScope.Complete();
+                }
             }
 
             bool audioRecoveryAttempted = false;
-            if (runResult.ExitCode != 0 && compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
+            if (runResult.ExitCode != 0 &&
+                compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent &&
+                !cancellationToken.IsCancellationRequested)
             {
                 int? corruptAudioStream = SourceAudioDecodePreflightService.FindCorruptAudioStreamIndex(runResult.StandardError);
                 int audioStreamIndex = corruptAudioStream ?? -1;
@@ -996,9 +1010,7 @@ namespace MediaFlux.Services
                 if (copiedPlan is not null)
                 {
                     audioRecoveryAttempted = true;
-                    using (PerformanceTimingService.PerformanceScope recoveryScope = performance.Measure(PerformanceTimingStage.AudioIntegrityRecovery))
-                    {
-                        string recoveryCodec = OutputContainerPolicy.SafeAudioRecoveryCodec(containerDecision.Resolved);
+                    string recoveryCodec = OutputContainerPolicy.SafeAudioRecoveryCodec(containerDecision.Resolved);
                         _log?.Invoke($"[EncodingService] Audio corruption detected: stream #{audioStreamIndex}; Copy -> Transcode; codec={recoveryCodec}.");
                         _log?.Invoke($"[EncodingService] Audio recovery initiated for stream #{audioStreamIndex}; policy=Intelligent; attempt=1.");
                         callback($"[MediaFlux] Recovering audio stream #{audioStreamIndex} by transcoding to {recoveryCodec}.");
@@ -1018,18 +1030,69 @@ namespace MediaFlux.Services
                                     splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                                     restorationFilterOverride: aiPlan?.PostAiFilterChain,
                                     plannedVideoGeometry: plannedOutputGeometry,
-                                    relaxSourceDecodeErrors: true);
+                                    sourceDecodeMode: FfmpegSourceDecodeMode.RecoverAudio);
                                 scope.Complete();
                             }
-                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                            using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.AudioIntegrityRecovery))
+                            {
+                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                                retryScope.Complete();
+                            }
                             _log?.Invoke(runResult.ExitCode == 0
                                 ? $"[EncodingService] Audio recovery success: stream #{audioStreamIndex} transcoded to {recoveryCodec}; continuing through normal validation/finalization."
                                 : $"[EncodingService] Audio recovery failure: stream #{audioStreamIndex}; exit={runResult.ExitCode}; bounded diagnostics retained.");
                         }
                         else
                             _log?.Invoke($"[EncodingService] Audio recovery failure: stream #{audioStreamIndex}; failed staged output could not be removed safely.");
-                        recoveryScope.Complete();
+                }
+            }
+
+            bool videoRecoveryAttempted = false;
+            if (runResult.ExitCode != 0)
+            {
+                FfmpegVideoDecodeRecoveryDecision recovery = FfmpegVideoDecodeRecoveryPolicy.Evaluate(
+                    runResult.StandardError,
+                    compatibilityPolicy,
+                    cancellationToken.IsCancellationRequested,
+                    videoRecoveryAttempted,
+                    requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
+                    output);
+                if (recovery.Eligible)
+                {
+                    videoRecoveryAttempted = true;
+                    _log?.Invoke($"[EncodingService] Reliable source video corruption detected on strict attempt. Evidence: {recovery.Evidence}.");
+                    _log?.Invoke("[EncodingService] Intelligent recovery: retrying once with tolerant source-video decode handling. Encoder/settings unchanged.");
+                    callback("[MediaFlux] Recovering source video decode once; encoder and settings are unchanged.");
+                    recoveryDiagnostics += $"Strict source-video corruption evidence: {recovery.Evidence}.{Environment.NewLine}";
+                    if (TryDeleteFailedStagingOutput(output))
+                    {
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                        {
+                            ffArgs = BuildFfmpegArgs(
+                                inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                sourcePixelFormat, restoration: restoration,
+                                splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                plannedVideoGeometry: plannedOutputGeometry,
+                                sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideo);
+                            scope.Complete();
+                        }
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
+                        {
+                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                            scope.Complete();
+                        }
+                        if (runResult.ExitCode == 0)
+                            _log?.Invoke("[EncodingService] Video decode recovery succeeded; validating recovered output.");
+                        else
+                            _log?.Invoke("[EncodingService] Video decode recovery failed; no further recovery attempts will be made.");
                     }
+                    else
+                        _log?.Invoke("[EncodingService] Video decode recovery failed; failed staged output could not be removed safely.");
                 }
             }
 
@@ -1048,7 +1111,7 @@ namespace MediaFlux.Services
                     runResult.StandardError);
 
                 _log?.Invoke($"[EncodingService] ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
-                string recoverySuffix = string.IsNullOrWhiteSpace(recoveryDiagnostics)
+                string recoverySuffix = !cudaRecoveryAttempted
                     ? ""
                     : cudaRecoveryStarted
                         ? " The software-decode NVENC recovery attempt also failed; both attempt diagnostics were recorded."
@@ -1076,17 +1139,14 @@ namespace MediaFlux.Services
                 string audioSuffix = audioRecoveryAttempted
                     ? " The one-time Intelligent audio recovery attempt also failed; the original source was retained."
                     : "";
-                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{recoverySuffix}{audioSuffix} See central log: {logPath}");
+                string videoSuffix = videoRecoveryAttempted
+                    ? " The one-time Intelligent video decode recovery attempt also failed; the original source was retained."
+                    : "";
+                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{recoverySuffix}{audioSuffix}{videoSuffix} See central log: {logPath}");
             }
-            encodeScope.Complete();
-            encodeScope.Dispose();
-
             _log?.Invoke(
                 "[EncodingService] ffmpeg completed successfully; validating staged output.");
-            EncodeFinalizationResult finalization;
-            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.Finalization))
-            {
-            finalization =
+            EncodeFinalizationResult finalization =
                 await _finalizationService.FinalizeAsync(
                     new EncodeOutputValidationRequest
                     {
@@ -1115,8 +1175,6 @@ namespace MediaFlux.Services
                     },
                     finalizationStatusCallback,
                     cancellationToken).ConfigureAwait(false);
-            if (finalization.Success) scope.Complete();
-            }
             if (!finalization.Success)
             {
                 FfmpegSourceDecodeCorruption sourceDecodeCorruption =
@@ -1516,7 +1574,7 @@ namespace MediaFlux.Services
             string? sourcePixelFormat = null,
             bool preferNvencGpuResidentFrames = true,
             bool disableHardwareDecode = false,
-            bool relaxSourceDecodeErrors = false,
+            FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
             VideoRestorationSettings? restoration = null,
             SplitSourceInput? splitSource = null,
             string? restorationFilterOverride = null,
@@ -1596,7 +1654,7 @@ namespace MediaFlux.Services
                 PreferNvencGpuResidentFrames =
                     preferNvencGpuResidentFrames,
                 DisableHardwareDecode = disableHardwareDecode,
-                RelaxSourceDecodeErrors = relaxSourceDecodeErrors,
+                SourceDecodeMode = sourceDecodeMode,
                 SourcePixelFormat = sourcePixelFormat ?? ""
                 ,SplitSource = splitSource
                 ,RestorationFilterOverride = restorationFilterOverride

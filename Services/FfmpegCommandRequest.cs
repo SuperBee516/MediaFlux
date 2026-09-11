@@ -2,6 +2,13 @@ using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
+    internal enum FfmpegSourceDecodeMode
+    {
+        Strict,
+        RecoverAudio,
+        RecoverVideo
+    }
+
     /// <summary>Maps replacement video separately from the original ancillary streams.</summary>
     internal sealed record SplitSourceInput(string VideoPath, EncodingInputSource AncillarySource);
 
@@ -39,7 +46,7 @@ namespace MediaFlux.Services
         // Keeps NVENC active while deliberately removing NVDEC/CUDA input
         // acceleration for a single device-recovery retry.
         public bool DisableHardwareDecode { get; init; }
-        public bool RelaxSourceDecodeErrors { get; init; }
+        public FfmpegSourceDecodeMode SourceDecodeMode { get; init; } = FfmpegSourceDecodeMode.Strict;
         public string SourcePixelFormat { get; init; } = "";
         public VideoOutputGeometryPlan? PlannedVideoGeometry { get; init; }
         public TimeSpan? SampleStart { get; init; }

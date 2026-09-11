@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.13] - 2026-09-11
+
+### Encoding Reliability
+
+- Added Intelligent recovery for localized source-video corruption that would otherwise abort an encode.
+- MediaFlux now retries once with tolerant source-video decoding while preserving the requested encoder, quality, bitrate, mappings, audio, subtitles, and container settings.
+- Strict mode continues to fail immediately on source decode corruption.
+- Existing output validation and staged finalization remain authoritative, preventing incomplete or invalid recovered outputs from being promoted.
+- Improved encode/recovery timing diagnostics and removed validation timing double-counting.
+
 ## [1.3.12] - 2026-09-10
 
 ### Encoding Reliability & Performance

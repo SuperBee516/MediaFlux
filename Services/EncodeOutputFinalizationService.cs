@@ -97,7 +97,11 @@ namespace MediaFlux.Services
             statusCallback?.Invoke("Finalizing");
             try
             {
-                _promoter.Promote(request.OutputPath, request.FinalOutputPath);
+                using (PerformanceTimingService.PerformanceScope? scope = request.PerformanceTiming?.Measure(PerformanceTimingStage.Finalization))
+                {
+                    _promoter.Promote(request.OutputPath, request.FinalOutputPath);
+                    scope?.Complete();
+                }
             }
             catch (Exception ex)
             {
