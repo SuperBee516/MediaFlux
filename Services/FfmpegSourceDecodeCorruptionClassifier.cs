@@ -44,4 +44,41 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
             .ToArray();
         return new(bitstreamMatches.Length > 0 && decoderRejected, evidence);
     }
+
+    /// <summary>
+    /// Benchmark-only classification for FFmpeg's causal decoder/teardown sequence.
+    /// The production classifier intentionally remains unchanged.
+    /// </summary>
+    public static FfmpegSourceDecodeCorruption ClassifyForBenchmark(string? standardError)
+    {
+        if (string.IsNullOrWhiteSpace(standardError))
+            return new(false, Array.Empty<string>());
+
+        string[] lines = standardError.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+        int decoderIndex = Array.FindIndex(lines, line =>
+            line.Contains("Error submitting packet to decoder", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("Error processing packet in decoder", StringComparison.OrdinalIgnoreCase));
+        if (decoderIndex < 0)
+            return new(false, Array.Empty<string>());
+
+        int bitstreamIndex = Array.FindIndex(lines, line =>
+            line.Contains("Invalid NAL unit size", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("missing picture in access unit", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("Error splitting the input into NAL units", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("mmco: unref short failure", StringComparison.OrdinalIgnoreCase));
+        if (bitstreamIndex < 0 || bitstreamIndex > decoderIndex)
+            return new(false, Array.Empty<string>());
+
+        string[] evidence = lines
+            .Take(decoderIndex + 1)
+            .Where(line => line.Contains("mmco: unref short failure", StringComparison.OrdinalIgnoreCase) ||
+                           line.Contains("Invalid NAL unit size", StringComparison.OrdinalIgnoreCase) ||
+                           line.Contains("missing picture in access unit", StringComparison.OrdinalIgnoreCase) ||
+                           line.Contains("Error splitting the input into NAL units", StringComparison.OrdinalIgnoreCase) ||
+                           line.Contains("Error submitting packet to decoder", StringComparison.OrdinalIgnoreCase) ||
+                           line.Contains("Error processing packet in decoder", StringComparison.OrdinalIgnoreCase))
+            .Take(6)
+            .ToArray();
+        return new(true, evidence);
+    }
 }

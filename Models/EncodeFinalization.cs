@@ -10,6 +10,12 @@ namespace MediaFlux.Models
         FinalVerification = 3
     }
 
+    public enum EncodeOutputValidationProfile
+    {
+        Production = 0,
+        BenchmarkSample = 1
+    }
+
     public sealed class EncodeOutputValidationRequest
     {
         public required EncodingInputSource Input { get; init; }
@@ -39,6 +45,7 @@ namespace MediaFlux.Models
         public int? ExpectedVideoWidth { get; init; }
         public int? ExpectedVideoHeight { get; init; }
         public PerformanceTimingService? PerformanceTiming { get; init; }
+        public EncodeOutputValidationProfile Profile { get; init; } = EncodeOutputValidationProfile.Production;
     }
 
     public sealed class EncodeOutputValidationEvidence

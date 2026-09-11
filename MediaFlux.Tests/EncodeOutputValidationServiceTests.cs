@@ -651,6 +651,17 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void BenchmarkSampleDoesNotRequireFullSourceChapterCount()
+    {
+        MediaProbeResult source = CloneProbe(SourceProbe(), chapters: Chapters(
+            (1, 0, 40, "One"), (2, 40, 80, "Two"), (3, 80, 100, "Three")));
+        MediaProbeResult output = CloneProbe(OutputProbe(duration: 25), chapters: Chapters((2, 0, 25, "Two")));
+        EncodeOutputValidationRequest request = Request(profile: EncodeOutputValidationProfile.BenchmarkSample);
+
+        Assert.DoesNotContain("chapter", EncodeOutputValidationService.ValidateProbe(request, source, output), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void DvdValidationUsesCombinedLogicalDurationNotFirstSegmentDuration()
     {
         EncodeOutputValidationRequest request = new()
@@ -726,7 +737,8 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         bool copySubtitles = false,
         bool tenBit = false,
         int? expectedWidth = null,
-        int? expectedHeight = null) => new()
+        int? expectedHeight = null,
+        EncodeOutputValidationProfile profile = EncodeOutputValidationProfile.Production) => new()
     {
         Input = EncodingInputSource.FromFile(_sourcePath),
         OutputPath = _outputPath,
@@ -740,7 +752,8 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         MapMode = EncodingService.StreamMapMode.KeepAll,
         CopySubtitles = copySubtitles,
         ExpectedVideoWidth = expectedWidth,
-        ExpectedVideoHeight = expectedHeight
+        ExpectedVideoHeight = expectedHeight,
+        Profile = profile
     };
 
     private static EncodeOutputValidationRequest FrameRequest(long expected, FrameCountProvenance provenance, double duration = 100, SourceTimingAnalysis? sourceTiming = null, bool copySubtitles = false, OutputContainerDecision? containerDecision = null) => new()

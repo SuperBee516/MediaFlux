@@ -80,6 +80,7 @@ public sealed class EncoderBenchmarkTests : IDisposable
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run);
+        Assert.Single(runner.Requests);
         Assert.False(Directory.Exists(temp) && Directory.EnumerateFileSystemEntries(temp).Any());
     }
 
@@ -96,6 +97,143 @@ public sealed class EncoderBenchmarkTests : IDisposable
         Assert.Null(result.GpuEncodePercent);
         Assert.Contains("unavailable", result.TelemetryStatus, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("exit 1", EncoderBenchmarkService.BuildTechnicalDetails(report.Definition, report.Sample, result), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task HealthyBenchmarkUsesOnlyTheExistingStrictSampleAttempt()
+    {
+        var runner = new ScriptedRunner(_ => SuccessfulMeasurement());
+        EncoderBenchmarkReport report = await Service(runner).RunAsync(new EncoderBenchmarkRequest(
+            Definition(), new[] { "p5" }, new[] { 1 }, 10));
+
+        Assert.Single(runner.Requests);
+        Assert.False(runner.Requests[0].TolerantVideoDecode);
+        EncoderBenchmarkConfigurationResult result = Assert.Single(report.Results);
+        Assert.Equal("Completed", result.Status);
+        Assert.Equal(1, Assert.Single(result.Jobs).AttemptCount);
+    }
+
+    [Fact]
+    public async Task RecognizedVideoDecodeFailureRetriesSameSampleOnceWithTolerantDecode()
+    {
+        var runner = new ScriptedRunner(request => request.TolerantVideoDecode
+            ? SuccessfulMeasurement()
+            : FailedDecodeMeasurement());
+        EncoderBenchmarkReport report = await Service(runner).RunAsync(new EncoderBenchmarkRequest(
+            Definition(), new[] { "p6" }, new[] { 1 }, 10));
+
+        Assert.Equal(2, runner.Requests.Count);
+        Assert.All(runner.Requests, x => Assert.Equal(TimeSpan.FromSeconds(40), x.Sample.Start));
+        Assert.False(runner.Requests[0].TolerantVideoDecode);
+        Assert.True(runner.Requests[1].TolerantVideoDecode);
+        EncoderBenchmarkConfigurationResult result = Assert.Single(report.Results);
+        Assert.Equal("Completed (decode recovery)", result.Status);
+        Assert.Equal(2, Assert.Single(result.Jobs).AttemptCount);
+        Assert.Contains("tolerant", EncoderBenchmarkService.BuildTechnicalDetails(report.Definition, report.Sample, result));
+    }
+
+    [Fact]
+    public async Task PersistentPrimaryDecodeFailureUsesBoundedAlternateSample()
+    {
+        var runner = new ScriptedRunner(request => request.Sample.Start == TimeSpan.FromSeconds(55) && !request.TolerantVideoDecode
+            ? SuccessfulMeasurement()
+            : FailedDecodeMeasurement());
+        EncoderBenchmarkReport report = await Service(runner).RunAsync(new EncoderBenchmarkRequest(
+            Definition(), new[] { "p5" }, new[] { 1 }, 10));
+
+        Assert.Equal(new[] { 40d, 40d, 55d }, runner.Requests.Select(x => x.Sample.Start.TotalSeconds));
+        EncoderBenchmarkConfigurationResult result = Assert.Single(report.Results);
+        Assert.Equal("Completed (alternate sample)", result.Status);
+        Assert.True(Assert.Single(result.Jobs).UsedAlternateSample);
+    }
+
+    [Fact]
+    public async Task PersistentVideoCorruptionTerminatesWithSourceSampleStatus()
+    {
+        var runner = new ScriptedRunner(_ => FailedDecodeMeasurement());
+        EncoderBenchmarkReport report = await Service(runner).RunAsync(new EncoderBenchmarkRequest(
+            Definition(), new[] { "p5" }, new[] { 1 }, 10));
+
+        Assert.Equal(6, runner.Requests.Count);
+        EncoderBenchmarkConfigurationResult result = Assert.Single(report.Results);
+        Assert.Equal("Source sample decode failed", result.Status);
+        Assert.Contains("Source unsuitable for benchmarking", result.Error);
+    }
+
+    [Fact]
+    public async Task EncoderFailureDoesNotTriggerDecodeRecovery()
+    {
+        var runner = new ScriptedRunner(_ => new EncoderBenchmarkJobMeasurement(1, false, TimeSpan.Zero, 0, 0, 0, "", "", 1, "NV_ENC_ERR_INVALID_PARAM"));
+        EncoderBenchmarkReport report = await Service(runner).RunAsync(new EncoderBenchmarkRequest(
+            Definition(), new[] { "p5" }, new[] { 1 }, 10));
+
+        Assert.Single(runner.Requests);
+        Assert.Equal("Encoder failed", Assert.Single(report.Results).Status);
+    }
+
+    [Fact]
+    public async Task CascadingDecoderFailureTakesPrecedenceOverNvencTeardown()
+    {
+        const string cascading = "[h264] mmco: unref short failure\n" +
+            "[dec:h264] Error submitting packet to decoder: Invalid data found when processing input\n" +
+            "[dec:h264] Error processing packet in decoder: Invalid data found when processing input\n" +
+            "[dec:h264] Task finished with error code: -1094995529\n" +
+            "[hevc_nvenc] Could not open encoder before EOF\n" +
+            "[hevc_nvenc] Task finished with error code: -22 (Invalid argument)\n" +
+            "Nothing was written into output file\nConversion failed";
+        var runner = new ScriptedRunner(request => request.TolerantVideoDecode
+            ? SuccessfulMeasurement()
+            : new EncoderBenchmarkJobMeasurement(1, false, TimeSpan.Zero, 0, 0, 0, "", "", 1, cascading));
+
+        EncoderBenchmarkReport report = await Service(runner).RunAsync(new EncoderBenchmarkRequest(
+            Definition(), new[] { "p5" }, new[] { 1 }, 10));
+
+        Assert.Equal(2, runner.Requests.Count);
+        Assert.True(runner.Requests[1].TolerantVideoDecode);
+        Assert.Equal("Completed (decode recovery)", Assert.Single(report.Results).Status);
+    }
+
+    [Theory]
+    [InlineData("No space left on device while writing output.mkv")]
+    [InlineData("unclassified ffmpeg failure")]
+    public async Task StorageAndUnknownFailuresDoNotTriggerDecodeRecovery(string error)
+    {
+        var runner = new ScriptedRunner(_ => new EncoderBenchmarkJobMeasurement(1, false, TimeSpan.Zero, 0, 0, 0, "", "", 1, error));
+        await Service(runner).RunAsync(new EncoderBenchmarkRequest(Definition(), new[] { "p5" }, new[] { 1 }, 10));
+
+        Assert.Single(runner.Requests);
+    }
+
+    [Fact]
+    public void SuccessfulFpsFallsBackToEncodedFramesOverSuccessfulElapsedTime()
+    {
+        Assert.Equal(24, EncoderBenchmarkService.CalculateSuccessfulFps(
+            Array.Empty<double>(), 600, TimeSpan.FromSeconds(25)), 3);
+        Assert.Equal(60, EncoderBenchmarkService.CalculateSuccessfulFps(
+            new[] { 60d }, 0, TimeSpan.FromSeconds(25)), 3);
+        Assert.Equal(0, EncoderBenchmarkService.CalculateSuccessfulFps(
+            Array.Empty<double>(), 0, TimeSpan.FromSeconds(25)));
+    }
+
+    [Fact]
+    public void TechnicalDetailsForResultsIncludesEveryConfigurationAndAttemptHistory()
+    {
+        EncoderBenchmarkDefinition definition = Definition();
+        EncoderBenchmarkSample sample = EncoderBenchmarkService.SelectRepresentativeSample(definition.SourceDuration, 10);
+        var first = new EncoderBenchmarkConfigurationResult(
+            "p5", 1, true,
+            new[] { new EncoderBenchmarkJobMeasurement(1, true, TimeSpan.FromSeconds(1), 60, 2, 1000, "-xerror -err_detect explode", "NVENC", 0, "", 2, true, false, sample, "Video decode corruption recovered", "40 (strict): failed; 40 (tolerant): succeeded") },
+            60, 2, 60, 2, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(50), null, null, null, null, null, null, null, "Unavailable", "Completed (decode recovery)", "");
+        var second = first with { Preset = "p6", Status = "Source sample decode failed" };
+
+        string text = EncoderBenchmarkService.BuildTechnicalDetailsForResults(definition, sample, new[] { first, second });
+
+        Assert.Contains("Encoder / preset: GPU (NVENC) / p5", text);
+        Assert.Contains("Encoder / preset: GPU (NVENC) / p6", text);
+        Assert.Contains("Benchmark attempts: 2", text);
+        Assert.Contains("40 (tolerant): succeeded", text);
+        Assert.Contains("Completed (decode recovery)", text);
+        Assert.Contains("Source sample decode failed", text);
     }
 
     [Fact]
@@ -150,7 +288,7 @@ public sealed class EncoderBenchmarkTests : IDisposable
         Assert.DoesNotContain("-t 25", normal);
     }
 
-    private EncoderBenchmarkService Service(FakeRunner runner) => new(
+    private EncoderBenchmarkService Service(IEncoderBenchmarkJobRunner runner) => new(
         runner, new UnavailableTelemetry(), Path.Combine(_root, Guid.NewGuid().ToString("N")), TimeSpan.FromMilliseconds(5));
 
     private EncoderBenchmarkDefinition Definition()
@@ -198,6 +336,25 @@ public sealed class EncoderBenchmarkTests : IDisposable
                 : new(request.JobNumber, true, _delay, 60, 2, 1_000_000, "-safe benchmark args", "NVDEC -> NVENC", 0, "");
         }
     }
+
+    private sealed class ScriptedRunner : IEncoderBenchmarkJobRunner
+    {
+        private readonly Func<EncoderBenchmarkJobRequest, EncoderBenchmarkJobMeasurement> _run;
+        public List<EncoderBenchmarkJobRequest> Requests { get; } = new();
+        public ScriptedRunner(Func<EncoderBenchmarkJobRequest, EncoderBenchmarkJobMeasurement> run) => _run = run;
+        public Task<EncoderBenchmarkJobMeasurement> RunAsync(EncoderBenchmarkJobRequest request, IProgress<string>? progress, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            return Task.FromResult(_run(request) with { JobNumber = request.JobNumber });
+        }
+    }
+
+    private static EncoderBenchmarkJobMeasurement SuccessfulMeasurement() =>
+        new(1, true, TimeSpan.FromSeconds(1), 60, 2, 1_000, "args", "NVENC", 0, "");
+
+    private static EncoderBenchmarkJobMeasurement FailedDecodeMeasurement() =>
+        new(1, false, TimeSpan.FromSeconds(1), 0, 0, 0, "args", "", 1,
+            "[h264] Invalid NAL unit size\nError submitting packet to decoder: Invalid data found when processing input");
 }
 
 [Collection("LibraryAnalyzerUi")]

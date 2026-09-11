@@ -50,7 +50,8 @@ public sealed record EncoderBenchmarkJobRequest(
     int Concurrency,
     int JobNumber,
     string OutputFolder,
-    double? SampleTargetMb);
+    double? SampleTargetMb,
+    bool TolerantVideoDecode = false);
 
 public sealed record EncoderBenchmarkJobMeasurement(
     int JobNumber,
@@ -62,7 +63,13 @@ public sealed record EncoderBenchmarkJobMeasurement(
     string FfmpegArguments,
     string Pipeline,
     int? ExitCode,
-    string Error);
+    string Error,
+    int AttemptCount = 1,
+    bool UsedDecodeRecovery = false,
+    bool UsedAlternateSample = false,
+    EncoderBenchmarkSample? ActualSample = null,
+    string FailureClassification = "",
+    string AttemptDetails = "");
 
 public sealed record EncoderBenchmarkConfigurationResult(
     string Preset,
@@ -83,6 +90,7 @@ public sealed record EncoderBenchmarkConfigurationResult(
     double? GpuDecodePercent,
     long? PeakVramBytes,
     string TelemetryStatus,
+    string Status,
     string Error);
 
 public sealed record EncoderBenchmarkReport(
@@ -125,17 +133,13 @@ public sealed class EncodingServiceBenchmarkJobRunner : IEncoderBenchmarkJobRunn
     {
         var speedValues = new List<double>();
         var fpsValues = new List<double>();
+        long encodedFrames = 0;
+        var decoderDiagnostics = new StringBuilder();
         string pipeline = "Unavailable";
         Action<string> callback = line =>
         {
             if (line.StartsWith("[MediaFlux] Video pipeline:", StringComparison.OrdinalIgnoreCase))
                 pipeline = line[(line.IndexOf(':') + 1)..].Trim();
-            if (EncodingDiagnosticsService.TryParseProgress(
-                    line, request.Sample.Duration.TotalSeconds, out var value))
-            {
-                if (value.Speed > 0) speedValues.Add(value.Speed);
-                if (value.Fps > 0) fpsValues.Add(value.Fps);
-            }
             progress?.Report($"{request.Preset}, {request.Concurrency} job(s): " + line);
         };
         var encoder = new EncodingService(
@@ -166,7 +170,26 @@ public sealed class EncodingServiceBenchmarkJobRunner : IEncoderBenchmarkJobRunn
                 ContainerCompatibilityConfirmed = request.Definition.Settings.ContainerCompatibilityConfirmed,
                 CancellationToken = cancellationToken,
                 SampleStart = request.Sample.Start,
-                SampleDuration = request.Sample.Duration
+                SampleDuration = request.Sample.Duration,
+                SourceDecodeMode = request.TolerantVideoDecode
+                    ? FfmpegSourceDecodeMode.RecoverVideo
+                    : FfmpegSourceDecodeMode.Strict,
+                DisableAutomaticFfmpegRecovery = true,
+                FfmpegDiagnosticCallback = line =>
+                {
+                    if (decoderDiagnostics.Length < 32_768)
+                        decoderDiagnostics.AppendLine(line);
+                    if (EncodingDiagnosticsService.TryParseProgress(
+                        line, request.Sample.Duration.TotalSeconds, out var value))
+                    {
+                        if (value.Speed > 0) speedValues.Add(value.Speed);
+                        if (value.Fps > 0) fpsValues.Add(value.Fps);
+                    }
+                    Match frame = Regex.Match(line, @"(?:^|\s)frame=\s*(\d+)", RegexOptions.IgnoreCase);
+                    if (frame.Success && long.TryParse(frame.Groups[1].Value, out long count))
+                        encodedFrames = Math.Max(encodedFrames, count);
+                }
+                ,ValidationProfile = EncodeOutputValidationProfile.BenchmarkSample
             }).ConfigureAwait(false);
             stopwatch.Stop();
             double realtime = stopwatch.Elapsed.TotalSeconds > 0
@@ -175,7 +198,7 @@ public sealed class EncodingServiceBenchmarkJobRunner : IEncoderBenchmarkJobRunn
             return new EncoderBenchmarkJobMeasurement(
                 request.JobNumber, result.Success && result.FinalizationSucceeded,
                 stopwatch.Elapsed,
-                fpsValues.Count == 0 ? 0 : fpsValues.Average(),
+                EncoderBenchmarkService.CalculateSuccessfulFps(fpsValues, encodedFrames, stopwatch.Elapsed),
                 speedValues.Count == 0 ? realtime : speedValues.Average(),
                 result.FinalOutputSizeBytes ?? 0,
                 result.DiagnosticArguments, pipeline, 0,
@@ -191,9 +214,13 @@ public sealed class EncodingServiceBenchmarkJobRunner : IEncoderBenchmarkJobRunn
             Match exit = Regex.Match(ex.Message, @"exit(?:ed)?\s+(?:with\s+)?code\s+(\d+)", RegexOptions.IgnoreCase);
             return new EncoderBenchmarkJobMeasurement(
                 request.JobNumber, false, stopwatch.Elapsed, 0, 0, 0, "", pipeline,
-                exit.Success ? int.Parse(exit.Groups[1].Value) : null, ex.Message);
+                exit.Success ? int.Parse(exit.Groups[1].Value) : null,
+                string.IsNullOrWhiteSpace(decoderDiagnostics.ToString())
+                    ? ex.Message
+                    : $"{ex.Message}{Environment.NewLine}{decoderDiagnostics}");
         }
     }
+
 }
 
 public sealed class EncoderBenchmarkService : IDisposable
@@ -267,8 +294,8 @@ public sealed class EncoderBenchmarkService : IDisposable
         Task sampling = SampleTelemetryAsync(telemetry, samplingCts.Token);
         var wall = Stopwatch.StartNew();
         Task<EncoderBenchmarkJobMeasurement>[] jobs = Enumerable.Range(1, concurrency)
-            .Select(index => _runner.RunAsync(new EncoderBenchmarkJobRequest(
-                definition, sample, preset, concurrency, index, folder, sampleTarget),
+            .Select(index => RunJobWithDecodeRecoveryAsync(
+                definition, sample, preset, concurrency, index, folder, sampleTarget,
                 progress, cancellationToken))
             .ToArray();
         EncoderBenchmarkJobMeasurement[] measurements;
@@ -293,6 +320,11 @@ public sealed class EncoderBenchmarkService : IDisposable
         double? sourceRead = anySuccess && definition.SourceDuration.TotalSeconds > 0 && wall.Elapsed.TotalSeconds > 0
             ? definition.SourceSizeBytes * 8d / definition.SourceDuration.TotalSeconds * aggregateSpeed / 1_000_000d
             : null;
+        string status = measurements.All(x => x.Success)
+            ? measurements.Any(x => x.UsedAlternateSample) ? "Completed (alternate sample)"
+            : measurements.Any(x => x.UsedDecodeRecovery) ? "Completed (decode recovery)" : "Completed"
+            : measurements.Where(x => !x.Success).All(x => x.FailureClassification == "Video decode corruption")
+                ? "Source sample decode failed" : "Encoder failed";
         return new EncoderBenchmarkConfigurationResult(
             preset, concurrency, measurements.All(x => x.Success), measurements,
             Average(measurements.Where(x => x.Success).Select(x => x.EncodeFps)), averageSpeed,
@@ -307,7 +339,89 @@ public sealed class EncoderBenchmarkService : IDisposable
             AverageNullable(samples.Select(x => x.GpuDecodePercent)),
             Peak(samples.Select(x => x.VramUsedBytes)),
             samples.Select(x => x.GpuStatus).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "Telemetry unavailable.",
+            status,
             string.Join(" | ", measurements.Where(x => !x.Success).Select(x => x.Error)));
+    }
+
+    private async Task<EncoderBenchmarkJobMeasurement> RunJobWithDecodeRecoveryAsync(
+        EncoderBenchmarkDefinition definition, EncoderBenchmarkSample primarySample, string preset,
+        int concurrency, int jobNumber, string folder, double? sampleTarget,
+        IProgress<string>? progress, CancellationToken cancellationToken)
+    {
+        var attempts = new List<EncoderBenchmarkJobMeasurement>();
+        var attemptDetails = new List<string>();
+        foreach ((EncoderBenchmarkSample sample, bool tolerant, bool alternate) attempt in
+            EnumerateAttempts(definition, primarySample))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EncoderBenchmarkJobMeasurement measurement = await _runner.RunAsync(new EncoderBenchmarkJobRequest(
+                definition, attempt.sample, preset, concurrency, jobNumber, folder,
+                sampleTarget, attempt.tolerant), progress, cancellationToken).ConfigureAwait(false);
+            measurement = measurement with { ActualSample = attempt.sample };
+            attempts.Add(measurement);
+            if (measurement.Success)
+            {
+                attemptDetails.Add($"{attempt.sample.Start:g} ({(attempt.tolerant ? "tolerant" : "strict")}): succeeded");
+                return measurement with
+                {
+                    AttemptCount = attempts.Count,
+                    UsedDecodeRecovery = attempts.Any(x => !x.Success),
+                    UsedAlternateSample = attempt.alternate,
+                    ActualSample = attempt.sample,
+                    FailureClassification = attempts.Count > 1 ? "Video decode corruption recovered" : "",
+                    AttemptDetails = string.Join("; ", attemptDetails)
+                };
+            }
+
+            FfmpegVideoDecodeRecoveryDecision decision = FfmpegVideoDecodeRecoveryPolicy.EvaluateForBenchmark(
+                measurement.Error, cancellationToken.IsCancellationRequested,
+                definition.Settings.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase), folder);
+            if (!decision.Eligible)
+            {
+                attemptDetails.Add($"{attempt.sample.Start:g} ({(attempt.tolerant ? "tolerant" : "strict")}): failed; Other failure");
+                return measurement with { AttemptCount = attempts.Count, FailureClassification = "Other failure", AttemptDetails = string.Join("; ", attemptDetails) };
+            }
+            attemptDetails.Add($"{attempt.sample.Start:g} ({(attempt.tolerant ? "tolerant" : "strict")}): failed; video decode corruption ({decision.Evidence})");
+
+            // Each sample begins strict. A tolerant retry follows only its recognized video-decode failure.
+            if (!attempt.tolerant)
+                continue;
+        }
+
+        EncoderBenchmarkJobMeasurement last = attempts[^1];
+        return last with
+        {
+            AttemptCount = attempts.Count,
+            UsedDecodeRecovery = true,
+            UsedAlternateSample = attempts.Skip(2).Any(),
+            ActualSample = last.ActualSample ?? primarySample,
+            FailureClassification = "Video decode corruption",
+            Error = "Source unsuitable for benchmarking: persistent video decode errors were encountered in representative samples.",
+            AttemptDetails = string.Join("; ", attemptDetails)
+        };
+    }
+
+    private static IEnumerable<(EncoderBenchmarkSample sample, bool tolerant, bool alternate)> EnumerateAttempts(
+        EncoderBenchmarkDefinition definition, EncoderBenchmarkSample primary)
+    {
+        yield return (primary, false, false);
+        yield return (primary, true, false);
+        foreach (EncoderBenchmarkSample alternate in SelectAlternateSamples(definition.SourceDuration, primary.Duration, primary.Start))
+        {
+            yield return (alternate, false, true);
+            yield return (alternate, true, true);
+        }
+    }
+
+    private static IEnumerable<EncoderBenchmarkSample> SelectAlternateSamples(TimeSpan sourceDuration, TimeSpan duration, TimeSpan primaryStart)
+    {
+        if (sourceDuration <= duration + TimeSpan.FromSeconds(2)) yield break;
+        foreach (double point in new[] { .60, .30 })
+        {
+            double start = Math.Clamp(sourceDuration.TotalSeconds * point - duration.TotalSeconds / 2d, 0, sourceDuration.TotalSeconds - duration.TotalSeconds);
+            if (Math.Abs(start - primaryStart.TotalSeconds) < 2d) continue;
+            yield return new EncoderBenchmarkSample($"Alternate representative section ({point:P0})", TimeSpan.FromSeconds(start), duration);
+        }
     }
 
     private async Task SampleTelemetryAsync(
@@ -320,6 +434,19 @@ public sealed class EncoderBenchmarkService : IDisposable
             try { samples.Enqueue(_telemetry.Sample()); } catch { }
             await Task.Delay(_telemetryInterval, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    internal static double CalculateSuccessfulFps(
+        IEnumerable<double> observedFps,
+        long encodedFrames,
+        TimeSpan successfulElapsed)
+    {
+        double[] values = observedFps.Where(value => value > 0 && double.IsFinite(value)).ToArray();
+        if (values.Length > 0)
+            return values.Average();
+        return encodedFrames > 0 && successfulElapsed.TotalSeconds > 0
+            ? encodedFrames / successfulElapsed.TotalSeconds
+            : 0;
     }
 
     public static EncoderBenchmarkSample SelectRepresentativeSample(TimeSpan sourceDuration, int requestedSeconds)
@@ -354,6 +481,7 @@ public sealed class EncoderBenchmarkService : IDisposable
             .AppendLine($"Encoder codec / quality: {definition.Settings.Encoder.FfmpegCodec} / {definition.Settings.QualityValue}")
             .AppendLine($"Options: {(definition.Settings.TenBit ? "10-bit" : "8-bit")}; scale {definition.Settings.ScaleMode}; audio channels {(definition.Settings.AudioChannels?.ToString() ?? "copy")}; container {definition.Settings.OutputContainer}")
             .AppendLine($"Concurrency: {result.Concurrency}")
+            .AppendLine($"Status: {result.Status}")
             .AppendLine($"Per-job FPS / speed: {result.AverageJobFps:0.0} / {result.AverageJobRealtimeMultiplier:0.00}x")
             .AppendLine($"Aggregate FPS / speed: {result.AggregateFps:0.0} / {result.AggregateRealtimeMultiplier:0.00}x")
             .AppendLine($"Estimated full-file time: {result.EstimatedFullFileTime?.ToString("g") ?? "Unavailable"}")
@@ -365,6 +493,8 @@ public sealed class EncoderBenchmarkService : IDisposable
         foreach (EncoderBenchmarkJobMeasurement job in result.Jobs)
         {
             text.AppendLine().AppendLine($"Job {job.JobNumber}: {(job.Success ? "Succeeded" : "Failed")}; elapsed {job.Elapsed:g}; {job.EncodeFps:0.0} FPS; {job.RealtimeMultiplier:0.00}x; exit {(job.ExitCode?.ToString() ?? "Unavailable")}")
+                .AppendLine($"Benchmark attempts: {job.AttemptCount}; sample: {(job.ActualSample is null ? sample.Label : $"{job.ActualSample.Label}, {job.ActualSample.Start:g}")}; decode: {(job.UsedDecodeRecovery ? "tolerant recovery used" : "strict")}; classification: {(string.IsNullOrWhiteSpace(job.FailureClassification) ? "None" : job.FailureClassification)}")
+                .AppendLine($"Attempt detail: {(string.IsNullOrWhiteSpace(job.AttemptDetails) ? "Unavailable" : job.AttemptDetails)}")
                 .AppendLine($"Hardware/decode path: {job.Pipeline}")
                 .AppendLine($"FFmpeg arguments: {(string.IsNullOrWhiteSpace(job.FfmpegArguments) ? "Unavailable" : job.FfmpegArguments)}");
             if (!string.IsNullOrWhiteSpace(job.Error)) text.AppendLine($"Error: {job.Error}");
@@ -372,6 +502,18 @@ public sealed class EncoderBenchmarkService : IDisposable
         return text.ToString();
         static string Percent(double? value) => value.HasValue ? $"{value:0.#}%" : "Unavailable";
         static string Rate(double? value) => value.HasValue ? $"{value:0.00} Mbit/s" : "Unavailable";
+    }
+
+    public static string BuildTechnicalDetailsForResults(
+        EncoderBenchmarkDefinition definition,
+        EncoderBenchmarkSample sample,
+        IEnumerable<EncoderBenchmarkConfigurationResult> results)
+    {
+        ArgumentNullException.ThrowIfNull(results);
+        EncoderBenchmarkConfigurationResult[] materialized = results.ToArray();
+        return string.Join(
+            Environment.NewLine + Environment.NewLine + new string('-', 72) + Environment.NewLine + Environment.NewLine,
+            materialized.Select(result => BuildTechnicalDetails(definition, sample, result)));
     }
 
     private static void Validate(EncoderBenchmarkRequest request)

@@ -42,5 +42,11 @@ namespace MediaFlux.Services
         public Action<string>? FinalizationStatusCallback { get; init; }
         public TimeSpan? SampleStart { get; init; }
         public TimeSpan? SampleDuration { get; init; }
+        // Benchmark orchestration owns its deliberately bounded decode retries.
+        // This remains internal so production callers retain their existing policy.
+        internal FfmpegSourceDecodeMode SourceDecodeMode { get; init; } = FfmpegSourceDecodeMode.Strict;
+        internal bool DisableAutomaticFfmpegRecovery { get; init; }
+        internal Action<string>? FfmpegDiagnosticCallback { get; init; }
+        internal EncodeOutputValidationProfile ValidationProfile { get; init; } = EncodeOutputValidationProfile.Production;
     }
 }

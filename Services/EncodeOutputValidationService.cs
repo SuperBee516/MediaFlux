@@ -532,12 +532,15 @@ namespace MediaFlux.Services
                     return $"The encoded output contains {actual} attachment stream(s), but {expected} were selected for preservation.";
             }
 
-            string chapterError = ValidateChapterPreservation(
-                source.Chapters,
-                output.Chapters,
-                log);
-            if (!string.IsNullOrWhiteSpace(chapterError))
-                return chapterError;
+            if (request.Profile == EncodeOutputValidationProfile.Production)
+            {
+                string chapterError = ValidateChapterPreservation(
+                    source.Chapters,
+                    output.Chapters,
+                    log);
+                if (!string.IsNullOrWhiteSpace(chapterError))
+                    return chapterError;
+            }
 
             if (source.FormatTags.TryGetValue("title", out string? sourceTitle) &&
                 !string.IsNullOrWhiteSpace(sourceTitle) &&

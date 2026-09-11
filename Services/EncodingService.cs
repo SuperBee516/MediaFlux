@@ -330,7 +330,11 @@ namespace MediaFlux.Services
                 request.SampleStart,
                 request.SampleDuration,
                 VideoRestorationModeResolver.Resolve(request.Restoration),
-                request.AiProgressCallback);
+                request.AiProgressCallback,
+                request.SourceDecodeMode,
+                request.DisableAutomaticFfmpegRecovery,
+                request.FfmpegDiagnosticCallback,
+                request.ValidationProfile);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -490,7 +494,11 @@ namespace MediaFlux.Services
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
             VideoRestorationSettings? restoration = null,
-            Action<AiIntermediateProgress>? aiProgressCallback = null)
+            Action<AiIntermediateProgress>? aiProgressCallback = null,
+            FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
+            bool disableAutomaticFfmpegRecovery = false,
+            Action<string>? ffmpegDiagnosticCallback = null,
+            EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -522,7 +530,11 @@ namespace MediaFlux.Services
                 sampleStart,
                 sampleDuration,
                 restoration,
-                aiProgressCallback);
+                aiProgressCallback,
+                sourceDecodeMode,
+                disableAutomaticFfmpegRecovery,
+                ffmpegDiagnosticCallback,
+                validationProfile);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -555,7 +567,11 @@ namespace MediaFlux.Services
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
             VideoRestorationSettings? restoration = null,
-            Action<AiIntermediateProgress>? aiProgressCallback = null)
+            Action<AiIntermediateProgress>? aiProgressCallback = null,
+            FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
+            bool disableAutomaticFfmpegRecovery = false,
+            Action<string>? ffmpegDiagnosticCallback = null,
+            EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -870,7 +886,8 @@ namespace MediaFlux.Services
                 sampleDuration,
                 sourcePixelFormat,
                 restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain,
-                plannedVideoGeometry: plannedOutputGeometry);
+                plannedVideoGeometry: plannedOutputGeometry,
+                sourceDecodeMode: sourceDecodeMode);
             scope.Complete();
             }
 
@@ -904,7 +921,7 @@ namespace MediaFlux.Services
             using (PerformanceTimingService.PerformanceScope initialEncodeScope = performance.Measure(PerformanceTimingStage.FinalEncode))
             {
                 runResult = await RunFfmpegAsync(
-                    ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                    ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
                 initialEncodeScope.Complete();
             }
 
@@ -912,7 +929,7 @@ namespace MediaFlux.Services
             bool cudaRecoveryAttempted = false;
             bool cudaRecoveryStarted = false;
             FfmpegCudaNvdecFailure cudaFailure = FfmpegCudaNvdecFailureClassifier.Classify(runResult.StandardError);
-            if (runResult.ExitCode != 0 &&
+            if (!disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
                 FfmpegCudaNvdecFailureClassifier.ShouldRetryOnce(
                     requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
                     ffArgs.Contains("-hwaccel cuda ", StringComparison.Ordinal),
@@ -947,7 +964,7 @@ namespace MediaFlux.Services
                     _log?.Invoke($"[EncodingService] Attempt 2: software decode -> NVENC; pipeline={pipelineDiagnostic}; ffmpeg arguments: {ffArgs}");
                     using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
                     {
-                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
                         retryScope.Complete();
                     }
                     _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery retry result: exit={runResult.ExitCode}.");
@@ -958,7 +975,7 @@ namespace MediaFlux.Services
                 }
             }
 
-            if (runResult.ExitCode != 0 &&
+            if (!disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
                 !cudaRecoveryAttempted &&
                 ShouldRetryWithSoftwareFrames(ffArgs, runResult.StandardError))
             {
@@ -990,13 +1007,13 @@ namespace MediaFlux.Services
                 using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
                 {
                     runResult = await RunFfmpegAsync(
-                        ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                        ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
                     retryScope.Complete();
                 }
             }
 
             bool audioRecoveryAttempted = false;
-            if (runResult.ExitCode != 0 &&
+            if (!disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
                 compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent &&
                 !cancellationToken.IsCancellationRequested)
             {
@@ -1035,7 +1052,7 @@ namespace MediaFlux.Services
                             }
                             using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.AudioIntegrityRecovery))
                             {
-                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
                                 retryScope.Complete();
                             }
                             _log?.Invoke(runResult.ExitCode == 0
@@ -1048,7 +1065,7 @@ namespace MediaFlux.Services
             }
 
             bool videoRecoveryAttempted = false;
-            if (runResult.ExitCode != 0)
+            if (!disableAutomaticFfmpegRecovery && runResult.ExitCode != 0)
             {
                 FfmpegVideoDecodeRecoveryDecision recovery = FfmpegVideoDecodeRecoveryPolicy.Evaluate(
                     runResult.StandardError,
@@ -1083,7 +1100,7 @@ namespace MediaFlux.Services
                         }
                         using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                         {
-                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
                             scope.Complete();
                         }
                         if (runResult.ExitCode == 0)
@@ -1172,6 +1189,7 @@ namespace MediaFlux.Services
                         ExpectedVideoWidth = plannedOutputGeometry?.Width,
                         ExpectedVideoHeight = plannedOutputGeometry?.Height,
                         PerformanceTiming = performance
+                        ,Profile = validationProfile
                     },
                     finalizationStatusCallback,
                     cancellationToken).ConfigureAwait(false);
@@ -1257,7 +1275,8 @@ namespace MediaFlux.Services
             string arguments,
             Action<string> callback,
             TimeSpan totalDuration,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            Action<string>? diagnosticCallback = null)
         {
             var stderrBuilder = new StringBuilder();
             var psi = new ProcessStartInfo
@@ -1284,6 +1303,7 @@ namespace MediaFlux.Services
                 if (e.Data == null)
                     return;
 
+                diagnosticCallback?.Invoke(e.Data);
                 HandleProgressLine(e.Data, callback, totalDuration);
                 AppendBounded(stderrBuilder, e.Data, MaxCapturedFfmpegCharacters);
             };
