@@ -33,6 +33,9 @@ namespace MediaFlux
         private Button? _locationPause;
         private Button? _locationResume;
         private Button? _locationCancel;
+        private Button? _reanalysisMetadata;
+        private Button? _reanalysisExact;
+        private Button? _reanalysisVisual;
         private readonly OverviewMetricCard _overviewVideosCard = new("Videos");
         private readonly OverviewMetricCard _overviewSizeCard = new("Library size");
         private readonly OverviewMetricCard _overviewDuplicatesCard = new("Duplicate sets");
@@ -432,9 +435,9 @@ namespace MediaFlux
             reanalysis.AutoSize = true;
             reanalysis.MinimumSize = new Size(0, 0);
             reanalysis.Controls.Add(new Label { Text = "Re-analysis", AutoSize = true, ForeColor = LibraryAnalyzerAccentColor, Margin = new Padding(8, 10, 3, 0) });
-            Button metadata = AddButton(reanalysis, "Metadata", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.Metadata));
-            Button exact = AddButton(reanalysis, "Exact", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.ExactHash));
-            Button visual = AddButton(reanalysis, "Visual", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.VisualFingerprint));
+            _reanalysisMetadata = AddButton(reanalysis, "Metadata", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.Metadata));
+            _reanalysisExact = AddButton(reanalysis, "Exact", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.ExactHash));
+            _reanalysisVisual = AddButton(reanalysis, "Visual", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.VisualFingerprint));
             filters.Controls.Add(reanalysis);
             _search.KeyDown += async (_, e) =>
             {
@@ -841,19 +844,11 @@ namespace MediaFlux
             if (_locationPause != null) _locationPause.Enabled = scanning && !_runtime.Scanner.IsPaused;
             if (_locationResume != null) _locationResume.Enabled = scanning && _runtime.Scanner.IsPaused;
             if (_locationCancel != null) _locationCancel.Enabled = scanning;
-            foreach (Control control in ControlsRecursive(this).Where(control => control is Button button &&
-                         button.Text is "Metadata" or "Exact" or "Visual"))
-                control.Enabled = hasFiles;
-        }
-
-        private static IEnumerable<Control> ControlsRecursive(Control parent)
-        {
-            foreach (Control child in parent.Controls)
-            {
-                yield return child;
-                foreach (Control descendant in ControlsRecursive(child))
-                    yield return descendant;
-            }
+            // These commands operate on selected indexed files. Navigation destinations
+            // deliberately remain enabled regardless of catalog contents.
+            if (_reanalysisMetadata != null) _reanalysisMetadata.Enabled = hasFiles;
+            if (_reanalysisExact != null) _reanalysisExact.Enabled = hasFiles;
+            if (_reanalysisVisual != null) _reanalysisVisual.Enabled = hasFiles;
         }
 
         private void Enrichment_ProgressChanged(object? sender, LibraryEnrichmentProgress e)

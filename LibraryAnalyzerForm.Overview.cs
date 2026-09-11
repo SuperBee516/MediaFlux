@@ -184,9 +184,11 @@ public sealed partial class LibraryAnalyzerForm
         _overviewExactLink.Text = $"Exact duplicates      {snapshot.Duplicates.ExactGroups:N0} sets · {snapshot.Duplicates.ExactAffectedFiles:N0} files";
         _overviewVisualLink.Text = $"Visual duplicates     {snapshot.Duplicates.VisualGroups:N0} groups · {snapshot.Duplicates.VisualAffectedFiles:N0} files";
         _overviewFamilyLink.Text = $"Duplicate families    {snapshot.Duplicates.FamilyGroups:N0} groups · {snapshot.Duplicates.FamilyAffectedFiles:N0} files";
-        SetOverviewLinkState(_overviewExactLink, snapshot.Duplicates.ExactGroups > 0);
-        SetOverviewLinkState(_overviewVisualLink, snapshot.Duplicates.VisualGroups > 0);
-        SetOverviewLinkState(_overviewFamilyLink, snapshot.Duplicates.FamilyGroups > 0);
+        // These are navigation links, so they remain available even when analysis
+        // has not run or produced no matches. The destination owns its empty state.
+        SetOverviewLinkState(_overviewExactLink, true);
+        SetOverviewLinkState(_overviewVisualLink, true);
+        SetOverviewLinkState(_overviewFamilyLink, true);
         OverviewReviewProgress review = CalculateReviewProgress(snapshot.Duplicates.ReviewedGroups, snapshot.Duplicates.UnreviewedGroups);
         _overviewDuplicateProgress.Text = review.Total == 0 ? "Review duplicates  ·  No duplicate groups are available yet" : $"Review duplicates  ·  Reviewed {review.Reviewed:N0} / {review.Total:N0} ({review.Percent:0.#}%)";
         _overviewDuplicateProgressBar.Percent = review.Percent;
@@ -209,7 +211,7 @@ public sealed partial class LibraryAnalyzerForm
 
     private static LinkLabel OverviewLinkLabel() => new()
     {
-        AutoEllipsis = true, Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 2), TabStop = false, Enabled = false,
+        AutoEllipsis = true, Dock = DockStyle.Fill, Padding = new Padding(8, 4, 8, 2), TabStop = false, Enabled = true,
         LinkColor = LibraryAnalyzerAccentColor, ActiveLinkColor = LibraryAnalyzerAccentColor,
         VisitedLinkColor = LibraryAnalyzerAccentColor, Cursor = Cursors.Default
     };

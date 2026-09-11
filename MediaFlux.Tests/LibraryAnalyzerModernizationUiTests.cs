@@ -46,6 +46,10 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
                 Pump(InvokeTask(form, "RefreshFilesAsync"));
                 Assert.Contains("No indexed files", Field<Label>(form, "_filesSummary").Text, StringComparison.OrdinalIgnoreCase);
                 Assert.False(AllControls(form).OfType<Button>().Single(button => button.Text == "Metadata").Enabled);
+                AnalyzerNavigationRail rail = Field<AnalyzerNavigationRail>(form, "_navigationRail");
+                Assert.All(AllControls(rail).OfType<AnalyzerNavigationItem>(), item => Assert.True(item.Enabled));
+                Assert.False(Field<Button>(form, "_reanalysisExact").Enabled);
+                Assert.False(Field<Button>(form, "_reanalysisVisual").Enabled);
 
                 Pump(InvokeTask(form, "RefreshStatisticsAsync"));
                 Assert.Contains(AllControls(form), control => control.Name == "StatisticsCodecGrid");
