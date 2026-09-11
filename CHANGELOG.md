@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.14] - 2026-09-11
+
+### AI Benchmark Manager
+
+- Modernized the AI Benchmark Manager with responsive summary cards, structured Details and Comparison inspectors, and an integrated FPS comparison chart.
+- Added supplied SVG iconography across benchmark cards, toolbar commands, and analysis headers.
+- Fixed summary/grid layout clipping and improved responsive splitter behavior.
+- Added remembered AI Benchmark Manager window sizing with safe minimum-size and maximized-state handling.
+- Strengthened focused UI regression coverage for layout, icons, comparison semantics, and window-size persistence.
+
 ## [1.3.13] - 2026-09-11
 
 ### Encoding Reliability

@@ -13,7 +13,7 @@
     <ApplicationIcon>images\mediaflux_icn.ico</ApplicationIcon>
     <PackageIcon>mediaflux_icn.png</PackageIcon>
     <!-- Release builds override this once with the validated release tag value. -->
-    <Version>1.3.13</Version>
+    <Version>1.3.14</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,6 +23,7 @@
     <Content Include="gear-wheel-animated.gif" Link="images\gear-wheel-animated.gif" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="folder-scan-animated.gif" Link="images\folder-scan-animated.gif" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="upscale-animated.gif" Link="images\upscale-animated.gif" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="images\ai-benchmark-icons\*.svg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Update="compress128.png" Pack="True" PackagePath="\" />
     <None Update="images\mediaflux_icn.png">
       <Pack>True</Pack>
@@ -35,6 +36,7 @@
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
     <PackageReference Include="taglib-sharp-netstandard2.0" Version="2.1.0" />
     <PackageReference Include="Velopack" Version="1.2.0" />
+    <PackageReference Include="Svg" Version="3.4.8" />
   </ItemGroup>
 
   <ItemGroup>

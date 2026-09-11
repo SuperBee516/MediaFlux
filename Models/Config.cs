@@ -145,6 +145,10 @@ namespace MediaFlux.Models
         public int MainWindowWidth { get; set; } = 0;
         public int MainWindowHeight { get; set; } = 0;
 
+        // AI Benchmark Manager's last usable normal-window size.
+        public int AiBenchmarkManagerWindowWidth { get; set; } = 0;
+        public int AiBenchmarkManagerWindowHeight { get; set; } = 0;
+
         // Video Splitter / Trimmer window placement. The actual trim selection is
         // deliberately session-only until Phase 2 introduces saved projects.
         public int VideoSplitterWindowX { get; set; } = int.MinValue;
