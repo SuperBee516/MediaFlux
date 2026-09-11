@@ -628,7 +628,7 @@ namespace MediaFlux.Services
                 ? inputSource.SourcePath
                 : inputSource.SourceFiles.FirstOrDefault() ?? inputSource.SourcePath;
             MediaProbeResult sourceProbe;
-            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.SourceAnalysis))
+            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.SourceProbe))
             {
             sourceProbe = await new FfprobeService(
                     _ffprobePath,
@@ -650,7 +650,7 @@ namespace MediaFlux.Services
             SourceTimingAnalysis? sourceTiming = null;
             if (inputSource.Kind == EncodingInputKind.File)
             {
-                using PerformanceTimingService.PerformanceScope timingScope = performance.Measure(PerformanceTimingStage.SourceAnalysis);
+                using PerformanceTimingService.PerformanceScope timingScope = performance.Measure(PerformanceTimingStage.SourceTimingAnalysis);
                 sourceTiming = await new SourceTimingAnalysisService(_ffprobePath, log: _log)
                     .AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
                 timingScope.Complete();
@@ -753,8 +753,13 @@ namespace MediaFlux.Services
                     "continuing for legacy API compatibility.");
             }
 
-            SubtitleConversionPreflightResult subtitlePreflight = await new SubtitleConversionPreflightService(_ffmpegPath)
-                .ValidateAsync(inputSource, containerDecision, cancellationToken).ConfigureAwait(false);
+            SubtitleConversionPreflightResult subtitlePreflight;
+            using (PerformanceTimingService.PerformanceScope subtitleScope = performance.Measure(PerformanceTimingStage.SubtitlePreflight))
+            {
+                subtitlePreflight = await new SubtitleConversionPreflightService(_ffmpegPath)
+                    .ValidateAsync(inputSource, containerDecision, cancellationToken).ConfigureAwait(false);
+                subtitleScope.Complete();
+            }
             if (!subtitlePreflight.Success)
             {
                 if (compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
@@ -770,15 +775,7 @@ namespace MediaFlux.Services
                 }
             }
 
-            SourceAudioDecodePreflightResult audioPreflight =
-                await new SourceAudioDecodePreflightService(_ffmpegPath)
-                    .ValidateCopiedStreamsAsync(inputSource, containerDecision, cancellationToken)
-                    .ConfigureAwait(false);
-            if (!audioPreflight.Success)
-            {
-                _log?.Invoke($"[EncodingService] Audio source preflight failed for stream #{audioPreflight.StreamIndex}: {audioPreflight.ErrorMessage} Diagnostics: {audioPreflight.Diagnostics}");
-                throw new InvalidOperationException(audioPreflight.ErrorMessage + " The original source was retained.");
-            }
+            _log?.Invoke("[EncodingService] Copied audio uses the normal encode path; no full-duration audio integrity preflight is performed.");
 
             // Keep the intended final name collision-safe, but write FFmpeg output
             // only to a hidden same-directory staging file until validation passes.
@@ -986,6 +983,56 @@ namespace MediaFlux.Services
                     ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
             }
 
+            bool audioRecoveryAttempted = false;
+            if (runResult.ExitCode != 0 && compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
+            {
+                int? corruptAudioStream = SourceAudioDecodePreflightService.FindCorruptAudioStreamIndex(runResult.StandardError);
+                int audioStreamIndex = corruptAudioStream ?? -1;
+                StreamCompatibilityPlan? copiedPlan = corruptAudioStream is not null
+                    ? containerDecision.StreamPlans.FirstOrDefault(plan => plan.StreamIndex == audioStreamIndex &&
+                        plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                        plan.Action == StreamCompatibilityAction.Copy)
+                    : null;
+                if (copiedPlan is not null)
+                {
+                    audioRecoveryAttempted = true;
+                    using (PerformanceTimingService.PerformanceScope recoveryScope = performance.Measure(PerformanceTimingStage.AudioIntegrityRecovery))
+                    {
+                        string recoveryCodec = OutputContainerPolicy.SafeAudioRecoveryCodec(containerDecision.Resolved);
+                        _log?.Invoke($"[EncodingService] Audio corruption detected: stream #{audioStreamIndex}; Copy -> Transcode; codec={recoveryCodec}.");
+                        _log?.Invoke($"[EncodingService] Audio recovery initiated for stream #{audioStreamIndex}; policy=Intelligent; attempt=1.");
+                        callback($"[MediaFlux] Recovering audio stream #{audioStreamIndex} by transcoding to {recoveryCodec}.");
+                        if (TryDeleteFailedStagingOutput(output))
+                        {
+                            containerDecision = OutputContainerPolicy.RecoverCopiedAudio(containerDecision, audioStreamIndex);
+                            containerDecisionCallback?.Invoke(containerDecision);
+                            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                            {
+                                ffArgs = BuildFfmpegArgs(
+                                    inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                    encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                    mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                    containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                    qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                    sourcePixelFormat, restoration: restoration,
+                                    splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                    restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                    plannedVideoGeometry: plannedOutputGeometry,
+                                    relaxSourceDecodeErrors: true);
+                                scope.Complete();
+                            }
+                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                            _log?.Invoke(runResult.ExitCode == 0
+                                ? $"[EncodingService] Audio recovery success: stream #{audioStreamIndex} transcoded to {recoveryCodec}; continuing through normal validation/finalization."
+                                : $"[EncodingService] Audio recovery failure: stream #{audioStreamIndex}; exit={runResult.ExitCode}; bounded diagnostics retained.");
+                        }
+                        else
+                            _log?.Invoke($"[EncodingService] Audio recovery failure: stream #{audioStreamIndex}; failed staged output could not be removed safely.");
+                        recoveryScope.Complete();
+                    }
+                }
+            }
+
             if (runResult.ExitCode != 0)
             {
                 string logPath = ErrorLogService.Append(
@@ -1026,7 +1073,10 @@ namespace MediaFlux.Services
                     throw new InvalidOperationException("FFmpeg stopped because the source media appears truncated or incomplete. The original source was retained. See central log: " + logPath);
                 if (sourceDecodeCorruption.IsReliable)
                     throw new InvalidOperationException("FFmpeg stopped because the source video contains undecodable or corrupt H.264 data. The original source was retained. See central log: " + logPath);
-                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{recoverySuffix} See central log: {logPath}");
+                string audioSuffix = audioRecoveryAttempted
+                    ? " The one-time Intelligent audio recovery attempt also failed; the original source was retained."
+                    : "";
+                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{recoverySuffix}{audioSuffix} See central log: {logPath}");
             }
             encodeScope.Complete();
             encodeScope.Dispose();
@@ -1466,6 +1516,7 @@ namespace MediaFlux.Services
             string? sourcePixelFormat = null,
             bool preferNvencGpuResidentFrames = true,
             bool disableHardwareDecode = false,
+            bool relaxSourceDecodeErrors = false,
             VideoRestorationSettings? restoration = null,
             SplitSourceInput? splitSource = null,
             string? restorationFilterOverride = null,
@@ -1545,6 +1596,7 @@ namespace MediaFlux.Services
                 PreferNvencGpuResidentFrames =
                     preferNvencGpuResidentFrames,
                 DisableHardwareDecode = disableHardwareDecode,
+                RelaxSourceDecodeErrors = relaxSourceDecodeErrors,
                 SourcePixelFormat = sourcePixelFormat ?? ""
                 ,SplitSource = splitSource
                 ,RestorationFilterOverride = restorationFilterOverride

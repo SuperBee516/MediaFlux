@@ -2,10 +2,7 @@ using MediaFlux.Models;
 
 namespace MediaFlux.Services;
 
-/// <summary>
-/// Decodes audio streams that an encode would otherwise stream-copy. This keeps
-/// a corrupt compressed audio payload from being carried into a validated output.
-/// </summary>
+/// <summary>Classifies reliable audio decoder evidence from the actual encode.</summary>
 internal sealed class SourceAudioDecodePreflightService
 {
     private readonly string _ffmpegPath;
@@ -24,35 +21,7 @@ internal sealed class SourceAudioDecodePreflightService
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(decision);
-        if (input.Kind != EncodingInputKind.File)
-            return SourceAudioDecodePreflightResult.Passed;
-
-        StreamCompatibilityPlan[] copiedAudio = decision.StreamPlans
-            .Where(plan => plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
-                           plan.Action == StreamCompatibilityAction.Copy)
-            .ToArray();
-        for (int position = 0; position < copiedAudio.Length; position++)
-        {
-            StreamCompatibilityPlan stream = copiedAudio[position];
-            MediaToolProcessResult process = await _runner.RunAsync(new MediaToolProcessRequest
-            {
-                FileName = _ffmpegPath,
-                Arguments = BuildArguments(input.InputPath, stream.StreamIndex),
-                Timeout = Timeout.InfiniteTimeSpan,
-                SendQuitOnCancellation = true
-            }, cancellationToken).ConfigureAwait(false);
-            if (process.ExitCode != 0 || process.TimedOut)
-            {
-                bool reliableCorruption = !process.TimedOut && IsReliableAudioDecodeFailure(process.StandardError);
-                string role = position == 0 ? "primary selected" : "secondary selected";
-                string message = reliableCorruption
-                    ? $"Source {role} audio stream #{stream.StreamIndex} contains undecodable or corrupt audio data. MediaFlux did not start the encode."
-                    : $"MediaFlux could not fully decode source {role} audio stream #{stream.StreamIndex}; the encode was not started."
-                        + (process.TimedOut ? " Audio preflight timed out." : " FFmpeg reported an ambiguous audio read/decode failure.");
-                return new(false, stream.StreamIndex, reliableCorruption, message, process.StandardError);
-            }
-        }
-
+        await Task.CompletedTask;
         return SourceAudioDecodePreflightResult.Passed;
     }
 
@@ -66,10 +35,19 @@ internal sealed class SourceAudioDecodePreflightService
     // signal, not merely arbitrary stderr, before describing it as corruption.
     internal static bool IsReliableAudioDecodeFailure(string? standardError) =>
         !string.IsNullOrWhiteSpace(standardError) &&
-        (standardError.Contains("Error while decoding", StringComparison.OrdinalIgnoreCase) ||
+        (standardError.Contains("Error while decoding stream", StringComparison.OrdinalIgnoreCase) ||
          standardError.Contains("Error submitting packet to decoder", StringComparison.OrdinalIgnoreCase) ||
          standardError.Contains("Invalid audio", StringComparison.OrdinalIgnoreCase) ||
-         standardError.Contains("Header missing", StringComparison.OrdinalIgnoreCase));
+         standardError.Contains("Header missing", StringComparison.OrdinalIgnoreCase)) &&
+        (standardError.Contains("audio", StringComparison.OrdinalIgnoreCase) || standardError.Contains("stream #0:", StringComparison.OrdinalIgnoreCase));
+
+    internal static int? FindCorruptAudioStreamIndex(string? standardError) =>
+        IsReliableAudioDecodeFailure(standardError)
+            ? System.Text.RegularExpressions.Regex.Matches(standardError!, @"stream\s+#\d+:(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                .Cast<System.Text.RegularExpressions.Match>()
+                .Select(match => int.TryParse(match.Groups[1].Value, out int index) ? index : (int?)null)
+                .FirstOrDefault(index => index.HasValue)
+            : null;
 }
 
 internal sealed record SourceAudioDecodePreflightResult(

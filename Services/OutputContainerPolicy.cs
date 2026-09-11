@@ -79,6 +79,38 @@ namespace MediaFlux.Services
             };
         }
 
+        /// <summary>Changes exactly one copied audio stream to the normal safe recovery codec.</summary>
+        public static OutputContainerDecision RecoverCopiedAudio(OutputContainerDecision decision, int streamIndex)
+        {
+            ArgumentNullException.ThrowIfNull(decision);
+            StreamCompatibilityPlan[] plans = decision.StreamPlans.Select(plan =>
+                plan.StreamIndex == streamIndex &&
+                plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                plan.Action == StreamCompatibilityAction.Copy
+                    ? plan with
+                    {
+                        Action = StreamCompatibilityAction.Transcode,
+                        TargetCodec = SafeAudioRecoveryCodec(decision.Resolved),
+                        Reason = "Source audio decode corruption was detected; the affected stream will be transcoded once for recovery."
+                    }
+                    : plan).ToArray();
+            if (!plans.Any(plan => plan.StreamIndex == streamIndex && plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) && plan.Action == StreamCompatibilityAction.Transcode))
+                throw new InvalidOperationException("Only a copied audio stream may use audio corruption recovery.");
+            return new OutputContainerDecision
+            {
+                Requested = decision.Requested,
+                Resolved = decision.Resolved,
+                Reason = decision.Reason,
+                CompatibilityWarnings = decision.CompatibilityWarnings.Append($"audio stream {streamIndex} will be transcoded once because source decode corruption was detected").ToArray(),
+                CopySubtitles = decision.CopySubtitles,
+                CopyDataStreams = decision.CopyDataStreams,
+                CopyAttachments = decision.CopyAttachments,
+                StreamPlans = plans
+            };
+        }
+
+        public static string SafeAudioRecoveryCodec(OutputContainer container) => "aac";
+
         private static bool IsTextSubtitleCodec(string codec) =>
             codec.Equals("ass", StringComparison.OrdinalIgnoreCase) ||
             codec.Equals("ssa", StringComparison.OrdinalIgnoreCase) ||

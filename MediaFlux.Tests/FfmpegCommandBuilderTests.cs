@@ -8,6 +8,28 @@ namespace MediaFlux.Tests;
 public sealed class FfmpegCommandBuilderTests
 {
     [Fact]
+    public void MixedAudioRecoveryTranscodesOnlyTheAffectedOutputStream()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(1, "audio", "aac", StreamCompatibilityAction.Copy, "copy"),
+                new StreamCompatibilityPlan(3, "audio", "aac", StreamCompatibilityAction.Transcode, "recovery", "aac")
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-c:a copy", arguments);
+        Assert.Contains("-c:a:1 aac", arguments);
+        Assert.DoesNotContain("-c:a aac -b:a 192k", arguments);
+    }
+
+    [Fact]
     public void NvencHevcQualityCommandMatchesExistingBehavior()
     {
         FfmpegCommandRequest request = CreateRequest(

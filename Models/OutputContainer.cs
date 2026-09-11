@@ -45,6 +45,9 @@ namespace MediaFlux.Models
             plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
             plan.Action == StreamCompatibilityAction.Transcode &&
             plan.TargetCodec == "aac");
+        public bool HasMixedAudioActions =>
+            StreamPlans.Any(plan => plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) && plan.Action == StreamCompatibilityAction.Copy) &&
+            StreamPlans.Any(plan => plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) && plan.Action == StreamCompatibilityAction.Transcode);
         public bool HasUnsupportedMeaningfulStreams => StreamPlans.Any(plan =>
             plan.Action == StreamCompatibilityAction.Unsupported &&
             (plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) || plan.StreamType.Equals("video", StringComparison.OrdinalIgnoreCase) || plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase)));

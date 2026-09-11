@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.12] - 2026-09-10
+
+### Encoding Reliability & Performance
+
+- Removed an unnecessary full audio-decode preflight that could delay encoding before the actual encoder started.
+- Added automatic Intelligent-mode recovery for damaged source audio by safely transcoding only the affected audio stream when possible.
+- Preserved strict validation safeguards so incomplete or corrupt outputs are never finalized.
+- Improved encode diagnostics and timing telemetry to distinguish source analysis, recovery, encoding, validation, and finalization overhead.
+
 ## [1.3.11] - 2026-09-10
 
 ### Library Analyzer

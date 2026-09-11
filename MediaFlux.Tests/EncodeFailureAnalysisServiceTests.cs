@@ -78,6 +78,22 @@ public sealed class EncodeFailureAnalysisServiceTests
     }
 
     [Fact]
+    public void CorruptCopiedAudioIsClassifiedAsAudioInputFailure()
+    {
+        EncodeFailureAnalysis? analysis = Analyze(
+            new InvalidOperationException("ffmpeg exited with code 1"),
+            "Error while decoding stream #0:1: Invalid data found when processing input",
+            encoderId: "nvenc",
+            encoder: "GPU (NVENC)",
+            codec: "hevc_nvenc");
+
+        Assert.NotNull(analysis);
+        Assert.Equal(EncodeFailureCategory.Audio, analysis!.Category);
+        Assert.Equal("Input decoding", analysis.FailureStage);
+        Assert.DoesNotContain("NVENC", analysis.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void CancellationDoesNotProduceFailureAnalysis()
     {
         EncodeFailureAnalysis? analysis = Analyze(

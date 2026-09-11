@@ -90,6 +90,19 @@ public static class EncodeFailureAnalysisService
                 plan);
         }
 
+        if (SourceAudioDecodePreflightService.IsReliableAudioDecodeFailure(diagnostic))
+        {
+            return Create(
+                EncodeFailureCategory.Audio,
+                "Input decoding",
+                "A source audio stream could not be decoded reliably.",
+                "FFmpeg reported corruption while decoding a source audio stream.",
+                "Retry with Intelligent audio recovery or transcode that audio stream instead of copying it.",
+                Evidence(Array.Empty<string>(), diagnostic),
+                EncodeFailureConfidence.High,
+                plan);
+        }
+
         FfmpegSourceTruncation truncation = FfmpegSourceTruncationClassifier.Classify(diagnostic);
         FfmpegSourceDecodeCorruption corruption = FfmpegSourceDecodeCorruptionClassifier.Classify(diagnostic);
         if (truncation.IsReliable || corruption.IsReliable ||

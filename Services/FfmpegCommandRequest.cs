@@ -39,6 +39,7 @@ namespace MediaFlux.Services
         // Keeps NVENC active while deliberately removing NVDEC/CUDA input
         // acceleration for a single device-recovery retry.
         public bool DisableHardwareDecode { get; init; }
+        public bool RelaxSourceDecodeErrors { get; init; }
         public string SourcePixelFormat { get; init; } = "";
         public VideoOutputGeometryPlan? PlannedVideoGeometry { get; init; }
         public TimeSpan? SampleStart { get; init; }

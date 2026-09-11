@@ -107,7 +107,9 @@ namespace MediaFlux.Services
             var builder = new StringBuilder();
             // Decode errors must fail the encode rather than allowing FFmpeg to
             // conceal damaged source packets behind a successful exit code.
-            builder.Append("-y -xerror -err_detect explode ");
+            builder.Append(request.RelaxSourceDecodeErrors
+                ? "-y -err_detect ignore_err "
+                : "-y -xerror -err_detect explode ");
 
             provider.AppendInputAcceleration(builder, context);
             if (validated.UseGpu && isAsfFamilyInput)
@@ -174,6 +176,7 @@ namespace MediaFlux.Services
             EncoderProviderUtilities.AppendOutputFormatFlags(builder, context);
 
             AppendAudioArguments(builder, request);
+            AppendPlannedAudioCodecs(builder, request.ContainerDecision, request.AudioChannels);
             AppendPlannedAudioMetadataAndDispositions(builder, request.ContainerDecision);
             AppendPlannedSubtitleMetadataAndDispositions(builder, request.ContainerDecision);
             if (request.ContainerDecision.Resolved == OutputContainer.Mp4)
@@ -281,7 +284,8 @@ namespace MediaFlux.Services
                 builder.Append("-c:a aac -b:a 192k ");
                 builder.Append($"-ac {request.AudioChannels.Value} ");
             }
-            else if (request.ForceMp4CompatibleAudio || request.ContainerDecision.TranscodeAudioToAac)
+            else if (request.ForceMp4CompatibleAudio ||
+                     (request.ContainerDecision.TranscodeAudioToAac && !request.ContainerDecision.HasMixedAudioActions))
             {
                 builder.Append("-c:a aac -b:a 192k ");
             }
@@ -291,6 +295,21 @@ namespace MediaFlux.Services
             }
         }
 
+        private static void AppendPlannedAudioCodecs(
+            StringBuilder builder, OutputContainerDecision decision, int? audioChannels)
+        {
+            if (audioChannels is > 0 || !decision.HasMixedAudioActions)
+                return;
+            int outputIndex = 0;
+            foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(plan =>
+                         plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                         plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
+            {
+                if (plan.Action == StreamCompatibilityAction.Transcode)
+                    builder.Append($"-c:a:{outputIndex} {plan.TargetCodec ?? OutputContainerPolicy.SafeAudioRecoveryCodec(decision.Resolved)} ");
+                outputIndex++;
+            }
+        }
         private static void AppendPlannedAudioMetadataAndDispositions(
             StringBuilder builder,
             OutputContainerDecision decision)

@@ -390,7 +390,11 @@ public sealed class PerformanceTimingService
 
     private static readonly PerformanceTimingStage[] StageOrder =
     {
+        PerformanceTimingStage.SourceProbe,
         PerformanceTimingStage.SourceAnalysis,
+        PerformanceTimingStage.SourceTimingAnalysis,
+        PerformanceTimingStage.SubtitlePreflight,
+        PerformanceTimingStage.AudioIntegrityRecovery,
         PerformanceTimingStage.AiPreparation,
         PerformanceTimingStage.AiExtraction,
         PerformanceTimingStage.AiProcessing,
@@ -407,7 +411,11 @@ public sealed class PerformanceTimingService
     private static readonly IReadOnlyDictionary<PerformanceTimingStage, string> StageNames =
         new Dictionary<PerformanceTimingStage, string>
         {
+            [PerformanceTimingStage.SourceProbe] = "Source Probe",
             [PerformanceTimingStage.SourceAnalysis] = "Source Analysis",
+            [PerformanceTimingStage.SourceTimingAnalysis] = "Source Timing Analysis",
+            [PerformanceTimingStage.SubtitlePreflight] = "Subtitle Preflight",
+            [PerformanceTimingStage.AudioIntegrityRecovery] = "Audio Integrity / Recovery",
             [PerformanceTimingStage.AiPreparation] = "AI Preparation",
             [PerformanceTimingStage.AiExtraction] = "AI Extraction",
             [PerformanceTimingStage.AiProcessing] = "AI Processing",
@@ -503,7 +511,11 @@ public sealed record AiChunkPerformanceMetrics(
 
 public enum PerformanceTimingStage
 {
+    SourceProbe,
     SourceAnalysis,
+    SourceTimingAnalysis,
+    SubtitlePreflight,
+    AudioIntegrityRecovery,
     AiPreparation,
     AiExtraction,
     AiProcessing,
