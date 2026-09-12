@@ -13,7 +13,8 @@ namespace MediaFlux.Models
     public enum EncodeOutputValidationProfile
     {
         Production = 0,
-        BenchmarkSample = 1
+        BenchmarkSample = 1,
+        SampleComparison = 2
     }
 
     public sealed class EncodeOutputValidationRequest

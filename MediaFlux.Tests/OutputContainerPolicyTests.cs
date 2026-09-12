@@ -248,6 +248,46 @@ public sealed class OutputContainerPolicyTests
     }
 
     [Fact]
+    public void SampleComparisonEffectiveGlobalAacPlanConvertsEverySelectedAudioStream()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"),
+            new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "eac3", Language = "eng" },
+            new MediaProbeStreamInfo { Index = 2, CodecType = "audio", CodecName = "dts", Language = "jpn" });
+
+        OutputContainerDecision effective =
+            OutputContainerPolicy.ResolveEffectiveGlobalAacAudioPlan(decision, globalAacRequired: true);
+        StreamCompatibilityPlan[] audio = effective.StreamPlans
+            .Where(plan => plan.StreamType == "audio")
+            .ToArray();
+
+        Assert.Equal(2, audio.Length);
+        Assert.All(audio, plan =>
+        {
+            Assert.Equal(StreamCompatibilityAction.Transcode, plan.Action);
+            Assert.Equal("aac", plan.TargetCodec);
+        });
+        Assert.Equal("eng", audio[0].Language);
+        Assert.Equal("jpn", audio[1].Language);
+    }
+
+    [Fact]
+    public void EffectiveGlobalAacPlanDoesNotChangeProductionDecision()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"), Stream("audio", "eac3"));
+
+        OutputContainerDecision unchanged =
+            OutputContainerPolicy.ResolveEffectiveGlobalAacAudioPlan(decision, globalAacRequired: false);
+
+        Assert.Same(decision, unchanged);
+        StreamCompatibilityPlan audio = Assert.Single(
+            unchanged.StreamPlans, plan => plan.StreamType == "audio");
+        Assert.Equal(StreamCompatibilityAction.Copy, audio.Action);
+        Assert.Null(audio.TargetCodec);
+    }
+
+    [Fact]
     public void ExplicitAudioSelectionPlanUsesFfmpegMappingOrder()
     {
         var probe = new MediaProbeResult

@@ -111,6 +111,43 @@ namespace MediaFlux.Services
 
         public static string SafeAudioRecoveryCodec(OutputContainer container) => "aac";
 
+        /// <summary>
+        /// Describes the effective audio plan produced by the command builder when
+        /// a global AAC selection is required. This is intentionally explicit so
+        /// validation can describe the artifact that was actually generated.
+        /// </summary>
+        public static OutputContainerDecision ResolveEffectiveGlobalAacAudioPlan(
+            OutputContainerDecision decision,
+            bool globalAacRequired)
+        {
+            ArgumentNullException.ThrowIfNull(decision);
+            if (!globalAacRequired)
+                return decision;
+
+            StreamCompatibilityPlan[] plans = decision.StreamPlans.Select(plan =>
+                plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode
+                    ? plan with
+                    {
+                        Action = StreamCompatibilityAction.Transcode,
+                        TargetCodec = "aac",
+                        Reason = "The effective sample command applies AAC to every selected audio stream."
+                    }
+                    : plan).ToArray();
+
+            return new OutputContainerDecision
+            {
+                Requested = decision.Requested,
+                Resolved = decision.Resolved,
+                Reason = decision.Reason,
+                CompatibilityWarnings = decision.CompatibilityWarnings,
+                CopySubtitles = decision.CopySubtitles,
+                CopyDataStreams = decision.CopyDataStreams,
+                CopyAttachments = decision.CopyAttachments,
+                StreamPlans = plans
+            };
+        }
+
         private static bool IsTextSubtitleCodec(string codec) =>
             codec.Equals("ass", StringComparison.OrdinalIgnoreCase) ||
             codec.Equals("ssa", StringComparison.OrdinalIgnoreCase) ||

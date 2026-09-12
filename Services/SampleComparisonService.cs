@@ -319,6 +319,7 @@ namespace MediaFlux.Services
                         QualityValue = settings.QualityValue,
                         TenBit = settings.TenBit,
                         AudioChannels = settings.AudioChannels,
+                        ValidationProfile = EncodeOutputValidationProfile.SampleComparison,
                         Restoration = settings.Restoration.Clone(),
                         CancellationToken = cancellationToken
                     };

@@ -862,6 +862,17 @@ namespace MediaFlux.Services
             bool forceMp4CompatibleAudio = (isAsfFamilyInput &&
                 string.Equals(Path.GetExtension(finalOutput), ".mp4", StringComparison.OrdinalIgnoreCase)) ||
                 containerDecision.TranscodeAudioToAac;
+            if (validationProfile == EncodeOutputValidationProfile.SampleComparison &&
+                forceMp4CompatibleAudio)
+            {
+                // The sample command intentionally uses its global AAC audio
+                // selection when any selected stream requires conversion. Keep
+                // validation aligned with that effective sample output plan;
+                // production validation continues to use the original decision.
+                containerDecision = OutputContainerPolicy.ResolveEffectiveGlobalAacAudioPlan(
+                    containerDecision,
+                    globalAacRequired: true);
+            }
             if (forceMp4CompatibleAudio)
             {
                 _log?.Invoke(isAsfFamilyInput
