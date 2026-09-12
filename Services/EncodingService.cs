@@ -701,6 +701,11 @@ namespace MediaFlux.Services
                 encoderSelection ??
                 EncoderRegistry.Default.ResolveLegacyCodec(videoCodec).Selection;
             double? legacyTargetMb = targetMb;
+            int? legacyAudioChannels = audioChannels;
+            StreamMapMode legacyMapMode = mapMode;
+            bool legacyCopySubtitles = copySubtitles;
+            bool legacyCopyDataStreams = copyDataStreams;
+            bool legacyCopyAttachments = copyAttachments;
             TimeSpan planKnownDuration = inputSource.KnownDurationSeconds is > 0
                 ? TimeSpan.FromSeconds(inputSource.KnownDurationSeconds.Value)
                 : programDuration.DurationSeconds is > 0
@@ -715,14 +720,19 @@ namespace MediaFlux.Services
             var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
             EncodingPlanService.EncodingPlanExecutionValues planExecution =
                 EncodingPlanService.GetExecutionValues(shadowPlan);
-            // Phase 2 authority boundary: downstream FFmpeg/finalization requests
-            // consume the frozen plan values, never mutable caller/UI values.
+            // Phase 2/3 authority boundary: downstream FFmpeg/finalization
+            // requests consume frozen plan values, never caller/UI values.
             VideoEncoderSelection requestedEncoder = planExecution.Encoder;
             VideoOutputGeometryPlan? plannedOutputGeometry = planExecution.Geometry;
             videoCodec = requestedEncoder.FfmpegCodec;
             useGpu = planExecution.UseGpu;
             targetMb = planExecution.TargetMb;
             encoderSelection = requestedEncoder;
+            audioChannels = planExecution.AudioChannels;
+            mapMode = planExecution.MapMode;
+            copySubtitles = planExecution.CopySubtitles;
+            copyDataStreams = planExecution.CopyDataStreams;
+            copyAttachments = planExecution.CopyAttachments;
             // The legacy calculations are parity-only.  They execute after the
             // plan is frozen and are never used for command construction.
             VideoOutputResolutionPlan? finalOutputResolution = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0
@@ -782,11 +792,11 @@ namespace MediaFlux.Services
                 outputContainer,
                 sourceProbe,
                 inputSource,
-                mapMode,
-                copySubtitles,
-                copyDataStreams,
-                copyAttachments,
-                audioWillBeTranscoded: audioChannels is > 0);
+                legacyMapMode,
+                legacyCopySubtitles,
+                legacyCopyDataStreams,
+                legacyCopyAttachments,
+                audioWillBeTranscoded: legacyAudioChannels is > 0);
             foreach (EncodingPlanDivergence divergence in EncodingPlanService.Compare(
                          shadowPlan, legacyContainerDecision, legacyOutputGeometry, legacyEncoder,
                          legacyTargetMb, sourceDecodeMode))

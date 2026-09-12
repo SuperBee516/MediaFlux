@@ -15,7 +15,12 @@ public static class EncodingPlanService
         VideoOutputGeometryPlan? Geometry,
         VideoEncoderSelection Encoder,
         bool UseGpu,
-        double? TargetMb);
+        double? TargetMb,
+        int? AudioChannels,
+        EncodingService.StreamMapMode MapMode,
+        bool CopySubtitles,
+        bool CopyDataStreams,
+        bool CopyAttachments);
 
     /// <summary>
     /// Creates a domain plan by composing the same container and geometry policy
@@ -62,7 +67,10 @@ public static class EncodingPlanService
             reasons.Add(new(EncodingDecisionReasonCode.StrictPolicyRejected, "Strict compatibility policy rejects the resolved stream plan."));
 
         List<EncodingPlanStream> streams = container.StreamPlans.Select(plan => new EncodingPlanStream(
-            plan.StreamIndex, plan.StreamType, plan.Codec, plan.Action, plan.TargetCodec)).ToList();
+            plan.StreamIndex, plan.StreamType, plan.Codec, plan.Action, plan.TargetCodec,
+            plan.Reason,
+            plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase)
+                ? context.AudioChannels : null)).ToList();
         foreach (EncodingPlanStream audio in streams.Where(stream => stream.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase)))
             reasons.Add(new(audio.Action == StreamCompatibilityAction.Copy ? EncodingDecisionReasonCode.CompatibleAudioPassthrough : EncodingDecisionReasonCode.AudioConversionRequired,
                 audio.Action == StreamCompatibilityAction.Copy ? "The container policy preserves this audio stream." : "The container policy requires an audio compatibility action."));
@@ -98,7 +106,9 @@ public static class EncodingPlanService
             Risks = risks,
             DecisionReasons = reasons,
             ExecutionValues = new EncodingPlanExecutionValues(
-                container, geometry, context.Encoder, context.UseGpu, context.TargetMb)
+                container, geometry, context.Encoder, context.UseGpu, context.TargetMb,
+                context.AudioChannels, context.MapMode, context.CopySubtitles,
+                context.CopyDataStreams, context.CopyAttachments)
         };
     }
 

@@ -121,6 +121,48 @@ public sealed class EncodingPlanServiceTests
     }
 
     [Fact]
+    public void FrozenStreamPlansCarrySelectedAudioAndSubtitleExecutionDecisions()
+    {
+        EncodingDecisionContext context = Context(
+            OutputContainerSelection.Mp4,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 },
+            new MediaProbeStreamInfo { Index = 4, CodecType = "audio", CodecName = "mp2" },
+            new MediaProbeStreamInfo { Index = 5, CodecType = "subtitle", CodecName = "ass" }) with
+        {
+            AudioChannels = 6
+        };
+        EncodingPlan plan = EncodingPlanService.Create(context);
+        EncodingPlanService.EncodingPlanExecutionValues execution =
+            EncodingPlanService.GetExecutionValues(plan);
+
+        EncodingPlanStream audio = Assert.Single(plan.Audio);
+        Assert.Equal(4, audio.StreamIndex);
+        Assert.Equal(StreamCompatibilityAction.Transcode, audio.Action);
+        Assert.Equal("aac", audio.TargetCodec);
+        Assert.Equal(6, audio.Channels);
+        Assert.False(string.IsNullOrWhiteSpace(audio.Reason));
+
+        EncodingPlanStream subtitle = Assert.Single(plan.Subtitles);
+        Assert.Equal(5, subtitle.StreamIndex);
+        Assert.Equal(StreamCompatibilityAction.Transcode, subtitle.Action);
+        Assert.Equal("mov_text", subtitle.TargetCodec);
+        Assert.Equal(6, execution.AudioChannels);
+        Assert.Equal(context.MapMode, execution.MapMode);
+        Assert.Equal(context.CopySubtitles, execution.CopySubtitles);
+        Assert.Equal(context.CopyDataStreams, execution.CopyDataStreams);
+        Assert.Equal(context.CopyAttachments, execution.CopyAttachments);
+
+        OutputContainerDecision legacy = OutputContainerPolicy.Decide(
+            context.ContainerConfigured, context.Source, context.Input, context.MapMode,
+            context.CopySubtitles, context.CopyDataStreams, context.CopyAttachments,
+            audioWillBeTranscoded: true);
+        Assert.Empty(EncodingPlanService.Compare(
+            plan, legacy, execution.Geometry, execution.Encoder, execution.TargetMb,
+            FfmpegSourceDecodeMode.Strict));
+    }
+
+    [Fact]
     public void Mp4PlanSurfacesAuthoritativeConversionsAndGeometryCorrection()
     {
         MediaProbeResult source = new()

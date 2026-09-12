@@ -24,7 +24,9 @@ public sealed record EncodingDecisionContext(
 
 public sealed record EncodingPlanSource(string Codec, int? Width, int? Height, double? FrameRate, double? DurationSeconds);
 public sealed record EncodingPlanVideo(string Action, string Codec, string Encoder, int? ConfiguredWidth, int? ConfiguredHeight, int? EffectiveWidth, int? EffectiveHeight, string? PixelFormat);
-public sealed record EncodingPlanStream(int StreamIndex, string StreamType, string Codec, StreamCompatibilityAction Action, string? TargetCodec);
+public sealed record EncodingPlanStream(
+    int StreamIndex, string StreamType, string Codec, StreamCompatibilityAction Action,
+    string? TargetCodec, string Reason, int? Channels = null);
 public sealed record EncodingPlanContainer(OutputContainerSelection Configured, OutputContainer Effective, string Reason);
 public sealed record EncodingPlanHardware(bool UseGpu, string EncoderId, bool HardwareEncoder);
 public sealed record EncodingPlanRecovery(string InitialDecodeMode, bool TolerantRecoveryPermitted, int MaximumRetryCount, IReadOnlyList<string> PermittedFailureClasses, IReadOnlyList<string> RejectedFailureClasses);
