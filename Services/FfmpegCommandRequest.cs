@@ -43,6 +43,7 @@ namespace MediaFlux.Services
         // separate from NVENC availability because some FFmpeg builds expose
         // both features but cannot negotiate CUDA frames with a given format.
         public bool PreferNvencGpuResidentFrames { get; init; } = true;
+        public bool NvencCudaFormatConversionSupported { get; init; }
         // Keeps NVENC active while deliberately removing NVDEC/CUDA input
         // acceleration for a single device-recovery retry.
         public bool DisableHardwareDecode { get; init; }

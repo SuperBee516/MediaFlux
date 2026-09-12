@@ -83,7 +83,11 @@ namespace MediaFlux
                 return;
             if (!await ConfirmExplicitMp4CompatibilityAsync(requestedRows))
                 return;
-            _activeOutputContainer = GetSelectedOutputContainer();
+            // Capture the configured selection once for this run.  The preview is
+            // advisory and the mutable UI state must not be reread while workers
+            // are building authoritative production requests.
+            OutputContainerSelection runOutputContainer = GetSelectedOutputContainer();
+            _activeOutputContainer = runOutputContainer;
 
             if (requestedRows.Any(row => row.Tag is not RowMeta { IsDvdEncode: true }) &&
                 !ValidateOutputFolderAgainstWatchFolder(cmbEncodeOutput.Text, showMessage: true))
@@ -202,7 +206,7 @@ namespace MediaFlux
                 {
                     await _encodeQueueRunner.RunAsync(
                         rowsToProcess,
-                        row => EncodeSingleRow(row, encodeToken),
+                        row => EncodeSingleRow(row, encodeToken, runOutputContainer),
                         maxParallel,
                         () => _encodeQueuePaused,
                         () => _cancelEncode,
@@ -355,7 +359,10 @@ namespace MediaFlux
                 : "Encode queue resumed.";
         }
 
-        private async Task EncodeSingleRow(DataGridViewRow row, CancellationToken cancellationToken)
+        private async Task EncodeSingleRow(
+            DataGridViewRow row,
+            CancellationToken cancellationToken,
+            OutputContainerSelection runOutputContainer)
         {
             if (_cancelEncode || cancellationToken.IsCancellationRequested)
                 return;
@@ -532,7 +539,9 @@ namespace MediaFlux
             string analysisEncoderId = encoderSnapshot.Validated.Resolved.Selection.EncoderId;
             string analysisEncoderPreset = encoderSnapshot.Validated.Preset;
             bool analysisTenBit = encoderSnapshot.Validated.TenBit;
-            string analysisOutputContainer = PolicyOutputContainer(policyIntent).ToString();
+            OutputContainerSelection requestedOutputContainer =
+                PolicyOutputContainer(policyIntent, runOutputContainer);
+            string analysisOutputContainer = requestedOutputContainer.ToString();
             string analysisRestoration = _config.VideoRestoration?.Preset.ToString() ?? "Off";
 
             // ==== TARGET SIZE (MB) ====
@@ -757,6 +766,8 @@ namespace MediaFlux
                     TenBit = tenBit,
                     AudioChannels = audioChannels,
                     ProgressCallback = jobCallback,
+                    StructuredProgressCallback = progress =>
+                        Ui(() => ApplyStructuredEncodeProgress(row, progress)),
                     AiProgressCallback = progress => ApplyAiIntermediateProgress(row, progress),
                     ConcurrentEncoderSessions =
                         concurrentEncoderSessions,
@@ -782,11 +793,17 @@ namespace MediaFlux
                             }
                         });
                     },
-                    OutputContainer = PolicyOutputContainer(policyIntent),
+                    OutputContainer = requestedOutputContainer,
                     ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
                     CompatibilityPolicy = GetContainerCompatibilityPolicy(),
                     ContainerDecisionCallback = decision => appliedContainerDecision = decision
                 };
+
+                jobLog.AppendLine(
+                    $"[MediaFlux] Encode request: source='{inputSource.SourcePath}'; " +
+                    $"configured-container={requestedOutputContainer}; effective-container=authoritative resolution pending; " +
+                    $"compatibility-policy={encodeRequest.CompatibilityPolicy}; " +
+                    "ffmpeg-launched=false (pending preflight)." );
 
                 if (!string.IsNullOrWhiteSpace(meta.EstimateDiagnostic))
                     jobLog.AppendLine(meta.EstimateDiagnostic);
@@ -1004,7 +1021,7 @@ namespace MediaFlux
                     : ex.Message;
 
                 bool cleanupEnabled = isCanceled
-                    ? _config.DeleteCanceledEncodeOutputs
+                    ? true
                     : _config.DeleteFailedEncodeOutputs;
                 string recoverableOutputPath =
                     finalizationResult?.RecoverableOutputPath ?? "";
@@ -1069,7 +1086,7 @@ namespace MediaFlux
                                 (isCanceled ? "Canceled" : "FfmpegFailed"),
                             StagingPath = stagedOutputPath,
                             SourceDeletionResult = sourceRetention,
-                            RequestedOutputContainer = PolicyOutputContainer(policyIntent).ToString(),
+                            RequestedOutputContainer = requestedOutputContainer.ToString(),
                             ResolvedOutputContainer = appliedContainerDecision?.Resolved.ToString(),
                             ContainerDecisionReason = appliedContainerDecision?.Reason,
                             DiagnosticSummary = diagnosticSummary

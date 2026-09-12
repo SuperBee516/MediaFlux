@@ -223,9 +223,31 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         MediaProbeResult source = SubtitleProbe(output: false, "eng", "Signs", defaultDisposition: true, forcedDisposition: true);
         MediaProbeResult output = SubtitleProbe(output: true, "eng", "Signs", defaultDisposition: true, forcedDisposition: true);
 
-        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(request, source, output));
-        string error = EncodeOutputValidationService.ValidateProbe(request, source, SubtitleProbe(output: true, "eng", "Signs", defaultDisposition: false, forcedDisposition: true));
-        Assert.Contains("default disposition", error, StringComparison.OrdinalIgnoreCase);
+        string error = EncodeOutputValidationService.ValidateProbe(request, source, output);
+        Assert.True(string.IsNullOrEmpty(error), error);
+        string dispositionError = EncodeOutputValidationService.ValidateProbe(request, source, SubtitleProbe(output: true, "eng", "Signs", defaultDisposition: false, forcedDisposition: true));
+        Assert.Contains("default disposition", dispositionError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("eng", true)]
+    [InlineData(null, false)]
+    [InlineData("jpn", false)]
+    public void PlannedSubtitleLanguageRemainsStrictExceptForUnspecifiedValues(string? outputLanguage, bool valid)
+    {
+        OutputContainerDecision decision = new()
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[] { new StreamCompatibilityPlan(3, "subtitle", "ass", StreamCompatibilityAction.Transcode, "test", "mov_text", Language: "ENG") }
+        };
+        EncodeOutputValidationRequest request = FrameRequest(3000, FrameCountProvenance.Measured, copySubtitles: true, containerDecision: decision);
+        string error = EncodeOutputValidationService.ValidateProbe(request,
+            SubtitleProbe(output: false, "eng", "", defaultDisposition: false, forcedDisposition: false),
+            SubtitleProbe(output: true, outputLanguage ?? "", "", defaultDisposition: false, forcedDisposition: false));
+
+        Assert.Equal(valid, string.IsNullOrEmpty(error));
     }
 
     [Fact]
@@ -246,10 +268,44 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         MediaProbeResult output = PlannedAudioProbe(output: true, "aac", "eng", "Main", defaultDisposition: true);
         EncodeOutputValidationRequest request = FrameRequest(3000, FrameCountProvenance.Measured, containerDecision: decision);
 
-        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(request, source, output));
+        string validationError = EncodeOutputValidationService.ValidateProbe(request, source, output);
+        Assert.True(string.IsNullOrEmpty(validationError), validationError);
         string error = EncodeOutputValidationService.ValidateProbe(request, source,
             PlannedAudioProbe(output: true, "ac3", "eng", "Main", defaultDisposition: true));
         Assert.Contains("requires 'aac'", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("und", "und", true)]
+    [InlineData("und", null, true)]
+    [InlineData(null, "und", true)]
+    [InlineData(null, null, true)]
+    [InlineData("eng", "eng", true)]
+    [InlineData("eng", null, false)]
+    [InlineData("eng", "und", false)]
+    [InlineData("eng", "jpn", false)]
+    public void PlannedAudioUnspecifiedLanguageMetadataUsesSemanticEquivalence(
+        string? plannedLanguage,
+        string? outputLanguage,
+        bool valid)
+    {
+        OutputContainerDecision decision = new()
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(4, "audio", "aac", StreamCompatibilityAction.Copy, "test", "aac",
+                    Language: plannedLanguage, Title: "Main", Dispositions: new Dictionary<string, bool> { ["default"] = true })
+            }
+        };
+        EncodeOutputValidationRequest request = FrameRequest(3000, FrameCountProvenance.Measured, containerDecision: decision);
+        MediaProbeResult source = PlannedAudioProbe(output: false, "aac", plannedLanguage ?? "", "Main", defaultDisposition: true);
+        MediaProbeResult output = PlannedAudioProbe(output: true, "aac", outputLanguage ?? "", "Main", defaultDisposition: true);
+
+        string error = EncodeOutputValidationService.ValidateProbe(request, source, output);
+        Assert.Equal(valid, string.IsNullOrEmpty(error));
     }
 
     [Fact]
@@ -298,7 +354,8 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         MediaProbeResult output = TopologyProbe(1419.96, 1419.96, 34045, includeOutlierSubtitle: false, format: "mov,mp4,m4a,3gp,3g2,mj2");
         EncodeOutputValidationRequest request = TopologyRequest();
 
-        Assert.Equal("", EncodeOutputValidationService.ValidateProbe(request, source, output));
+        string validationError = EncodeOutputValidationService.ValidateProbe(request, source, output);
+        Assert.True(string.IsNullOrEmpty(validationError), validationError);
     }
 
     [Fact]
@@ -662,6 +719,27 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void BenchmarkSampleDurationUsesVideoTimelineNotAuxiliaryContainerTail()
+    {
+        EncodeOutputValidationRequest request = Request(
+            profile: EncodeOutputValidationProfile.BenchmarkSample,
+            containerDecision: new OutputContainerDecision
+            {
+                Requested = OutputContainerSelection.Matroska,
+                Resolved = OutputContainer.Matroska,
+                Reason = "benchmark sample"
+            });
+        MediaProbeResult source = Probe("matroska", "h264", 1920, 1080, 25, 1, 0, 0, "Validation Test");
+        MediaProbeResult output = CloneProbe(
+            Probe("mov,mp4,m4a,3gp,3g2,mj2", "hevc", 1920, 1080, 25, 1, 0, 0, "Validation Test"),
+            durationSeconds: 27.63,
+            formatName: "matroska");
+
+        string validationError = EncodeOutputValidationService.ValidateProbe(request, source, output);
+        Assert.True(string.IsNullOrEmpty(validationError), validationError);
+    }
+
+    [Fact]
     public void DvdValidationUsesCombinedLogicalDurationNotFirstSegmentDuration()
     {
         EncodeOutputValidationRequest request = new()
@@ -738,7 +816,8 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         bool tenBit = false,
         int? expectedWidth = null,
         int? expectedHeight = null,
-        EncodeOutputValidationProfile profile = EncodeOutputValidationProfile.Production) => new()
+        EncodeOutputValidationProfile profile = EncodeOutputValidationProfile.Production,
+        OutputContainerDecision? containerDecision = null) => new()
     {
         Input = EncodingInputSource.FromFile(_sourcePath),
         OutputPath = _outputPath,
@@ -753,7 +832,13 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         CopySubtitles = copySubtitles,
         ExpectedVideoWidth = expectedWidth,
         ExpectedVideoHeight = expectedHeight,
-        Profile = profile
+        Profile = profile,
+        ContainerDecision = containerDecision ?? new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test"
+        }
     };
 
     private static EncodeOutputValidationRequest FrameRequest(long expected, FrameCountProvenance provenance, double duration = 100, SourceTimingAnalysis? sourceTiming = null, bool copySubtitles = false, OutputContainerDecision? containerDecision = null) => new()

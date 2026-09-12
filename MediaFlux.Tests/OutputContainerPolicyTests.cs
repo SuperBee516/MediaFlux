@@ -75,6 +75,44 @@ public sealed class OutputContainerPolicyTests
         Assert.False(decision.CopyDataStreams);
     }
 
+    [Theory]
+    [InlineData("subrip")]
+    [InlineData("hdmv_pgs_subtitle")]
+    public void ExplicitMatroska_CopiesTextAndBitmapSubtitles(string codec)
+    {
+        OutputContainerDecision decision = Decide(
+            OutputContainerSelection.Matroska,
+            Stream("video", "hevc"),
+            Stream("subtitle", codec));
+
+        Assert.Equal(OutputContainer.Matroska, decision.Resolved);
+        Assert.True(decision.CopySubtitles);
+        StreamCompatibilityPlan subtitle = Assert.Single(
+            decision.StreamPlans,
+            plan => plan.StreamType == "subtitle");
+        Assert.Equal(StreamCompatibilityAction.Copy, subtitle.Action);
+        Assert.Null(subtitle.TargetCodec);
+        Assert.Empty(decision.CompatibilityWarnings);
+    }
+
+    [Fact]
+    public void ExplicitMatroska_MixedSubRipAndPgsNeverUsesMp4Policy()
+    {
+        OutputContainerDecision decision = Decide(
+            OutputContainerSelection.Matroska,
+            Stream("video", "hevc"),
+            Stream("subtitle", "subrip"),
+            Stream("subtitle", "hdmv_pgs_subtitle"));
+
+        Assert.Equal(OutputContainer.Matroska, decision.Resolved);
+        Assert.Equal(2, decision.StreamPlans.Count(plan => plan.StreamType == "subtitle"));
+        Assert.All(
+            decision.StreamPlans.Where(plan => plan.StreamType == "subtitle"),
+            plan => Assert.Equal(StreamCompatibilityAction.Copy, plan.Action));
+        Assert.DoesNotContain(decision.CompatibilityWarnings, warning =>
+            warning.Contains("subtitle", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public void Auto_DoesNotSelectMatroskaSolelyForUnsupportedDataStreams()
     {

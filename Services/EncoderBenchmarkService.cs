@@ -163,9 +163,11 @@ public sealed class EncodingServiceBenchmarkJobRunner : IEncoderBenchmarkJobRunn
                 ProgressCallback = callback,
                 ConcurrentEncoderSessions = request.Concurrency > 1,
                 MapMode = request.Definition.Settings.MapMode,
-                CopySubtitles = request.Definition.Settings.CopySubtitles,
-                CopyDataStreams = request.Definition.Settings.CopyDataStreams,
-                CopyAttachments = request.Definition.Settings.CopyAttachments,
+                // Benchmarks measure the video path.  Do not let a source's
+                // auxiliary inventory or timestamps affect the short sample.
+                CopySubtitles = false,
+                CopyDataStreams = false,
+                CopyAttachments = false,
                 OutputContainer = request.Definition.Settings.OutputContainer,
                 ContainerCompatibilityConfirmed = request.Definition.Settings.ContainerCompatibilityConfirmed,
                 CancellationToken = cancellationToken,

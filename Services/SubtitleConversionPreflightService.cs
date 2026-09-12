@@ -25,6 +25,8 @@ internal sealed class SubtitleConversionPreflightService
         foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(plan =>
                      plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
                      plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode &&
+                     (decision.Resolved == OutputContainer.Mp4 ||
+                      plan.Action == StreamCompatibilityAction.Transcode) &&
                      (TextSubtitleCodecs.Contains(plan.Codec) ||
                       string.Equals(plan.TargetCodec, "mov_text", StringComparison.OrdinalIgnoreCase))))
         {

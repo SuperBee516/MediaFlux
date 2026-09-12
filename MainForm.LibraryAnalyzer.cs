@@ -142,9 +142,12 @@ namespace MediaFlux
             };
         }
 
-        private OutputContainerSelection PolicyOutputContainer(LibraryPolicyQueueItem? item)
+        private OutputContainerSelection PolicyOutputContainer(
+            LibraryPolicyQueueItem? item,
+            OutputContainerSelection? ordinaryRunSelection = null)
         {
-            if (item == null) return _activeOutputContainer;
+            if (item == null)
+                return ordinaryRunSelection ?? _activeOutputContainer;
             if (!string.IsNullOrWhiteSpace(item.EncodingPresetName))
             {
                 EncodingPreset? preset = _presetService.LoadAll().FirstOrDefault(value => value.Name.Equals(item.EncodingPresetName, StringComparison.OrdinalIgnoreCase));

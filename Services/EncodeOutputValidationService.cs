@@ -414,10 +414,13 @@ namespace MediaFlux.Services
                     ? request.Input.KnownDurationSeconds
                     : ProgramDurationResolver.Resolve(source).DurationSeconds);
             log?.Invoke($"[EncodeOutputValidation] Duration basis=authoritative video/program timeline {authoritativeDuration?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}s; output container={output.DurationSeconds?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}s.");
+            double? outputDuration = request.Profile == EncodeOutputValidationProfile.BenchmarkSample
+                ? ProgramDurationResolver.GetReliableDuration(outputVideo)
+                : ProgramDurationResolver.Resolve(output).DurationSeconds;
             string durationError = ValidateDuration(
                 request.Input.Kind,
                 authoritativeDuration ?? request.Input.KnownDurationSeconds,
-                ProgramDurationResolver.Resolve(output).DurationSeconds);
+                outputDuration);
             if (!string.IsNullOrWhiteSpace(durationError))
                 return durationError;
 
@@ -621,9 +624,11 @@ namespace MediaFlux.Services
                 if (!string.IsNullOrWhiteSpace(expectedCodec) &&
                     !string.Equals(expectedCodec, stream.CodecName, StringComparison.OrdinalIgnoreCase))
                     return $"{type} stream {index + 1} codec is '{stream.CodecName}', but planned stream {plan.StreamIndex} requires '{expectedCodec}'.";
-                if (!string.IsNullOrWhiteSpace(plan.Language) &&
-                    !string.Equals(plan.Language, stream.Language, StringComparison.OrdinalIgnoreCase))
-                    return $"{type} stream {index + 1} language metadata was not preserved from planned stream {plan.StreamIndex}.";
+                if (!LanguageMetadataNormalizer.Equivalent(plan.Language, stream.Language))
+                    return $"{type} language mismatch: source stream {plan.StreamIndex} / {type} {plan.SourceTypeOrdinal?.ToString(CultureInfo.InvariantCulture) ?? index.ToString(CultureInfo.InvariantCulture)} " +
+                        $"expected '{DescribeLanguage(plan.Language)}' (normalized '{DescribeLanguage(LanguageMetadataNormalizer.Normalize(plan.Language))}'), " +
+                        $"output {type} {plan.OutputTypeOrdinal?.ToString(CultureInfo.InvariantCulture) ?? index.ToString(CultureInfo.InvariantCulture)} " +
+                        $"reported '{DescribeLanguage(stream.Language)}' (normalized '{DescribeLanguage(LanguageMetadataNormalizer.Normalize(stream.Language))}').";
                 if (!string.IsNullOrWhiteSpace(plan.Title) &&
                     (!stream.Tags.TryGetValue("title", out string? title) || !string.Equals(plan.Title, title, StringComparison.Ordinal)))
                     return $"{type} stream {index + 1} title metadata was not preserved from planned stream {plan.StreamIndex}.";
@@ -634,6 +639,12 @@ namespace MediaFlux.Services
 
             return "";
         }
+
+        internal static string NormalizeUnspecifiedLanguage(string? language) =>
+            LanguageMetadataNormalizer.Normalize(language);
+
+        private static string DescribeLanguage(string? language) =>
+            string.IsNullOrWhiteSpace(language) ? "<unspecified>" : language;
 
         private static MediaProbeStreamInfo[] SelectedStreamsForTopology(
             MediaProbeResult probe,

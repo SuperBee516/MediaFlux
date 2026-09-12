@@ -97,10 +97,9 @@ namespace MediaFlux.Services
                         StringComparison.OrdinalIgnoreCase) &&
                     request.PreferNvencGpuResidentFrames &&
                     !request.DisableHardwareDecode &&
-                    // A software format/scale filter must receive software
-                    // frames.  Do not make FFmpeg insert an implicit bridge
-                    // between CUDA and system-memory filter domains.
-                    !requiresVideoFilter,
+                    (request.NvencCudaFormatConversionSupported || !requiresVideoFilter) &&
+                    // Restoration filters remain on the explicit software path.
+                    string.IsNullOrEmpty(restorationFilterChain),
                 RequiresVideoFilter = requiresVideoFilter
             };
 
@@ -135,15 +134,17 @@ namespace MediaFlux.Services
             bool copyDataStreams = request.CopyDataStreams &&
                 OutputContainerPolicy.SupportsGenericDataStreams(
                     request.ContainerDecision.Resolved);
-            bool usePlannedMp4Subtitles = request.ContainerDecision.Resolved == OutputContainer.Mp4 && request.ContainerDecision.StreamPlans.Count > 0;
+            bool usePlannedSubtitles = request.ContainerDecision.StreamPlans.Any(plan =>
+                plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
+                plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode);
             if (request.SplitSource is { } splitMapping)
             {
                 builder.Append("-map 0:v:0 ");
-                AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, request.CopySubtitles && !usePlannedMp4Subtitles, copyDataStreams, request.CopyAttachments, 1, includeVideo: false);
-                if (usePlannedMp4Subtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 1);
+                AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, request.CopySubtitles && !usePlannedSubtitles, copyDataStreams, request.CopyAttachments, 1, includeVideo: false);
+                if (usePlannedSubtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 1);
                 builder.Append("-map_metadata 1 -map_chapters 1 ");
             }
-            else { AppendStreamMapping(builder, request.Input, request.MapMode, request.CopySubtitles && !usePlannedMp4Subtitles, copyDataStreams, request.CopyAttachments); if (usePlannedMp4Subtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 0); builder.Append("-map_metadata 0 -map_chapters 0 "); }
+            else { AppendStreamMapping(builder, request.Input, request.MapMode, request.CopySubtitles && !usePlannedSubtitles, copyDataStreams, request.CopyAttachments); if (usePlannedSubtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 0); builder.Append("-map_metadata 0 -map_chapters 0 "); }
             AppendObsoleteVideoStatisticsCleanup(builder);
             if (request.SampleDuration is { } sampleDuration && sampleDuration > TimeSpan.Zero)
                 builder.Append($"-t {Seconds(sampleDuration.TotalSeconds)} ");
@@ -324,17 +325,19 @@ namespace MediaFlux.Services
                          plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
                          plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
             {
-                if (!string.IsNullOrWhiteSpace(plan.Language))
-                    builder.Append($"-metadata:s:a:{outputIndex} language={QuoteMetadata(plan.Language)} ");
+                int metadataIndex = plan.OutputTypeOrdinal ?? outputIndex;
+                if (!string.IsNullOrWhiteSpace(plan.Language) &&
+                    LanguageMetadataNormalizer.Normalize(plan.Language).Length > 0)
+                    builder.Append($"-metadata:s:a:{metadataIndex} language={QuoteMetadata(LanguageMetadataNormalizer.Normalize(plan.Language))} ");
                 if (!string.IsNullOrWhiteSpace(plan.Title))
-                    builder.Append($"-metadata:s:a:{outputIndex} title={QuoteMetadata(plan.Title)} ");
+                    builder.Append($"-metadata:s:a:{metadataIndex} title={QuoteMetadata(plan.Title)} ");
 
                 // A single disposition option replaces the output stream's set.
                 // Repeating -disposition for one stream makes FFmpeg warn and is
                 // unnecessary; the explicit list preserves the supported flags.
                 string dispositions = string.Join('+', new[] { "default", "forced" }
                     .Where(plan.IsDispositionSet));
-                builder.Append($"-disposition:a:{outputIndex} {(
+                builder.Append($"-disposition:a:{metadataIndex} {(
                     string.IsNullOrEmpty(dispositions) ? "0" : dispositions)} ");
                 outputIndex++;
             }
@@ -349,12 +352,13 @@ namespace MediaFlux.Services
                          plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
                          plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
             {
-                if (!string.IsNullOrWhiteSpace(plan.Language))
-                    builder.Append($"-metadata:s:s:{outputIndex} language={QuoteMetadata(plan.Language)} ");
+                int metadataIndex = plan.OutputTypeOrdinal ?? outputIndex;
+                if (LanguageMetadataNormalizer.Normalize(plan.Language).Length > 0)
+                    builder.Append($"-metadata:s:s:{metadataIndex} language={QuoteMetadata(LanguageMetadataNormalizer.Normalize(plan.Language))} ");
                 if (!string.IsNullOrWhiteSpace(plan.Title))
-                    builder.Append($"-metadata:s:s:{outputIndex} title={QuoteMetadata(plan.Title)} ");
+                    builder.Append($"-metadata:s:s:{metadataIndex} title={QuoteMetadata(plan.Title)} ");
                 string dispositions = string.Join('+', new[] { "default", "forced" }.Where(plan.IsDispositionSet));
-                builder.Append($"-disposition:s:{outputIndex} {(string.IsNullOrEmpty(dispositions) ? "0" : dispositions)} ");
+                builder.Append($"-disposition:s:{metadataIndex} {(string.IsNullOrEmpty(dispositions) ? "0" : dispositions)} ");
                 outputIndex++;
             }
         }

@@ -4714,7 +4714,7 @@ namespace MediaFlux
             _encodingService = new EncodingService(
                 AppPaths.InstallDirectory,
                 HandleFfmpegProgressLine,
-                null,
+                message => _activeJobLogSb?.AppendLine(message),
                 _config.FfmpegPath,
                 _config.FfprobePath);
 

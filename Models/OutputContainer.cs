@@ -20,7 +20,8 @@ namespace MediaFlux.Models
         int StreamIndex, string StreamType, string Codec, StreamCompatibilityAction Action,
         string Reason, string? TargetCodec = null, string RequestedAction = "copy",
         string? Language = null, string? Title = null,
-        IReadOnlyDictionary<string, bool>? Dispositions = null)
+        IReadOnlyDictionary<string, bool>? Dispositions = null,
+        int? SourceTypeOrdinal = null, int? OutputTypeOrdinal = null)
     {
         public bool IsDispositionSet(string name) =>
             Dispositions?.TryGetValue(name, out bool value) == true && value;

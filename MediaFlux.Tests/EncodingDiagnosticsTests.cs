@@ -26,6 +26,70 @@ public sealed class EncodingDiagnosticsTests
     }
 
     [Fact]
+    public void FrameFallbackUsesAuthoritativeFrameCountWhenTimestampIsUnavailable()
+    {
+        Assert.True(EncodingDiagnosticsService.TryParseProgress("frame= 250 fps= 50 time=N/A bitrate=1000kbits/s speed=2.0x", 20, out var progress, authoritativeTotalFrames: 1000, authoritativeFrameRate: 25));
+        Assert.Equal(25, progress.Percent, 3);
+        Assert.Equal(10, progress.MediaSeconds, 3);
+    }
+
+    [Fact]
+    public void ValidTimestampTakesPrecedenceOverFrameFallback()
+    {
+        Assert.True(EncodingDiagnosticsService.TryParseProgress("frame= 250 fps= 50 time=00:00:04.00 bitrate=1000kbits/s speed=2.0x", 20, out var progress, authoritativeTotalFrames: 1000, authoritativeFrameRate: 25));
+        Assert.Equal(20, progress.Percent, 3);
+        Assert.Equal(4, progress.MediaSeconds, 3);
+    }
+
+    [Fact]
+    public void UnknownTimestampAndFrameMetadataRemainUnknown()
+    {
+        Assert.False(EncodingDiagnosticsService.TryParseProgress("frame= 250 fps= 50 time=N/A bitrate=N/A speed=N/A", 20, out _));
+    }
+
+    [Fact]
+    public void ProductionParserPublishesFrameOnlyActivityWithAuthoritativeProgress()
+    {
+        Assert.True(EncodingService.TryParseProgress(
+            "frame= 250 fps= 50 time=N/A speed=N/A progress=continue",
+            TimeSpan.FromSeconds(40),
+            authoritativeTotalFrames: 1000,
+            authoritativeFrameRate: 25,
+            out var progress));
+        Assert.Equal(250, progress.EncodedFrames);
+        Assert.Equal(25, progress.Percent, 3);
+        Assert.Equal(10, progress.CurrentTime.TotalSeconds, 3);
+    }
+
+    [Fact]
+    public void ProductionParserPublishesFrameOnlyActivityWithoutInventingPercentage()
+    {
+        Assert.True(EncodingService.TryParseProgress(
+            "frame= 250 fps= 50 time=N/A speed=N/A progress=continue",
+            TimeSpan.FromSeconds(40),
+            authoritativeTotalFrames: null,
+            authoritativeFrameRate: null,
+            out var progress));
+        Assert.Equal(250, progress.EncodedFrames);
+        Assert.Equal(0, progress.Percent);
+        Assert.Equal(TimeSpan.Zero, progress.CurrentTime);
+    }
+
+    [Fact]
+    public void ProductionParserUsesStructuredOutTimeBeforeFrameFallback()
+    {
+        Assert.True(EncodingService.TryParseProgress(
+            "frame= 250 fps= 50 out_time_us=4000000 speed=2.0x progress=continue",
+            TimeSpan.FromSeconds(20),
+            authoritativeTotalFrames: 1000,
+            authoritativeFrameRate: 25,
+            out var progress));
+        Assert.Equal(4, progress.CurrentTime.TotalSeconds, 3);
+        Assert.Equal(20, progress.Percent, 3);
+        Assert.Equal(2, progress.Speed, 3);
+    }
+
+    [Fact]
     public void SessionLifecycleProducesBoundedCompletionSummary()
     {
         using var service=new EncodingDiagnosticsService(new FakeSystem(),TimeSpan.FromDays(1));service.Start(Job("a"));for(int i=0;i<350;i++){service.UpdateProgress("a",$"frame= 1 fps= 60 time=00:00:{i%60:00}.00 bitrate=1000kbits/s speed=2.0x",120);service.CaptureNow();}EncodingDiagnosticSnapshot active=Assert.Single(service.GetActive());Assert.Equal(EncodingDiagnosticsService.MaximumSamplesPerSession,active.RetainedSamples);EncodingDiagnosticSummary summary=service.Complete("a",2)!;Assert.Equal(300,summary.Samples);Assert.Equal(2,summary.AverageSpeed);Assert.Equal(2,summary.FinalizationSeconds);Assert.Empty(service.GetActive());

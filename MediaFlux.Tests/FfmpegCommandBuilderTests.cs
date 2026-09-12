@@ -150,6 +150,60 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void PlannedSubtitleMetadataUsesOutputOrdinalsNotSourceIndexes()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Matroska,
+            Resolved = OutputContainer.Matroska,
+            Reason = "test",
+            CopySubtitles = true,
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(3, "subtitle", "hdmv_pgs_subtitle", StreamCompatibilityAction.Copy,
+                    "test", Language: "ENG", SourceTypeOrdinal: 0, OutputTypeOrdinal: 0),
+                new StreamCompatibilityPlan(4, "subtitle", "hdmv_pgs_subtitle", StreamCompatibilityAction.Copy,
+                    "test", Language: "eng", SourceTypeOrdinal: 1, OutputTypeOrdinal: 1)
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-map 0:3 -map 0:4", arguments);
+        Assert.Contains("-metadata:s:s:0 language=\"eng\"", arguments);
+        Assert.Contains("-metadata:s:s:1 language=\"eng\"", arguments);
+        Assert.DoesNotContain("metadata:s:s:3", arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("metadata:s:s:4", arguments, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MatroskaCommandUsesTheResolvedContainerAndCopiesPlannedSubtitles()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Matroska,
+            Resolved = OutputContainer.Matroska,
+            Reason = "test",
+            CopySubtitles = true,
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(4, "subtitle", "subrip", StreamCompatibilityAction.Copy, "test"),
+                new StreamCompatibilityPlan(5, "subtitle", "hdmv_pgs_subtitle", StreamCompatibilityAction.Copy, "test")
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-map 0:4", arguments);
+        Assert.Contains("-map 0:5", arguments);
+        Assert.Contains("-c:s copy", arguments);
+        Assert.Contains("-f matroska", arguments);
+        Assert.Equal(".mkv", decision.Extension);
+        Assert.DoesNotContain("mov_text", arguments, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void TargetSizeBudgetUsesAacAllowanceForPlannedMp2Conversion()
     {
         var decision = new OutputContainerDecision
@@ -327,6 +381,23 @@ public sealed class FfmpegCommandBuilderTests
             "-profile:v main10 -pix_fmt p010le ",
             arguments);
         Assert.DoesNotContain("-highbitdepth", arguments);
+    }
+
+    [Fact]
+    public void NvencSupportedCudaConversionKeepsBitDepthConversionOnGpu()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            tenBit: true,
+            nvencHighBitDepthOutputSupported: true,
+            nvencCudaFormatConversionSupported: true,
+            sourcePixelFormat: "yuv420p"));
+
+        Assert.Contains("-hwaccel cuda -hwaccel_output_format cuda ", arguments);
+        Assert.Contains("-vf scale_cuda=format=p010le ", arguments);
+        Assert.DoesNotContain("-vf format=p010le", arguments);
+        Assert.DoesNotContain("-pix_fmt p010le ", arguments);
     }
 
     [Fact]
@@ -819,7 +890,8 @@ public sealed class FfmpegCommandBuilderTests
         bool disableHardwareDecode = false,
         OutputContainerDecision? containerDecision = null,
         FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
-        VideoOutputGeometryPlan? plannedVideoGeometry = null)
+        VideoOutputGeometryPlan? plannedVideoGeometry = null,
+        bool nvencCudaFormatConversionSupported = false)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -849,7 +921,8 @@ public sealed class FfmpegCommandBuilderTests
              disableHardwareDecode,
              containerDecision,
              sourceDecodeMode,
-             plannedVideoGeometry);
+             plannedVideoGeometry,
+             nvencCudaFormatConversionSupported);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -878,7 +951,8 @@ public sealed class FfmpegCommandBuilderTests
         bool disableHardwareDecode = false,
         OutputContainerDecision? containerDecision = null,
         FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
-        VideoOutputGeometryPlan? plannedVideoGeometry = null)
+        VideoOutputGeometryPlan? plannedVideoGeometry = null,
+        bool nvencCudaFormatConversionSupported = false)
     {
 
         return new FfmpegCommandRequest
@@ -924,6 +998,8 @@ public sealed class FfmpegCommandBuilderTests
             KnownDuration = knownDuration ?? TimeSpan.FromMinutes(10),
             NvencHighBitDepthOutputSupported =
                 nvencHighBitDepthOutputSupported,
+            NvencCudaFormatConversionSupported =
+                nvencCudaFormatConversionSupported,
             DisableHardwareDecode = disableHardwareDecode,
             SourceDecodeMode = sourceDecodeMode,
             SourcePixelFormat = sourcePixelFormat,

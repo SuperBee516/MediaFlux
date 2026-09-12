@@ -139,30 +139,37 @@ namespace MediaFlux.Services
             IReadOnlyList<MediaProbeStreamInfo> selectedSubtitles = copySubtitles
                 ? SelectStreams(source, input.SubtitleStreamIndexes, input.HasExplicitStreamSelection, "subtitle", int.MaxValue)
                 : Array.Empty<MediaProbeStreamInfo>();
-            int attachmentCount = copyAttachments && !input.HasExplicitStreamSelection ? Count(source, "attachment") : 0;
+            int attachmentCount = copyAttachments &&
+                requested != OutputContainerSelection.Matroska &&
+                !input.HasExplicitStreamSelection
+                ? Count(source, "attachment")
+                : 0;
 
             bool explicitMp4 = requested == OutputContainerSelection.Mp4;
             var warnings = new List<string>();
             var plans = new List<StreamCompatibilityPlan>();
-            foreach (MediaProbeStreamInfo stream in selectedAudio)
+            int audioOutputOrdinal = 0;
+            for (int selectedIndex = 0; selectedIndex < selectedAudio.Count; selectedIndex++)
             {
+                MediaProbeStreamInfo stream = selectedAudio[selectedIndex];
+                int sourceOrdinal = source.Streams.TakeWhile(candidate => candidate.Index != stream.Index).Count(candidate => IsType(candidate, "audio"));
                 if (audioWillBeTranscoded)
                 {
-                    plans.Add(AudioPlan(stream, StreamCompatibilityAction.Transcode,
+                    plans.Add(AudioPlan(stream, sourceOrdinal, audioOutputOrdinal++, StreamCompatibilityAction.Transcode,
                         "Selected audio will be converted to AAC by the requested audio layout.", "aac", "transcode"));
                 }
                 else if (!explicitMp4 || Mp4AudioCodecs.Contains(stream.CodecName))
                 {
-                    plans.Add(AudioPlan(stream, StreamCompatibilityAction.Copy, "Selected audio is retained."));
+                    plans.Add(AudioPlan(stream, sourceOrdinal, audioOutputOrdinal++, StreamCompatibilityAction.Copy, "Selected audio is retained."));
                 }
                 else if (AacTranscodeSourceCodecs.Contains(stream.CodecName))
                 {
-                    plans.Add(AudioPlan(stream, StreamCompatibilityAction.Transcode,
+                    plans.Add(AudioPlan(stream, sourceOrdinal, audioOutputOrdinal++, StreamCompatibilityAction.Transcode,
                         "MP4 cannot stream-copy this audio codec; MediaFlux will convert it to AAC.", "aac"));
                 }
                 else
                 {
-                    plans.Add(AudioPlan(stream, StreamCompatibilityAction.Unsupported,
+                    plans.Add(AudioPlan(stream, sourceOrdinal, null, StreamCompatibilityAction.Unsupported,
                         "MP4 audio codec cannot be safely copied and MediaFlux has no conservative AAC conversion path."));
                 }
             }
@@ -173,7 +180,7 @@ namespace MediaFlux.Services
                     .Select(stream => string.IsNullOrWhiteSpace(stream.CodecName) ? "unknown" : stream.CodecName)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
-                if (incompatibleAudio.Length > 0)
+                if (incompatibleAudio.Length > 0 && requested != OutputContainerSelection.Matroska)
                     warnings.Add($"audio codec(s) requiring compatible conversion or a decision: {string.Join(", ", incompatibleAudio)}");
             }
 
@@ -182,21 +189,32 @@ namespace MediaFlux.Services
                 .Select(stream => string.IsNullOrWhiteSpace(stream.CodecName) ? "unknown" : stream.CodecName)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            foreach (MediaProbeStreamInfo stream in selectedSubtitles)
+            int subtitleOutputOrdinal = 0;
+            for (int selectedIndex = 0; selectedIndex < selectedSubtitles.Count; selectedIndex++)
             {
+                MediaProbeStreamInfo stream = selectedSubtitles[selectedIndex];
+                int sourceOrdinal = source.Streams.TakeWhile(candidate => candidate.Index != stream.Index).Count(candidate => IsType(candidate, "subtitle"));
                 bool supported = !explicitMp4 || Mp4SubtitleCodecs.Contains(stream.CodecName);
                 bool ass = stream.CodecName.Equals("ass", StringComparison.OrdinalIgnoreCase) || stream.CodecName.Equals("ssa", StringComparison.OrdinalIgnoreCase);
                 StreamCompatibilityAction action = supported ? StreamCompatibilityAction.Copy : ass ? StreamCompatibilityAction.Transcode : StreamCompatibilityAction.Unsupported;
-                string streamReason = supported ? "Selected subtitle is MP4-compatible." : ass
+                string streamReason = supported && explicitMp4 ? "Selected subtitle is MP4-compatible." : supported
+                    ? "Selected subtitle will be copied into Matroska."
+                    : ass
                     ? "ASS/SSA will be converted to mov_text; styling may be lost."
                     : "Subtitle cannot be safely represented in MP4.";
-                plans.Add(new(stream.Index, "subtitle", stream.CodecName, action, streamReason, ass ? "mov_text" : null));
+                plans.Add(new(stream.Index, "subtitle", stream.CodecName, action, streamReason, ass ? "mov_text" : null,
+                    Language: stream.Language,
+                    Title: stream.Tags.TryGetValue("title", out string? title) ? title : null,
+                    Dispositions: stream.Dispositions,
+                    SourceTypeOrdinal: sourceOrdinal,
+                    OutputTypeOrdinal: action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode ? subtitleOutputOrdinal++ : null));
             }
-            if (incompatibleSubtitles.Length > 0)
+            if (incompatibleSubtitles.Length > 0 && requested != OutputContainerSelection.Matroska)
                 warnings.Add($"subtitle codec(s) requiring conversion or a decision: {string.Join(", ", incompatibleSubtitles)}");
             if (attachmentCount > 0)
             {
-                warnings.Add($"{attachmentCount} attachment stream(s) that MP4 will not preserve");
+                if (requested != OutputContainerSelection.Matroska)
+                    warnings.Add($"{attachmentCount} attachment stream(s) that MP4 will not preserve");
                 foreach (MediaProbeStreamInfo stream in source.Streams.Where(s => IsType(s, "attachment")))
                     plans.Add(new(stream.Index, "attachment", stream.CodecName, StreamCompatibilityAction.Omit, "MP4 does not preserve attachments."));
             }
@@ -269,7 +287,7 @@ namespace MediaFlux.Services
             string.IsNullOrWhiteSpace(codec) ? "unknown" : codec;
 
         private static StreamCompatibilityPlan AudioPlan(
-            MediaProbeStreamInfo stream,
+            MediaProbeStreamInfo stream, int sourceTypeOrdinal, int? outputTypeOrdinal,
             StreamCompatibilityAction action,
             string reason,
             string? targetCodec = null,
@@ -277,6 +295,6 @@ namespace MediaFlux.Services
             new(stream.Index, "audio", stream.CodecName, action, reason, targetCodec,
                 requestedAction, stream.Language,
                 stream.Tags.TryGetValue("title", out string? title) ? title : null,
-                stream.Dispositions);
+                stream.Dispositions, sourceTypeOrdinal, outputTypeOrdinal);
     }
 }

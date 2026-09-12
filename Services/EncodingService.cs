@@ -105,6 +105,11 @@ namespace MediaFlux.Services
             public double Speed { get; }
             public double BitrateKbps { get; }
             public double Percent { get; }
+            public long? EncodedFrames { get; }
+            public EncodeProgressBasis Basis { get; }
+            public long? TotalFrames { get; }
+            public bool TimestampStalled { get; }
+            public bool TimestampAvailable { get; }
 
             public EncodeProgress(
                 TimeSpan currentTime,
@@ -112,7 +117,9 @@ namespace MediaFlux.Services
                 double fps,
                 double speed,
                 double bitrateKbps,
-                double percent)
+                double percent,
+                long? encodedFrames = null, EncodeProgressBasis basis = EncodeProgressBasis.Timestamp,
+                long? totalFrames = null, bool timestampStalled = false, bool timestampAvailable = true)
             {
                 CurrentTime = currentTime;
                 TotalDuration = totalDuration;
@@ -120,6 +127,11 @@ namespace MediaFlux.Services
                 Speed = speed;
                 BitrateKbps = bitrateKbps;
                 Percent = percent;
+                EncodedFrames = encodedFrames;
+                Basis = basis;
+                TotalFrames = totalFrames;
+                TimestampStalled = timestampStalled;
+                TimestampAvailable = timestampAvailable;
             }
         }
 
@@ -334,7 +346,8 @@ namespace MediaFlux.Services
                 request.SourceDecodeMode,
                 request.DisableAutomaticFfmpegRecovery,
                 request.FfmpegDiagnosticCallback,
-                request.ValidationProfile);
+                request.ValidationProfile,
+                request.StructuredProgressCallback);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -498,7 +511,8 @@ namespace MediaFlux.Services
             FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
             bool disableAutomaticFfmpegRecovery = false,
             Action<string>? ffmpegDiagnosticCallback = null,
-            EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production)
+            EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
+            Action<EncodeProgress>? structuredProgressCallback = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -571,7 +585,8 @@ namespace MediaFlux.Services
             FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
             bool disableAutomaticFfmpegRecovery = false,
             Action<string>? ffmpegDiagnosticCallback = null,
-            EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production)
+            EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
+            Action<EncodeProgress>? structuredProgressCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -739,6 +754,10 @@ namespace MediaFlux.Services
                 copyDataStreams,
                 copyAttachments,
                 audioWillBeTranscoded: audioChannels is > 0);
+            _log?.Invoke(
+                $"[EncodingService] stage=ContainerResolution; configured={containerDecision.Requested}; " +
+                $"effective={containerDecision.Resolved}; policy={compatibilityPolicy}; " +
+                $"reason={containerDecision.Reason}");
             _log?.Invoke($"[EncodingService] {containerDecision.Reason}");
             containerDecisionCallback?.Invoke(containerDecision);
             foreach (StreamCompatibilityPlan plan in containerDecision.StreamPlans)
@@ -770,6 +789,7 @@ namespace MediaFlux.Services
             }
 
             SubtitleConversionPreflightResult subtitlePreflight;
+            _log?.Invoke($"[EncodingService] stage=Preflight; effective={containerDecision.Resolved}; validating planned subtitle operations.");
             using (PerformanceTimingService.PerformanceScope subtitleScope = performance.Measure(PerformanceTimingStage.SubtitlePreflight))
             {
                 subtitlePreflight = await new SubtitleConversionPreflightService(_ffmpegPath)
@@ -798,6 +818,9 @@ namespace MediaFlux.Services
             string finalOutput = OutputPathService.GetCollisionSafePath(
                 Path.Combine(outFolder, $"{name}{actualSuffix}{containerDecision.Extension}"));
             string output = OutputPathService.CreateEncodeStagingPath(finalOutput);
+            _log?.Invoke(
+                $"[EncodingService] stage=OutputAllocation; effective={containerDecision.Resolved}; " +
+                $"output='{finalOutput}'; staged='{output}'");
             outputPathCallback?.Invoke(finalOutput);
             stagingPathCallback?.Invoke(output);
             bool isAsfFamilyInput =
@@ -856,12 +879,16 @@ namespace MediaFlux.Services
                 : GetVideoDuration(input);
             if (totalDuration <= TimeSpan.Zero)
                 _log?.Invoke("[EncodingService] Warning: could not determine duration, progress percent will be 0.");
+            long? progressTotalFrames = sampleDuration is { } benchmarkWindow && sourceVideo?.FrameRate is > 0
+                ? (long)Math.Round(benchmarkWindow.TotalSeconds * sourceVideo.FrameRate.Value)
+                : sourceVideo?.FrameCount;
 
             string sourcePixelFormat = sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals(
                 "video", StringComparison.OrdinalIgnoreCase))?.PixelFormat ?? "";
             string ffArgs;
             using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
             {
+            _log?.Invoke($"[EncodingService] stage=CommandBuild; effective={containerDecision.Resolved}; building FFmpeg command.");
             ffArgs = BuildFfmpegArgs(
                 inputSource,
                 output,
@@ -913,7 +940,7 @@ namespace MediaFlux.Services
                 $"[EncodingService] Video pipeline: {pipelineDiagnostic}");
 
             _log?.Invoke(
-                $"[EncodingService] Starting ffmpeg for '{inputSource.SourcePath}' " +
+                $"[EncodingService] stage=FfmpegLaunch; ffmpeg-launched=true; '{inputSource.SourcePath}' " +
                 $"using '{input}' -> staged '{output}' (final '{finalOutput}')");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
 
@@ -921,7 +948,8 @@ namespace MediaFlux.Services
             using (PerformanceTimingService.PerformanceScope initialEncodeScope = performance.Measure(PerformanceTimingStage.FinalEncode))
             {
                 runResult = await RunFfmpegAsync(
-                    ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
+                    ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
+                    progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification).ConfigureAwait(false);
                 initialEncodeScope.Complete();
             }
 
@@ -964,7 +992,7 @@ namespace MediaFlux.Services
                     _log?.Invoke($"[EncodingService] Attempt 2: software decode -> NVENC; pipeline={pipelineDiagnostic}; ffmpeg arguments: {ffArgs}");
                     using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
                     {
-                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
+                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification).ConfigureAwait(false);
                         retryScope.Complete();
                     }
                     _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery retry result: exit={runResult.ExitCode}.");
@@ -1007,7 +1035,7 @@ namespace MediaFlux.Services
                 using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
                 {
                     runResult = await RunFfmpegAsync(
-                        ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
+                        ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification).ConfigureAwait(false);
                     retryScope.Complete();
                 }
             }
@@ -1052,7 +1080,7 @@ namespace MediaFlux.Services
                             }
                             using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.AudioIntegrityRecovery))
                             {
-                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
+                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification).ConfigureAwait(false);
                                 retryScope.Complete();
                             }
                             _log?.Invoke(runResult.ExitCode == 0
@@ -1100,7 +1128,7 @@ namespace MediaFlux.Services
                         }
                         using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                         {
-                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback).ConfigureAwait(false);
+                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification).ConfigureAwait(false);
                             scope.Complete();
                         }
                         if (runResult.ExitCode == 0)
@@ -1276,9 +1304,19 @@ namespace MediaFlux.Services
             Action<string> callback,
             TimeSpan totalDuration,
             CancellationToken cancellationToken,
-            Action<string>? diagnosticCallback = null)
+            Action<string>? diagnosticCallback = null,
+            long? authoritativeTotalFrames = null,
+            double? authoritativeFrameRate = null,
+            Action<EncodeProgress>? structuredProgressCallback = null,
+            SourceTimingClassification? sourceTimingClassification = null)
         {
             var stderrBuilder = new StringBuilder();
+            bool cfrFallbackEligible = sourceTimingClassification == SourceTimingClassification.Cfr &&
+                totalDuration > TimeSpan.Zero && authoritativeFrameRate is > 0;
+            var progressArbitrator = new EncodeProgressArbitrator(
+                totalDuration, authoritativeTotalFrames, authoritativeFrameRate, cfrFallbackEligible);
+            _log?.Invoke($"[Progress] timing={sourceTimingClassification?.ToString() ?? "unknown"}; duration={(totalDuration > TimeSpan.Zero ? totalDuration.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) : "unavailable")}; rate={(authoritativeFrameRate is > 0 ? authoritativeFrameRate.Value.ToString("0.###", CultureInfo.InvariantCulture) : "unavailable")}; measuredFrames={(authoritativeTotalFrames is > 0 ? authoritativeTotalFrames.Value.ToString(CultureInfo.InvariantCulture) : "unavailable")}; cfrFallbackEligible={cfrFallbackEligible}.");
+            var fallbackState = new ProgressLogState();
             var psi = new ProcessStartInfo
             {
                 FileName = _ffmpegPath,
@@ -1296,7 +1334,7 @@ namespace MediaFlux.Services
             proc.OutputDataReceived += (_, e) =>
             {
                 if (e.Data != null)
-                    HandleProgressLine(e.Data, callback, totalDuration);
+                    HandleProgressLine(e.Data, callback, totalDuration, authoritativeTotalFrames, authoritativeFrameRate, structuredProgressCallback, progressArbitrator, fallbackState);
             };
             proc.ErrorDataReceived += (_, e) =>
             {
@@ -1304,9 +1342,11 @@ namespace MediaFlux.Services
                     return;
 
                 diagnosticCallback?.Invoke(e.Data);
-                HandleProgressLine(e.Data, callback, totalDuration);
+                HandleProgressLine(e.Data, callback, totalDuration, authoritativeTotalFrames, authoritativeFrameRate, structuredProgressCallback, progressArbitrator, fallbackState);
                 AppendBounded(stderrBuilder, e.Data, MaxCapturedFfmpegCharacters);
             };
+
+            _log?.Invoke($"[EncodingService] Progress telemetry: FFmpeg stdout/stderr lines; structured frame/time fields enabled; authoritative frames={(authoritativeTotalFrames is > 0 ? "available" : "unavailable")}; authoritative frame rate={(authoritativeFrameRate is > 0 ? "available" : "unavailable")}.");
 
             try
             {
@@ -1408,7 +1448,10 @@ namespace MediaFlux.Services
             try
             {
                 if (proc.HasExited)
+                {
+                    proc.WaitForExit();
                     return;
+                }
 
                 var waitTask = proc.WaitForExitAsync();
                 var completed = await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
@@ -1422,7 +1465,8 @@ namespace MediaFlux.Services
                 {
                     _log?.Invoke("[EncodingService] FFmpeg did not exit after graceful cancel; killing launched process.");
                     proc.Kill(entireProcessTree: true);
-                    await proc.WaitForExitAsync().ConfigureAwait(false);
+                await proc.WaitForExitAsync().ConfigureAwait(false);
+                proc.WaitForExit();
                 }
             }
             catch (Exception ex)
@@ -1434,7 +1478,7 @@ namespace MediaFlux.Services
         // --------------------------------------------------------------------
         // Progress parsing + forwarding
         // --------------------------------------------------------------------
-        private void HandleProgressLine(string line, Action<string> callback, TimeSpan totalDuration)
+        private void HandleProgressLine(string line, Action<string> callback, TimeSpan totalDuration, long? authoritativeTotalFrames, double? authoritativeFrameRate, Action<EncodeProgress>? structuredProgressCallback, EncodeProgressArbitrator? progressArbitrator, ProgressLogState fallbackState)
         {
             // NOTE: FFmpeg stdout/stderr callbacks are raised on background threads.
             // When running concurrent jobs, invoking UI-bound callbacks from those threads can
@@ -1449,13 +1493,32 @@ namespace MediaFlux.Services
                 _log?.Invoke($"[ffmpeg] {line}");
 
                 // Structured progress (optional)
-                if (StructuredProgress == null)
+                if (StructuredProgress == null && structuredProgressCallback == null)
                     return;
 
-                if (TryParseProgress(line, totalDuration, out var progress))
+                if (TryParseProgress(line, totalDuration, authoritativeTotalFrames, authoritativeFrameRate, out var progress))
                 {
-                    try { StructuredProgress?.Invoke(progress); }
-                    catch { /* don't let subscribers break encoding */ }
+                    if (progressArbitrator != null)
+                    {
+                        double? timestamp = progress.TimestampAvailable && progress.CurrentTime >= TimeSpan.Zero
+                            ? progress.CurrentTime.TotalSeconds : null;
+                        EncodeProgressArbitrationResult result = progressArbitrator.Update(
+                            timestamp, progress.EncodedFrames, progress.Fps, progress.Speed, progress.BitrateKbps, null);
+                        if (result.TimestampStalled && !fallbackState.FallbackLogged)
+                        {
+                            fallbackState.FallbackLogged = true;
+                            _log?.Invoke($"[Progress] FFmpeg timestamp stalled while frames continue advancing; switching to frame-derived progress. basis={(progressArbitrator.Basis == EncodeProgressBasis.MeasuredFrames ? "measured frames" : "CFR duration+rate")}; frame={result.EncodedFrames?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}; timestamp={result.TimestampSeconds?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}.");
+                        }
+                        progress = new EncodeProgress(TimeSpan.FromSeconds(Math.Max(0, result.MediaSeconds)), totalDuration,
+                            result.Fps, result.Speed, result.BitrateKbps, result.Percent, result.EncodedFrames,
+                            result.Basis, result.TotalFrames, result.TimestampStalled, result.TimestampSeconds.HasValue);
+                    }
+                    structuredProgressCallback?.Invoke(progress);
+                    if (StructuredProgress != null)
+                    {
+                        try { StructuredProgress(progress); }
+                        catch { /* don't let subscribers break encoding */ }
+                    }
                 }
             }
 
@@ -1470,21 +1533,38 @@ namespace MediaFlux.Services
             }
         }
 
-        private static bool TryParseProgress(string line, TimeSpan totalDuration, out EncodeProgress progress)
+        internal static bool TryParseProgress(string line, TimeSpan totalDuration, long? authoritativeTotalFrames, double? authoritativeFrameRate, out EncodeProgress progress)
         {
             progress = null!;
 
-            if (line.IndexOf("time=", StringComparison.Ordinal) < 0)
+            if (line.IndexOf("frame=", StringComparison.Ordinal) < 0 &&
+                line.IndexOf("time=", StringComparison.Ordinal) < 0 &&
+                line.IndexOf("out_time", StringComparison.Ordinal) < 0)
                 return false;
 
             try
             {
-                string? timeStr = ExtractValue(line, "time=");
+                string? timeStr = ExtractValue(line, "time=") ?? ExtractValue(line, "out_time=");
                 if (string.IsNullOrWhiteSpace(timeStr))
+                {
+                    string? microseconds = ExtractValue(line, "out_time_us=") ?? ExtractValue(line, "out_time_ms=");
+                    if (long.TryParse(microseconds, NumberStyles.Integer, CultureInfo.InvariantCulture, out long value))
+                        timeStr = TimeSpan.FromTicks(value * (line.Contains("out_time_us=", StringComparison.Ordinal) ? 10 : 10_000)).ToString();
+                }
+                string? frameText = ExtractValue(line, "frame=");
+                long? encodedFrames = long.TryParse(frameText, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsedFrame) && parsedFrame > 0 ? parsedFrame : null;
+                if (string.IsNullOrWhiteSpace(timeStr) && encodedFrames is not > 0)
                     return false;
-
-                if (!TryParseTime(timeStr, out var currentTime))
-                    return false;
+                bool hasTimestamp = TryParseTime(timeStr ?? "", out var currentTime);
+                if (!hasTimestamp)
+                {
+                    if (encodedFrames is not > 0)
+                        return false;
+                    if (authoritativeTotalFrames is > 0 && authoritativeFrameRate is > 0)
+                        currentTime = TimeSpan.FromSeconds(encodedFrames.Value / authoritativeFrameRate.Value);
+                    else
+                        currentTime = TimeSpan.Zero;
+                }
 
                 string? fpsStr = ExtractValue(line, "fps=");
                 string? bitrateStr = ExtractValue(line, "bitrate=");
@@ -1495,7 +1575,9 @@ namespace MediaFlux.Services
                 double bitrateKbps = TryParseBitrateKbps(bitrateStr);
 
                 double percent = 0;
-                if (totalDuration > TimeSpan.Zero)
+                if (!hasTimestamp && authoritativeTotalFrames is > 0 && authoritativeFrameRate is > 0)
+                    percent = Math.Clamp(currentTime.TotalSeconds * authoritativeFrameRate!.Value / authoritativeTotalFrames.Value * 100.0, 0.0, 100.0);
+                else if (totalDuration > TimeSpan.Zero)
                 {
                     percent = Math.Clamp(
                         currentTime.TotalSeconds / totalDuration.TotalSeconds * 100.0,
@@ -1503,7 +1585,8 @@ namespace MediaFlux.Services
                         100.0);
                 }
 
-                progress = new EncodeProgress(currentTime, totalDuration, fps, speed, bitrateKbps, percent);
+                progress = new EncodeProgress(currentTime, totalDuration, fps, speed, bitrateKbps, percent, encodedFrames,
+                    timestampAvailable: hasTimestamp);
                 return true;
             }
             catch
@@ -1519,6 +1602,8 @@ namespace MediaFlux.Services
                 return null;
 
             idx += key.Length;
+            while (idx < line.Length && char.IsWhiteSpace(line[idx]))
+                idx++;
             if (idx >= line.Length)
                 return null;
 
@@ -1638,6 +1723,14 @@ namespace MediaFlux.Services
                     _ffmpegPath,
                     resolved.Selection.FfmpegCodec,
                     "highbitdepth");
+            bool supportsNvencCudaFormatConversion =
+                useGpu &&
+                isNvenc &&
+                FfmpegEncoderCapabilityService.SupportsFilter(
+                    _ffmpegPath, "scale_cuda");
+            _log?.Invoke(
+                $"[EncodingService] NVENC CUDA format conversion: " +
+                $"available={supportsNvencCudaFormatConversion}; software restoration filters remain host-side.");
             var request = new FfmpegCommandRequest
             {
                 Input = input,
@@ -1673,6 +1766,8 @@ namespace MediaFlux.Services
                     supportsGpuResidentHighBitDepthOutput,
                 PreferNvencGpuResidentFrames =
                     preferNvencGpuResidentFrames,
+                NvencCudaFormatConversionSupported =
+                    supportsNvencCudaFormatConversion,
                 DisableHardwareDecode = disableHardwareDecode,
                 SourceDecodeMode = sourceDecodeMode,
                 SourcePixelFormat = sourcePixelFormat ?? ""
@@ -1686,6 +1781,11 @@ namespace MediaFlux.Services
                 GetPrimaryAudioBitrateKbps,
                 _log);
             return builder.Build(request);
+        }
+
+        private sealed class ProgressLogState
+        {
+            public bool FallbackLogged { get; set; }
         }
 
         private static string DescribeVideoPipeline(

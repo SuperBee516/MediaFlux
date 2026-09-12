@@ -18,6 +18,11 @@ namespace MediaFlux.Services.Encoders
             builder.Append($"-vf {string.Join(',', filters)} ");
         }
 
+        public static string BuildCudaVideoFilter(string scaleExpression, string outputPixelFormat) =>
+            string.IsNullOrEmpty(scaleExpression)
+                ? $"scale_cuda=format={outputPixelFormat}"
+                : $"scale_cuda={scaleExpression}:interp_algo=lanczos:format={outputPixelFormat}";
+
         public static void AppendCodecAndTenBitFlags(
             StringBuilder builder,
             EncoderArgumentContext context)

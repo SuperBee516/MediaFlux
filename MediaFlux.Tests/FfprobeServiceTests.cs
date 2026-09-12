@@ -73,6 +73,12 @@ public sealed class FfprobeServiceTests : IDisposable
                           "disposition": { "default": 1 }
                         },
                         {
+                          "index": 3,
+                          "codec_name": "hdmv_pgs_subtitle",
+                          "codec_type": "subtitle",
+                          "tags": { "language": "jpn", "title": "Signs" }
+                        },
+                        {
                           "index": 2,
                           "id": "0x20",
                           "codec_name": "rtp",
@@ -110,7 +116,7 @@ public sealed class FfprobeServiceTests : IDisposable
         Assert.Equal(1_048_576, result.SizeBytes);
         Assert.Equal(7_000_000, result.BitRate);
         Assert.Equal("MediaFlux Probe Test", result.FormatTags["title"]);
-        Assert.Equal(3, result.Streams.Count);
+        Assert.Equal(4, result.Streams.Count);
         Assert.Equal("0x1e0", result.Streams[0].Id);
         Assert.Equal(720, result.Streams[0].Width);
         Assert.Equal("Main", result.Streams[0].Profile);
@@ -124,8 +130,10 @@ public sealed class FfprobeServiceTests : IDisposable
         Assert.Equal(-0.042, result.Streams[0].StartTimeSeconds);
         Assert.Equal(3611, result.Streams[0].FrameCount);
         Assert.Equal("eng", result.Streams[1].Language);
-        Assert.Equal("GPAC ISO Hint Handler", result.Streams[2].Tags["handler_name"]);
-        Assert.True(result.Streams[2].Dispositions["forced"]);
+        Assert.Equal("jpn", result.Streams[2].Language);
+        Assert.Equal("Signs", result.Streams[2].Tags["title"]);
+        Assert.Equal("GPAC ISO Hint Handler", result.Streams[3].Tags["handler_name"]);
+        Assert.True(result.Streams[3].Dispositions["forced"]);
         Assert.Equal("Chapter 1", Assert.Single(result.Chapters).Title);
         Assert.Equal(_mediaPath, runner.LastRequest?.Arguments[^1]);
         Assert.Contains("-show_streams", runner.LastRequest?.Arguments ?? Array.Empty<string>());

@@ -18,6 +18,8 @@ namespace MediaFlux
             public double Speed { get; set; }
             public string TimeStr { get; set; } = "--";
             public bool HasData { get; set; }
+            public long LastFrame { get; set; }
+            public DateTime LastFrameUtc { get; set; }
         }
 
         private readonly Dictionary<DataGridViewRow, EncodeMetrics> _activeEncodeMetrics = new();
@@ -358,12 +360,7 @@ namespace MediaFlux
             UpdateEncodeMetricsPanel();
             UpdateCurrentOperationSummary();
 
-            bool singleEncode = _activeEncodeRows.Count <= 1;
-            if (singleEncode)
-            {
-                ApplyAuthoritativeEncodeProgress(row, metrics.TimeStr, metrics.Speed);
-            }
-            else
+            if (_activeEncodeRows.Count > 1)
             {
                 if (progressBarEncode.Style != ProgressBarStyle.Marquee)
                 {
@@ -371,6 +368,64 @@ namespace MediaFlux
                     progressBarEncode.MarqueeAnimationSpeed = 30;
                 }
             }
+        }
+
+        private void ApplyStructuredEncodeProgress(
+            DataGridViewRow row,
+            EncodingService.EncodeProgress progress)
+        {
+            if (row == null || row.DataGridView != dgvEncodeQueue)
+                return;
+
+            string existingText = row.Cells["colProgress"].Value?.ToString() ?? "";
+            int existingPercent = int.TryParse(existingText.TrimEnd('%'), out int parsedPercent)
+                ? parsedPercent
+                : 0;
+            int percent = Math.Max(existingPercent, (int)Math.Round(progress.Percent));
+            row.Cells["colProgress"].Value = $"{Math.Clamp(percent, 0, 100)}%";
+            if (progress.EncodedFrames is long frame)
+            {
+                if (!_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? metrics))
+                    metrics = new EncodeMetrics();
+                DateTime now = DateTime.UtcNow;
+                if (metrics.LastFrame > 0 && frame > metrics.LastFrame)
+                {
+                    double elapsed = (now - metrics.LastFrameUtc).TotalSeconds;
+                    if (elapsed >= 0.25)
+                        metrics.Fps = (int)Math.Round((frame - metrics.LastFrame) / elapsed);
+                }
+                if (progress.Fps > 0)
+                    metrics.Fps = (int)Math.Round(progress.Fps);
+                metrics.Speed = progress.Speed;
+                metrics.LastFrame = Math.Max(metrics.LastFrame, frame);
+                metrics.LastFrameUtc = now;
+                metrics.HasData = true;
+                _activeEncodeMetrics[row] = metrics;
+                row.Cells["colProgress"].ToolTipText =
+                    $"Encoded frames: {frame:N0}" +
+                    (progress.Basis is EncodeProgressBasis.MeasuredFrames or EncodeProgressBasis.DerivedCfrFrames
+                        ? " (frame-derived progress)"
+                        : progress.Basis == EncodeProgressBasis.Indeterminate
+                            ? " (FFmpeg timestamp unavailable; progress indeterminate)"
+                            : "");
+                UpdateEncodeMetricsPanel();
+            }
+            double? etaSeconds = progress.Basis is EncodeProgressBasis.MeasuredFrames or EncodeProgressBasis.DerivedCfrFrames
+                && progress.TotalFrames is long totalFrames
+                && progress.EncodedFrames is long encodedFrames
+                ? EncodeEtaCalculator.CalculateFrameSeconds(totalFrames, encodedFrames, progress.Fps)
+                : progress.Basis == EncodeProgressBasis.Indeterminate
+                    ? null
+                    : EncodeEtaCalculator.CalculateSeconds(
+                        progress.TotalDuration.TotalSeconds,
+                        progress.CurrentTime.TotalSeconds,
+                        progress.Speed);
+            row.Cells["colETA"].Value = etaSeconds.HasValue
+                ? TimeSpan.FromSeconds(etaSeconds.Value).ToString(@"hh\:mm\:ss")
+                : "--:--:--";
+            if (ReferenceEquals(_activeEncodeRow, row))
+                SetProgress(progressBarEncode, percent);
+            UpdateCurrentOperationSummary();
         }
 
         private void ApplyAuthoritativeEncodeProgress(DataGridViewRow row, string timeText, double ffmpegSpeed)

@@ -89,10 +89,14 @@ namespace MediaFlux.Services.Encoders
             StringBuilder builder,
             EncoderArgumentContext context)
         {
-            // FFmpeg builds may advertise scale_cuda while still being unable
-            // to negotiate its CUDA output with NVENC for NV12/P010.  Format
-            // conversion therefore uses the explicit software-frame path;
-            // AppendInputAcceleration omits hwaccel_output_format=cuda for it.
+            if (context.UseGpuResidentFrames && context.RequiresVideoFilter)
+            {
+                builder.Append(
+                    $"-vf {EncoderProviderUtilities.BuildCudaVideoFilter(
+                        context.ScaleExpression, context.OutputPixelFormat)} ");
+                return;
+            }
+
             EncoderProviderUtilities.AppendSoftwareVideoFilters(builder, context);
         }
 

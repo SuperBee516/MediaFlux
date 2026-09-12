@@ -49,6 +49,32 @@ public sealed class SubtitleConversionPreflightServiceTests
         Assert.Contains("mov_text", runner.Request.Arguments);
     }
 
+    [Fact]
+    public async Task MatroskaCopiedTextSubtitleDoesNotUseMp4ConversionPreflight()
+    {
+        var runner = new FakeRunner(new MediaToolProcessResult
+        {
+            ExitCode = 1,
+            StandardError = "This failure must not be consulted for MKV copy"
+        });
+        OutputContainerDecision decision = new()
+        {
+            Requested = OutputContainerSelection.Matroska,
+            Resolved = OutputContainer.Matroska,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(3, "subtitle", "subrip", StreamCompatibilityAction.Copy, "test")
+            }
+        };
+
+        SubtitleConversionPreflightResult result = await new SubtitleConversionPreflightService("ffmpeg.exe", runner)
+            .ValidateAsync(Input(), decision);
+
+        Assert.True(result.Success);
+        Assert.Empty(runner.Request.FileName);
+    }
+
     private static EncodingInputSource Input() => EncodingInputSource.FromFile("source.mkv");
     private static OutputContainerDecision Decision() => new()
     {
