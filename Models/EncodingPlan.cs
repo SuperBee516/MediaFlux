@@ -17,6 +17,7 @@ public enum EncodingRecoveryResult { NotAttempted, Succeeded, Failed, NotStarted
 public enum EncodingLifecycleStatus { NotRequired, NotRun, Passed, Failed, Skipped, Canceled }
 public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, PreflightRejected, EncodeFailed, RecoveryFailed, ValidationFailed, FinalizationFailed, Canceled }
 public enum EncodingSourceDisposition { Retained, DeferredToCaller, NotReached }
+public enum EncodingHistoricalConfidence { None, Low, Medium, High }
 
 public sealed record EncodingDecisionReason(EncodingDecisionReasonCode Code, string Description);
 public sealed record EncodingRisk(EncodingRiskSeverity Severity, EncodingRiskCategory Category, string Code, string Description);
@@ -50,7 +51,9 @@ public sealed record EncodingPlanRecoveryCapabilities(IReadOnlyList<EncodingReco
 public sealed record EncodingValidationIntent(bool StagedOutputRequired, bool OutputProbeRequired, bool DurationRequired, bool StreamValidationRequired, bool ContainerValidationRequired, bool IntegrityRequired, bool PromotedOutputVerificationRequired, string Profile);
 public sealed record EncodingFinalizationIntent(bool UsesStagedOutput, bool PromoteOnlyAfterValidation, bool VerifyPromotedOutput, bool RetainSourceUntilSuccess, string CollisionPolicy);
 public sealed record EncodingPlanValidation(string Profile, bool OutputValidation, bool SampleComparison);
-public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio);
+public sealed record EncodingHistoricalPrediction(int SampleCount, int MatchTier, EncodingHistoricalConfidence Confidence, double? PredictedSpeedX, double? SpeedLow, double? SpeedHigh, TimeSpan? PredictedDuration, TimeSpan? DurationLow, TimeSpan? DurationHigh, double? PredictedOutputSizeMb, double? OutputSizeLowMb, double? OutputSizeHighMb, double? PredictedCompressionRatio, string Reason)
+{ public bool IsAvailable => Confidence != EncodingHistoricalConfidence.None; }
+public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio, EncodingHistoricalPrediction? HistoricalPrediction = null);
 
 public sealed record EncodingPlanItem(string Label, string Value, string? Reason = null);
 public sealed record EncodingPlanSection(string Title, IReadOnlyList<EncodingPlanItem> Items);

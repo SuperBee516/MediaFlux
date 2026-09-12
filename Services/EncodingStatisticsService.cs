@@ -49,6 +49,8 @@ namespace MediaFlux.Services
         public bool IsSampleJob { get; set; }
         public EncodingDiagnosticSummary? DiagnosticSummary { get; set; }
         public string Notes { get; set; } = "";
+        public string HardwareKey { get; set; } = "";
+        public bool RecoveredSuccessful { get; set; }
     }
 
     public readonly record struct EncodingStatisticsUtcRange(
@@ -105,6 +107,7 @@ namespace MediaFlux.Services
             WriteIndented = false,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
         };
+        private const int MaximumHistoricalRecords = 3000;
 
         public EncodingStatisticsService(string storagePath)
         {
@@ -133,6 +136,13 @@ namespace MediaFlux.Services
                 File.AppendAllText(_path, line + Environment.NewLine);
                 _records.Add(record);
                 _recordIds.Add(record.Id);
+                if (_records.Count > MaximumHistoricalRecords)
+                {
+                    EncodingStatisticsRecord[] retained = _records.OrderByDescending(value => value.EndUtc).Take(MaximumHistoricalRecords).ToArray();
+                    File.WriteAllLines(_path, retained.Select(value => JsonSerializer.Serialize(value, _jsonOptions)));
+                    _records.Clear(); _records.AddRange(retained); _recordIds.Clear();
+                    foreach (EncodingStatisticsRecord value in retained) _recordIds.Add(value.Id);
+                }
                 return true;
             }
         }
@@ -194,6 +204,7 @@ namespace MediaFlux.Services
             record.OutputResolutionTier = record.OutputResolutionTier?.Trim() ?? "";
             if (record.OutputBitDepth is not (8 or 10 or 12 or 16)) record.OutputBitDepth = null;
             record.Notes ??= "";
+            record.HardwareKey = record.HardwareKey?.Trim() ?? "";
             if (record.DiagnosticSummary is { } diagnostic)
             {
                 record.DiagnosticSummary = diagnostic with

@@ -114,6 +114,16 @@ public static class EncodingPlanService
             ? new FileInfo(context.Input.SourcePath).Length : null;
         double? ratio = sourceBytes is > 0 && context.TargetMb is > 0
             ? context.TargetMb.Value * 1024d * 1024d / sourceBytes.Value : null;
+        EncodingHistoricalPrediction historicalPrediction;
+        try
+        {
+            historicalPrediction = new EncodingHistoricalPredictionService(
+                new EncodingStatisticsService(AppPaths.EncodingStatisticsFile)).Predict(context);
+        }
+        catch
+        {
+            historicalPrediction = new(0, 0, EncodingHistoricalConfidence.None, null, null, null, null, null, null, null, null, null, null, "HistoryUnavailable");
+        }
 
         return new EncodingPlan
         {
@@ -137,7 +147,7 @@ public static class EncodingPlanService
             ValidationIntent = new EncodingValidationIntent(true, true, true, true, true, true, true, context.ValidationProfile.ToString()),
             FinalizationIntent = new EncodingFinalizationIntent(true, true, true, true, "Collision-safe, no-overwrite promotion"),
             Validation = new EncodingPlanValidation(context.ValidationProfile.ToString(), true, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison),
-            Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio),
+            Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio, historicalPrediction),
             Risks = risks,
             DecisionReasons = reasons,
             ExecutionValues = new EncodingPlanExecutionValues(

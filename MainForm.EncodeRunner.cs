@@ -956,7 +956,8 @@ namespace MediaFlux
                     scalingApplied: RuntimeOutputHeight(statisticsSourceHeight, scaleMode) is int outputHeight &&
                         statisticsSourceHeight is int sourceHeight && outputHeight != sourceHeight,
                     concurrentEncoderSessions: encoderSnapshot.Validated.ConcurrentEncoderSessions,
-                    diagnosticSummary: diagnosticSummary);
+                    diagnosticSummary: diagnosticSummary,
+                    recoveredSuccessful: jobLog.ToString().Contains("Result=Succeeded", StringComparison.Ordinal));
 
                 try
                 {

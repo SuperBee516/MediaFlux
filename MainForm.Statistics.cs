@@ -485,7 +485,8 @@ namespace MediaFlux
             bool? scalingApplied = null,
             bool? concurrentEncoderSessions = null,
             bool isSampleJob = false,
-            EncodingDiagnosticSummary? diagnosticSummary = null)
+            EncodingDiagnosticSummary? diagnosticSummary = null,
+            bool recoveredSuccessful = false)
         {
             try
             {
@@ -513,6 +514,10 @@ namespace MediaFlux
                         ConcurrentEncoderSessions = concurrentEncoderSessions,
                         IsSampleJob = isSampleJob,
                         DiagnosticSummary = diagnosticSummary,
+                        HardwareKey = encoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase)
+                            ? HardwarePerformanceService.DetectGpuIdentity()
+                            : "cpu",
+                        RecoveredSuccessful = recoveredSuccessful,
                         Notes = notes
                     });
 
