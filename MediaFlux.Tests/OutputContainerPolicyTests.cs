@@ -15,6 +15,7 @@ public sealed class OutputContainerPolicyTests
             Stream("audio", "aac"));
 
         Assert.Equal(OutputContainer.Mp4, decision.Resolved);
+        Assert.Equal(OutputContainerSelection.Auto, decision.Requested);
         Assert.Empty(decision.CompatibilityWarnings);
         Assert.Equal(".mp4", decision.Extension);
     }
@@ -35,6 +36,7 @@ public sealed class OutputContainerPolicyTests
             Stream(type, codec));
 
         Assert.Equal(OutputContainer.Matroska, decision.Resolved);
+        Assert.Equal(OutputContainerSelection.Auto, decision.Requested);
         Assert.NotEmpty(decision.CompatibilityWarnings);
         Assert.Equal(".mkv", decision.Extension);
     }
