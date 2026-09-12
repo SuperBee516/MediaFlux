@@ -149,6 +149,19 @@ namespace MediaFlux.Models
         public int AiBenchmarkManagerWindowWidth { get; set; } = 0;
         public int AiBenchmarkManagerWindowHeight { get; set; } = 0;
 
+        // Job History window presentation state. These values are UI-only; the
+        // history record schema and retention behavior remain unchanged.
+        public int JobHistoryWindowWidth { get; set; } = 0;
+        public int JobHistoryWindowHeight { get; set; } = 0;
+        public int JobHistoryWindowX { get; set; } = int.MinValue;
+        public int JobHistoryWindowY { get; set; } = int.MinValue;
+        public int JobHistoryDetailsSplitterDistance { get; set; } = 0;
+        public Dictionary<string, int> JobHistoryGridColumnWidths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<string> JobHistoryGridColumnOrder { get; set; } = new();
+        public string JobHistorySortColumn { get; set; } = "";
+        public bool JobHistorySortDescending { get; set; } = false;
+        public int JobHistoryDetailsTab { get; set; } = 0;
+
         // Video Splitter / Trimmer window placement. The actual trim selection is
         // deliberately session-only until Phase 2 introduces saved projects.
         public int VideoSplitterWindowX { get; set; } = int.MinValue;

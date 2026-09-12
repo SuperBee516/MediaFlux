@@ -1,8 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
 using System.Windows.Forms;
 using MediaFlux.Services;
 
@@ -12,322 +11,36 @@ namespace MediaFlux
     {
         private void ViewHistoryToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            // Load records from the new persistent store (data/history.json)
-            var records = _historyService.LoadAll();
-
-            // Build a viewer form with a split: grid (top) + log (bottom)
-            var frm = new MediaFluxForm
+            try
             {
-                Text = "Job History",
-                StartPosition = FormStartPosition.CenterParent,
-                Width = 1100,
-                Height = 560
-            };
-
-            var split = new SplitContainer
-            {
-                Dock = DockStyle.Fill,
-                Orientation = Orientation.Horizontal,
-                SplitterDistance = 300
-            };
-
-            // Top panel: toolbar + grid
-            var topPanel = new Panel { Dock = DockStyle.Fill };
-
-            var bar = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 40,
-                FlowDirection = FlowDirection.LeftToRight,
-                Padding = new Padding(6, 6, 6, 0)
-            };
-
-            var btnRefresh = new Button { Text = "Refresh", Width = 90 };
-            var btnRequeue = new Button { Text = "Requeue", Width = 100 };
-            var btnOpenSrc = new Button { Text = "Open Source", Width = 120 };
-            var btnOpenOut = new Button { Text = "Open Output", Width = 120 };
-            var btnDelete = new Button { Text = "Delete Selected", Width = 140 };
-            var btnClearAll = new Button { Text = "Clear All", Width = 100 };
-            var btnClose = new Button { Text = "Close", Width = 90 };
-
-            bar.Controls.AddRange(new Control[] { btnRefresh, btnRequeue, btnOpenSrc, btnOpenOut, btnDelete, btnClearAll, btnClose });
-
-            var grid = new DataGridView
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = true,
-                AllowUserToAddRows = false,
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                AutoGenerateColumns = false,
-                MultiSelect = true
-            };
-
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "colWhen", HeaderText = "Finished (Local)", Width = 160 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "colType", HeaderText = "Type", Width = 80 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "colStatus", HeaderText = "Status", Width = 90 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "colSource", HeaderText = "Source", Width = 320 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "colOutput", HeaderText = "Output", Width = 320 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "colNotes", HeaderText = "Notes", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
-
-            topPanel.Controls.Add(grid);
-            topPanel.Controls.Add(bar);
-            split.Panel1.Controls.Add(topPanel);
-
-            // Bottom panel: log viewer
-            var txtLog = new TextBox
-            {
-                Dock = DockStyle.Fill,
-                Multiline = true,
-                ReadOnly = true,
-                ScrollBars = ScrollBars.Both,
-                WordWrap = false
-            };
-            split.Panel2.Controls.Add(txtLog);
-
-            frm.Controls.Add(split);
-
-            // ----- local helpers -----
-            void LoadGrid()
-            {
-                var rows = _historyService.LoadAll();
-                grid.Rows.Clear();
-                foreach (var r in rows)
-                {
-                    int idx = grid.Rows.Add();
-                    var row = grid.Rows[idx];
-                    row.Tag = r;
-                    row.Cells["colWhen"].Value = r.EndUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-                    row.Cells["colType"].Value = FormatHistoryJobType(r.Type);
-                    row.Cells["colStatus"].Value = r.Status.ToString();
-                    row.Cells["colSource"].Value = r.SourcePath;
-                    row.Cells["colOutput"].Value = r.OutputPath;
-                    row.Cells["colNotes"].Value = r.Notes ?? "";
-
-                    if (r.Status != JobStatus.Success)
-                    {
-                        row.DefaultCellStyle.BackColor = Color.MistyRose;
-                        row.DefaultCellStyle.SelectionBackColor = Color.MistyRose;
-                        row.DefaultCellStyle.SelectionForeColor = Color.Black;
-                    }
-                }
-                txtLog.Clear();
+                using var form = new JobHistoryForm(_historyService, _config, _configPath, path => AddEncodeItemIfNotPresent(path), () => { SafeRefreshEstimates(); SwitchToEncodeTab(); });
+                form.ShowDialog(this);
             }
-
-            void ShowSelectedLog()
+            catch (Exception ex)
             {
-                if (grid.SelectedRows.Count == 0) { txtLog.Clear(); return; }
-                if (grid.SelectedRows[0].Tag is JobHistoryRecord r)
-                    txtLog.Text = (r.Log ?? "") + (r.DiagnosticSummary == null ? "" : Environment.NewLine + Environment.NewLine + EncodingDiagnosticsService.FormatCompletedSummary(r.DiagnosticSummary));
-                else
-                    txtLog.Clear();
+                ErrorLogService.Append(AppPaths.UserDataDirectory, "Open Job History failed", exception: ex);
+                MessageBox.Show(this, "Job History could not be opened. See the MediaFlux error log for details.", "Job History", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-
-            // ----- wire events -----
-            grid.SelectionChanged += (_, __) => ShowSelectedLog();
-            btnRefresh.Click += (_, __) => LoadGrid();
-
-            btnRequeue.Click += (_, __) =>
-            {
-                if (grid.SelectedRows.Count == 0) return;
-                int added = 0;
-                foreach (DataGridViewRow gr in grid.SelectedRows)
-                {
-                    if (gr.Tag is JobHistoryRecord rec)
-                    {
-                        var src = rec.SourcePath;
-                        if (!string.IsNullOrWhiteSpace(src) && File.Exists(src))
-                        {
-                            if (AddEncodeItemIfNotPresent(src)) added++;
-                        }
-                    }
-                }
-                if (added > 0)
-                {
-                    MessageBox.Show($"Added {added} file(s) to the Encode queue.", "Requeue",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    // optional: refresh estimated sizes after adding
-                    btnRefreshEncode_Click(null, EventArgs.Empty);
-                }
-            };
-
-            btnOpenSrc.Click += (_, __) =>
-            {
-                if (grid.SelectedRows.Count == 0) return;
-                if (grid.SelectedRows[0].Tag is JobHistoryRecord r)
-                {
-                    var dir = Path.GetDirectoryName(r.SourcePath);
-                    if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
-                        Process.Start("explorer.exe", dir);
-                }
-            };
-
-            btnOpenOut.Click += (_, __) =>
-            {
-                if (grid.SelectedRows.Count == 0) return;
-                if (grid.SelectedRows[0].Tag is JobHistoryRecord r)
-                {
-                    var dir = Path.GetDirectoryName(r.OutputPath);
-                    if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
-                        Process.Start("explorer.exe", dir);
-                }
-            };
-
-            btnDelete.Click += (_, __) =>
-            {
-                if (grid.SelectedRows.Count == 0) return;
-                var ids = new List<string>();
-                foreach (DataGridViewRow gr in grid.SelectedRows)
-                    if (gr.Tag is JobHistoryRecord r) ids.Add(r.Id);
-
-                if (ids.Count == 0) return;
-
-                var ok = MessageBox.Show($"Delete {ids.Count} selected entr{(ids.Count == 1 ? "y" : "ies")}?",
-                    "Confirm Delete", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                if (ok != DialogResult.Yes) return;
-
-                _historyService.DeleteByIds(ids);
-                LoadGrid();
-            };
-
-            btnClearAll.Click += (_, __) =>
-            {
-                var ok = MessageBox.Show("Clear ALL history?", "Confirm",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                if (ok != DialogResult.Yes) return;
-
-                _historyService.Clear();
-                LoadGrid();
-            };
-
-            btnClose.Click += (_, __) => frm.Close();
-
-            // Initial load and show
-            LoadGrid();
-            frm.ShowDialog(this);
         }
 
         private void LoadHistoryGrid()
         {
-            var list = _historyService.LoadAll();
-            dgvHistory.Rows.Clear();
-
+            var list = _historyService.LoadAll(); dgvHistory.Rows.Clear();
             foreach (var r in list)
             {
-                int idx = dgvHistory.Rows.Add();
-                var row = dgvHistory.Rows[idx];
-                row.Tag = r; // keep full record on the row
-                row.Cells["colH_When"].Value = r.EndUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-                row.Cells["colH_Type"].Value = FormatHistoryJobType(r.Type);
-                row.Cells["colH_Status"].Value = r.Status.ToString();
-                row.Cells["colH_Source"].Value = r.SourcePath;
-                row.Cells["colH_Output"].Value = r.OutputPath;
-                row.Cells["colH_Notes"].Value = string.IsNullOrWhiteSpace(r.Notes) ? "" : r.Notes;
-
-                // Optional: color failed rows
-                if (r.Status != JobStatus.Success)
-                {
-                    row.DefaultCellStyle.BackColor = Color.MistyRose;
-                    row.DefaultCellStyle.SelectionBackColor = Color.MistyRose;
-                    row.DefaultCellStyle.SelectionForeColor = Color.Black;
-                }
+                int idx = dgvHistory.Rows.Add(); var row = dgvHistory.Rows[idx]; row.Tag = r;
+                row.Cells["colH_When"].Value = r.EndUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"); row.Cells["colH_Type"].Value = FormatHistoryJobType(r.Type); row.Cells["colH_Status"].Value = r.Status.ToString(); row.Cells["colH_Source"].Value = r.SourcePath; row.Cells["colH_Output"].Value = r.OutputPath; row.Cells["colH_Notes"].Value = string.IsNullOrWhiteSpace(r.Notes) ? "" : r.Notes;
             }
         }
 
-        private static string FormatHistoryJobType(JobType type)
-        {
-            return type switch
-            {
-                JobType.DvdEncode => "DVD Encode",
-                JobType.DvdRemux => "DVD Remux",
-                JobType.Remux => "Remux",
-                _ => type.ToString()
-            };
-        }
-
-        private void dgvHistory_SelectionChanged(object sender, EventArgs e)
-        {
-            if (dgvHistory.SelectedRows.Count == 0) { txtHistoryLog.Text = ""; return; }
-            var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord;
-            txtHistoryLog.Text = (rec?.Log ?? "") + (rec?.DiagnosticSummary == null ? "" : Environment.NewLine + Environment.NewLine + EncodingDiagnosticsService.FormatCompletedSummary(rec.DiagnosticSummary));
-        }
-
-        // Toolbar buttons
+        private static string FormatHistoryJobType(JobType type) => JobHistoryPresentation.FormatType(type);
+        private void dgvHistory_SelectionChanged(object sender, EventArgs e) { if (dgvHistory.SelectedRows.Count == 0) { txtHistoryLog.Text = ""; return; } var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord; txtHistoryLog.Text = (rec?.Log ?? "") + (rec?.DiagnosticSummary == null ? "" : Environment.NewLine + Environment.NewLine + EncodingDiagnosticsService.FormatCompletedSummary(rec.DiagnosticSummary)); }
         private void btnHistoryRefresh_Click(object sender, EventArgs e) => LoadHistoryGrid();
-
-        private void btnHistoryRequeue_Click(object sender, EventArgs e)
-        {
-            if (dgvHistory.SelectedRows.Count == 0) return;
-            int added = 0;
-            foreach (DataGridViewRow row in dgvHistory.SelectedRows)
-            {
-                if (row.Tag is JobHistoryRecord rec)
-                {
-                    var path = rec.SourcePath;
-                    if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
-                    {
-                        if (AddEncodeItemIfNotPresent(path)) added++;
-                    }
-                }
-            }
-            if (added > 0)
-            {
-                MessageBox.Show($"Added {added} file(s) to the Encode queue.", "Requeue",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                SafeRefreshEstimates();
-                SwitchToEncodeTab();
-            }
-        }
-
-        private void btnHistoryOpenSrc_Click(object sender, EventArgs e)
-        {
-            if (dgvHistory.SelectedRows.Count == 0) return;
-            var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord;
-            var p = rec?.SourcePath;
-            if (string.IsNullOrWhiteSpace(p)) return;
-            var dir = Directory.Exists(p) ? p : Path.GetDirectoryName(p);
-            if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
-                Process.Start("explorer.exe", dir);
-        }
-
-        private void btnHistoryOpenOut_Click(object sender, EventArgs e)
-        {
-            if (dgvHistory.SelectedRows.Count == 0) return;
-            var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord;
-            var p = rec?.OutputPath;
-            if (string.IsNullOrWhiteSpace(p)) return;
-            var dir = Path.GetDirectoryName(p);
-            if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
-                Process.Start("explorer.exe", dir);
-        }
-
-        private void btnHistoryDelete_Click(object sender, EventArgs e)
-        {
-            if (dgvHistory.SelectedRows.Count == 0) return;
-            var ids = new List<string>();
-            foreach (DataGridViewRow row in dgvHistory.SelectedRows)
-                if (row.Tag is JobHistoryRecord rec)
-                    ids.Add(rec.Id);
-
-            if (ids.Count == 0) return;
-
-            var ok = MessageBox.Show($"Delete {ids.Count} selected entr{(ids.Count == 1 ? "y" : "ies")}?",
-                "Confirm Delete", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-            if (ok != DialogResult.Yes) return;
-
-            _historyService.DeleteByIds(ids);
-            LoadHistoryGrid();
-        }
-
-        private void btnHistoryClearAll_Click(object sender, EventArgs e)
-        {
-            var ok = MessageBox.Show("Clear ALL history?", "Confirm",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-            if (ok != DialogResult.Yes) return;
-            _historyService.Clear();
-            LoadHistoryGrid();
-        }
-
-
-
+        private void btnHistoryRequeue_Click(object sender, EventArgs e) { if (dgvHistory.SelectedRows.Count == 0) return; int added = 0; foreach (DataGridViewRow row in dgvHistory.SelectedRows) if (row.Tag is JobHistoryRecord rec && File.Exists(rec.SourcePath) && AddEncodeItemIfNotPresent(rec.SourcePath)) added++; if (added > 0) { MessageBox.Show($"Added {added} file(s) to the Encode queue.", "Requeue", MessageBoxButtons.OK, MessageBoxIcon.Information); SafeRefreshEstimates(); SwitchToEncodeTab(); } }
+        private void btnHistoryOpenSrc_Click(object sender, EventArgs e) => OpenHistoryPath(true);
+        private void btnHistoryOpenOut_Click(object sender, EventArgs e) => OpenHistoryPath(false);
+        private void OpenHistoryPath(bool source) { if (dgvHistory.SelectedRows.Count == 0) return; var rec = dgvHistory.SelectedRows[0].Tag as JobHistoryRecord; var path = source ? rec?.SourcePath : rec?.OutputPath; if (string.IsNullOrWhiteSpace(path)) return; var dir = Directory.Exists(path) ? path : Path.GetDirectoryName(path); if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir)) Process.Start("explorer.exe", dir); }
+        private void btnHistoryDelete_Click(object sender, EventArgs e) { var ids = dgvHistory.SelectedRows.Cast<DataGridViewRow>().Select(row => row.Tag as JobHistoryRecord).Where(r => r != null).Select(r => r!.Id).ToArray(); if (ids.Length == 0 || MessageBox.Show($"Delete {ids.Length} selected entr{(ids.Length == 1 ? "y" : "ies")} ?", "Confirm Delete", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; _historyService.DeleteByIds(ids); LoadHistoryGrid(); }
+        private void btnHistoryClearAll_Click(object sender, EventArgs e) { if (MessageBox.Show("Clear ALL history?", "Confirm", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; _historyService.Clear(); LoadHistoryGrid(); }
     }
 }
