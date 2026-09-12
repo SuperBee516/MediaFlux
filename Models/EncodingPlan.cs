@@ -51,6 +51,10 @@ public sealed class EncodingPlan
     public EncodingPlanEstimates Estimates { get; init; } = new(null, null, null);
     public IReadOnlyList<EncodingRisk> Risks { get; init; } = Array.Empty<EncodingRisk>();
     public IReadOnlyList<EncodingDecisionReason> DecisionReasons { get; init; } = Array.Empty<EncodingDecisionReason>();
+    // Execution-only values retain the exact outputs of existing policy services.
+    // They are internal so the UI/domain summary remains a projection, not an API
+    // for teaching lower-level FFmpeg construction about EncodingPlan.
+    internal EncodingPlanService.EncodingPlanExecutionValues? ExecutionValues { get; init; }
     // Retained for the existing read-only UI preview.
     public IReadOnlyList<EncodingPlanSection> Sections { get; init; } = Array.Empty<EncodingPlanSection>();
 

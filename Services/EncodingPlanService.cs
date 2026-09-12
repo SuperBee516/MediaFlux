@@ -10,6 +10,13 @@ namespace MediaFlux.Services;
 /// </summary>
 public static class EncodingPlanService
 {
+    internal sealed record EncodingPlanExecutionValues(
+        OutputContainerDecision ContainerDecision,
+        VideoOutputGeometryPlan? Geometry,
+        VideoEncoderSelection Encoder,
+        bool UseGpu,
+        double? TargetMb);
+
     /// <summary>
     /// Creates a domain plan by composing the same container and geometry policy
     /// used by EncodingService.  The result is observational: callers must not
@@ -89,9 +96,15 @@ public static class EncodingPlanService
             Validation = new EncodingPlanValidation(context.ValidationProfile.ToString(), true, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison),
             Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio),
             Risks = risks,
-            DecisionReasons = reasons
+            DecisionReasons = reasons,
+            ExecutionValues = new EncodingPlanExecutionValues(
+                container, geometry, context.Encoder, context.UseGpu, context.TargetMb)
         };
     }
+
+    internal static EncodingPlanExecutionValues GetExecutionValues(EncodingPlan plan) =>
+        plan.ExecutionValues ?? throw new InvalidOperationException(
+            "The plan was not created for execution.");
 
     internal static IReadOnlyList<EncodingPlanDivergence> Compare(
         EncodingPlan plan, OutputContainerDecision actualContainer,

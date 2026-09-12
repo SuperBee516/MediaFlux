@@ -58,6 +58,69 @@ public sealed class EncodingPlanServiceTests
     }
 
     [Fact]
+    public void ExecutionValuesComeFromFrozenPlanAndMatchLegacyPolicy()
+    {
+        EncodingDecisionContext context = Context(
+            OutputContainerSelection.Auto,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1281, Height = 719 },
+            new MediaProbeStreamInfo { Index = 1, CodecType = "subtitle", CodecName = "ass" });
+        EncodingPlan plan = EncodingPlanService.Create(context);
+        EncodingPlanService.EncodingPlanExecutionValues execution =
+            EncodingPlanService.GetExecutionValues(plan);
+
+        Assert.Equal(OutputContainer.Matroska, execution.ContainerDecision.Resolved);
+        Assert.Equal(1282, execution.Geometry!.Width);
+        Assert.Equal(720, execution.Geometry.Height);
+        Assert.Equal(100, execution.TargetMb);
+        Assert.Equal("hevc_nvenc", execution.Encoder.FfmpegCodec);
+
+        OutputContainerDecision legacyContainer = OutputContainerPolicy.Decide(
+            context.ContainerConfigured, context.Source, context.Input, context.MapMode,
+            context.CopySubtitles, context.CopyDataStreams, context.CopyAttachments);
+        VideoOutputResolutionPlan legacyResolution = VideoRestorationPipeline.ResolveFinalOutputResolution(
+            1281, 719, context.Restoration, context.ScaleMode);
+        VideoOutputGeometryPlan legacyGeometry = VideoOutputGeometryPlanner.Resolve(
+            1281, 719, legacyResolution, context.Encoder, context.TenBit);
+
+        Assert.Empty(EncodingPlanService.Compare(
+            plan, legacyContainer, legacyGeometry, context.Encoder, context.TargetMb,
+            FfmpegSourceDecodeMode.Strict));
+
+        EncodingPlan laterPlan = EncodingPlanService.Create(Context(
+            OutputContainerSelection.Mp4,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 }));
+        Assert.Equal(OutputContainer.Matroska, execution.ContainerDecision.Resolved);
+        Assert.Equal(OutputContainer.Mp4, laterPlan.Container!.Effective);
+    }
+
+    [Fact]
+    public void DivergenceIsReportedWithoutChangingFrozenExecutionValues()
+    {
+        EncodingPlan plan = EncodingPlanService.Create(Context(
+            OutputContainerSelection.Auto,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 },
+            new MediaProbeStreamInfo { Index = 1, CodecType = "subtitle", CodecName = "ass" }));
+        EncodingPlanService.EncodingPlanExecutionValues execution =
+            EncodingPlanService.GetExecutionValues(plan);
+        var legacyMismatch = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Auto,
+            Resolved = OutputContainer.Mp4,
+            Reason = "Test mismatch."
+        };
+
+        IReadOnlyList<EncodingPlanDivergence> divergences = EncodingPlanService.Compare(
+            plan, legacyMismatch, execution.Geometry, execution.Encoder, execution.TargetMb,
+            FfmpegSourceDecodeMode.Strict);
+
+        Assert.Contains(divergences, divergence => divergence.Decision == "output-container");
+        Assert.Equal(OutputContainer.Matroska, execution.ContainerDecision.Resolved);
+    }
+
+    [Fact]
     public void Mp4PlanSurfacesAuthoritativeConversionsAndGeometryCorrection()
     {
         MediaProbeResult source = new()

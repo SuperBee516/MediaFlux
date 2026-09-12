@@ -697,32 +697,42 @@ namespace MediaFlux.Services
                 if (sourceTiming.Classification == SourceTimingClassification.IrregularUnsafe)
                     throw new InvalidOperationException("The source video has materially discontinuous or non-monotonic presentation timestamps. MediaFlux did not start an encode because it cannot prove a complete presentation timeline. The original source was retained.");
             }
-            VideoOutputResolutionPlan? finalOutputResolution = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0
-                ? VideoRestorationPipeline.ResolveFinalOutputResolution(sourceVideo.Width.Value, sourceVideo.Height.Value, restoration, scaleMode)
-                : null;
-            VideoEncoderSelection requestedEncoder =
+            VideoEncoderSelection legacyEncoder =
                 encoderSelection ??
                 EncoderRegistry.Default.ResolveLegacyCodec(videoCodec).Selection;
-            VideoOutputGeometryPlan? plannedOutputGeometry = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0 && finalOutputResolution is not null
-                ? VideoOutputGeometryPlanner.Resolve(
-                    sourceVideo.Width.Value,
-                    sourceVideo.Height.Value,
-                    finalOutputResolution,
-                    requestedEncoder,
-                    tenBit)
-                : null;
+            double? legacyTargetMb = targetMb;
             TimeSpan planKnownDuration = inputSource.KnownDurationSeconds is > 0
                 ? TimeSpan.FromSeconds(inputSource.KnownDurationSeconds.Value)
                 : programDuration.DurationSeconds is > 0
                     ? TimeSpan.FromSeconds(programDuration.DurationSeconds.Value)
                     : TimeSpan.Zero;
             var planContext = new EncodingDecisionContext(
-                sourceProbe, inputSource, requestedEncoder, useGpu, targetMb, scaleMode,
+                sourceProbe, inputSource, legacyEncoder, useGpu, targetMb, scaleMode,
                 restoration?.Clone() ?? new VideoRestorationSettings(), encoderPreset ?? "", qualityValue, tenBit, audioChannels,
                 mapMode, copySubtitles, copyDataStreams, copyAttachments, outputContainer,
                 compatibilityPolicy, planKnownDuration, validationProfile);
             EncodingPlan shadowPlan = EncodingPlanService.Create(planContext);
             var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
+            EncodingPlanService.EncodingPlanExecutionValues planExecution =
+                EncodingPlanService.GetExecutionValues(shadowPlan);
+            // Phase 2 authority boundary: downstream FFmpeg/finalization requests
+            // consume the frozen plan values, never mutable caller/UI values.
+            VideoEncoderSelection requestedEncoder = planExecution.Encoder;
+            VideoOutputGeometryPlan? plannedOutputGeometry = planExecution.Geometry;
+            videoCodec = requestedEncoder.FfmpegCodec;
+            useGpu = planExecution.UseGpu;
+            targetMb = planExecution.TargetMb;
+            encoderSelection = requestedEncoder;
+            // The legacy calculations are parity-only.  They execute after the
+            // plan is frozen and are never used for command construction.
+            VideoOutputResolutionPlan? finalOutputResolution = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0
+                ? VideoRestorationPipeline.ResolveFinalOutputResolution(sourceVideo.Width.Value, sourceVideo.Height.Value, restoration, scaleMode)
+                : null;
+            VideoOutputGeometryPlan? legacyOutputGeometry = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0 && finalOutputResolution is not null
+                ? VideoOutputGeometryPlanner.Resolve(
+                    sourceVideo.Width.Value, sourceVideo.Height.Value,
+                    finalOutputResolution, legacyEncoder, tenBit)
+                : null;
             _log?.Invoke(EncodingPlanService.DescribeSummary(shadowPlan));
             encodingPlanSnapshotCallback?.Invoke(planSnapshot);
             if (plannedOutputGeometry is not null)
@@ -768,7 +778,7 @@ namespace MediaFlux.Services
                 _log?.Invoke($"[EncodingService] AI intermediate ready: {aiIntermediate.Path}; {aiPlan.DescribeStages()}.");
             }
 
-            OutputContainerDecision containerDecision = OutputContainerPolicy.Decide(
+            OutputContainerDecision legacyContainerDecision = OutputContainerPolicy.Decide(
                 outputContainer,
                 sourceProbe,
                 inputSource,
@@ -778,12 +788,13 @@ namespace MediaFlux.Services
                 copyAttachments,
                 audioWillBeTranscoded: audioChannels is > 0);
             foreach (EncodingPlanDivergence divergence in EncodingPlanService.Compare(
-                         shadowPlan, containerDecision, plannedOutputGeometry, requestedEncoder,
-                         targetMb, sourceDecodeMode))
+                         shadowPlan, legacyContainerDecision, legacyOutputGeometry, legacyEncoder,
+                         legacyTargetMb, sourceDecodeMode))
             {
                 _log?.Invoke($"[EncodingPlan] Shadow divergence: {divergence}");
                 encodingPlanDivergenceCallback?.Invoke(divergence);
             }
+            OutputContainerDecision containerDecision = planExecution.ContainerDecision;
             _log?.Invoke(
                 $"[EncodingService] stage=ContainerResolution; configured={containerDecision.Requested}; " +
                 $"effective={containerDecision.Resolved}; policy={compatibilityPolicy}; " +
