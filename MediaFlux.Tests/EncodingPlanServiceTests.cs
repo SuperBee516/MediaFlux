@@ -7,6 +7,57 @@ namespace MediaFlux.Tests;
 public sealed class EncodingPlanServiceTests
 {
     [Fact]
+    public void ShadowPlanKeepsConfiguredAutoSeparateFromEffectiveMkvAndRecordsReasons()
+    {
+        EncodingPlan plan = EncodingPlanService.Create(Context(
+            OutputContainerSelection.Auto,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1281, Height = 720 },
+            new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "mp2" },
+            new MediaProbeStreamInfo { Index = 2, CodecType = "subtitle", CodecName = "ass" }));
+
+        Assert.Equal(OutputContainerSelection.Auto, plan.Container!.Configured);
+        Assert.Equal(OutputContainer.Matroska, plan.Container.Effective);
+        Assert.Contains(plan.DecisionReasons, reason => reason.Code == EncodingDecisionReasonCode.ContainerAutoResolved);
+        Assert.Contains(plan.DecisionReasons, reason => reason.Code == EncodingDecisionReasonCode.GeometryNormalized);
+        Assert.Contains(plan.Audio, stream => stream.Action == StreamCompatibilityAction.Copy);
+        Assert.Contains(plan.Subtitles, stream => stream.Action == StreamCompatibilityAction.Copy);
+    }
+
+    [Fact]
+    public void ShadowPlanReportsMp4CompatibilityWithoutChangingStrictPolicyDecision()
+    {
+        EncodingPlan plan = EncodingPlanService.Create(Context(
+            OutputContainerSelection.Mp4,
+            ContainerCompatibilityPolicy.Strict,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "hevc", Width = 1920, Height = 1080 },
+            new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "mp2" },
+            new MediaProbeStreamInfo { Index = 2, CodecType = "subtitle", CodecName = "ass" }));
+
+        Assert.Equal(OutputContainer.Mp4, plan.Container!.Effective);
+        Assert.Contains(plan.Audio, stream => stream.Action == StreamCompatibilityAction.Transcode && stream.TargetCodec == "aac");
+        Assert.Contains(plan.Subtitles, stream => stream.Action == StreamCompatibilityAction.Transcode && stream.TargetCodec == "mov_text");
+        Assert.Contains(plan.DecisionReasons, reason => reason.Code == EncodingDecisionReasonCode.StrictPolicyRejected);
+        Assert.Contains(plan.Risks, risk => risk.Category == EncodingRiskCategory.AudioCompatibility);
+    }
+
+    [Fact]
+    public void ShadowPlanModelsOnlyConditionalIntelligentVideoRecovery()
+    {
+        EncodingPlan plan = EncodingPlanService.Create(Context(
+            OutputContainerSelection.Matroska,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 }));
+
+        Assert.Equal("Strict", plan.Recovery!.InitialDecodeMode);
+        Assert.True(plan.Recovery.TolerantRecoveryPermitted);
+        Assert.Equal(1, plan.Recovery.MaximumRetryCount);
+        Assert.Contains("NVENC", plan.Recovery.RejectedFailureClasses);
+        Assert.Contains("storage", plan.Recovery.RejectedFailureClasses);
+        Assert.Contains("cancellation", plan.Recovery.RejectedFailureClasses);
+    }
+
+    [Fact]
     public void Mp4PlanSurfacesAuthoritativeConversionsAndGeometryCorrection()
     {
         MediaProbeResult source = new()
@@ -115,4 +166,27 @@ public sealed class EncodingPlanServiceTests
         Assert.Contains(processing.Items, item => item.Value == "VHS / TV capture restore");
         Assert.Contains(processing.Items, item => item.Value.Contains("General · general-x2 · 2×"));
     }
+
+    private static EncodingDecisionContext Context(
+        OutputContainerSelection container,
+        ContainerCompatibilityPolicy policy,
+        params MediaProbeStreamInfo[] streams) => new(
+            new MediaProbeResult { Success = true, Streams = streams },
+            EncodingInputSource.FromFile("source.mkv"),
+            new VideoEncoderSelection(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"),
+            UseGpu: true,
+            TargetMb: 100,
+            ScaleMode: EncodingService.ScaleMode.None,
+            Restoration: new VideoRestorationSettings(),
+            EncoderPreset: "p5",
+            QualityValue: 24,
+            TenBit: false,
+            AudioChannels: null,
+            MapMode: EncodingService.StreamMapMode.KeepAll,
+            CopySubtitles: true,
+            CopyDataStreams: true,
+            CopyAttachments: true,
+            ContainerConfigured: container,
+            CompatibilityPolicy: policy,
+            KnownDuration: TimeSpan.FromMinutes(10));
 }

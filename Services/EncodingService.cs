@@ -347,7 +347,9 @@ namespace MediaFlux.Services
                 request.DisableAutomaticFfmpegRecovery,
                 request.FfmpegDiagnosticCallback,
                 request.ValidationProfile,
-                request.StructuredProgressCallback);
+                request.StructuredProgressCallback,
+                request.EncodingPlanSnapshotCallback,
+                request.EncodingPlanDivergenceCallback);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -512,7 +514,9 @@ namespace MediaFlux.Services
             bool disableAutomaticFfmpegRecovery = false,
             Action<string>? ffmpegDiagnosticCallback = null,
             EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
-            Action<EncodeProgress>? structuredProgressCallback = null)
+            Action<EncodeProgress>? structuredProgressCallback = null,
+            Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
+            Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -548,7 +552,10 @@ namespace MediaFlux.Services
                 sourceDecodeMode,
                 disableAutomaticFfmpegRecovery,
                 ffmpegDiagnosticCallback,
-                validationProfile);
+                validationProfile,
+                structuredProgressCallback,
+                encodingPlanSnapshotCallback,
+                encodingPlanDivergenceCallback);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -586,7 +593,9 @@ namespace MediaFlux.Services
             bool disableAutomaticFfmpegRecovery = false,
             Action<string>? ffmpegDiagnosticCallback = null,
             EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
-            Action<EncodeProgress>? structuredProgressCallback = null)
+            Action<EncodeProgress>? structuredProgressCallback = null,
+            Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
+            Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -702,6 +711,20 @@ namespace MediaFlux.Services
                     requestedEncoder,
                     tenBit)
                 : null;
+            TimeSpan planKnownDuration = inputSource.KnownDurationSeconds is > 0
+                ? TimeSpan.FromSeconds(inputSource.KnownDurationSeconds.Value)
+                : programDuration.DurationSeconds is > 0
+                    ? TimeSpan.FromSeconds(programDuration.DurationSeconds.Value)
+                    : TimeSpan.Zero;
+            var planContext = new EncodingDecisionContext(
+                sourceProbe, inputSource, requestedEncoder, useGpu, targetMb, scaleMode,
+                restoration?.Clone() ?? new VideoRestorationSettings(), encoderPreset ?? "", qualityValue, tenBit, audioChannels,
+                mapMode, copySubtitles, copyDataStreams, copyAttachments, outputContainer,
+                compatibilityPolicy, planKnownDuration, validationProfile);
+            EncodingPlan shadowPlan = EncodingPlanService.Create(planContext);
+            var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
+            _log?.Invoke(EncodingPlanService.DescribeSummary(shadowPlan));
+            encodingPlanSnapshotCallback?.Invoke(planSnapshot);
             if (plannedOutputGeometry is not null)
             {
                 _log?.Invoke($"[EncodingService] Output geometry plan: source={plannedOutputGeometry.SourceWidth}x{plannedOutputGeometry.SourceHeight}; requested={plannedOutputGeometry.RequestedWidth}x{plannedOutputGeometry.RequestedHeight}; planned={plannedOutputGeometry.Width}x{plannedOutputGeometry.Height}; encoder={requestedEncoder.FfmpegCodec}; pixel-format={plannedOutputGeometry.PixelFormat}; reason={plannedOutputGeometry.Reason}.");
@@ -754,6 +777,13 @@ namespace MediaFlux.Services
                 copyDataStreams,
                 copyAttachments,
                 audioWillBeTranscoded: audioChannels is > 0);
+            foreach (EncodingPlanDivergence divergence in EncodingPlanService.Compare(
+                         shadowPlan, containerDecision, plannedOutputGeometry, requestedEncoder,
+                         targetMb, sourceDecodeMode))
+            {
+                _log?.Invoke($"[EncodingPlan] Shadow divergence: {divergence}");
+                encodingPlanDivergenceCallback?.Invoke(divergence);
+            }
             _log?.Invoke(
                 $"[EncodingService] stage=ContainerResolution; configured={containerDecision.Requested}; " +
                 $"effective={containerDecision.Resolved}; policy={compatibilityPolicy}; " +

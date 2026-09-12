@@ -796,7 +796,11 @@ namespace MediaFlux
                     OutputContainer = requestedOutputContainer,
                     ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
                     CompatibilityPolicy = GetContainerCompatibilityPolicy(),
-                    ContainerDecisionCallback = decision => appliedContainerDecision = decision
+                    ContainerDecisionCallback = decision => appliedContainerDecision = decision,
+                    EncodingPlanSnapshotCallback = snapshot =>
+                        jobLog.AppendLine(EncodingPlanService.DescribeSummary(snapshot.Plan)),
+                    EncodingPlanDivergenceCallback = divergence =>
+                        jobLog.AppendLine($"[EncodingPlan] Shadow divergence: {divergence}")
                 };
 
                 jobLog.AppendLine(

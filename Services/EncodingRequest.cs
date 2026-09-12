@@ -37,6 +37,9 @@ namespace MediaFlux.Services
         public bool ContainerCompatibilityConfirmed { get; init; }
         public ContainerCompatibilityPolicy CompatibilityPolicy { get; init; } = ContainerCompatibilityPolicy.Intelligent;
         public Action<OutputContainerDecision>? ContainerDecisionCallback { get; init; }
+        /// <summary>Shadow-only diagnostic hooks; they never influence execution.</summary>
+        public Action<EncodingPlanSnapshot>? EncodingPlanSnapshotCallback { get; init; }
+        public Action<EncodingPlanDivergence>? EncodingPlanDivergenceCallback { get; init; }
         public CancellationToken CancellationToken { get; init; }
         public Action<string>? OutputPathCallback { get; init; }
         public Action<string>? StagingPathCallback { get; init; }
