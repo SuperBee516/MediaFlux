@@ -40,6 +40,8 @@ namespace MediaFlux.Services
         /// <summary>Shadow-only diagnostic hooks; they never influence execution.</summary>
         public Action<EncodingPlanSnapshot>? EncodingPlanSnapshotCallback { get; init; }
         public Action<EncodingPlanDivergence>? EncodingPlanDivergenceCallback { get; init; }
+        /// <summary>Observational execution facts; this never changes recovery behavior.</summary>
+        public Action<EncodingExecutionOutcome>? EncodingExecutionOutcomeCallback { get; init; }
         public CancellationToken CancellationToken { get; init; }
         public Action<string>? OutputPathCallback { get; init; }
         public Action<string>? StagingPathCallback { get; init; }

@@ -84,6 +84,30 @@ public static class EncodingPlanService
         if (context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
             risks.Add(new(EncodingRiskSeverity.Information, EncodingRiskCategory.SourceDecode, "conditional-video-recovery", "A single tolerant retry is available only for corroborated source-video corruption; cancellation, storage, and NVENC failures are excluded."));
 
+        bool copiedAudioRecoveryCandidate = container.StreamPlans.Any(plan =>
+            plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+            plan.Action == StreamCompatibilityAction.Copy);
+        bool intelligentRecovery = context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent;
+        EncodingRecoveryCapability[] recoveryCapabilities =
+        [
+            new(EncodingRecoveryKind.VideoDecode, EncodingRecoveryMode.Strict, intelligentRecovery, intelligentRecovery ? 1 : 0,
+                [EncodingRecoveryFailureClass.SourceVideoCorruption],
+                [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.StorageFailure, EncodingRecoveryFailureClass.NvencFailure, EncodingRecoveryFailureClass.SourceTruncation, EncodingRecoveryFailureClass.SourceAudioCorruption],
+                "The existing video policy alone corroborates failure evidence and permits one tolerant retry."),
+            new(EncodingRecoveryKind.AudioStream, EncodingRecoveryMode.Strict, intelligentRecovery && copiedAudioRecoveryCandidate, intelligentRecovery && copiedAudioRecoveryCandidate ? 1 : 0,
+                [EncodingRecoveryFailureClass.SourceAudioCorruption],
+                [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.SourceVideoCorruption],
+                "The existing audio path can transcode only a copied stream identified from encode diagnostics."),
+            new(EncodingRecoveryKind.HardwareDecode, EncodingRecoveryMode.Strict, context.UseGpu && context.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase), context.UseGpu && context.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase) ? 1 : 0,
+                [EncodingRecoveryFailureClass.NvdecCudaFailure],
+                [EncodingRecoveryFailureClass.Cancellation],
+                "The existing NVDEC/CUDA fallback retains NVENC and removes hardware decode."),
+            new(EncodingRecoveryKind.GpuFramePipeline, EncodingRecoveryMode.Strict, context.UseGpu && context.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase), context.UseGpu && context.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase) ? 1 : 0,
+                [EncodingRecoveryFailureClass.GpuFramePipelineFailure],
+                [EncodingRecoveryFailureClass.Cancellation],
+                "The existing GPU-frame fallback uses software-frame conversion when negotiation fails.")
+        ];
+
         double? targetKbps = context.TargetMb is > 0 && context.KnownDuration > TimeSpan.Zero
             ? context.TargetMb.Value * 8192d / context.KnownDuration.TotalSeconds : null;
         double? sourceBytes = context.Input.Kind == EncodingInputKind.File && File.Exists(context.Input.SourcePath)
@@ -101,6 +125,15 @@ public static class EncodingPlanService
             Container = new EncodingPlanContainer(context.ContainerConfigured, container.Resolved, container.Reason),
             Hardware = new EncodingPlanHardware(context.UseGpu, context.Encoder.EncoderId, context.UseGpu),
             Recovery = new EncodingPlanRecovery("Strict", context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent, context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent ? 1 : 0, new[] { "corroborated-source-video-corruption" }, new[] { "cancellation", "storage", "NVENC", "source-truncation", "audio-only" }),
+            Preflight = new EncodingPlanPreflight(
+            [
+                new(EncodingPreflightCheckKind.SourceProbe, EncodingPreflightDisposition.Required, "FFprobe resolves source streams before planning and launch."),
+                new(EncodingPreflightCheckKind.SourceTiming, context.Input.Kind == EncodingInputKind.File ? EncodingPreflightDisposition.Required : EncodingPreflightDisposition.NotRequired, "File inputs retain the existing source-timing safety analysis."),
+                new(EncodingPreflightCheckKind.SubtitleConversion, EncodingPreflightDisposition.Required, "Existing subtitle conversion preflight validates planned subtitle operations."),
+                new(EncodingPreflightCheckKind.CopiedAudioDecode, EncodingPreflightDisposition.NotRequired, "Copied audio remains on the normal encode path; no full-duration preflight is added."),
+                new(EncodingPreflightCheckKind.SampleComparison, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison ? EncodingPreflightDisposition.Required : EncodingPreflightDisposition.NotRequired, "Sample comparison retains its existing independent command and failure semantics.")
+            ]),
+            RecoveryCapabilities = new EncodingPlanRecoveryCapabilities(recoveryCapabilities),
             Validation = new EncodingPlanValidation(context.ValidationProfile.ToString(), true, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison),
             Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio),
             Risks = risks,
@@ -138,6 +171,28 @@ public static class EncodingPlanService
         return divergences;
     }
 
+    internal static EncodingPlanDivergence? CompareRecoveryAttempt(
+        EncodingPlan plan, EncodingRecoveryKind kind, EncodingRecoveryFailureClass failureClass)
+    {
+        EncodingRecoveryCapability? capability = plan.RecoveryCapabilities?.Items
+            .FirstOrDefault(item => item.Kind == kind);
+        if (capability is null || !capability.Permitted || !capability.EligibleFailureClasses.Contains(failureClass))
+            return new EncodingPlanDivergence(
+                "recovery-capability",
+                capability is null ? $"{kind}: unavailable" : $"{kind}: not permitted for {failureClass}",
+                $"{kind}: attempted for {failureClass}");
+        return null;
+    }
+
+    public static string DescribeRecovery(EncodingExecutionOutcome outcome)
+    {
+        string recovery = outcome.Recovery.Count == 0
+            ? "RecoveryAttempted=False"
+            : string.Join("; ", outcome.Recovery.Select(item =>
+                $"Type={item.Kind}; Failure={item.FailureClass}; InitialMode={item.InitialMode}; RecoveryMode={item.RecoveryMode}; Attempt={item.Attempt}/{item.MaximumAttempts}; Result={item.Result}"));
+        return $"[EncodingRecovery] PlanId={outcome.PlanId}; {recovery}";
+    }
+
     private static void CompareStreamActions(
         IReadOnlyList<EncodingPlanStream> planned,
         OutputContainerDecision actualContainer,
@@ -165,7 +220,13 @@ public static class EncodingPlanService
         string source = plan.Source is { } s ? $"{s.Codec} {s.Width}x{s.Height}" : "unknown";
         string video = plan.Video is { } v ? $"{v.Action}/{v.Codec}" : "unknown";
         string container = plan.Container is { } c ? $"{c.Configured}->{c.Effective}" : "unknown";
-        return $"[EncodingPlan] PlanId={plan.PlanId}; Source={source}; Video={video}; Container={container}; Recovery={plan.Recovery?.InitialDecodeMode}; Risks={plan.Risks.Count} informational.";
+        EncodingRecoveryCapability? videoRecovery = plan.RecoveryCapabilities?.Items
+            .FirstOrDefault(item => item.Kind == EncodingRecoveryKind.VideoDecode);
+        EncodingRecoveryCapability? audioRecovery = plan.RecoveryCapabilities?.Items
+            .FirstOrDefault(item => item.Kind == EncodingRecoveryKind.AudioStream);
+        return $"[EncodingPlan] PlanId={plan.PlanId}; Source={source}; Video={video}; Container={container}; " +
+            $"Recovery={plan.Recovery?.InitialDecodeMode}; VideoRecoveryPermitted={videoRecovery?.Permitted}; " +
+            $"AudioRecoveryPermitted={audioRecovery?.Permitted}; Risks={plan.Risks.Count} informational.";
     }
 
     private static void AddCompatibilityRisks(OutputContainerDecision decision, List<EncodingRisk> risks)

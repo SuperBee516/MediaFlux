@@ -800,7 +800,9 @@ namespace MediaFlux
                     EncodingPlanSnapshotCallback = snapshot =>
                         jobLog.AppendLine(EncodingPlanService.DescribeSummary(snapshot.Plan)),
                     EncodingPlanDivergenceCallback = divergence =>
-                        jobLog.AppendLine($"[EncodingPlan] Shadow divergence: {divergence}")
+                        jobLog.AppendLine($"[EncodingPlan] Shadow divergence: {divergence}"),
+                    EncodingExecutionOutcomeCallback = outcome =>
+                        jobLog.AppendLine(EncodingPlanService.DescribeRecovery(outcome))
                 };
 
                 jobLog.AppendLine(

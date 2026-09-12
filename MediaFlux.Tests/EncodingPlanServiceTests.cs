@@ -58,6 +58,50 @@ public sealed class EncodingPlanServiceTests
     }
 
     [Fact]
+    public void PlanDescribesExistingPreflightAndRecoveryCapabilitiesWithoutCreatingWork()
+    {
+        EncodingPlan plan = EncodingPlanService.Create(Context(
+            OutputContainerSelection.Matroska,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 },
+            new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "aac" }));
+
+        Assert.Contains(plan.Preflight!.Checks, check =>
+            check.Kind == EncodingPreflightCheckKind.SourceProbe && check.Disposition == EncodingPreflightDisposition.Required);
+        Assert.Contains(plan.Preflight.Checks, check =>
+            check.Kind == EncodingPreflightCheckKind.CopiedAudioDecode && check.Disposition == EncodingPreflightDisposition.NotRequired);
+        EncodingRecoveryCapability video = Assert.Single(plan.RecoveryCapabilities!.Items,
+            capability => capability.Kind == EncodingRecoveryKind.VideoDecode);
+        EncodingRecoveryCapability audio = Assert.Single(plan.RecoveryCapabilities.Items,
+            capability => capability.Kind == EncodingRecoveryKind.AudioStream);
+        Assert.True(video.Permitted);
+        Assert.Equal(1, video.MaximumAttempts);
+        Assert.Contains(EncodingRecoveryFailureClass.NvencFailure, video.NonEligibleFailureClasses);
+        Assert.True(audio.Permitted);
+        Assert.Contains(EncodingRecoveryFailureClass.SourceAudioCorruption, audio.EligibleFailureClasses);
+    }
+
+    [Fact]
+    public void RecoveryOutcomeIsSeparateFromFrozenPlanAndMismatchIsDiagnosticOnly()
+    {
+        EncodingPlan plan = EncodingPlanService.Create(Context(
+            OutputContainerSelection.Matroska,
+            ContainerCompatibilityPolicy.Strict,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 }));
+        EncodingPlanDivergence? divergence = EncodingPlanService.CompareRecoveryAttempt(
+            plan, EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption);
+        var outcome = new EncodingExecutionOutcome(plan.PlanId,
+            new[] { new EncodingPreflightOutcome(EncodingPreflightCheckKind.SourceProbe, EncodingPreflightStatus.Passed) },
+            new[] { new EncodingRecoveryOutcome(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
+                EncodingRecoveryMode.Strict, EncodingRecoveryMode.Tolerant, 1, 1, EncodingRecoveryResult.Succeeded) });
+
+        Assert.NotNull(divergence);
+        Assert.Contains("not permitted", divergence!.Planned);
+        Assert.False(plan.Recovery!.TolerantRecoveryPermitted);
+        Assert.Contains("Type=VideoDecode", EncodingPlanService.DescribeRecovery(outcome));
+    }
+
+    [Fact]
     public void ExecutionValuesComeFromFrozenPlanAndMatchLegacyPolicy()
     {
         EncodingDecisionContext context = Context(

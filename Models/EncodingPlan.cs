@@ -7,6 +7,13 @@ namespace MediaFlux.Models;
 public enum EncodingDecisionReasonCode { UserRequestedVideoReencode, ContainerAutoResolved, ContainerCompatibility, CompatibleAudioPassthrough, AudioConversionRequired, SubtitleConversionRequired, GeometryNormalized, StrictPolicyRejected, IntelligentRecoveryAvailable, HardwareEncoderSelected, TargetSizeBudget }
 public enum EncodingRiskSeverity { Information, Warning }
 public enum EncodingRiskCategory { SourceDecode, ContainerCompatibility, AudioCompatibility, SubtitleCompatibility, Geometry, Hardware, Sampling, OutputValidation, Storage }
+public enum EncodingPreflightCheckKind { SourceProbe, SourceTiming, SubtitleConversion, CopiedAudioDecode, SampleComparison }
+public enum EncodingPreflightDisposition { Required, NotRequired }
+public enum EncodingPreflightStatus { Passed, Failed, Skipped }
+public enum EncodingRecoveryKind { VideoDecode, AudioStream, HardwareDecode, GpuFramePipeline }
+public enum EncodingRecoveryFailureClass { SourceVideoCorruption, SourceAudioCorruption, NvdecCudaFailure, GpuFramePipelineFailure, Cancellation, StorageFailure, NvencFailure, SourceTruncation, Unknown }
+public enum EncodingRecoveryMode { Strict, Tolerant, AudioTranscode, SoftwareDecodeWithNvenc, SoftwareFrames }
+public enum EncodingRecoveryResult { NotAttempted, Succeeded, Failed, NotStarted }
 
 public sealed record EncodingDecisionReason(EncodingDecisionReasonCode Code, string Description);
 public sealed record EncodingRisk(EncodingRiskSeverity Severity, EncodingRiskCategory Category, string Code, string Description);
@@ -30,6 +37,13 @@ public sealed record EncodingPlanStream(
 public sealed record EncodingPlanContainer(OutputContainerSelection Configured, OutputContainer Effective, string Reason);
 public sealed record EncodingPlanHardware(bool UseGpu, string EncoderId, bool HardwareEncoder);
 public sealed record EncodingPlanRecovery(string InitialDecodeMode, bool TolerantRecoveryPermitted, int MaximumRetryCount, IReadOnlyList<string> PermittedFailureClasses, IReadOnlyList<string> RejectedFailureClasses);
+public sealed record EncodingPlanPreflightCheck(EncodingPreflightCheckKind Kind, EncodingPreflightDisposition Disposition, string Reason);
+public sealed record EncodingPlanPreflight(IReadOnlyList<EncodingPlanPreflightCheck> Checks);
+public sealed record EncodingRecoveryCapability(
+    EncodingRecoveryKind Kind, EncodingRecoveryMode InitialMode, bool Permitted,
+    int MaximumAttempts, IReadOnlyList<EncodingRecoveryFailureClass> EligibleFailureClasses,
+    IReadOnlyList<EncodingRecoveryFailureClass> NonEligibleFailureClasses, string Reason);
+public sealed record EncodingPlanRecoveryCapabilities(IReadOnlyList<EncodingRecoveryCapability> Items);
 public sealed record EncodingPlanValidation(string Profile, bool OutputValidation, bool SampleComparison);
 public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio);
 
@@ -49,6 +63,8 @@ public sealed class EncodingPlan
     public EncodingPlanContainer? Container { get; init; }
     public EncodingPlanHardware? Hardware { get; init; }
     public EncodingPlanRecovery? Recovery { get; init; }
+    public EncodingPlanPreflight? Preflight { get; init; }
+    public EncodingPlanRecoveryCapabilities? RecoveryCapabilities { get; init; }
     public EncodingPlanValidation? Validation { get; init; }
     public EncodingPlanEstimates Estimates { get; init; } = new(null, null, null);
     public IReadOnlyList<EncodingRisk> Risks { get; init; } = Array.Empty<EncodingRisk>();
@@ -68,3 +84,14 @@ public sealed record EncodingPlanDivergence(string Decision, string Planned, str
 {
     public override string ToString() => $"{Decision}: planned={Planned}; actual={Actual}";
 }
+
+/// <summary>Immutable execution facts, kept separate from the frozen plan.</summary>
+public sealed record EncodingPreflightOutcome(
+    EncodingPreflightCheckKind Kind, EncodingPreflightStatus Status, string Detail = "");
+public sealed record EncodingRecoveryOutcome(
+    EncodingRecoveryKind Kind, EncodingRecoveryFailureClass FailureClass,
+    EncodingRecoveryMode InitialMode, EncodingRecoveryMode RecoveryMode,
+    int Attempt, int MaximumAttempts, EncodingRecoveryResult Result, string Detail = "");
+public sealed record EncodingExecutionOutcome(
+    Guid PlanId, IReadOnlyList<EncodingPreflightOutcome> Preflight,
+    IReadOnlyList<EncodingRecoveryOutcome> Recovery);

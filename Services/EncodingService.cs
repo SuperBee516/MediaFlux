@@ -349,7 +349,8 @@ namespace MediaFlux.Services
                 request.ValidationProfile,
                 request.StructuredProgressCallback,
                 request.EncodingPlanSnapshotCallback,
-                request.EncodingPlanDivergenceCallback);
+                request.EncodingPlanDivergenceCallback,
+                request.EncodingExecutionOutcomeCallback);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -516,7 +517,8 @@ namespace MediaFlux.Services
             EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
             Action<EncodeProgress>? structuredProgressCallback = null,
             Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
-            Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null)
+            Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
+            Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -555,7 +557,8 @@ namespace MediaFlux.Services
                 validationProfile,
                 structuredProgressCallback,
                 encodingPlanSnapshotCallback,
-                encodingPlanDivergenceCallback);
+                encodingPlanDivergenceCallback,
+                encodingExecutionOutcomeCallback);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -595,7 +598,8 @@ namespace MediaFlux.Services
             EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
             Action<EncodeProgress>? structuredProgressCallback = null,
             Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
-            Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null)
+            Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
+            Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -718,6 +722,34 @@ namespace MediaFlux.Services
                 compatibilityPolicy, planKnownDuration, validationProfile);
             EncodingPlan shadowPlan = EncodingPlanService.Create(planContext);
             var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
+            var preflightOutcomes = new List<EncodingPreflightOutcome>
+            {
+                new(EncodingPreflightCheckKind.SourceProbe, EncodingPreflightStatus.Passed),
+                new(EncodingPreflightCheckKind.SourceTiming,
+                    inputSource.Kind == EncodingInputKind.File ? EncodingPreflightStatus.Passed : EncodingPreflightStatus.Skipped,
+                    inputSource.Kind == EncodingInputKind.File ? "Existing source timing analysis passed." : "Not applicable to this input source.")
+            };
+            var recoveryOutcomes = new List<EncodingRecoveryOutcome>();
+            void PublishExecutionOutcome()
+            {
+                encodingExecutionOutcomeCallback?.Invoke(new EncodingExecutionOutcome(
+                    shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray()));
+            }
+            void RecordRecovery(EncodingRecoveryKind kind, EncodingRecoveryFailureClass failureClass,
+                EncodingRecoveryMode recoveryMode, int maximumAttempts, EncodingRecoveryResult result, string detail)
+            {
+                EncodingPlanDivergence? divergence = EncodingPlanService.CompareRecoveryAttempt(shadowPlan, kind, failureClass);
+                if (divergence is not null)
+                {
+                    _log?.Invoke($"[EncodingPlan] Shadow divergence: {divergence}");
+                    encodingPlanDivergenceCallback?.Invoke(divergence);
+                }
+                recoveryOutcomes.Add(new EncodingRecoveryOutcome(kind, failureClass,
+                    EncodingRecoveryMode.Strict, recoveryMode, 1, maximumAttempts, result, detail));
+                EncodingExecutionOutcome outcome = new(shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray());
+                _log?.Invoke(EncodingPlanService.DescribeRecovery(outcome));
+                encodingExecutionOutcomeCallback?.Invoke(outcome);
+            }
             EncodingPlanService.EncodingPlanExecutionValues planExecution =
                 EncodingPlanService.GetExecutionValues(shadowPlan);
             // Phase 2/3 authority boundary: downstream FFmpeg/finalization
@@ -745,6 +777,7 @@ namespace MediaFlux.Services
                 : null;
             _log?.Invoke(EncodingPlanService.DescribeSummary(shadowPlan));
             encodingPlanSnapshotCallback?.Invoke(planSnapshot);
+            PublishExecutionOutcome();
             if (plannedOutputGeometry is not null)
             {
                 _log?.Invoke($"[EncodingService] Output geometry plan: source={plannedOutputGeometry.SourceWidth}x{plannedOutputGeometry.SourceHeight}; requested={plannedOutputGeometry.RequestedWidth}x{plannedOutputGeometry.RequestedHeight}; planned={plannedOutputGeometry.Width}x{plannedOutputGeometry.Height}; encoder={requestedEncoder.FfmpegCodec}; pixel-format={plannedOutputGeometry.PixelFormat}; reason={plannedOutputGeometry.Reason}.");
@@ -847,6 +880,11 @@ namespace MediaFlux.Services
                     .ValidateAsync(inputSource, containerDecision, cancellationToken).ConfigureAwait(false);
                 subtitleScope.Complete();
             }
+            preflightOutcomes.Add(new EncodingPreflightOutcome(
+                EncodingPreflightCheckKind.SubtitleConversion,
+                subtitlePreflight.Success ? EncodingPreflightStatus.Passed : EncodingPreflightStatus.Failed,
+                subtitlePreflight.Success ? "Existing subtitle preflight passed." : subtitlePreflight.ErrorMessage));
+            PublishExecutionOutcome();
             if (!subtitlePreflight.Success)
             {
                 if (compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
@@ -1058,10 +1096,17 @@ namespace MediaFlux.Services
                         retryScope.Complete();
                     }
                     _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery retry result: exit={runResult.ExitCode}.");
+                    RecordRecovery(EncodingRecoveryKind.HardwareDecode, EncodingRecoveryFailureClass.NvdecCudaFailure,
+                        EncodingRecoveryMode.SoftwareDecodeWithNvenc, 1,
+                        runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                        cudaFailure.DescribeEvidence());
                 }
                 else
                 {
                     recoveryDiagnostics += "Recovery retry was not started because the failed staged output could not be removed safely." + Environment.NewLine;
+                    RecordRecovery(EncodingRecoveryKind.HardwareDecode, EncodingRecoveryFailureClass.NvdecCudaFailure,
+                        EncodingRecoveryMode.SoftwareDecodeWithNvenc, 1, EncodingRecoveryResult.NotStarted,
+                        "Failed staged output could not be removed safely.");
                 }
             }
 
@@ -1100,6 +1145,10 @@ namespace MediaFlux.Services
                         ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification).ConfigureAwait(false);
                     retryScope.Complete();
                 }
+                RecordRecovery(EncodingRecoveryKind.GpuFramePipeline, EncodingRecoveryFailureClass.GpuFramePipelineFailure,
+                    EncodingRecoveryMode.SoftwareFrames, 1,
+                    runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                    "Existing GPU-resident frame negotiation fallback.");
             }
 
             bool audioRecoveryAttempted = false;
@@ -1148,9 +1197,18 @@ namespace MediaFlux.Services
                             _log?.Invoke(runResult.ExitCode == 0
                                 ? $"[EncodingService] Audio recovery success: stream #{audioStreamIndex} transcoded to {recoveryCodec}; continuing through normal validation/finalization."
                                 : $"[EncodingService] Audio recovery failure: stream #{audioStreamIndex}; exit={runResult.ExitCode}; bounded diagnostics retained.");
+                            RecordRecovery(EncodingRecoveryKind.AudioStream, EncodingRecoveryFailureClass.SourceAudioCorruption,
+                                EncodingRecoveryMode.AudioTranscode, 1,
+                                runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                                $"Copied audio stream #{audioStreamIndex} -> {recoveryCodec}.");
                         }
                         else
+                        {
                             _log?.Invoke($"[EncodingService] Audio recovery failure: stream #{audioStreamIndex}; failed staged output could not be removed safely.");
+                            RecordRecovery(EncodingRecoveryKind.AudioStream, EncodingRecoveryFailureClass.SourceAudioCorruption,
+                                EncodingRecoveryMode.AudioTranscode, 1, EncodingRecoveryResult.NotStarted,
+                                "Failed staged output could not be removed safely.");
+                        }
                 }
             }
 
@@ -1197,9 +1255,18 @@ namespace MediaFlux.Services
                             _log?.Invoke("[EncodingService] Video decode recovery succeeded; validating recovered output.");
                         else
                             _log?.Invoke("[EncodingService] Video decode recovery failed; no further recovery attempts will be made.");
+                        RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
+                            EncodingRecoveryMode.Tolerant, 1,
+                            runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                            recovery.Evidence);
                     }
                     else
+                    {
                         _log?.Invoke("[EncodingService] Video decode recovery failed; failed staged output could not be removed safely.");
+                        RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
+                            EncodingRecoveryMode.Tolerant, 1, EncodingRecoveryResult.NotStarted,
+                            "Failed staged output could not be removed safely.");
+                    }
                 }
             }
 
