@@ -86,5 +86,7 @@ namespace MediaFlux.Models
         public string ValidationSummary { get; init; } = "";
         public long? FinalOutputSizeBytes { get; init; }
         public long? FinalOutputLastWriteUtcTicks { get; init; }
+        public EncodeOutputValidationResult? StagedValidationResult { get; init; }
+        public EncodeOutputValidationResult? PromotedValidationResult { get; init; }
     }
 }

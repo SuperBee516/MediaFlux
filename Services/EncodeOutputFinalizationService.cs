@@ -90,7 +90,8 @@ namespace MediaFlux.Services
                     EncodeFinalizationFailureKind.Validation,
                     $"Output validation failed: {staged.ErrorMessage}",
                     request,
-                    File.Exists(request.OutputPath) ? request.OutputPath : "");
+                    File.Exists(request.OutputPath) ? request.OutputPath : "",
+                    stagedValidation: staged);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -114,7 +115,8 @@ namespace MediaFlux.Services
                     EncodeFinalizationFailureKind.Promotion,
                     message,
                     request,
-                    File.Exists(request.OutputPath) ? request.OutputPath : "");
+                    File.Exists(request.OutputPath) ? request.OutputPath : "",
+                    stagedValidation: staged);
             }
 
             statusCallback?.Invoke("Verifying final output");
@@ -140,7 +142,8 @@ namespace MediaFlux.Services
                         EncodeFinalizationFailureKind.FinalVerification,
                         "Final output verification was canceled.",
                         request,
-                        recoverablePath),
+                        recoverablePath,
+                        stagedValidation: staged),
                     cancellationToken);
             }
             if (!promoted.Success || promoted.Evidence == null)
@@ -152,7 +155,9 @@ namespace MediaFlux.Services
                     EncodeFinalizationFailureKind.FinalVerification,
                     $"Final output verification failed: {promoted.ErrorMessage}",
                     request,
-                    recoverablePath);
+                    recoverablePath,
+                    stagedValidation: staged,
+                    promotedValidation: promoted);
             }
 
             return new EncodeFinalizationResult
@@ -164,7 +169,9 @@ namespace MediaFlux.Services
                     $"{staged.Summary} {promoted.Summary}".Trim(),
                 FinalOutputSizeBytes = promoted.Evidence.OutputSizeBytes,
                 FinalOutputLastWriteUtcTicks =
-                    promoted.Evidence.OutputLastWriteUtcTicks
+                    promoted.Evidence.OutputLastWriteUtcTicks,
+                StagedValidationResult = staged,
+                PromotedValidationResult = promoted
             };
         }
 
@@ -172,14 +179,18 @@ namespace MediaFlux.Services
             EncodeFinalizationFailureKind kind,
             string message,
             EncodeOutputValidationRequest request,
-            string recoverablePath) => new()
+            string recoverablePath,
+            EncodeOutputValidationResult? stagedValidation = null,
+            EncodeOutputValidationResult? promotedValidation = null) => new()
         {
             Success = false,
             FailureKind = kind,
             ErrorMessage = message,
             FinalOutputPath = request.FinalOutputPath,
             StagingPath = request.OutputPath,
-            RecoverableOutputPath = recoverablePath
+            RecoverableOutputPath = recoverablePath,
+            StagedValidationResult = stagedValidation,
+            PromotedValidationResult = promotedValidation
         };
     }
 

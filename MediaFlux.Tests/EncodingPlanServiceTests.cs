@@ -102,6 +102,64 @@ public sealed class EncodingPlanServiceTests
     }
 
     [Fact]
+    public void PlanDescribesExistingValidationAndStagedFinalizationIntent()
+    {
+        EncodingPlan plan = EncodingPlanService.Create(Context(
+            OutputContainerSelection.Mp4,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 }));
+
+        Assert.True(plan.ValidationIntent!.StagedOutputRequired);
+        Assert.True(plan.ValidationIntent.IntegrityRequired);
+        Assert.True(plan.FinalizationIntent!.PromoteOnlyAfterValidation);
+        Assert.True(plan.FinalizationIntent.RetainSourceUntilSuccess);
+    }
+
+    [Fact]
+    public void FinalizerResultsProduceSeparateValidationAndFinalizationOutcomes()
+    {
+        var staged = new EncodeOutputValidationResult { Success = true, Summary = "passed" };
+        var completed = new EncodeFinalizationResult
+        {
+            Success = true,
+            FinalOutputPath = "final.mp4",
+            StagingPath = "stage.partial",
+            StagedValidationResult = staged,
+            PromotedValidationResult = staged
+        };
+        var failed = new EncodeFinalizationResult
+        {
+            Success = false,
+            FailureKind = EncodeFinalizationFailureKind.Validation,
+            ErrorMessage = "duration differs",
+            StagingPath = "stage.partial",
+            StagedValidationResult = new EncodeOutputValidationResult { Success = false, ErrorMessage = "duration differs" }
+        };
+
+        Assert.Equal(EncodingLifecycleStatus.Passed, EncodingPlanService.DescribeValidationOutcome(completed).Status);
+        Assert.Equal(EncodingLifecycleStatus.Passed, EncodingPlanService.DescribeFinalizationOutcome(completed).Status);
+        EncodingValidationOutcome validation = EncodingPlanService.DescribeValidationOutcome(failed);
+        Assert.Equal(EncodingLifecycleStatus.Failed, validation.Status);
+        Assert.Equal("Validation", validation.FailureCategory);
+        Assert.Equal(EncodingSourceDisposition.Retained, EncodingPlanService.DescribeFinalizationOutcome(failed).SourceDisposition);
+    }
+
+    [Fact]
+    public void CompletedLifecycleWithOmittedRequiredValidationIsDiagnosticOnlyDivergence()
+    {
+        EncodingPlan plan = EncodingPlanService.Create(Context(
+            OutputContainerSelection.Mp4,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 }));
+        var outcome = new EncodingExecutionOutcome(plan.PlanId, Array.Empty<EncodingPreflightOutcome>(),
+            Array.Empty<EncodingRecoveryOutcome>(), TerminalResult: EncodingTerminalResult.Completed);
+
+        IReadOnlyList<EncodingPlanDivergence> divergences = EncodingPlanService.CompareLifecycle(plan, outcome);
+        Assert.Contains(divergences, divergence => divergence.Decision == "validation-lifecycle");
+        Assert.Contains(divergences, divergence => divergence.Decision == "finalization-lifecycle");
+    }
+
+    [Fact]
     public void ExecutionValuesComeFromFrozenPlanAndMatchLegacyPolicy()
     {
         EncodingDecisionContext context = Context(

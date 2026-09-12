@@ -730,10 +730,14 @@ namespace MediaFlux.Services
                     inputSource.Kind == EncodingInputKind.File ? "Existing source timing analysis passed." : "Not applicable to this input source.")
             };
             var recoveryOutcomes = new List<EncodingRecoveryOutcome>();
+            EncodingValidationOutcome? validationOutcome = null;
+            EncodingFinalizationOutcome? finalizationOutcome = null;
+            EncodingTerminalResult terminalResult = EncodingTerminalResult.NotRun;
             void PublishExecutionOutcome()
             {
                 encodingExecutionOutcomeCallback?.Invoke(new EncodingExecutionOutcome(
-                    shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray()));
+                    shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(),
+                    validationOutcome, finalizationOutcome, terminalResult));
             }
             void RecordRecovery(EncodingRecoveryKind kind, EncodingRecoveryFailureClass failureClass,
                 EncodingRecoveryMode recoveryMode, int maximumAttempts, EncodingRecoveryResult result, string detail)
@@ -746,7 +750,7 @@ namespace MediaFlux.Services
                 }
                 recoveryOutcomes.Add(new EncodingRecoveryOutcome(kind, failureClass,
                     EncodingRecoveryMode.Strict, recoveryMode, 1, maximumAttempts, result, detail));
-                EncodingExecutionOutcome outcome = new(shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray());
+                EncodingExecutionOutcome outcome = new(shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult);
                 _log?.Invoke(EncodingPlanService.DescribeRecovery(outcome));
                 encodingExecutionOutcomeCallback?.Invoke(outcome);
             }
@@ -1350,8 +1354,15 @@ namespace MediaFlux.Services
                     },
                     finalizationStatusCallback,
                     cancellationToken).ConfigureAwait(false);
+            validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+            finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+            PublishExecutionOutcome();
             if (!finalization.Success)
             {
+                terminalResult = finalization.FailureKind == EncodeFinalizationFailureKind.Validation
+                    ? EncodingTerminalResult.ValidationFailed
+                    : EncodingTerminalResult.FinalizationFailed;
+                PublishExecutionOutcome();
                 FfmpegSourceDecodeCorruption sourceDecodeCorruption =
                     FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
                 if (finalization.FailureKind == EncodeFinalizationFailureKind.Validation &&
@@ -1366,8 +1377,13 @@ namespace MediaFlux.Services
                         ErrorMessage = "Output validation rejected substantial missing video frames. FFmpeg also reported source H.264 bitstream/decode failures, so the source video contains undecodable or corrupt data; MediaFlux did not finalize the output.",
                         FinalOutputPath = finalization.FinalOutputPath,
                         StagingPath = finalization.StagingPath,
-                        RecoverableOutputPath = finalization.RecoverableOutputPath
+                        RecoverableOutputPath = finalization.RecoverableOutputPath,
+                        StagedValidationResult = finalization.StagedValidationResult,
+                        PromotedValidationResult = finalization.PromotedValidationResult
                     };
+                    validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                    finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                    PublishExecutionOutcome();
                 }
                 _log?.Invoke(
                     $"[EncodingService] Finalization failed: {finalization.ErrorMessage}");
@@ -1376,6 +1392,18 @@ namespace MediaFlux.Services
 
             _log?.Invoke(
                 $"[EncodingService] Validated and finalized '{finalization.FinalOutputPath}'.");
+            terminalResult = recoveryOutcomes.Any(outcome => outcome.Result == EncodingRecoveryResult.Succeeded)
+                ? EncodingTerminalResult.CompletedAfterRecovery
+                : EncodingTerminalResult.Completed;
+            PublishExecutionOutcome();
+            EncodingExecutionOutcome completedOutcome = new(
+                shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult);
+            foreach (EncodingPlanDivergence divergence in EncodingPlanService.CompareLifecycle(shadowPlan, completedOutcome))
+            {
+                _log?.Invoke($"[EncodingPlan] Shadow divergence: {divergence}");
+                encodingPlanDivergenceCallback?.Invoke(divergence);
+            }
+            _log?.Invoke(EncodingPlanService.DescribeLifecycle(completedOutcome));
             using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.TemporaryFileCleanup))
             { if (aiIntermediate is not null) { aiIntermediate.Dispose(); scope.Complete(); } }
             performance.LogSummary(_log);

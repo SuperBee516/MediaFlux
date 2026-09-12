@@ -134,6 +134,8 @@ public static class EncodingPlanService
                 new(EncodingPreflightCheckKind.SampleComparison, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison ? EncodingPreflightDisposition.Required : EncodingPreflightDisposition.NotRequired, "Sample comparison retains its existing independent command and failure semantics.")
             ]),
             RecoveryCapabilities = new EncodingPlanRecoveryCapabilities(recoveryCapabilities),
+            ValidationIntent = new EncodingValidationIntent(true, true, true, true, true, true, true, context.ValidationProfile.ToString()),
+            FinalizationIntent = new EncodingFinalizationIntent(true, true, true, true, "Collision-safe, no-overwrite promotion"),
             Validation = new EncodingPlanValidation(context.ValidationProfile.ToString(), true, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison),
             Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio),
             Risks = risks,
@@ -192,6 +194,41 @@ public static class EncodingPlanService
                 $"Type={item.Kind}; Failure={item.FailureClass}; InitialMode={item.InitialMode}; RecoveryMode={item.RecoveryMode}; Attempt={item.Attempt}/{item.MaximumAttempts}; Result={item.Result}"));
         return $"[EncodingRecovery] PlanId={outcome.PlanId}; {recovery}";
     }
+
+    internal static EncodingValidationOutcome DescribeValidationOutcome(EncodeFinalizationResult result)
+    {
+        EncodeOutputValidationResult? staged = result.StagedValidationResult;
+        EncodingLifecycleStatus status = staged is null ? EncodingLifecycleStatus.NotRun : staged.Success ? EncodingLifecycleStatus.Passed : EncodingLifecycleStatus.Failed;
+        EncodingLifecycleStatus component = status == EncodingLifecycleStatus.Passed ? EncodingLifecycleStatus.Passed : status;
+        return new EncodingValidationOutcome(status, component, component, component, component, component,
+            result.StagingPath, result.FailureKind == EncodeFinalizationFailureKind.Validation ? "Validation" : "", staged?.ErrorMessage ?? result.ErrorMessage);
+    }
+
+    internal static EncodingFinalizationOutcome DescribeFinalizationOutcome(EncodeFinalizationResult result) =>
+        new(result.Success ? EncodingLifecycleStatus.Passed : EncodingLifecycleStatus.Failed,
+            result.StagedValidationResult?.Success,
+            result.FinalOutputPath,
+            result.Success ? EncodingSourceDisposition.DeferredToCaller : EncodingSourceDisposition.Retained,
+            result.Success ? "Promoted" : string.IsNullOrWhiteSpace(result.RecoverableOutputPath) ? "RetainedOrUnavailable" : "Recoverable",
+            result.FailureKind.ToString(), result.ErrorMessage);
+
+    internal static IReadOnlyList<EncodingPlanDivergence> CompareLifecycle(
+        EncodingPlan plan, EncodingExecutionOutcome outcome)
+    {
+        var divergences = new List<EncodingPlanDivergence>();
+        if (outcome.TerminalResult is EncodingTerminalResult.Completed or EncodingTerminalResult.CompletedAfterRecovery)
+        {
+            if (plan.ValidationIntent?.StagedOutputRequired == true && outcome.Validation?.Status != EncodingLifecycleStatus.Passed)
+                divergences.Add(new("validation-lifecycle", "staged validation required", outcome.Validation?.Status.ToString() ?? "NotRun"));
+            if (plan.FinalizationIntent?.PromoteOnlyAfterValidation == true && outcome.Finalization?.Status != EncodingLifecycleStatus.Passed)
+                divergences.Add(new("finalization-lifecycle", "validated promotion required", outcome.Finalization?.Status.ToString() ?? "NotRun"));
+        }
+        return divergences;
+    }
+
+    public static string DescribeLifecycle(EncodingExecutionOutcome outcome) =>
+        $"[EncodingResult] PlanId={outcome.PlanId}; Validation={outcome.Validation?.Status.ToString() ?? "NotRun"}; " +
+        $"Finalization={outcome.Finalization?.Status.ToString() ?? "NotRun"}; TerminalResult={outcome.TerminalResult}.";
 
     private static void CompareStreamActions(
         IReadOnlyList<EncodingPlanStream> planned,

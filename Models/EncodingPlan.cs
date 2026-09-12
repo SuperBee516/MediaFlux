@@ -14,6 +14,9 @@ public enum EncodingRecoveryKind { VideoDecode, AudioStream, HardwareDecode, Gpu
 public enum EncodingRecoveryFailureClass { SourceVideoCorruption, SourceAudioCorruption, NvdecCudaFailure, GpuFramePipelineFailure, Cancellation, StorageFailure, NvencFailure, SourceTruncation, Unknown }
 public enum EncodingRecoveryMode { Strict, Tolerant, AudioTranscode, SoftwareDecodeWithNvenc, SoftwareFrames }
 public enum EncodingRecoveryResult { NotAttempted, Succeeded, Failed, NotStarted }
+public enum EncodingLifecycleStatus { NotRequired, NotRun, Passed, Failed, Skipped, Canceled }
+public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, PreflightRejected, EncodeFailed, RecoveryFailed, ValidationFailed, FinalizationFailed, Canceled }
+public enum EncodingSourceDisposition { Retained, DeferredToCaller, NotReached }
 
 public sealed record EncodingDecisionReason(EncodingDecisionReasonCode Code, string Description);
 public sealed record EncodingRisk(EncodingRiskSeverity Severity, EncodingRiskCategory Category, string Code, string Description);
@@ -44,6 +47,8 @@ public sealed record EncodingRecoveryCapability(
     int MaximumAttempts, IReadOnlyList<EncodingRecoveryFailureClass> EligibleFailureClasses,
     IReadOnlyList<EncodingRecoveryFailureClass> NonEligibleFailureClasses, string Reason);
 public sealed record EncodingPlanRecoveryCapabilities(IReadOnlyList<EncodingRecoveryCapability> Items);
+public sealed record EncodingValidationIntent(bool StagedOutputRequired, bool OutputProbeRequired, bool DurationRequired, bool StreamValidationRequired, bool ContainerValidationRequired, bool IntegrityRequired, bool PromotedOutputVerificationRequired, string Profile);
+public sealed record EncodingFinalizationIntent(bool UsesStagedOutput, bool PromoteOnlyAfterValidation, bool VerifyPromotedOutput, bool RetainSourceUntilSuccess, string CollisionPolicy);
 public sealed record EncodingPlanValidation(string Profile, bool OutputValidation, bool SampleComparison);
 public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio);
 
@@ -65,6 +70,8 @@ public sealed class EncodingPlan
     public EncodingPlanRecovery? Recovery { get; init; }
     public EncodingPlanPreflight? Preflight { get; init; }
     public EncodingPlanRecoveryCapabilities? RecoveryCapabilities { get; init; }
+    public EncodingValidationIntent? ValidationIntent { get; init; }
+    public EncodingFinalizationIntent? FinalizationIntent { get; init; }
     public EncodingPlanValidation? Validation { get; init; }
     public EncodingPlanEstimates Estimates { get; init; } = new(null, null, null);
     public IReadOnlyList<EncodingRisk> Risks { get; init; } = Array.Empty<EncodingRisk>();
@@ -94,4 +101,16 @@ public sealed record EncodingRecoveryOutcome(
     int Attempt, int MaximumAttempts, EncodingRecoveryResult Result, string Detail = "");
 public sealed record EncodingExecutionOutcome(
     Guid PlanId, IReadOnlyList<EncodingPreflightOutcome> Preflight,
-    IReadOnlyList<EncodingRecoveryOutcome> Recovery);
+    IReadOnlyList<EncodingRecoveryOutcome> Recovery,
+    EncodingValidationOutcome? Validation = null,
+    EncodingFinalizationOutcome? Finalization = null,
+    EncodingTerminalResult TerminalResult = EncodingTerminalResult.NotRun);
+public sealed record EncodingValidationOutcome(
+    EncodingLifecycleStatus Status, EncodingLifecycleStatus OutputProbe,
+    EncodingLifecycleStatus Duration, EncodingLifecycleStatus Streams,
+    EncodingLifecycleStatus Container, EncodingLifecycleStatus Integrity,
+    string StagingPath = "", string FailureCategory = "", string Detail = "");
+public sealed record EncodingFinalizationOutcome(
+    EncodingLifecycleStatus Status, bool? StagedOutputAccepted,
+    string FinalOutputPath, EncodingSourceDisposition SourceDisposition,
+    string StagedOutputDisposition, string FailureCategory = "", string Detail = "");
