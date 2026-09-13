@@ -219,12 +219,9 @@ namespace MediaFlux.Services
         {
             if (request.KnownDuration <= TimeSpan.Zero)
             {
-                _log?.Invoke(
-                    "[EncodingService] Target-size bitrate budgeting skipped " +
-                    "because input duration could not be determined; using " +
-                    "quality-based encoding instead.");
-                provider.AppendQualityArguments(builder, context);
-                return;
+                throw new InvalidOperationException(
+                    "MediaFlux cannot honor a target-size encode because the " +
+                    "source duration could not be determined.");
             }
 
             double seconds = request.KnownDuration.TotalSeconds;

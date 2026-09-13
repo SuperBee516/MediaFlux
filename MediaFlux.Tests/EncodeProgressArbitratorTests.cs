@@ -6,6 +6,24 @@ namespace MediaFlux.Tests;
 public sealed class EncodeProgressArbitratorTests
 {
     [Fact]
+    public void RetryProgressResetsOnceAndRejectsDelayedPriorAttempt()
+    {
+        var tracker = new EncodeProgressAttemptTracker();
+
+        Assert.Equal(
+            EncodeProgressAttemptDisposition.AcceptAndReset,
+            tracker.Observe(1));
+        Assert.Equal(EncodeProgressAttemptDisposition.Accept, tracker.Observe(1));
+        Assert.Equal(
+            EncodeProgressAttemptDisposition.AcceptAndReset,
+            tracker.Observe(2));
+        Assert.Equal(
+            EncodeProgressAttemptDisposition.IgnoreStale,
+            tracker.Observe(1));
+        Assert.Equal(2, tracker.CurrentAttempt);
+    }
+
+    [Fact]
     public void AdvancingTimestampRemainsPrimary()
     {
         var tracker = new EncodeProgressArbitrator(TimeSpan.FromSeconds(100), 1000, 10, true);

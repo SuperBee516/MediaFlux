@@ -20,6 +20,7 @@ namespace MediaFlux
             public bool HasData { get; set; }
             public long LastFrame { get; set; }
             public DateTime LastFrameUtc { get; set; }
+            public EncodeProgressAttemptTracker AttemptTracker { get; } = new();
         }
 
         private readonly Dictionary<DataGridViewRow, EncodeMetrics> _activeEncodeMetrics = new();
@@ -377,6 +378,27 @@ namespace MediaFlux
             if (row == null || row.DataGridView != dgvEncodeQueue)
                 return;
 
+            if (!_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? attemptMetrics))
+                attemptMetrics = new EncodeMetrics();
+            EncodeProgressAttemptDisposition attemptDisposition =
+                attemptMetrics.AttemptTracker.Observe(progress.Attempt);
+            if (attemptDisposition == EncodeProgressAttemptDisposition.IgnoreStale)
+                return;
+            if (attemptDisposition == EncodeProgressAttemptDisposition.AcceptAndReset)
+            {
+                attemptMetrics.Fps = 0;
+                attemptMetrics.SizeKiB = 0;
+                attemptMetrics.Bitrate = 0;
+                attemptMetrics.Speed = 0;
+                attemptMetrics.TimeStr = "--";
+                attemptMetrics.HasData = false;
+                attemptMetrics.LastFrame = 0;
+                attemptMetrics.LastFrameUtc = default;
+                _activeEncodeMetrics[row] = attemptMetrics;
+                row.Cells["colProgress"].Value = "0%";
+                row.Cells["colETA"].Value = "--:--:--";
+            }
+
             string existingText = row.Cells["colProgress"].Value?.ToString() ?? "";
             int existingPercent = int.TryParse(existingText.TrimEnd('%'), out int parsedPercent)
                 ? parsedPercent
@@ -386,7 +408,7 @@ namespace MediaFlux
             if (progress.EncodedFrames is long frame)
             {
                 if (!_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? metrics))
-                    metrics = new EncodeMetrics();
+                    metrics = attemptMetrics;
                 DateTime now = DateTime.UtcNow;
                 if (metrics.LastFrame > 0 && frame > metrics.LastFrame)
                 {

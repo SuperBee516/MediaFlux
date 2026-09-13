@@ -568,11 +568,13 @@ namespace MediaFlux
             string targetText = hasCustomProfile
                 ? string.Empty
                 : UiGet(() => txtTargetSize.Text, string.Empty);
-            double manualTargetMb = 0;
-            bool hasManualTarget =
-                !hasCustomProfile &&
-                double.TryParse(targetText, out manualTargetMb) &&
-                manualTargetMb > 0;
+            bool autoTargetSize = !hasCustomProfile &&
+                UiGet(() => chkAutoTargetSize.Checked, false);
+            double? configuredManualTargetMb =
+                EncodingTargetSizeResolver.ResolveConfiguredManualTargetMb(
+                    autoTargetSize,
+                    targetText);
+            bool hasManualTarget = configuredManualTargetMb is > 0;
             bool storageSavingsApplies =
                 storageSavings.Enabled &&
                 SizeEstimateService.IsHevcCodec(videoCodec) &&
@@ -623,7 +625,7 @@ namespace MediaFlux
                 // Manual override from UI?
                 if (hasManualTarget)
                 {
-                    targetMb = manualTargetMb;
+                    targetMb = configuredManualTargetMb;
                 }
                 else if (useStorageQualityTarget)
                 {

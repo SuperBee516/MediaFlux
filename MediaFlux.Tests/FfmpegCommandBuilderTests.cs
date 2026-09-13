@@ -690,6 +690,39 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void TargetSizeDoesNotSilentlyFallBackToQualityWhenDurationIsUnknown()
+    {
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            targetMb: 700,
+            knownDuration: TimeSpan.Zero);
+
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            () => CreateBuilder().Build(request));
+
+        Assert.Contains("target-size encode", error.Message);
+        Assert.Contains("duration", error.Message);
+    }
+
+    [Theory]
+    [InlineData("h264_nvenc")]
+    [InlineData("hevc_nvenc")]
+    public void NvencTargetSizeUsesBitrateBudgetWithoutConstantQualityOverride(
+        string codec)
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            codec,
+            useGpu: true,
+            targetMb: 100,
+            knownDuration: TimeSpan.FromSeconds(100),
+            knownAudioBitrateKbps: 160));
+
+        Assert.Contains("-b:v 7950k -maxrate 8586k -bufsize 11130k -rc vbr ", arguments);
+        Assert.DoesNotContain("-cq ", arguments);
+    }
+
+    [Fact]
     public void Libx265RetainsSharedAudioAndSubtitleHandling()
     {
         FfmpegCommandRequest request = CreateRequest(
@@ -731,7 +764,7 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
-    public void UnknownDurationRetainsQualityFallback()
+    public void UnknownDurationRejectsTargetSizeInsteadOfUsingQualityFallback()
     {
         var log = new List<string>();
         FfmpegCommandRequest request = CreateRequest(
@@ -744,14 +777,11 @@ public sealed class FfmpegCommandBuilderTests
             _ => 160,
             log.Add);
 
-        string arguments = builder.Build(request);
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            () => builder.Build(request));
 
-        Assert.Contains("-c:v libx265 -crf 24 -preset slow ", arguments);
-        Assert.Contains(
-            log,
-            message => message.Contains(
-                "using quality-based encoding instead",
-                StringComparison.Ordinal));
+        Assert.Contains("target-size encode", error.Message);
+        Assert.Empty(log);
     }
 
     [Fact]

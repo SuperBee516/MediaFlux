@@ -334,6 +334,7 @@ namespace MediaFlux.Services
                 : Math.Clamp(quality, 0, 51);
             double targetVideoKbps;
             string mode;
+            bool usesSourceVideoBitrateFloor = false;
             if (storageSavingsApplies && !savings.UsesQualityTarget)
             {
                 targetVideoKbps =
@@ -359,6 +360,25 @@ namespace MediaFlux.Services
                 mode = storageSavingsApplies && savings.UsesQualityTarget
                     ? $"storage quality target {effectiveQuality} (CQ/CRF/ICQ)"
                     : $"conservative profile {compressionProfile}, quality {effectiveQuality}";
+
+                // A same-generation re-encode of an already efficient codec has
+                // no source-quality evidence that supports promising a lower
+                // bitrate. Retain the observed source-video bitrate as the Auto
+                // quality floor; manual targets and explicit storage policies
+                // intentionally bypass this recommendation-only safeguard.
+                if (UsesSameEfficientCodecQualityFloor(
+                        sourceCodec,
+                        targetCodec,
+                        width,
+                        height,
+                        outputWidth,
+                        outputHeight) &&
+                    targetVideoKbps < sourceVideoKbps)
+                {
+                    targetVideoKbps = sourceVideoKbps;
+                    usesSourceVideoBitrateFloor = true;
+                    mode += "; retained source-video bitrate for equivalent-codec quality protection";
+                }
             }
 
             double plannedMappedKbps = plannedAudioKbps + mappedAncillaryKbps;
@@ -399,6 +419,7 @@ namespace MediaFlux.Services
                 TargetVideoBitrateKbps = targetVideoKbps,
                 TargetTotalBitrateKbps = targetTotalKbps,
                 UsedMeasuredVideoBitrate = usedMeasuredVideoBitrate,
+                UsesSourceVideoBitrateFloor = usesSourceVideoBitrateFloor,
                 UsesStorageQualityTarget =
                     storageSavingsApplies && savings.UsesQualityTarget,
                 Diagnostic = diagnostic
@@ -500,6 +521,23 @@ namespace MediaFlux.Services
             return value.Contains("265", StringComparison.OrdinalIgnoreCase) ||
                    value.Contains("hevc", StringComparison.OrdinalIgnoreCase);
         }
+
+        private static bool UsesSameEfficientCodecQualityFloor(
+            string? sourceCodec,
+            string targetCodec,
+            int sourceWidth,
+            int sourceHeight,
+            int outputWidth,
+            int outputHeight)
+        {
+            if (sourceWidth != outputWidth || sourceHeight != outputHeight)
+                return false;
+
+            double sourceBpp = GetCodecBpp(sourceCodec);
+            double targetBpp = GetCodecBpp(targetCodec);
+            return sourceBpp is > 0 and <= 0.055 &&
+                   Math.Abs(sourceBpp - targetBpp) < 0.000001;
+        }
     }
 
     internal sealed class SizeEstimateBreakdown
@@ -514,6 +552,7 @@ namespace MediaFlux.Services
         public double TargetVideoBitrateKbps { get; init; }
         public double TargetTotalBitrateKbps { get; init; }
         public bool UsedMeasuredVideoBitrate { get; init; }
+        public bool UsesSourceVideoBitrateFloor { get; init; }
         public bool UsesStorageQualityTarget { get; init; }
         public string Diagnostic { get; init; } = "Required metadata is unavailable.";
     }

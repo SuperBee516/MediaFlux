@@ -94,8 +94,7 @@ namespace MediaFlux
             }
 
             cell.Value = recommendation?.DisplayName ?? "Unavailable";
-            cell.ToolTipText = recommendation?.BuildTooltip() ??
-                "Required media metadata could not be analyzed.";
+            cell.ToolTipText = GetQueueAnalysisPresentation(row, meta).BuildTooltip();
             ApplyRecommendationCellStyle(cell, recommendation?.Kind);
             if (row.Selected || dgvEncodeQueue.CurrentRow == row)
                 UpdateEncodePreview();

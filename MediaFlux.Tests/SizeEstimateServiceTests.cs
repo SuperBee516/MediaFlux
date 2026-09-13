@@ -5,6 +5,17 @@ namespace MediaFlux.Tests;
 
 public sealed class SizeEstimateServiceTests
 {
+    [Fact]
+    public void AutoModeIgnoresDormantManualTargetUntilAutoIsDisabled()
+    {
+        Assert.Null(EncodingTargetSizeResolver.ResolveConfiguredManualTargetMb(
+            autoTargetSize: true,
+            configuredManualTarget: "700"));
+        Assert.Equal(700, EncodingTargetSizeResolver.ResolveConfiguredManualTargetMb(
+            autoTargetSize: false,
+            configuredManualTarget: "700"));
+    }
+
     [Theory]
     [InlineData(true, 0, true)]
     [InlineData(false, 0, true)]
@@ -204,6 +215,63 @@ public sealed class SizeEstimateServiceTests
             (sourceMb - estimate.EstimatedOutputMb) / sourceMb * 100d;
         Assert.InRange(savingsPercent, 40, 60);
         Assert.Equal(videoKbps, estimate.SourceVideoBitrateKbps, precision: 0);
+    }
+
+    [Fact]
+    public void EquivalentHevcAutoEstimateRetainsObservedVideoBitrateInsteadOfPromisingLargeSavings()
+    {
+        const double durationSeconds = 3_600;
+        const int videoKbps = 4_300;
+        const int audioKbps = 192;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+
+        SizeEstimateBreakdown estimate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                sourceMb,
+                durationSeconds,
+                width: 1920,
+                height: 1080,
+                fps: 24,
+                sourceVideoBitrateKbps: videoKbps,
+                sourceCodec: "hevc",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: audioKbps,
+                sourceAudioStreamCount: 1);
+
+        Assert.True(estimate.UsesSourceVideoBitrateFloor);
+        Assert.Equal(videoKbps, estimate.TargetVideoBitrateKbps, precision: 0);
+        Assert.True(estimate.EstimatedOutputMb >= sourceMb);
+        Assert.Contains("equivalent-codec quality protection", estimate.Diagnostic);
+    }
+
+    [Fact]
+    public void EquivalentHevcEstimateCanReportGrowthWhenQualityFloorExceedsSourceTotal()
+    {
+        const double durationSeconds = 3_600;
+        const int videoKbps = 1_500;
+        const int audioKbps = 192;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+
+        SizeEstimateBreakdown estimate =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                sourceMb,
+                durationSeconds,
+                width: 1920,
+                height: 1080,
+                fps: 60,
+                sourceVideoBitrateKbps: videoKbps,
+                sourceCodec: "hevc",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: audioKbps,
+                sourceAudioStreamCount: 1);
+
+        Assert.True(estimate.EstimatedOutputMb >= sourceMb);
     }
 
     [Fact]

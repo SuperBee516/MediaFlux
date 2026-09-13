@@ -42,19 +42,7 @@ namespace MediaFlux.Models
 
         public string BuildTooltip()
         {
-            var lines = new List<string> { DisplayName };
-            if (EstimatedSavingsPercent.HasValue && EstimatedSavingsMb.HasValue)
-            {
-                lines.Add(
-                    $"Estimated saving: {EstimatedSavingsPercent.Value:0.#}% " +
-                    $"({EstimatedSavingsMb.Value:0.#} MB)");
-            }
-
-            lines.Add($"Confidence: {Confidence}");
-            foreach (string reason in Reasons.Where(reason => !string.IsNullOrWhiteSpace(reason)))
-                lines.Add($"• {reason}");
-
-            return string.Join(Environment.NewLine, lines);
+            return QueueAnalysisPresentation.Create(this).BuildTooltip();
         }
     }
 

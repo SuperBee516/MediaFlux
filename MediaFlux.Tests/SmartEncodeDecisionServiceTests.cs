@@ -167,6 +167,17 @@ public sealed class SmartEncodeDecisionServiceTests
     }
 
     [Fact]
+    public void EquivalentHevcQualityFloorThatDoesNotSaveSpaceIsSkipped()
+    {
+        SmartEncodeRecommendation result = Evaluate(
+            DefaultSource(videoCodec: "hevc"),
+            DefaultIntent(estimatedOutputMb: 1_005, targetCodec: "hevc_nvenc"));
+
+        Assert.Equal(SmartEncodeRecommendationKind.Skip, result.Kind);
+        Assert.Contains("not expected to reduce", result.PrimaryReason);
+    }
+
+    [Fact]
     public void LikelyAnimationRequiresProfileReview()
     {
         SmartEncodeRecommendation result = Evaluate(

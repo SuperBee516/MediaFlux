@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-09-13
+
+### Encoding Reliability
+
+- Improved target-size accuracy and Auto/manual target handling.
+- Target-size jobs now report clearly when source duration is unavailable instead of silently switching to quality-based encoding.
+- Improved Auto sizing decisions for already-efficient HEVC sources.
+- Improved progress and ETA reliability across recovery retries.
+
+### Queue Analysis
+
+- Added persistent Queue Analysis details to the Encoding Plan view.
+- Improved savings/increase wording and recommendation explanations.
+
 ## [1.4.1] - 2026-09-12
 
 ### Compare Samples

@@ -8,6 +8,10 @@ public partial class MainForm
 {
     private Label? _encodingPlanStatusLabel;
     private TableLayoutPanel? _encodingPlanTable;
+    private Label? _queueAnalysisStatusLabel;
+    private TableLayoutPanel? _queueAnalysisTable;
+    private DataGridViewRow? _renderedQueueAnalysisRow;
+    private string? _renderedQueueAnalysisTooltip;
     private DataGridViewRow? _renderedIntelligenceRow;
     private EncodingIntelligencePresentation.PresentationKey? _renderedIntelligenceKey;
     private Guid? _renderedPlanId;
@@ -31,14 +35,31 @@ public partial class MainForm
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 6,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
             BackColor = Color.White
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int index = 0; index < 6; index++)
+            content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        content.Controls.Add(CreateEncodingPlanHeader("QUEUE ANALYSIS"), 0, 0);
+
+        _queueAnalysisStatusLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(900, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(0, 0, 0, 4),
+            Text = "Select a queue item to view its queue analysis."
+        };
+        content.Controls.Add(_queueAnalysisStatusLabel, 0, 1);
+
+        _queueAnalysisTable = CreateEncodingPlanTable();
+        content.Controls.Add(_queueAnalysisTable, 0, 2);
+
+        content.Controls.Add(CreateEncodingPlanHeader("ENCODING PLAN"), 0, 3);
 
         _encodingPlanStatusLabel = new Label
         {
@@ -48,29 +69,44 @@ public partial class MainForm
             Margin = new Padding(0, 0, 0, 8),
             Text = "Select a queue item to view Encoding Intelligence."
         };
-        content.Controls.Add(_encodingPlanStatusLabel, 0, 0);
+        content.Controls.Add(_encodingPlanStatusLabel, 0, 4);
 
-        _encodingPlanTable = new TableLayoutPanel
+        _encodingPlanTable = CreateEncodingPlanTable();
+        content.Controls.Add(_encodingPlanTable, 0, 5);
+
+        group.Controls.Add(content);
+        return group;
+    }
+
+    private static Label CreateEncodingPlanHeader(string text) => new()
+    {
+        AutoSize = true,
+        Text = text,
+        ForeColor = Color.FromArgb(31, 88, 166),
+        Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold),
+        Margin = new Padding(0, 1, 0, 3)
+    };
+
+    private static TableLayoutPanel CreateEncodingPlanTable()
+    {
+        var table = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
             RowCount = 0,
-            Margin = Padding.Empty,
+            Margin = new Padding(0, 0, 0, 7),
             Padding = Padding.Empty,
             BackColor = Color.White
         };
-        _encodingPlanTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        content.Controls.Add(_encodingPlanTable, 0, 1);
-
-        group.Controls.Add(content);
-        return group;
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        return table;
     }
 
     private void ScheduleEncodingPlanRefresh()
     {
-        if (_encodingPlanTable == null || IsDisposed)
+        if (_encodingPlanTable == null || _queueAnalysisTable == null || IsDisposed)
             return;
         DataGridViewRow[] rows = dgvEncodeQueue.SelectedRows
             .Cast<DataGridViewRow>()
@@ -78,6 +114,9 @@ public partial class MainForm
             .ToArray();
         if (rows.Length != 1)
         {
+            RenderQueueAnalysis(null, null, rows.Length == 0
+                ? "Select a queue item to view its queue analysis."
+                : "Select one queue item at a time to view queue analysis.");
             RenderEncodingPlanStatus(rows.Length == 0
                 ? "Select a queue item to view Encoding Intelligence."
                 : "Select one queue item at a time to view Encoding Intelligence.");
@@ -85,14 +124,107 @@ public partial class MainForm
         }
 
         RowMeta meta = EnsureRowMeta(rows[0]);
+        RenderQueueAnalysis(rows[0], meta, null);
         if (meta.IntelligencePlan == null)
         {
-            if (ReferenceEquals(_renderedIntelligenceRow, rows[0]) && _renderedIntelligenceKey != null)
-                return;
             RenderEncodingPlanStatus("Encoding Intelligence will appear when the existing encode preflight publishes its plan.");
             return;
         }
         RenderEncodingPlan(meta.IntelligencePlan, meta.IntelligenceOutcome, rows[0]);
+    }
+
+    private void RenderQueueAnalysis(DataGridViewRow? row, RowMeta? meta, string? emptyStatus)
+    {
+        if (_queueAnalysisStatusLabel == null || _queueAnalysisTable == null)
+            return;
+
+        if (row == null || meta == null)
+        {
+            _queueAnalysisStatusLabel.Text = emptyStatus ?? "Select a queue item to view its queue analysis.";
+            _renderedQueueAnalysisRow = null;
+            _renderedQueueAnalysisTooltip = null;
+            ClearEncodingPlanRows(_queueAnalysisTable);
+            return;
+        }
+
+        QueueAnalysisPresentation presentation = GetQueueAnalysisPresentation(row, meta);
+        string tooltip = presentation.BuildTooltip();
+        if (ReferenceEquals(_renderedQueueAnalysisRow, row) &&
+            string.Equals(_renderedQueueAnalysisTooltip, tooltip, StringComparison.Ordinal))
+            return;
+
+        _renderedQueueAnalysisRow = row;
+        _renderedQueueAnalysisTooltip = tooltip;
+        _queueAnalysisStatusLabel.Text = presentation.IsAvailable ? string.Empty : presentation.Status;
+        ClearEncodingPlanRows(_queueAnalysisTable);
+        if (!presentation.IsAvailable)
+            return;
+
+        AddQueueAnalysisItem("Recommendation", presentation.Recommendation!);
+        if (presentation.Confidence != null)
+            AddQueueAnalysisItem("Confidence", presentation.Confidence);
+        if (presentation.EstimatedResult != null)
+            AddQueueAnalysisItem("Estimated result", presentation.EstimatedResult);
+        if (presentation.SavingsLabel != null && presentation.SavingsValue != null)
+            AddQueueAnalysisItem(presentation.SavingsLabel, presentation.SavingsValue);
+        if (presentation.Reasons.Count > 0)
+            AddQueueAnalysisSection("Why", presentation.Reasons);
+    }
+
+    private QueueAnalysisPresentation GetQueueAnalysisPresentation(
+        DataGridViewRow row,
+        RowMeta meta)
+    {
+        string path = GetFullPathFromRow(row) ?? meta.Path;
+        double sourceMb = meta.SrcMb;
+        if (sourceMb <= 0)
+            _queueSourceSizeMap.TryGetValue(path, out sourceMb);
+        _estimatedSizeMap.TryGetValue(path, out double estimatedOutputMb);
+        return QueueAnalysisPresentation.Create(
+            meta.EncodeRecommendation,
+            sourceMb,
+            estimatedOutputMb);
+    }
+
+    private void AddQueueAnalysisSection(string title, IReadOnlyList<string> reasons)
+    {
+        if (_queueAnalysisTable == null)
+            return;
+
+        int headerRow = _queueAnalysisTable.RowCount++;
+        _queueAnalysisTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _queueAnalysisTable.Controls.Add(CreateEncodingPlanHeader(title.ToUpperInvariant()), 0, headerRow);
+        foreach (string reason in reasons)
+            AddQueueAnalysisItem("•", reason);
+    }
+
+    private void AddQueueAnalysisItem(string label, string value)
+    {
+        if (_queueAnalysisTable == null)
+            return;
+
+        int row = _queueAnalysisTable.RowCount++;
+        _queueAnalysisTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            Margin = new Padding(0, 0, 0, 3),
+            Padding = new Padding(7, 3, 7, 3),
+            BackColor = Color.FromArgb(248, 249, 251)
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, label == "•" ? 18F : 112F));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        var caption = CreateInfoCaption(label == "•" ? label : label.ToUpperInvariant());
+        caption.Anchor = AnchorStyles.Left;
+        panel.Controls.Add(caption, 0, 0);
+        var text = CreateInfoValue(value, bold: label != "•");
+        text.AutoSize = true;
+        text.MaximumSize = new Size(760, 0);
+        panel.Controls.Add(text, 1, 0);
+        _queueAnalysisTable.Controls.Add(panel, 0, row);
     }
 
     private void RenderEncodingPlanStatus(string text)
@@ -106,7 +238,7 @@ public partial class MainForm
         _renderedIntelligenceKey = null;
         _renderedPlanId = null;
         _dynamicIntelligenceValues.Clear();
-        ClearEncodingPlanRows();
+        ClearEncodingPlanRows(_encodingPlanTable);
     }
 
     private void RenderEncodingPlanUnavailable(string text)
@@ -150,7 +282,7 @@ public partial class MainForm
             : plan.UnavailableReason;
         if (!string.Equals(_encodingPlanStatusLabel.Text, status, StringComparison.Ordinal))
             _encodingPlanStatusLabel.Text = status;
-        ClearEncodingPlanRows();
+        ClearEncodingPlanRows(_encodingPlanTable);
 
         if (!plan.IsAvailable)
             return;
@@ -260,21 +392,21 @@ public partial class MainForm
         _encodingPlanTable.Controls.Add(panel, 0, row);
     }
 
-    private void ClearEncodingPlanRows()
+    private static void ClearEncodingPlanRows(TableLayoutPanel? table)
     {
-        if (_encodingPlanTable == null)
+        if (table == null)
             return;
 
-        _encodingPlanTable.SuspendLayout();
+        table.SuspendLayout();
         try
         {
-            _encodingPlanTable.Controls.Clear();
-            _encodingPlanTable.RowStyles.Clear();
-            _encodingPlanTable.RowCount = 0;
+            table.Controls.Clear();
+            table.RowStyles.Clear();
+            table.RowCount = 0;
         }
         finally
         {
-            _encodingPlanTable.ResumeLayout(true);
+            table.ResumeLayout(true);
         }
     }
 }
