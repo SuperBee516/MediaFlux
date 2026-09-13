@@ -29,6 +29,8 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                 catalog.Initialize();
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 using var form = new LibraryAnalyzerForm(runtime);
+                Size preferredSize = form.Size;
+                Assert.Equal(new Size(1360, 840), preferredSize);
                 form.Show();
                 var tabs = AllControls(form).OfType<TabControl>().Single(tab => tab.Name == "LibraryAnalyzerTabs");
                 string[] expected =
@@ -45,10 +47,13 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                 {
                     form.Size = size;
                     Application.DoEvents();
+                    Size actualSize = form.Size;
                     Assert.All(tabs.TabPages.Cast<TabPage>(), page =>
-                        Assert.True(page.Width > 0 && page.Height > 0, $"{page.Text} should have a client area at {size}."));
-                    AssertMetricRowsHaveClearance(form, size);
-                    AssertDuplicateFilterLayout(tabs, "Duplicates — Visual", size);
+                        Assert.True(page.Width > 0 && page.Height > 0, $"{page.Text} should have a client area at {actualSize}."));
+                    Assert.True(Screen.FromControl(form).WorkingArea.IntersectsWith(form.Bounds),
+                        $"Window should remain associated with the monitor working area at {actualSize}: {form.Bounds} / {Screen.FromControl(form).WorkingArea}.");
+                    AssertMetricRowsHaveClearance(form, actualSize);
+                    AssertDuplicateFilterLayout(tabs, "Duplicates — Visual", actualSize);
                 }
 
                 Assert.Equal(new Size(1100, 700), form.MinimumSize);

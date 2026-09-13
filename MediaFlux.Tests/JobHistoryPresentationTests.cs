@@ -30,8 +30,9 @@ public sealed class JobHistoryPresentationTests
     [Fact]
     public void DateFilterAndPresentationKeepTimestampSortable()
     {
-        DateTime now = new(2026, 9, 12, 12, 0, 0); DateTime end = new(2026, 9, 11, 23, 41, 0, DateTimeKind.Utc); var record = Record(JobStatus.Success, end: end);
-        Assert.Single(JobHistoryPresentation.Filter(new[] { record }, "", "All", "All", JobHistoryDateFilter.Last7Days, now)); Assert.Equal("Yesterday 7:41 PM", JobHistoryPresentation.FormatFinished(end, now)); Assert.Equal("clip.mp4", JobHistoryPresentation.FileNameOrUnavailable(record.SourcePath)); Assert.Equal(end, record.EndUtc);
+        TimeZoneInfo context = TimeZoneInfo.CreateCustomTimeZone("Test Eastern", TimeSpan.FromHours(-4), "Test Eastern", "Test Eastern");
+        DateTime now = new(2026, 9, 12, 12, 0, 0, DateTimeKind.Utc); DateTime end = new(2026, 9, 11, 23, 41, 0, DateTimeKind.Utc); var record = Record(JobStatus.Success, end: end);
+        Assert.Single(JobHistoryPresentation.Filter(new[] { record }, "", "All", "All", JobHistoryDateFilter.Last7Days, now, context)); Assert.Equal("Yesterday 7:41 PM", JobHistoryPresentation.FormatFinished(end, now, context)); Assert.Equal("clip.mp4", JobHistoryPresentation.FileNameOrUnavailable(record.SourcePath)); Assert.Equal(end, record.EndUtc);
     }
 
     [Fact]

@@ -28,14 +28,14 @@ public static class JobHistoryPresentation
     }
 
     public static IReadOnlyList<JobHistoryRecord> Filter(
-        IEnumerable<JobHistoryRecord> records, string? search, string? status, string? type, JobHistoryDateFilter date, DateTime? now = null)
+        IEnumerable<JobHistoryRecord> records, string? search, string? status, string? type, JobHistoryDateFilter date, DateTime? now = null, TimeZoneInfo? timeZone = null)
     {
-        DateTime localNow = now ?? DateTime.Now;
+        DateTime localNow = ToDisplayTime(now ?? DateTime.Now, timeZone, timeZone is not null);
         string query = (search ?? "").Trim();
         return records.Where(record =>
             (string.IsNullOrEmpty(status) || status.Equals("All", StringComparison.OrdinalIgnoreCase) || StatusLabel(record.Status).Equals(status, StringComparison.OrdinalIgnoreCase) || record.Status.ToString().Equals(status, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrEmpty(type) || type.Equals("All", StringComparison.OrdinalIgnoreCase) || FormatType(record.Type).Equals(type, StringComparison.OrdinalIgnoreCase)) &&
-            MatchesDate(record.EndUtc.ToLocalTime(), date, localNow) &&
+            MatchesDate(ToDisplayTime(record.EndUtc, timeZone, timeZone is not null), date, localNow) &&
             (string.IsNullOrEmpty(query) || SearchText(record).Contains(query, StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(record => record.EndUtc)
             .ToArray();
@@ -63,16 +63,22 @@ public static class JobHistoryPresentation
 
     public static string FileNameOrUnavailable(string? path) => string.IsNullOrWhiteSpace(path) ? "Unavailable" : Path.GetFileName(path);
 
-    public static string FormatFinished(DateTime endUtc, DateTime? now = null)
+    public static string FormatFinished(DateTime endUtc, DateTime? now = null, TimeZoneInfo? timeZone = null)
     {
-        DateTime value = endUtc.ToLocalTime();
-        DateTime localNow = now ?? DateTime.Now;
+        DateTime value = ToDisplayTime(endUtc, timeZone, true);
+        DateTime localNow = ToDisplayTime(now ?? DateTime.Now, timeZone, timeZone is not null);
         if (value.Date == localNow.Date) return $"Today {value:h:mm tt}";
         if (value.Date == localNow.Date.AddDays(-1)) return $"Yesterday {value:h:mm tt}";
         return value.Year == localNow.Year ? value.ToString("MMM d, h:mm tt", CultureInfo.CurrentCulture) : value.ToString("MMM d, yyyy, h:mm tt", CultureInfo.CurrentCulture);
     }
 
     public static string SearchText(JobHistoryRecord record) => string.Join(" ", record.SourcePath, record.OutputPath, record.Status, FormatType(record.Type), record.Notes, record.ErrorSummary, record.FinalizationOutcome);
+
+    private static DateTime ToDisplayTime(DateTime value, TimeZoneInfo? timeZone, bool treatAsUtc)
+    {
+        if (timeZone is null) return treatAsUtc ? value.ToLocalTime() : value;
+        return TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(value, DateTimeKind.Utc), timeZone);
+    }
 
     private static bool MatchesDate(DateTime value, JobHistoryDateFilter filter, DateTime now) => filter switch
     {

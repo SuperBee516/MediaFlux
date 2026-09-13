@@ -156,19 +156,20 @@ public sealed class LibraryAnalyzerOverviewUiTests : IDisposable
         {
             Control label = insights.GetControlFromPosition(0, row)!;
             Control value = insights.GetControlFromPosition(1, row)!;
-            Assert.True(label.Bottom <= insights.ClientSize.Height && value.Bottom <= insights.ClientSize.Height, $"Insight row {row} is outside its content bounds.");
+            Rectangle contentBounds = insights.DisplayRectangle;
+            Assert.True(contentBounds.Contains(label.Bounds) && contentBounds.Contains(value.Bounds), $"Insight row {row} is outside its content bounds.");
             Assert.True(label.Right <= value.Left, $"Insight label/value columns overlap at row {row}: {label.Bounds} / {value.Bounds}");
             Assert.True(value.Top >= label.Top && value.Bottom <= insights.ClientSize.Height, $"Insight value row {row} has invalid bounds: {value.Bounds}");
             if (value is TableLayoutPanel valuePanel)
             {
                 Control primary = valuePanel.GetControlFromPosition(0, 0)!;
-                Assert.True(primary.Bottom <= valuePanel.ClientSize.Height, $"Insight primary value is clipped at row {row}: {primary.Bounds} / {valuePanel.ClientSize}");
+                Assert.True(valuePanel.ClientRectangle.Contains(primary.Bounds), $"Insight primary value is clipped at row {row}: {primary.Bounds} / {valuePanel.ClientSize}");
                 if (valuePanel.RowCount > 1)
                 {
                     Control secondary = valuePanel.GetControlFromPosition(0, 1)!;
                     Assert.True(primary.Height > 0 && secondary.Height > 0, $"Insight secondary row collapsed at row {row}: {primary.Bounds} / {secondary.Bounds}");
                     Assert.True(secondary.Top >= primary.Bottom - 1, $"Insight secondary overlaps primary at row {row}: {primary.Bounds} / {secondary.Bounds}");
-                    Assert.True(secondary.Right <= valuePanel.ClientSize.Width, $"Insight secondary exceeds value bounds at row {row}: {secondary.Bounds} / {valuePanel.ClientSize}");
+                    Assert.True(valuePanel.ClientRectangle.Contains(secondary.Bounds), $"Insight secondary exceeds value bounds at row {row}: {secondary.Bounds} / {valuePanel.ClientSize}");
                 }
                 else Assert.True(primary.Height > 0, $"Insight primary row collapsed at row {row}: {primary.Bounds}");
             }
