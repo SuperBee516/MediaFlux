@@ -585,19 +585,28 @@ namespace MediaFlux.Services
             string outputPath,
             CancellationToken cancellationToken)
         {
+            return RunFfmpegAsync(
+                BuildComparisonArguments(originalPath, encodedPath, outputPath),
+                "building the side-by-side preview",
+                cancellationToken);
+        }
+
+        internal static string BuildComparisonArguments(
+            string originalPath,
+            string encodedPath,
+            string outputPath)
+        {
             const string filter =
                 "[0:v]setpts=PTS-STARTPTS,scale=-2:540:flags=lanczos,setsar=1[left];" +
                 "[1:v]setpts=PTS-STARTPTS,scale=-2:540:flags=lanczos,setsar=1[right];" +
                 "[left][right]hstack=inputs=2[v]";
 
-            return RunFfmpegAsync(
+            return
                 $"-hide_banner -nostats -loglevel error -y " +
                 $"-i {Quote(originalPath)} -i {Quote(encodedPath)} " +
                 $"-filter_complex {Quote(filter)} -map \"[v]\" -map 1:a:0? " +
-                $"-c:v libx264 -preset veryfast -crf 14 -c:a aac -b:a 192k " +
-                $"-shortest -movflags +faststart {Quote(outputPath)}",
-                "building the side-by-side preview",
-                cancellationToken);
+                $"-ac 2 -c:v libx264 -preset veryfast -crf 14 -c:a aac -b:a 192k " +
+                $"-shortest -movflags +faststart {Quote(outputPath)}";
         }
 
         private async Task RunFfmpegAsync(

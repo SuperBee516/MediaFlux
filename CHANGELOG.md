@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-09-12
+
+### Compare Samples
+
+- Fixed side-by-side comparison previews failing for encoded samples with six-channel audio and an unspecified channel layout by normalizing preview audio to stereo before AAC encoding.
+
+### Reliability
+
+- Hardened focused UI test synchronization for hosted Windows runners.
+
 ## [1.4.0] - 2026-09-12
 
 ### Encoding Intelligence

@@ -108,6 +108,36 @@ public sealed class SampleComparisonServiceTests
     }
 
     [Fact]
+    public void ComparisonArgumentsNormalizeOptionalEncodedAudioToStereo()
+    {
+        string arguments = SampleComparisonService.BuildComparisonArguments(
+            "original.mkv",
+            "encoded.mkv",
+            "comparison.mp4");
+
+        Assert.Contains("-map 1:a:0? -ac 2 -c:v libx264", arguments);
+        Assert.Contains("-c:a aac -b:a 192k", arguments);
+    }
+
+    [Fact]
+    public void ComparisonArgumentsKeepVideoPlanAndSupportAudioLessSamples()
+    {
+        string arguments = SampleComparisonService.BuildComparisonArguments(
+            "original.mkv",
+            "encoded-six-channel-unspecified-layout.mkv",
+            "comparison.mp4");
+
+        Assert.Contains(
+            "[0:v]setpts=PTS-STARTPTS,scale=-2:540:flags=lanczos,setsar=1[left];" +
+            "[1:v]setpts=PTS-STARTPTS,scale=-2:540:flags=lanczos,setsar=1[right];" +
+            "[left][right]hstack=inputs=2[v]",
+            arguments);
+        Assert.Contains("-map \"[v]\" -map 1:a:0?", arguments);
+        Assert.Contains("-preset veryfast -crf 14", arguments);
+        Assert.Contains("-shortest -movflags +faststart", arguments);
+    }
+
+    [Fact]
     public void StreamCopyArgumentsGenerateTimestampsBeforeOpeningInput()
     {
         string arguments = SampleComparisonService.BuildStreamCopyClipArguments(

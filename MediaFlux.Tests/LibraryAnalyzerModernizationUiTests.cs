@@ -70,13 +70,14 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
         Exception? failure = null;
         var thread = new Thread(() =>
         {
+            LibraryAnalyzerForm? form = null;
             try
             {
                 SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
                 using var catalog = new SqliteLibraryCatalog(Path.Combine(_root, "navigation.db"), Path.Combine(_root, "navigation-backups"), Path.Combine(_root, "navigation-recovery"));
                 catalog.Initialize();
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
-                using var form = new LibraryAnalyzerForm(runtime);
+                form = new LibraryAnalyzerForm(runtime);
                 form.Show();
                 form.Size = new Size(1100, 700);
                 Application.DoEvents();
@@ -119,12 +120,9 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
                 Assert.True(AllControls(rail).OfType<AnalyzerNavigationItem>().Single(item => item.Text == "Health").Selected);
                 Assert.Equal(AccessibleRole.PageTab, visual.AccessibleRole);
                 Assert.True(AllControls(rail).OfType<AnalyzerNavigationItem>().All(item => item.TabStop));
-                form.Close();
-                Application.DoEvents();
-                Thread.Sleep(100);
-                Application.DoEvents();
             }
             catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
