@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-12
+
+### Encoding Intelligence
+
+- Added a structured Encoding Plan experience showing planned video, encoder, resolution, container, audio, subtitle, and target-size decisions.
+- Added human-readable decision explanations, source-health and recovery-capability reporting, and preflight, recovery, validation, finalization, and terminal lifecycle outcomes.
+- Added hardware-aware historical encoding predictions with expected speed, duration, output size, compression, confidence, and comparable-job counts.
+- Historical estimates remain advisory only and never alter encoding behavior.
+- Stabilized the Encoding Plan presentation so routine progress, FPS, ETA, elapsed-time, and bitrate updates do not rebuild or clear it.
+
+### Reliability
+
+- Preserved existing recovery, validation, finalization, and staged-output safety behavior.
+- Added consistency diagnostics between planned and actual execution outcomes.
+- Historical predictions isolate materially different GPU hardware and exclude failed or incomplete jobs from clean-performance cohorts.
+
 ## [1.3.14] - 2026-09-11
 
 ### AI Benchmark Manager
