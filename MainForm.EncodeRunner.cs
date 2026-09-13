@@ -798,13 +798,19 @@ namespace MediaFlux
                     CompatibilityPolicy = GetContainerCompatibilityPolicy(),
                     ContainerDecisionCallback = decision => appliedContainerDecision = decision,
                     EncodingPlanSnapshotCallback = snapshot =>
-                        jobLog.AppendLine(EncodingPlanService.DescribeSummary(snapshot.Plan)),
+                    {
+                        meta.IntelligencePlan = snapshot.Plan;
+                        jobLog.AppendLine(EncodingPlanService.DescribeSummary(snapshot.Plan));
+                        Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
+                    },
                     EncodingPlanDivergenceCallback = divergence =>
                         jobLog.AppendLine($"[EncodingPlan] Shadow divergence: {divergence}"),
                     EncodingExecutionOutcomeCallback = outcome =>
                     {
+                        meta.IntelligenceOutcome = outcome;
                         jobLog.AppendLine(EncodingPlanService.DescribeRecovery(outcome));
                         jobLog.AppendLine(EncodingPlanService.DescribeLifecycle(outcome));
+                        Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
                     }
                 };
 

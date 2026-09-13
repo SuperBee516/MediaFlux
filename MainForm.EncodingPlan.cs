@@ -8,19 +8,10 @@ public partial class MainForm
 {
     private Label? _encodingPlanStatusLabel;
     private TableLayoutPanel? _encodingPlanTable;
-    private CancellationTokenSource? _encodingPlanCts;
-    private int _encodingPlanRefreshGeneration;
-
-    private sealed record EncodingPlanContext(
-        string ProbePath,
-        EncodingInputSource Input,
-        VideoEncoderSelection Encoder,
-        bool UseGpu,
-        bool TenBit,
-        int? AudioChannels,
-        EncodingService.ScaleMode ScaleMode,
-        OutputContainerSelection OutputContainer);
-
+    private DataGridViewRow? _renderedIntelligenceRow;
+    private EncodingIntelligencePresentation.PresentationKey? _renderedIntelligenceKey;
+    private Guid? _renderedPlanId;
+    private readonly Dictionary<string, Label> _dynamicIntelligenceValues = new(StringComparer.Ordinal);
     private Control CreateEncodingPlanGroup()
     {
         var group = new GroupBox
@@ -55,7 +46,7 @@ public partial class MainForm
             MaximumSize = new Size(900, 0),
             ForeColor = SystemColors.GrayText,
             Margin = new Padding(0, 0, 0, 8),
-            Text = "Select one queue item to see its resolved pre-encode plan."
+            Text = "Select a queue item to view Encoding Intelligence."
         };
         content.Controls.Add(_encodingPlanStatusLabel, 0, 0);
 
@@ -81,167 +72,40 @@ public partial class MainForm
     {
         if (_encodingPlanTable == null || IsDisposed)
             return;
-
-        _encodingPlanCts?.Cancel();
-        _encodingPlanCts = new CancellationTokenSource();
-        int generation = Interlocked.Increment(ref _encodingPlanRefreshGeneration);
-        _ = RefreshEncodingPlanAsync(generation, _encodingPlanCts.Token);
-    }
-
-    private async Task RefreshEncodingPlanAsync(
-        int generation,
-        CancellationToken cancellationToken)
-    {
-        try
+        DataGridViewRow[] rows = dgvEncodeQueue.SelectedRows
+            .Cast<DataGridViewRow>()
+            .Where(row => !row.IsNewRow)
+            .ToArray();
+        if (rows.Length != 1)
         {
-            await Task.Delay(120, cancellationToken);
-            if (IsDisposed || generation != _encodingPlanRefreshGeneration)
+            RenderEncodingPlanStatus(rows.Length == 0
+                ? "Select a queue item to view Encoding Intelligence."
+                : "Select one queue item at a time to view Encoding Intelligence.");
+            return;
+        }
+
+        RowMeta meta = EnsureRowMeta(rows[0]);
+        if (meta.IntelligencePlan == null)
+        {
+            if (ReferenceEquals(_renderedIntelligenceRow, rows[0]) && _renderedIntelligenceKey != null)
                 return;
-
-            DataGridViewRow[] rows = dgvEncodeQueue.SelectedRows
-                .Cast<DataGridViewRow>()
-                .Where(row => !row.IsNewRow)
-                .ToArray();
-            if (rows.Length != 1)
-            {
-                RenderEncodingPlanStatus(rows.Length == 0
-                    ? "Select one queue item to see its resolved pre-encode plan."
-                    : "Select one queue item at a time to see its resolved pre-encode plan.");
-                return;
-            }
-
-            EncodingPlanContext? context = TryCaptureEncodingPlanContext(rows[0]);
-            if (context == null)
-                return;
-
-            RenderEncodingPlanStatus("Resolving the selected source and current profile…");
-            MediaProbeResult source = await new FfprobeService(
-                    AppPaths.InstallDirectory,
-                    _config.FfprobePath)
-                .ProbeAsync(context.ProbePath, cancellationToken);
-
-            if (cancellationToken.IsCancellationRequested ||
-                IsDisposed ||
-                generation != _encodingPlanRefreshGeneration)
-            {
-                return;
-            }
-
-            if (!source.Success)
-            {
-                RenderEncodingPlanUnavailable(
-                    $"The plan is unavailable because FFprobe could not inspect the source: {source.ErrorMessage}");
-                return;
-            }
-
-            EncodingPlan plan = EncodingPlanService.Resolve(
-                new EncodingPlanService.Request(
-                    source,
-                    context.Input,
-                    context.Encoder,
-                    context.UseGpu,
-                    context.TenBit,
-                    context.AudioChannels,
-                    context.ScaleMode,
-                    _config.VideoRestoration.Clone(),
-                    context.OutputContainer,
-                    CompatibilityPolicy: GetContainerCompatibilityPolicy()));
-            RenderEncodingPlan(plan);
+            RenderEncodingPlanStatus("Encoding Intelligence will appear when the existing encode preflight publishes its plan.");
+            return;
         }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception ex)
-        {
-            if (!IsDisposed && generation == _encodingPlanRefreshGeneration)
-            {
-                RenderEncodingPlanUnavailable(
-                    $"The plan is unavailable until the selected source can be resolved: {ex.Message}");
-            }
-        }
-    }
-
-    private EncodingPlanContext? TryCaptureEncodingPlanContext(DataGridViewRow row)
-    {
-        RowMeta meta = EnsureRowMeta(row);
-        string? displayPath = GetFullPathFromRow(row) ?? meta.Path;
-        if (string.IsNullOrWhiteSpace(displayPath))
-        {
-            RenderEncodingPlanUnavailable("The selected queue item has no source path.");
-            return null;
-        }
-
-        EncodingInputSource input;
-        string probePath;
-        if (meta.IsDvdEncode && meta.DvdEncodeOptions != null)
-        {
-            input = new DvdEncodingInputFactory().Create(meta.DvdEncodeOptions);
-            probePath = input.SourceFiles.FirstOrDefault() ?? input.SourcePath;
-        }
-        else
-        {
-            input = EncodingInputSource.FromFile(displayPath);
-            probePath = displayPath;
-        }
-
-        ValidatedEncoderSettings validated;
-        EncodingService.ScaleMode scaleMode;
-        OutputContainerSelection outputContainer;
-        if (meta.LibraryPolicyIntent is LibraryPolicyQueueItem policy)
-        {
-            EncodingPreset? preset = string.IsNullOrWhiteSpace(policy.EncodingPresetName)
-                ? null
-                : _presetService.LoadAll().FirstOrDefault(value =>
-                    value.Name.Equals(policy.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
-            VideoCodecFamily codec = preset == null
-                ? policy.ProposedCodec
-                : VideoEncoderCompatibility.ParseCodecFamily(
-                    string.IsNullOrWhiteSpace(preset.VideoCodec)
-                        ? preset.VideoFormat
-                        : preset.VideoCodec);
-            string encoderId = preset == null
-                ? policy.EncoderId
-                : VideoEncoderCompatibility.ResolveEncoderId(
-                    string.IsNullOrWhiteSpace(preset.EncoderId)
-                        ? preset.EncoderMode
-                        : preset.EncoderId,
-                    codec);
-            ResolvedVideoEncoder resolved = EncoderRegistry.Default.Resolve(encoderId, codec);
-            validated = EncodingRequestValidator.ValidateAndNormalize(
-                EncoderRegistry.Default,
-                resolved.Selection,
-                resolved.Provider.Capabilities.IsHardware,
-                targetMb: null,
-                preset?.EncoderPreset ?? policy.EncoderPreset,
-                preset?.QualityValue ?? policy.QualityValue,
-                preset?.TenBit ?? policy.PreferredBitDepth >= 10,
-                GetSelectedAudioChannels(),
-                concurrentEncoderSessions: false);
-            scaleMode = PolicyScaleMode(policy);
-            outputContainer = PolicyOutputContainer(policy);
-        }
-        else
-        {
-            validated = GetValidatedEncoderSettingsFromUi(includeConcurrentSessions: false);
-            scaleMode = GetSelectedScaleMode();
-            outputContainer = GetSelectedOutputContainer();
-        }
-
-        return new EncodingPlanContext(
-            probePath,
-            input,
-            validated.Resolved.Selection,
-            validated.UseGpu,
-            validated.TenBit,
-            GetSelectedAudioChannels(),
-            scaleMode,
-            outputContainer);
+        RenderEncodingPlan(meta.IntelligencePlan, meta.IntelligenceOutcome, rows[0]);
     }
 
     private void RenderEncodingPlanStatus(string text)
     {
+        if (_renderedIntelligenceRow == null && _renderedPlanId == null &&
+            string.Equals(_encodingPlanStatusLabel?.Text, text, StringComparison.Ordinal))
+            return;
         if (_encodingPlanStatusLabel != null)
             _encodingPlanStatusLabel.Text = text;
+        _renderedIntelligenceRow = null;
+        _renderedIntelligenceKey = null;
+        _renderedPlanId = null;
+        _dynamicIntelligenceValues.Clear();
         ClearEncodingPlanRows();
     }
 
@@ -250,36 +114,60 @@ public partial class MainForm
         RenderEncodingPlanStatus(text);
     }
 
-    private void RenderEncodingPlan(EncodingPlan plan)
+    private void RefreshCurrentEncodingIntelligence(DataGridViewRow row, RowMeta meta)
+    {
+        if (IsDisposed || meta.IntelligencePlan == null ||
+            !dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().Contains(row))
+            return;
+        RenderEncodingPlan(meta.IntelligencePlan, meta.IntelligenceOutcome, row);
+    }
+
+    private void RenderEncodingPlan(EncodingPlan plan, EncodingExecutionOutcome? outcome = null, DataGridViewRow? row = null)
     {
         if (_encodingPlanStatusLabel == null || _encodingPlanTable == null)
             return;
 
-        _encodingPlanStatusLabel.Text = plan.IsAvailable
-            ? "Resolved from the selected source and current encode settings. Output size is omitted because no authoritative pre-encode value is available here."
+        EncodingIntelligencePresentation.PresentationKey key =
+            EncodingIntelligencePresentation.GetKey(plan, outcome);
+        if (ReferenceEquals(_renderedIntelligenceRow, row) && _renderedPlanId == plan.PlanId &&
+            _renderedIntelligenceKey == key)
+            return;
+
+        if (ReferenceEquals(_renderedIntelligenceRow, row) && _renderedPlanId == plan.PlanId)
+        {
+            UpdateDynamicEncodingIntelligence(plan, outcome);
+            _renderedIntelligenceKey = key;
+            return;
+        }
+
+        _renderedIntelligenceRow = row;
+        _renderedIntelligenceKey = key;
+        _renderedPlanId = plan.PlanId;
+        _dynamicIntelligenceValues.Clear();
+
+        string status = plan.IsAvailable
+            ? "Planned settings are authoritative. Historical estimates are advisory and never change the encode."
             : plan.UnavailableReason;
+        if (!string.Equals(_encodingPlanStatusLabel.Text, status, StringComparison.Ordinal))
+            _encodingPlanStatusLabel.Text = status;
         ClearEncodingPlanRows();
 
         if (!plan.IsAvailable)
             return;
 
+        EncodingIntelligencePresentation.Model presentation = EncodingIntelligencePresentation.Create(plan, outcome);
+        AddEncodingPlanSection("Encoding intelligence", presentation.Summary);
+        if (presentation.Reasons.Count > 0)
+            AddEncodingPlanSection("Why this plan?", presentation.Reasons);
+        if (presentation.Technical.Count > 0)
+            AddEncodingPlanSection("Technical details", presentation.Technical);
+
         foreach (EncodingPlanSection section in plan.Sections)
-        {
-            int sectionRow = _encodingPlanTable.RowCount++;
-            _encodingPlanTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            var header = CreateInfoCaption(section.Title.ToUpperInvariant());
-            header.ForeColor = Color.FromArgb(31, 88, 166);
-            header.Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold);
-            header.Margin = new Padding(0, sectionRow == 0 ? 1 : 8, 0, 3);
-            _encodingPlanTable.Controls.Add(header, 0, sectionRow);
+            AddEncodingPlanSection(section.Title, section.Items);
 
-            foreach (EncodingPlanItem item in section.Items)
-                AddEncodingPlanItem(item);
-        }
-
-        if (plan.Sections.Count == 0)
+        if (presentation.Summary.Count == 0 && plan.Sections.Count == 0)
         {
-            int row = _encodingPlanTable.RowCount++;
+            int fallbackRow = _encodingPlanTable.RowCount++;
             _encodingPlanTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             _encodingPlanTable.Controls.Add(
                 new Label
@@ -289,8 +177,35 @@ public partial class MainForm
                     Text = "No additional resolved processing or stream changes are available for this item."
                 },
                 0,
-                row);
+                fallbackRow);
         }
+    }
+
+    private void UpdateDynamicEncodingIntelligence(EncodingPlan plan, EncodingExecutionOutcome? outcome)
+    {
+        EncodingIntelligencePresentation.Model presentation = EncodingIntelligencePresentation.Create(plan, outcome);
+        foreach (EncodingPlanItem item in presentation.Summary.Concat(presentation.Technical))
+        {
+            if (_dynamicIntelligenceValues.TryGetValue(item.Label, out Label? label) &&
+                !string.Equals(label.Text, item.Value, StringComparison.Ordinal))
+                label.Text = item.Value;
+        }
+    }
+
+    private void AddEncodingPlanSection(string title, IReadOnlyList<EncodingPlanItem> items)
+    {
+        if (_encodingPlanTable == null || items.Count == 0)
+            return;
+
+        int sectionRow = _encodingPlanTable.RowCount++;
+        _encodingPlanTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var header = CreateInfoCaption(title.ToUpperInvariant());
+        header.ForeColor = Color.FromArgb(31, 88, 166);
+        header.Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold);
+        header.Margin = new Padding(0, sectionRow == 0 ? 1 : 8, 0, 3);
+        _encodingPlanTable.Controls.Add(header, 0, sectionRow);
+        foreach (EncodingPlanItem item in items)
+            AddEncodingPlanItem(item);
     }
 
     private void AddEncodingPlanItem(EncodingPlanItem item)
@@ -325,6 +240,8 @@ public partial class MainForm
         value.AutoSize = true;
         value.MaximumSize = new Size(760, 0);
         panel.Controls.Add(value, 1, 0);
+        if (item.Label is "Recovery" or "Lifecycle" or "Terminal result" or "Validation" or "Finalization")
+            _dynamicIntelligenceValues[item.Label] = value;
 
         if (!string.IsNullOrWhiteSpace(item.Reason))
         {

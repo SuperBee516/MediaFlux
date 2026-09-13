@@ -2433,6 +2433,8 @@ namespace MediaFlux
             public double StatisticsProcessingSeconds;
             public string CurrentProcessingStage = "Queued";
             public EncodeFailureAnalysis? FailureAnalysis;
+            public EncodingPlan? IntelligencePlan;
+            public EncodingExecutionOutcome? IntelligenceOutcome;
 
             public bool HasCustomSettings =>
                 CustomTargetMb.HasValue ||
