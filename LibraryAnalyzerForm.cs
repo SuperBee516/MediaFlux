@@ -890,6 +890,8 @@ namespace MediaFlux
             {
                 string phase = _runtime.Duplicates.IsPaused
                     ? "Exact duplicate analysis paused"
+                    : _runtime.Duplicates.IsWaitingForAnalyzer
+                        ? $"Exact duplicate analysis queued — waiting for {_runtime.Duplicates.ActiveAnalyzer?.ToString().ToLowerInvariant() ?? "the other analyzer"} analysis"
                     : _runtime.Duplicates.IsWaitingForEncoding
                         ? "Exact duplicate analysis waiting for active encoding"
                         : $"Analyzing exact duplicates — {duplicate?.Stage ?? "starting"}";
@@ -899,6 +901,11 @@ namespace MediaFlux
                 long completed = duplicate?.Stage == "Quick fingerprints" ? duplicate.QuickHashed : 0;
                 SetActivity(status, detail, active: true, completed, total, determinate: completed > 0 && total > 0);
                 UpdateDuplicateActivity(status, detail, completed, total);
+                if (_runtime.VisualSimilarity.IsRunning && _runtime.VisualSimilarity.IsWaitingForAnalyzer)
+                {
+                    string queued = $"Visual analysis queued — waiting for exact analysis: {_latestVisualProgress?.FingerprintedFiles ?? 0:N0}/{_latestVisualProgress?.EligibleFiles ?? 0:N0} fingerprinted";
+                    UpdateVisualActivity(queued, "The shared duplicate-analysis slot is owned by Exact.", 0, 0, false);
+                }
                 return;
             }
 
@@ -907,6 +914,8 @@ namespace MediaFlux
             {
                 string phase = _runtime.VisualSimilarity.IsPaused
                     ? "Visual analysis paused"
+                    : _runtime.VisualSimilarity.IsWaitingForAnalyzer
+                        ? $"Visual analysis queued — waiting for {_runtime.VisualSimilarity.ActiveAnalyzer?.ToString().ToLowerInvariant() ?? "the other analyzer"} analysis"
                     : _runtime.VisualSimilarity.IsWaitingForEncoding
                         ? "Visual analysis waiting for active encoding"
                         : visual?.Stage == "Extracting visual fingerprints"
@@ -918,6 +927,11 @@ namespace MediaFlux
                 bool determinate = visual?.Stage == "Extracting visual fingerprints" && visual.EligibleFiles > 0;
                 SetActivity(status, detail, active: true, visual?.FingerprintedFiles ?? 0, visual?.EligibleFiles ?? 0, determinate);
                 UpdateVisualActivity(status, detail, visual?.FingerprintedFiles ?? 0, visual?.EligibleFiles ?? 0, determinate);
+                if (_runtime.Duplicates.IsRunning && _runtime.Duplicates.IsWaitingForAnalyzer)
+                {
+                    string queued = $"Exact duplicate analysis queued — waiting for visual analysis: {_latestDuplicateProgress?.QuickHashed ?? 0:N0} quick · {_latestDuplicateProgress?.FullHashed ?? 0:N0} full hashes";
+                    UpdateDuplicateActivity(queued, "The shared duplicate-analysis slot is owned by Visual.", 0, 0);
+                }
                 return;
             }
 
@@ -939,6 +953,12 @@ namespace MediaFlux
             }
 
             SetActivity(_scanTerminalStatus, "", active: false);
+            _duplicateProgress.Visible = false;
+            _visualProgress.Visible = false;
+            if (!_runtime.Duplicates.IsRunning && (_duplicateStatus.Text.StartsWith("Analyzing exact duplicates", StringComparison.OrdinalIgnoreCase) || _duplicateStatus.Text.StartsWith("Exact duplicate analysis queued", StringComparison.OrdinalIgnoreCase)))
+                _duplicateStatus.Text = "Exact analysis idle.";
+            if (!_runtime.VisualSimilarity.IsRunning && (_visualStatus.Text.StartsWith("Analyzing visual similarity", StringComparison.OrdinalIgnoreCase) || _visualStatus.Text.StartsWith("Visual analysis queued", StringComparison.OrdinalIgnoreCase)))
+                _visualStatus.Text = "Visual analysis idle.";
         }
 
         private void SetActivity(string status, string detail, bool active, long completed = 0, long total = 0, bool determinate = false)

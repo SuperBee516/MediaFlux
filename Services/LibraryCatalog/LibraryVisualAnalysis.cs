@@ -193,6 +193,8 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly LibraryVisualAnalysisOptions _options;
         private readonly Func<bool> _isEncodingActive;
         private readonly LibraryStorageScheduler _storageScheduler;
+        private readonly LibraryDuplicateAnalysisGate _analysisGate;
+        private readonly bool _ownsAnalysisGate;
         private MediaFlux.Models.DuplicateKeeperPreferences _keeperPreferences;
         private readonly object _keeperPreferencesSync = new();
         private readonly AsyncPauseGate _pause = new();
@@ -200,6 +202,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private CancellationTokenSource? _activeCancellation;
         private TaskCompletionSource? _activeCompletion;
         private int _waitingForEncoding;
+        private int _waitingForAnalyzer;
         private bool _disposed;
 
         public LibraryVisualAnalysisCoordinator(
@@ -208,7 +211,8 @@ namespace MediaFlux.Services.LibraryCatalog
             LibraryVisualAnalysisOptions? options = null,
             Func<bool>? isEncodingActive = null,
             LibraryStorageScheduler? storageScheduler = null,
-            MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null)
+            MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null,
+            LibraryDuplicateAnalysisGate? analysisGate = null)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             _extractor = extractor ?? throw new ArgumentNullException(nameof(extractor));
@@ -217,6 +221,8 @@ namespace MediaFlux.Services.LibraryCatalog
                 throw new ArgumentOutOfRangeException(nameof(options));
             _isEncodingActive = isEncodingActive ?? (() => false);
             _storageScheduler = storageScheduler ?? new LibraryStorageScheduler();
+            _ownsAnalysisGate = analysisGate == null;
+            _analysisGate = analysisGate ?? new LibraryDuplicateAnalysisGate();
             _keeperPreferences = (keeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences()).Clone();
             _keeperPreferences.Normalize();
         }
@@ -225,6 +231,8 @@ namespace MediaFlux.Services.LibraryCatalog
         public bool IsRunning { get { lock (_sync) return _activeCancellation != null; } }
         public bool IsPaused => _pause.IsPaused;
         public bool IsWaitingForEncoding => Volatile.Read(ref _waitingForEncoding) != 0;
+        public bool IsWaitingForAnalyzer => Volatile.Read(ref _waitingForAnalyzer) != 0;
+        public LibraryDuplicateAnalyzer? ActiveAnalyzer => _analysisGate.ActiveAnalyzer;
         public void Pause() => _pause.Pause();
         public void Resume() => _pause.Resume();
         public void Cancel() { lock (_sync) _activeCancellation?.Cancel(); }
@@ -252,11 +260,15 @@ namespace MediaFlux.Services.LibraryCatalog
                 _activeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
             VisualAnalysisHandle? run = null;
+            LibraryDuplicateAnalysisGate.Lease? analysisLease = null;
             long eligible = 0, fingerprinted = 0, candidates = 0, matches = 0, errors = 0;
             string errorText = "";
             DuplicateAnalysisStatus status = DuplicateAnalysisStatus.Failed;
             try
             {
+                Volatile.Write(ref _waitingForAnalyzer, 1);
+                analysisLease = await _analysisGate.AcquireAsync(LibraryDuplicateAnalyzer.Visual, linked.Token).ConfigureAwait(false);
+                Volatile.Write(ref _waitingForAnalyzer, 0);
                 run = _catalog.BeginVisualAnalysis(Algorithm, AlgorithmVersion);
                 eligible = _catalog.CountVisualFingerprintCandidates(AlgorithmVersion, _extractor.ToolVersion);
                 while (true)
@@ -327,6 +339,8 @@ namespace MediaFlux.Services.LibraryCatalog
             }
             finally
             {
+                Volatile.Write(ref _waitingForAnalyzer, 0);
+                analysisLease?.Dispose();
                 if (run != null)
                 {
                     _catalog.CompleteVisualAnalysis(run, new VisualAnalysisCompletion(status, eligible, fingerprinted, candidates, matches, errors, errorText));
@@ -430,6 +444,8 @@ namespace MediaFlux.Services.LibraryCatalog
             if (_disposed) return;
             _disposed = true;
             CancelAndWait(TimeSpan.FromSeconds(10));
+            if (_ownsAnalysisGate)
+                _analysisGate.Dispose();
         }
     }
 }

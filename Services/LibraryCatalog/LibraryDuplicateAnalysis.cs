@@ -108,11 +108,14 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly Func<string, bool> _isProtectedPath;
         private readonly AsyncPauseGate _pause = new();
         private readonly LibraryStorageScheduler _storageScheduler;
+        private readonly LibraryDuplicateAnalysisGate _analysisGate;
+        private readonly bool _ownsAnalysisGate;
         private DuplicateKeeperPreferences _keeperPreferences;
         private readonly object _sync = new();
         private CancellationTokenSource? _activeCancellation;
         private TaskCompletionSource? _activeCompletion;
         private int _waitingForEncoding;
+        private int _waitingForAnalyzer;
         private bool _disposed;
 
         public LibraryDuplicateAnalysisCoordinator(
@@ -121,7 +124,8 @@ namespace MediaFlux.Services.LibraryCatalog
             Func<bool>? isEncodingActive = null,
             Func<string, bool>? isProtectedPath = null,
             LibraryStorageScheduler? storageScheduler = null,
-            DuplicateKeeperPreferences? keeperPreferences = null)
+            DuplicateKeeperPreferences? keeperPreferences = null,
+            LibraryDuplicateAnalysisGate? analysisGate = null)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             _options = options ?? new LibraryDuplicateAnalysisOptions();
@@ -130,6 +134,8 @@ namespace MediaFlux.Services.LibraryCatalog
             _isEncodingActive = isEncodingActive ?? (() => false);
             _isProtectedPath = isProtectedPath ?? (_ => false);
             _storageScheduler = storageScheduler ?? new LibraryStorageScheduler();
+            _ownsAnalysisGate = analysisGate == null;
+            _analysisGate = analysisGate ?? new LibraryDuplicateAnalysisGate();
             _keeperPreferences = keeperPreferences?.Clone() ?? new DuplicateKeeperPreferences();
             _keeperPreferences.Normalize();
         }
@@ -166,6 +172,8 @@ namespace MediaFlux.Services.LibraryCatalog
         public bool IsRunning { get { lock (_sync) return _activeCancellation != null; } }
         public bool IsPaused => _pause.IsPaused;
         public bool IsWaitingForEncoding => Volatile.Read(ref _waitingForEncoding) != 0;
+        public bool IsWaitingForAnalyzer => Volatile.Read(ref _waitingForAnalyzer) != 0;
+        public LibraryDuplicateAnalyzer? ActiveAnalyzer => _analysisGate.ActiveAnalyzer;
 
         public void Pause() => _pause.Pause();
         public void Resume() => _pause.Resume();
@@ -184,11 +192,15 @@ namespace MediaFlux.Services.LibraryCatalog
             }
 
             DuplicateAnalysisHandle? run = null;
+            LibraryDuplicateAnalysisGate.Lease? analysisLease = null;
             long sizeCandidates = 0, quick = 0, full = 0, groups = 0, errors = 0;
             string errorText = "";
             DuplicateAnalysisStatus status = DuplicateAnalysisStatus.Failed;
             try
             {
+                Volatile.Write(ref _waitingForAnalyzer, 1);
+                analysisLease = await _analysisGate.AcquireAsync(LibraryDuplicateAnalyzer.Exact, linked.Token).ConfigureAwait(false);
+                Volatile.Write(ref _waitingForAnalyzer, 0);
                 run = _catalog.BeginDuplicateAnalysis(ExactDuplicateHashService.QuickAlgorithm, ExactDuplicateHashService.QuickVersion, ExactDuplicateHashService.FullAlgorithm, ExactDuplicateHashService.FullVersion);
                 sizeCandidates = _catalog.CountSizeCandidates();
                 Report("Size candidates", sizeCandidates, quick, full, groups, errors, "", false);
@@ -219,6 +231,8 @@ namespace MediaFlux.Services.LibraryCatalog
             }
             finally
             {
+                Volatile.Write(ref _waitingForAnalyzer, 0);
+                analysisLease?.Dispose();
                 if (run != null)
                     _catalog.CompleteDuplicateAnalysis(run, new DuplicateAnalysisCompletion(status, sizeCandidates, quick, full, groups, errors, errorText));
                 lock (_sync)
@@ -347,6 +361,8 @@ namespace MediaFlux.Services.LibraryCatalog
             if (_disposed) return;
             _disposed = true;
             CancelAndWait(TimeSpan.FromSeconds(10));
+            if (_ownsAnalysisGate)
+                _analysisGate.Dispose();
         }
     }
 }

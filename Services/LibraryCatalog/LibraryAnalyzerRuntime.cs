@@ -6,6 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly LibraryEnrichmentCoordinator _enrichment;
         private readonly LibraryDuplicateAnalysisCoordinator _duplicates;
         private readonly LibraryVisualAnalysisCoordinator _visual;
+        private readonly LibraryDuplicateAnalysisGate _duplicateAnalysisGate;
         private readonly LibraryReanalysisCoordinator _reanalysis;
         private bool _disposed;
 
@@ -56,6 +57,7 @@ namespace MediaFlux.Services.LibraryCatalog
             _catalog.RecoverInterruptedCleanupPlans();
             _catalog.RecoverInterruptedVisualCleanupPlans();
             LibraryStorageScheduler scheduler = storageScheduler ?? new LibraryStorageScheduler();
+            _duplicateAnalysisGate = new LibraryDuplicateAnalysisGate();
             _enrichment = new LibraryEnrichmentCoordinator(
                 _catalog,
                 probe,
@@ -72,13 +74,15 @@ namespace MediaFlux.Services.LibraryCatalog
                 isEncodingActive: isEncodingActive,
                 isProtectedPath: path => protectedRoots.Any(root => Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase)),
                 storageScheduler: scheduler,
-                keeperPreferences: keeperPreferences);
+                keeperPreferences: keeperPreferences,
+                analysisGate: _duplicateAnalysisGate);
             _visual = new LibraryVisualAnalysisCoordinator(
                 _catalog,
                 visualExtractor,
                 isEncodingActive: isEncodingActive,
                 storageScheduler: scheduler,
-                keeperPreferences: keeperPreferences);
+                keeperPreferences: keeperPreferences,
+                analysisGate: _duplicateAnalysisGate);
             DuplicateCleanup = new LibraryDuplicateCleanupService(_catalog, _catalog, keeperPreferences, isEncodingActive);
             VisualDuplicateCleanup = new LibraryVisualDuplicateCleanupService(_catalog, _catalog, _catalog, keeperPreferences, isEncodingActive);
             FileRelocation = new LibraryFileRelocationService(_catalog, identity: identityProvider);
@@ -185,6 +189,7 @@ namespace MediaFlux.Services.LibraryCatalog
             {
                 _duplicates.Dispose();
                 _visual.Dispose();
+                _duplicateAnalysisGate.Dispose();
                 _catalog.Checkpoint(LibraryCatalogCheckpointMode.Passive);
                 _catalog.Dispose();
             }
