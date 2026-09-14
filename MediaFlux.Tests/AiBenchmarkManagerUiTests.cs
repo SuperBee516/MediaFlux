@@ -66,7 +66,9 @@ public sealed class AiBenchmarkManagerUiTests
                 foreach (var expected in new[] { ("Results", "Results", "1"), ("BestvalidFPS", "Best valid FPS", "0.30"), ("GPU", "GPU", "GPU"), ("Backend", "Backend", "ncnn-vulkan"), ("Model", "Model", "model-a"), ("Scale", "Scale", "2x"), ("Precision", "Precision", "FP32") }) { TableLayoutPanel tile = form.Controls.Find("summary" + expected.Item1, true).OfType<TableLayoutPanel>().Single(); Label title = tile.Controls.Find("summary" + expected.Item1 + "Title", false).OfType<Label>().Single(); Label value = tile.Controls.Find("summary" + expected.Item1 + "Value", false).OfType<Label>().Single(); Assert.Equal(expected.Item2, title.Text); Assert.Contains(expected.Item3, value.Text); Assert.True(tile.ClientRectangle.Contains(title.Bounds)); Assert.True(tile.ClientRectangle.Contains(value.Bounds)); Assert.True(value.Bottom < tile.ClientRectangle.Bottom); Assert.False(title.Bounds.IntersectsWith(value.Bounds)); }
                 foreach (string key in new[] { "Results", "BestvalidFPS", "GPU", "Backend", "Model", "Scale", "Precision" }) { TableLayoutPanel tile = form.Controls.Find("summary" + key, true).OfType<TableLayoutPanel>().Single(); PictureBox icon = tile.Controls.Find("summary" + key + "Icon", false).OfType<PictureBox>().Single(); Assert.NotNull(icon.Image); Assert.True(tile.ClientRectangle.Contains(icon.Bounds)); }
                 foreach (var command in new[] { ("RunBenchmark", "Run Benchmark"), ("Re-runSelected", "Re-run Selected"), ("CompareSelected", "Compare Selected"), ("Refresh", "Refresh") }) { Button button = form.Controls.Find("benchmarkCommand" + command.Item1, true).OfType<Button>().Single(); Assert.Equal(command.Item2, button.Text); Assert.NotNull(button.Image); Assert.True(button.Image!.Width < button.ClientSize.Width); Assert.True(button.ClientSize.Height > button.Image.Height); } FlowLayoutPanel commands = form.Controls.Find("benchmarkCommands", true).OfType<FlowLayoutPanel>().Single(); var commandItems = commands.Controls.OfType<ToolStrip>().SelectMany(strip => strip.Items.Cast<ToolStripItem>()).OfType<ToolStripDropDownButton>().ToArray(); Assert.NotNull(commandItems.Single(item => item.Name == "benchmarkCommandImportExport").Image); Assert.NotNull(commandItems.Single(item => item.Name == "benchmarkCommandMore").Image); Assert.NotNull(form.Controls.Find("benchmarkDetailsLabelTitleIcon", true).OfType<PictureBox>().Single().Image); Assert.NotNull(form.Controls.Find("benchmarkComparisonLabelIcon", true).OfType<PictureBox>().Single().Image);
-                TableLayoutPanel summaryHost = form.Controls.Find("benchmarkSummary", true).OfType<TableLayoutPanel>().Single(); SplitContainer mainHost = form.Controls.Find("benchmarkMainSplit", true).OfType<SplitContainer>().Single(); Assert.True(summaryHost.Bottom < mainHost.Top); Assert.True(mainHost.Top - summaryHost.Bottom >= 1); var tiles = summaryHost.Controls.OfType<TableLayoutPanel>().ToArray(); for (int i = 0; i < tiles.Length; i++) for (int j = i + 1; j < tiles.Length; j++) Assert.False(tiles[i].Bounds.IntersectsWith(tiles[j].Bounds));
+                AssertSummaryAndGridLayout(form);
+                form.Size = new Size(1200, 720); Application.DoEvents(); AssertSummaryAndGridLayout(form);
+                form.WindowState = FormWindowState.Maximized; Application.DoEvents(); AssertSummaryAndGridLayout(form); form.WindowState = FormWindowState.Normal; Application.DoEvents(); AssertSummaryAndGridLayout(form);
             }
             catch (Exception ex) { failure = ex; }
             finally { WinFormsTestLifecycle.CloseAndDispose(form); }
@@ -97,6 +99,7 @@ public sealed class AiBenchmarkManagerUiTests
                 Assert.True(form.Controls.Find("benchmarkGrid", true).Single().Bounds.Size.Width > 0);
                 Assert.True(form.Controls.Find("benchmarkDetails", true).Single().Bounds.Size.Width > 0);
                 Assert.True(form.Controls.Find("benchmarkComparison", true).Single().Bounds.Size.Width > 0);
+                AssertSummaryAndGridLayout(form);
                 status = form.Controls.Find("benchmarkStatus", true).Single().Text;
                 SplitContainer main = form.Controls.Find("benchmarkMainSplit", true).OfType<SplitContainer>().Single();
                 SplitContainer lower = form.Controls.Find("benchmarkDetailsComparisonSplit", true).OfType<SplitContainer>().Single();
@@ -108,11 +111,13 @@ public sealed class AiBenchmarkManagerUiTests
                 AssertContained(form.Controls.Find("benchmarkFpsChart", true).Single());
                 form.Size = form.MinimumSize;
                 Application.DoEvents();
+                AssertSummaryAndGridLayout(form);
                 minimumDistances = new[] { main.SplitterDistance, lower.SplitterDistance };
                 AssertLegal(main);
                 AssertLegal(lower);
                 form.Size = new Size(1650, 1000);
                 Application.DoEvents();
+                AssertSummaryAndGridLayout(form);
                 AssertLegal(main);
                 AssertLegal(lower);
             }
@@ -138,6 +143,28 @@ public sealed class AiBenchmarkManagerUiTests
     {
         int available = (splitter.Orientation == Orientation.Vertical ? splitter.ClientSize.Width : splitter.ClientSize.Height) - splitter.SplitterWidth;
         Assert.InRange(splitter.SplitterDistance, splitter.Panel1MinSize, available - splitter.Panel2MinSize);
+    }
+
+    private static void AssertSummaryAndGridLayout(Form form)
+    {
+        TableLayoutPanel root = form.Controls.Find("benchmarkRoot", true).OfType<TableLayoutPanel>().Single();
+        TableLayoutPanel summary = form.Controls.Find("benchmarkSummary", true).OfType<TableLayoutPanel>().Single();
+        Control gap = form.Controls.Find("benchmarkSummaryGap", true).Single();
+        SplitContainer main = form.Controls.Find("benchmarkMainSplit", true).OfType<SplitContainer>().Single();
+        DataGridView grid = form.Controls.Find("benchmarkGrid", true).OfType<DataGridView>().Single();
+        Assert.Equal((int)Math.Round(76 * form.DeviceDpi / 96d), summary.Height);
+        Assert.True(summary.Bounds.Bottom <= gap.Bounds.Top);
+        Assert.True(gap.Bounds.Bottom <= main.Bounds.Top);
+        Assert.True(main.Top >= summary.Bottom + gap.Height);
+        Assert.True(grid.Parent == main.Panel1);
+        Assert.True(grid.Bounds.Top >= 0 && grid.Bounds.Bottom <= grid.Parent.ClientSize.Height);
+        foreach (TableLayoutPanel tile in summary.Controls.OfType<TableLayoutPanel>())
+        {
+            Assert.True(tile.Bounds.Top >= 0 && tile.Bounds.Bottom <= summary.ClientSize.Height, $"Tile {tile.Name} {tile.Bounds} exceeds summary client {summary.ClientSize}.");
+            Assert.True(tile.ClientRectangle.Contains(tile.Controls.Find(tile.Name + "Title", false).OfType<Label>().Single().Bounds));
+        }
+        Assert.True(new Rectangle(Point.Empty, root.ClientSize).Contains(summary.Bounds));
+        Assert.True(new Rectangle(Point.Empty, root.ClientSize).Contains(main.Bounds));
     }
 
     private static void AssertContained(Control control)
