@@ -138,6 +138,21 @@ public sealed class SampleComparisonServiceTests
     }
 
     [Fact]
+    public void RecoveredComparisonTrimsPreRollBackToRequestedInterval()
+    {
+        string arguments = SampleComparisonService.BuildComparisonArguments(
+            "preroll-original.mkv",
+            "encoded.mkv",
+            "comparison.mp4",
+            TimeSpan.FromSeconds(3),
+            TimeSpan.FromSeconds(25));
+
+        Assert.Contains(
+            "[0:v]trim=start=3:duration=25,setpts=PTS-STARTPTS",
+            arguments);
+    }
+
+    [Fact]
     public void StreamCopyArgumentsGenerateTimestampsBeforeOpeningInput()
     {
         string arguments = SampleComparisonService.BuildStreamCopyClipArguments(

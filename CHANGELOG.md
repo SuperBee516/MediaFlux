@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-09-13
+
+### Compare Samples
+
+- Fixed Compare Samples failures when seeked samples begin at problematic video decode boundaries on otherwise valid media.
+- Added bounded tolerant decode recovery and a small pre-roll retry for eligible sample decode failures.
+- Improved Compare Samples diagnostics with sample timestamps, recovery attempts, decode modes, and failure classification.
+- Normal production encoding behavior is unchanged.
+
 ## [1.4.2] - 2026-09-13
 
 ### Encoding Reliability
