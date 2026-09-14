@@ -314,6 +314,49 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
     }
 
     [Fact]
+    public async Task VisualResolvedQueriesArePairScopedAndDecisionsAreMutuallyExclusive()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "visual-resolved-queries"); Directory.CreateDirectory(library);
+        string a = Write(library, "a.mkv", 1000), b = Write(library, "b.mp4", 800), c = Write(library, "c.mp4", 700);
+        AddInventoryAndMetadata(catalog, library, new[] { a, b, c }, _ => ("hevc", 1920, 1080, 60d));
+        ulong[] first = Enumerable.Range(0, 6).Select(i => 0x3030303030303030UL + (ulong)i).ToArray();
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog,
+            new FakeVisualExtractor(_ => first),
+            new LibraryVisualAnalysisOptions(1, 3, 16, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+
+        VisualSimilarityGroupRecord[] all = catalog.QueryVisualGroups(new VisualGroupQuery(IncludeFamilyPairs: true)).Groups.ToArray();
+        Assert.True(all.Length >= 2);
+        VisualSimilarityGroupRecord ab = all.Single(group =>
+            catalog.GetVisualGroupMembers(group.GroupId).Select(member => member.FullPath).ToHashSet()
+                .SetEquals(new[] { a, b }));
+        VisualSimilarityGroupRecord ac = all.Single(group =>
+            catalog.GetVisualGroupMembers(group.GroupId).Select(member => member.FullPath).ToHashSet()
+                .SetEquals(new[] { a, c }));
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(ab.GroupId, ab.SuggestedKeeperFileId, true, true, false));
+        Assert.DoesNotContain(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: false, NotMatch: false, IncludeFamilyPairs: true)).Groups,
+            group => group.GroupId == ab.GroupId);
+        Assert.Contains(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: true, IncludeFamilyPairs: true)).Groups,
+            group => group.GroupId == ab.GroupId);
+        Assert.Contains(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: false, NotMatch: false, IncludeFamilyPairs: true)).Groups,
+            group => group.GroupId == ac.GroupId);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(ab.GroupId, ab.SuggestedKeeperFileId, true, false, true));
+        VisualSimilarityGroupRecord notMatch = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: true, IncludeFamilyPairs: true)).Groups);
+        Assert.Equal(ab.GroupId, notMatch.GroupId);
+        Assert.False(notMatch.Ignored);
+        Assert.Contains(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: false, NotMatch: false, IncludeFamilyPairs: true)).Groups,
+            group => group.GroupId == ac.GroupId);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(ab.GroupId, ab.SuggestedKeeperFileId, true, true, false));
+        VisualSimilarityGroupRecord ignored = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: true, IncludeFamilyPairs: true)).Groups);
+        Assert.Equal(ab.GroupId, ignored.GroupId);
+        Assert.False(ignored.NotMatch);
+    }
+
+    [Fact]
     public async Task DeleteBothUsesDurablePlanRevalidatesBothFilesAndAuditsEachAction()
     {
         using SqliteLibraryCatalog catalog = CreateCatalog();
@@ -1088,12 +1131,26 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 Assert.Empty(form.BuildVisualCleanupPreviewAsync(new[] { initialGroupId }, deleteBoth: false).GetAwaiter().GetResult().Items);
                 stage = "ignore button assertion";
                 Assert.Equal("Restore Ignored Match", Descendants<Button>(visualActions).Single(button => button.Name == "VisualIgnoredButton").Text);
+                reviewFilter.SelectedIndex = 0;
+                PumpTask(InvokePrivateTaskOnUi(form, form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpUntil(() => groups.Rows.Count == 1);
+                Assert.DoesNotContain(groups.Rows.Cast<DataGridViewRow>(), row =>
+                    ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                reviewFilter.SelectedIndex = 3;
+                PumpTask(InvokePrivateTaskOnUi(form, form, "RefreshVisualGroupsAsync", new object?[] { initialGroupId }));
+                PumpUntil(() => groups.Rows.Count == 1);
+                Assert.Equal(initialGroupId, ((VisualSimilarityGroupRecord)groups.Rows[0].Tag!).GroupId);
+                groups.Rows[0].Selected = true;
+                groups.CurrentCell = groups.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 stage = "restore ignore command";
                 PumpTask(InvokePrivateTaskOnUi(form, form, "ToggleSelectedVisualIgnoredAsync"));
                 stage = "restore ignore assertion";
-                Assert.False(groups.Rows.Cast<DataGridViewRow>()
-                    .Select(row => (VisualSimilarityGroupRecord)row.Tag!)
-                    .Single(group => group.GroupId == initialGroupId).Ignored);
+                reviewFilter.SelectedIndex = 0;
+                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpUntil(() => groups.Rows.Count == 2);
+                Assert.Contains(groups.Rows.Cast<DataGridViewRow>(), row =>
+                    ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                Assert.False(catalog.GetVisualGroup(initialGroupId)!.Ignored);
                 PumpUiIdle(form);
 
                 stage = "cleanup preview command";

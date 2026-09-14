@@ -550,8 +550,18 @@ namespace MediaFlux
         private VisualGroupQuery BuildVisualQuery()
         {
             bool? reviewed = _visualReview.SelectedIndex switch { 1 => false, 2 => true, _ => null };
-            bool? ignored = _visualReview.SelectedIndex == 3 ? true : null;
-            bool? notMatch = _visualReview.SelectedIndex switch { 4 => true, 5 => null, _ => false };
+            bool? ignored = _visualReview.SelectedIndex switch
+            {
+                0 or 1 or 2 => false,
+                3 => true,
+                _ => null
+            };
+            bool? notMatch = _visualReview.SelectedIndex switch
+            {
+                0 or 1 or 2 => false,
+                4 => true,
+                _ => null
+            };
             bool? codec = _visualCodecDifference.SelectedIndex switch { 1 => true, 2 => false, _ => null };
             bool? resolution = _visualResolutionDifference.SelectedIndex switch { 1 => true, 2 => false, _ => null };
             long? location = _visualLocation.SelectedItem is LocationChoice choice && choice.Id > 0 ? choice.Id : null;

@@ -129,16 +129,20 @@ namespace MediaFlux
         {
             if (SelectedVisualGroup() is not { } group)
                 return;
+            bool ignored = !group.Ignored;
             await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, !group.Ignored, group.NotMatch)));
+                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, ignored,
+                    ignored ? false : group.NotMatch)));
             await RefreshVisualGroupsAsync(group.GroupId);
         }
 
         private async Task ToggleSelectedVisualNotMatchAsync()
         {
             if (SelectedVisualGroup() is not { } group) return;
+            bool notMatch = !group.NotMatch;
             await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, group.Reviewed, group.Ignored, !group.NotMatch)));
+                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, group.Reviewed,
+                    notMatch ? false : group.Ignored, notMatch)));
             await RefreshVisualGroupsAsync();
         }
 
