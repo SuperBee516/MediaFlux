@@ -921,15 +921,18 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
-    public void CfrRecoveryUsesHostNormalizationButRetainsNvenc()
+    public void TimelineRecoveryUsesExactFrameIndexedTimestampsAndRetainsNvenc()
     {
         string arguments = CreateBuilder().Build(CreateRequest(
             "hevc_nvenc", useGpu: true, tenBit: true, sourcePixelFormat: "yuv420p",
-            sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideoWithCfrNormalization,
-            disableHardwareDecode: true, recoveryFrameRate: 30000d / 1001d));
+            sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction,
+            disableHardwareDecode: true, recoveryFrameRateRational: "30000/1001",
+            timestampReconstructionFilter: "setpts=N*1001/30000/TB"));
 
-        Assert.Contains("-fps_mode cfr", arguments);
-        Assert.Contains("-r 29.97003", arguments);
+        Assert.Contains("setpts=N*1001/30000/TB", arguments);
+        Assert.Contains("-fps_mode passthrough", arguments);
+        Assert.DoesNotContain("-fps_mode cfr", arguments);
+        Assert.DoesNotContain(" -r ", arguments);
         Assert.DoesNotContain("-hwaccel cuda", arguments);
         Assert.Contains("hevc_nvenc", arguments);
     }
@@ -962,7 +965,8 @@ public sealed class FfmpegCommandBuilderTests
         FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
         VideoOutputGeometryPlan? plannedVideoGeometry = null,
         bool nvencCudaFormatConversionSupported = false,
-        double? recoveryFrameRate = null)
+        string? recoveryFrameRateRational = null,
+        string? timestampReconstructionFilter = null)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -994,7 +998,8 @@ public sealed class FfmpegCommandBuilderTests
              sourceDecodeMode,
             plannedVideoGeometry,
             nvencCudaFormatConversionSupported,
-            recoveryFrameRate);
+             recoveryFrameRateRational,
+             timestampReconstructionFilter);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -1025,7 +1030,8 @@ public sealed class FfmpegCommandBuilderTests
         FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
         VideoOutputGeometryPlan? plannedVideoGeometry = null,
         bool nvencCudaFormatConversionSupported = false,
-        double? recoveryFrameRate = null)
+        string? recoveryFrameRateRational = null,
+        string? timestampReconstructionFilter = null)
     {
 
         return new FfmpegCommandRequest
@@ -1075,7 +1081,8 @@ public sealed class FfmpegCommandBuilderTests
                 nvencCudaFormatConversionSupported,
             DisableHardwareDecode = disableHardwareDecode,
             SourceDecodeMode = sourceDecodeMode,
-            RecoveryFrameRate = recoveryFrameRate,
+            RecoveryFrameRateRational = recoveryFrameRateRational,
+            TimestampReconstructionFilter = timestampReconstructionFilter,
             SourcePixelFormat = sourcePixelFormat,
             PlannedVideoGeometry = plannedVideoGeometry,
             SplitSource = splitSource,

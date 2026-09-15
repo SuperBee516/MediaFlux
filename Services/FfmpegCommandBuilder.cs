@@ -66,7 +66,8 @@ namespace MediaFlux.Services
             bool requiresVideoFilter =
                 !string.IsNullOrEmpty(scaleExpression) ||
                 string.IsNullOrWhiteSpace(request.SourcePixelFormat) ||
-                sourceIsTenBit != wantsTenBit || !string.IsNullOrEmpty(restorationFilterChain);
+                sourceIsTenBit != wantsTenBit || !string.IsNullOrEmpty(restorationFilterChain) ||
+                !string.IsNullOrEmpty(request.TimestampReconstructionFilter);
 
             var context = new EncoderArgumentContext
             {
@@ -78,6 +79,7 @@ namespace MediaFlux.Services
                 OutputPixelFormat = outputPixelFormat,
                 ScaleExpression = scaleExpression,
                 RestorationFilterChain = restorationFilterChain,
+                TimestampReconstructionFilter = request.TimestampReconstructionFilter ?? "",
                 Preset = validated.Preset,
                 QualityValue = validated.QualityValue,
                 ConcurrentEncoderSessions =
@@ -167,17 +169,19 @@ namespace MediaFlux.Services
 
             provider.AppendVideoFilters(builder, context);
 
-            if (request.SourceDecodeMode == FfmpegSourceDecodeMode.RecoverVideoWithCfrNormalization)
+            if (request.SourceDecodeMode == FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction)
             {
-                if (request.RecoveryFrameRate is not > 0 || !double.IsFinite(request.RecoveryFrameRate.Value))
-                    throw new InvalidOperationException("CFR recovery requires a finite source frame rate.");
+                if (!request.DisableHardwareDecode)
+                    throw new InvalidOperationException("Timestamp reconstruction requires software video decode.");
+                if (!RationalFrameRate.TryParse(request.RecoveryFrameRateRational, out RationalFrameRate rate))
+                    throw new InvalidOperationException("Timestamp reconstruction requires an exact rational source frame rate.");
+                if (string.IsNullOrWhiteSpace(request.TimestampReconstructionFilter))
+                    throw new InvalidOperationException("Timestamp reconstruction requires a frame-index timestamp filter.");
 
-                // This is intentionally output-scoped and recovery-only. Software
-                // decoding supplies host timestamps; CFR output synchronization at
-                // the authoritative source rate prevents the GPU decode path from
-                // silently losing a tail of frames while NVENC remains selected.
-                builder.Append("-fps_mode cfr ");
-                builder.Append($"-r {request.RecoveryFrameRate.Value.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture)} ");
+                // The filter supplies one timestamp per decoded frame. Passthrough
+                // prevents FFmpeg's output synchronizer from manufacturing or
+                // dropping frames after the timeline has been reconstructed.
+                builder.Append("-fps_mode passthrough ");
             }
 
             if (request.TargetMb is > 0)

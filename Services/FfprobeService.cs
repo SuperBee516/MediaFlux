@@ -271,6 +271,7 @@ namespace MediaFlux.Services
                     FrameCount = GetPositiveLong(stream, "nb_frames"),
                     AverageFrameRate = ParseFrameRate(GetString(stream, "avg_frame_rate"), ""),
                     NominalFrameRate = ParseFrameRate(GetString(stream, "r_frame_rate"), ""),
+                    NominalFrameRateRational = GetString(stream, "r_frame_rate"),
                     FrameRate = ParseFrameRate(
                         GetString(stream, "avg_frame_rate"),
                         GetString(stream, "r_frame_rate")),

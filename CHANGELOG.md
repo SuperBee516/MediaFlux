@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-15
+
+### Encoding Reliability
+
+- Added conservative recovery for localized malformed CFR source timelines capable of causing large frame loss during otherwise successful FFmpeg encodes.
+- Recovery reconstructs the provable presentation timeline using deterministic frame-index timestamps while preserving NVENC and encode intent.
+- Fixed a lifecycle issue that could incorrectly report `FinalizationFailed` after recovery, validation, promotion, and final verification had actually succeeded.
+- Strict output validation remains enforced.
+
 ## [1.5.0] - 2026-09-15
 
 ### Encoding Reliability

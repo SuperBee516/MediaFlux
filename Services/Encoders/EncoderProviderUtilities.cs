@@ -12,6 +12,7 @@ namespace MediaFlux.Services.Encoders
             if (!context.RequiresVideoFilter && string.IsNullOrEmpty(context.RestorationFilterChain))
                 return;
             var filters = new List<string>();
+            if (!string.IsNullOrEmpty(context.TimestampReconstructionFilter)) filters.Add(context.TimestampReconstructionFilter);
             if (!string.IsNullOrEmpty(context.RestorationFilterChain)) filters.Add(context.RestorationFilterChain);
             if (!string.IsNullOrEmpty(context.ScaleExpression)) filters.Add($"scale={context.ScaleExpression}:flags=lanczos");
             filters.Add($"format={context.OutputPixelFormat}");

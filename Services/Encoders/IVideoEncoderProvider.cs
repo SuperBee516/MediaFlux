@@ -12,6 +12,7 @@ namespace MediaFlux.Services.Encoders
         public required string? TenBitPixelFormat { get; init; }
         public required string ScaleExpression { get; init; }
         public string RestorationFilterChain { get; init; } = "";
+        public string TimestampReconstructionFilter { get; init; } = "";
         public required string Preset { get; init; }
         public required int QualityValue { get; init; }
         public required bool ConcurrentEncoderSessions { get; init; }

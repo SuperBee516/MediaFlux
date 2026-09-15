@@ -1385,113 +1385,131 @@ namespace MediaFlux.Services
                         videoRecoveryAttempted,
                         requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase));
                 if (!disableAutomaticFfmpegRecovery &&
-                    finalization.FailureKind == EncodeFinalizationFailureKind.Validation && frameRecovery.Eligible)
+                    finalization.FailureKind == EncodeFinalizationFailureKind.Validation && frameRecovery.Eligible &&
+                    sourceVideo is not null)
                 {
                     EncodeOutputValidationFailureEvidence evidence = frameRecovery.FrameDeficit!;
-                    _log?.Invoke(
-                        "[EncodingRecovery] Primary encode completed but output validation detected a material frame deficit while duration remained consistent with the authoritative source timeline; retrying once with software decode and CFR/timestamp normalization. " +
-                        $"{frameRecovery.Evidence}; timing={sourceTiming!.Classification}; reason={EncodingRecoveryFailureClass.FrameCadenceValidationFailure}; strategy=software-decode,cfr-output-at-source-rate.");
-                    callback("[MediaFlux] Recovering video once with software decode and CFR/timestamp normalization; NVENC retained.");
+                    SourceTimelineRecoveryAnalysis timelineRecovery =
+                        await new LocalizedSourceTimelineAnalysisService(_ffprobePath, log: _log)
+                            .AnalyzeAsync(inputSource.SourcePath, sourceVideo, programDuration.DurationSeconds, cancellationToken)
+                            .ConfigureAwait(false);
                     recoveryDiagnostics += $"Frame/cadence validation evidence: {frameRecovery.Evidence}.{Environment.NewLine}";
-                    if (TryDeleteFailedStagingOutput(output))
+                    recoveryDiagnostics += $"Deep timing diagnosis: {timelineRecovery.DescribeEvidence()}; eligible={timelineRecovery.IsEligible}; reason={timelineRecovery.Reason}.{Environment.NewLine}";
+                    if (timelineRecovery.IsEligible && timelineRecovery.NominalFrameRate is { } exactRate)
                     {
-                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                        videoRecoveryAttempted = true;
+                        string timestampFilter = $"setpts=N*{exactRate.Denominator}/{exactRate.Numerator}/TB";
+                        _log?.Invoke(
+                            "[EncodingRecovery] Primary encode completed but output validation detected a material frame deficit while duration remained consistent with the authoritative source timeline. " +
+                            $"Deep timing analysis detected localized source presentation-timeline corruption; retrying once with deterministic frame-index timestamp reconstruction at {exactRate.Text} while retaining NVENC. " +
+                            $"{frameRecovery.Evidence}; diagnosis={timelineRecovery.DescribeEvidence()}; reason={EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption}; strategy=software-decode,setpts,fps-mode-passthrough.");
+                        callback("[MediaFlux] Recovering video once with deterministic timestamp reconstruction; NVENC retained.");
+                        if (TryDeleteFailedStagingOutput(output))
                         {
-                            ffArgs = BuildFfmpegArgs(
-                                inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
-                                encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
-                                mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
-                                containerDecision, forceMp4CompatibleAudio, totalDuration,
-                                qualityValue, encoderSelection, sampleStart, sampleDuration,
-                                sourcePixelFormat, recoveryFrameRate: sourceVideo?.NominalFrameRate ?? sourceVideo?.FrameRate,
-                                disableHardwareDecode: true, restoration: restoration,
-                                splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
-                                restorationFilterOverride: aiPlan?.PostAiFilterChain,
-                                plannedVideoGeometry: plannedOutputGeometry,
-                                sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideoWithCfrNormalization);
-                            scope.Complete();
-                        }
-                        pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
-                        _log?.Invoke($"[EncodingRecovery] Recovery strategy: software decode -> host CFR/timestamp normalization at {evidence.FrameRate:0.######} fps -> NVENC; ffmpeg arguments: {ffArgs}");
-                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
-                        {
-                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
-                            scope.Complete();
-                        }
-                        if (runResult.ExitCode == 0)
-                        {
-                            finalization = await _finalizationService.FinalizeAsync(
-                                BuildValidationRequest(), finalizationStatusCallback, cancellationToken).ConfigureAwait(false);
-                            RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.FrameCadenceValidationFailure,
-                                EncodingRecoveryMode.SoftwareDecodeWithNvencAndCfrNormalization, 1,
-                                finalization.Success ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
-                                frameRecovery.Evidence + $"; recovered-validation={(finalization.Success ? "passed" : "failed")}");
-                            validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
-                            finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
-                            PublishExecutionOutcome();
+                            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                            {
+                                ffArgs = BuildFfmpegArgs(
+                                    inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                    encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                    mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                    containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                    qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                    sourcePixelFormat, recoveryFrameRateRational: exactRate.Text,
+                                    timestampReconstructionFilter: timestampFilter,
+                                    disableHardwareDecode: true, restoration: restoration,
+                                    splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                    restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                    plannedVideoGeometry: plannedOutputGeometry,
+                                    sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
+                                scope.Complete();
+                            }
+                            pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
+                            _log?.Invoke($"[EncodingRecovery] Recovery strategy: software decode -> {timestampFilter} -> NVENC with -fps_mode passthrough; ffmpeg arguments: {ffArgs}");
+                            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
+                            {
+                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                                scope.Complete();
+                            }
+                            if (runResult.ExitCode == 0)
+                            {
+                                finalization = await _finalizationService.FinalizeAsync(
+                                    BuildValidationRequest(), finalizationStatusCallback, cancellationToken).ConfigureAwait(false);
+                                RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
+                                    EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction, 1,
+                                    finalization.Success ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                                    timelineRecovery.DescribeEvidence() + $"; recovered-validation={(finalization.Success ? "passed" : "failed")}");
+                                validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                                finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                                PublishExecutionOutcome();
+                            }
+                            else
+                            {
+                                RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
+                                    EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction, 1,
+                                    EncodingRecoveryResult.Failed, timelineRecovery.DescribeEvidence());
+                                finalization = new EncodeFinalizationResult
+                                {
+                                    Success = false,
+                                    FailureKind = EncodeFinalizationFailureKind.Validation,
+                                    ErrorMessage = "The one-time deterministic timestamp reconstruction recovery encode failed; the recovered output was not finalized. The original source was retained.",
+                                    FinalOutputPath = finalOutput,
+                                    StagingPath = output,
+                                    RecoverableOutputPath = File.Exists(output) ? output : ""
+                                };
+                                validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                                finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                                PublishExecutionOutcome();
+                            }
                         }
                         else
                         {
-                            RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.FrameCadenceValidationFailure,
-                                EncodingRecoveryMode.SoftwareDecodeWithNvencAndCfrNormalization, 1,
-                                EncodingRecoveryResult.Failed, frameRecovery.Evidence);
-                            finalization = new EncodeFinalizationResult
-                            {
-                                Success = false,
-                                FailureKind = EncodeFinalizationFailureKind.Validation,
-                                ErrorMessage = "The one-time CFR frame-deficit recovery encode failed; the recovered output was not finalized. The original source was retained.",
-                                FinalOutputPath = finalOutput,
-                                StagingPath = output,
-                                RecoverableOutputPath = File.Exists(output) ? output : ""
-                            };
-                            validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
-                            finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
-                            PublishExecutionOutcome();
+                            RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
+                                EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction, 1,
+                                EncodingRecoveryResult.NotStarted, "Failed staged output could not be removed safely.");
                         }
                     }
-                    else
-                    {
-                        RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.FrameCadenceValidationFailure,
-                            EncodingRecoveryMode.SoftwareDecodeWithNvencAndCfrNormalization, 1,
-                            EncodingRecoveryResult.NotStarted, "Failed staged output could not be removed safely.");
-                    }
                 }
-                terminalResult = finalization.FailureKind == EncodeFinalizationFailureKind.Validation
-                    ? EncodingTerminalResult.ValidationFailed
-                    : EncodingTerminalResult.FinalizationFailed;
-                PublishExecutionOutcome();
-                FfmpegSourceDecodeCorruption sourceDecodeCorruption =
-                    FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
-                if (finalization.FailureKind == EncodeFinalizationFailureKind.Validation &&
-                    IsFrameDeficitValidationFailure(finalization.ErrorMessage) &&
-                    sourceDecodeCorruption.IsReliable)
+                // A recovery finalization replaces the primary attempt as the
+                // authoritative result. Preserve the primary failure in recovery
+                // diagnostics, but never turn a successfully finalized recovery
+                // into a terminal failure.
+                if (!finalization.Success)
                 {
-                    _log?.Invoke($"[EncodingService] Source decode corruption was corroborated by rejected output validation: {sourceDecodeCorruption.DescribeEvidence()}.");
-                    finalization = new EncodeFinalizationResult
-                    {
-                        Success = false,
-                        FailureKind = finalization.FailureKind,
-                        ErrorMessage = "Output validation rejected substantial missing video frames. FFmpeg also reported source H.264 bitstream/decode failures, so the source video contains undecodable or corrupt data; MediaFlux did not finalize the output.",
-                        FinalOutputPath = finalization.FinalOutputPath,
-                        StagingPath = finalization.StagingPath,
-                        RecoverableOutputPath = finalization.RecoverableOutputPath,
-                        StagedValidationResult = finalization.StagedValidationResult,
-                        PromotedValidationResult = finalization.PromotedValidationResult
-                    };
-                    validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
-                    finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                    terminalResult = ResolveTerminalResult(finalization, completedAfterRecovery: false);
                     PublishExecutionOutcome();
+                    FfmpegSourceDecodeCorruption sourceDecodeCorruption =
+                        FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
+                    if (finalization.FailureKind == EncodeFinalizationFailureKind.Validation &&
+                        IsFrameDeficitValidationFailure(finalization.ErrorMessage) &&
+                        sourceDecodeCorruption.IsReliable)
+                    {
+                        _log?.Invoke($"[EncodingService] Source decode corruption was corroborated by rejected output validation: {sourceDecodeCorruption.DescribeEvidence()}.");
+                        finalization = new EncodeFinalizationResult
+                        {
+                            Success = false,
+                            FailureKind = finalization.FailureKind,
+                            ErrorMessage = "Output validation rejected substantial missing video frames. FFmpeg also reported source H.264 bitstream/decode failures, so the source video contains undecodable or corrupt data; MediaFlux did not finalize the output.",
+                            FinalOutputPath = finalization.FinalOutputPath,
+                            StagingPath = finalization.StagingPath,
+                            RecoverableOutputPath = finalization.RecoverableOutputPath,
+                            StagedValidationResult = finalization.StagedValidationResult,
+                            PromotedValidationResult = finalization.PromotedValidationResult
+                        };
+                        validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                        finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                        PublishExecutionOutcome();
+                    }
+                    _log?.Invoke(
+                        $"[EncodingService] Finalization failed: {finalization.ErrorMessage}");
+                    throw new EncodeFinalizationException(finalization);
                 }
-                _log?.Invoke(
-                    $"[EncodingService] Finalization failed: {finalization.ErrorMessage}");
-                throw new EncodeFinalizationException(finalization);
             }
 
             _log?.Invoke(
                 $"[EncodingService] Validated and finalized '{finalization.FinalOutputPath}'.");
-            terminalResult = recoveryOutcomes.Any(outcome => outcome.Result == EncodingRecoveryResult.Succeeded)
-                ? EncodingTerminalResult.CompletedAfterRecovery
-                : EncodingTerminalResult.Completed;
+            terminalResult = ResolveTerminalResult(
+                finalization,
+                recoveryOutcomes.Any(outcome => outcome.Result == EncodingRecoveryResult.Succeeded));
             PublishExecutionOutcome();
             EncodingExecutionOutcome completedOutcome = new(
                 shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult);
@@ -1523,6 +1541,21 @@ namespace MediaFlux.Services
                 performance.LogSummary(_log);
                 throw;
             }
+        }
+
+        internal static EncodingTerminalResult ResolveTerminalResult(
+            EncodeFinalizationResult finalization,
+            bool completedAfterRecovery)
+        {
+            ArgumentNullException.ThrowIfNull(finalization);
+            if (!finalization.Success)
+                return finalization.FailureKind == EncodeFinalizationFailureKind.Validation
+                    ? EncodingTerminalResult.ValidationFailed
+                    : EncodingTerminalResult.FinalizationFailed;
+
+            return completedAfterRecovery
+                ? EncodingTerminalResult.CompletedAfterRecovery
+                : EncodingTerminalResult.Completed;
         }
 
         private static string DescribeUnsupportedDataStream(MediaProbeStreamInfo stream)
@@ -1933,7 +1966,8 @@ namespace MediaFlux.Services
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
             string? sourcePixelFormat = null,
-            double? recoveryFrameRate = null,
+            string? recoveryFrameRateRational = null,
+            string? timestampReconstructionFilter = null,
             bool preferNvencGpuResidentFrames = true,
             bool disableHardwareDecode = false,
             FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
@@ -2028,7 +2062,8 @@ namespace MediaFlux.Services
                 DisableHardwareDecode = disableHardwareDecode,
                 SourceDecodeMode = sourceDecodeMode,
                 SourcePixelFormat = sourcePixelFormat ?? ""
-                ,RecoveryFrameRate = recoveryFrameRate
+                ,RecoveryFrameRateRational = recoveryFrameRateRational
+                ,TimestampReconstructionFilter = timestampReconstructionFilter
                 ,SplitSource = splitSource
                 ,RestorationFilterOverride = restorationFilterOverride
                 ,PlannedVideoGeometry = plannedVideoGeometry

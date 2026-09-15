@@ -57,6 +57,8 @@ namespace MediaFlux.Models
         public double? AverageFrameRate { get; init; }
         /// <summary>Nominal packet/frame rate reported by FFprobe (r_frame_rate).</summary>
         public double? NominalFrameRate { get; init; }
+        /// <summary>Exact nominal packet/frame rate reported by FFprobe (r_frame_rate).</summary>
+        public string NominalFrameRateRational { get; init; } = "";
         public double? FrameRate { get; init; }
         /// <summary>Container-declared frame count when available; null means the container does not provide one.</summary>
         public long? FrameCount { get; init; }
