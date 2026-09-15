@@ -4,7 +4,8 @@ namespace MediaFlux.Services;
 
 internal sealed record FfmpegVideoDecodeRecoveryDecision(
     bool Eligible,
-    string Evidence)
+    string Evidence,
+    EncodeOutputValidationFailureEvidence? FrameDeficit = null)
 {
     public static FfmpegVideoDecodeRecoveryDecision NotEligible(string reason) =>
         new(false, reason);
@@ -13,6 +14,35 @@ internal sealed record FfmpegVideoDecodeRecoveryDecision(
 /// <summary>Pure, classifier-backed gate for the single Intelligent video recovery retry.</summary>
 internal static class FfmpegVideoDecodeRecoveryPolicy
 {
+    public static FfmpegVideoDecodeRecoveryDecision EvaluateFrameDeficit(
+        EncodeOutputValidationFailureEvidence? evidence,
+        ContainerCompatibilityPolicy policy,
+        SourceTimingAnalysis? sourceTiming,
+        bool cancellationRequested,
+        bool recoveryAlreadyAttempted,
+        bool requestedHardwareEncoder)
+    {
+        if (policy != ContainerCompatibilityPolicy.Intelligent)
+            return FfmpegVideoDecodeRecoveryDecision.NotEligible("compatibility policy is not Intelligent");
+        if (cancellationRequested)
+            return FfmpegVideoDecodeRecoveryDecision.NotEligible("cancellation was requested");
+        if (recoveryAlreadyAttempted)
+            return FfmpegVideoDecodeRecoveryDecision.NotEligible("video recovery was already attempted");
+        if (!requestedHardwareEncoder)
+            return FfmpegVideoDecodeRecoveryDecision.NotEligible("the requested encoder is not hardware NVENC");
+        if (sourceTiming?.Classification != SourceTimingClassification.Cfr ||
+            sourceTiming.AiEligibility != AiTimingEligibility.EligibleCurrentCfrPipeline)
+            return FfmpegVideoDecodeRecoveryDecision.NotEligible("source is not eligible for the current CFR pipeline");
+        if (evidence is null)
+            return FfmpegVideoDecodeRecoveryDecision.NotEligible("authoritative frame-deficit validation evidence is absent");
+
+        return new(true,
+            $"source={evidence.ExpectedFrameCount}; output={evidence.ActualFrameCount}; " +
+            $"delta={evidence.FrameDelta}; deficit={evidence.DeficitSeconds:0.###}s; " +
+            $"source-duration={evidence.SourceDurationSeconds:0.###}s; output-duration={evidence.OutputDurationSeconds:0.###}s",
+            evidence);
+    }
+
     public static FfmpegVideoDecodeRecoveryDecision Evaluate(
         string? standardError,
         ContainerCompatibilityPolicy policy,

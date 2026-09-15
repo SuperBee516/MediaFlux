@@ -43,6 +43,49 @@ public sealed class FfmpegVideoDecodeRecoveryPolicyTests
         Assert.False(Evaluate(diagnostics).Eligible);
     }
 
+    [Fact]
+    public void MaterialCfrValidationDeficitAllowsOneNvencRecovery()
+    {
+        var evidence = new EncodeOutputValidationFailureEvidence
+        {
+            SourceProbe = new MediaProbeResult { Success = true },
+            OutputProbe = new MediaProbeResult { Success = true },
+            ExpectedFrameCount = 64_729,
+            ActualFrameCount = 63_380,
+            FrameDelta = -1_349,
+            FrameRate = 30000d / 1001d,
+            DeficitSeconds = 45.011,
+            AllowedSeconds = .75,
+            SourceDurationSeconds = 2159.747,
+            OutputDurationSeconds = 2159.758
+        };
+        SourceTimingAnalysis timing = new(SourceTimingClassification.Cfr, AiTimingEligibility.EligibleCurrentCfrPipeline, 80, 30000d / 1001d, 30000d / 1001d, 0, false, false, "stable");
+
+        FfmpegVideoDecodeRecoveryDecision decision = FfmpegVideoDecodeRecoveryPolicy.EvaluateFrameDeficit(
+            evidence, ContainerCompatibilityPolicy.Intelligent, timing, false, false, true);
+
+        Assert.True(decision.Eligible);
+        Assert.Same(evidence, decision.FrameDeficit);
+        Assert.False(FfmpegVideoDecodeRecoveryPolicy.EvaluateFrameDeficit(evidence, ContainerCompatibilityPolicy.Intelligent, timing, false, true, true).Eligible);
+        Assert.False(FfmpegVideoDecodeRecoveryPolicy.EvaluateFrameDeficit(evidence, ContainerCompatibilityPolicy.Intelligent, timing, false, false, false).Eligible);
+    }
+
+    [Theory]
+    [InlineData(SourceTimingClassification.Vfr)]
+    [InlineData(SourceTimingClassification.CfrMinorVariance)]
+    [InlineData(SourceTimingClassification.IrregularUnsafe)]
+    public void NonCurrentCfrTimingDoesNotTriggerFrameDeficitRecovery(SourceTimingClassification classification)
+    {
+        var evidence = new EncodeOutputValidationFailureEvidence
+        {
+            SourceProbe = new MediaProbeResult { Success = true }, OutputProbe = new MediaProbeResult { Success = true },
+            ExpectedFrameCount = 3000, ActualFrameCount = 2900, FrameDelta = -100, FrameRate = 30,
+            DeficitSeconds = 3.33, AllowedSeconds = .75, SourceDurationSeconds = 100, OutputDurationSeconds = 100
+        };
+        var timing = new SourceTimingAnalysis(classification, AiTimingEligibility.PotentialFutureTimestampAware, 80, 30, 30, 0, false, false, "not current CFR");
+        Assert.False(FfmpegVideoDecodeRecoveryPolicy.EvaluateFrameDeficit(evidence, ContainerCompatibilityPolicy.Intelligent, timing, false, false, true).Eligible);
+    }
+
     private static FfmpegVideoDecodeRecoveryDecision Evaluate(
         string diagnostics,
         ContainerCompatibilityPolicy policy = ContainerCompatibilityPolicy.Intelligent,

@@ -11,8 +11,8 @@ public enum EncodingPreflightCheckKind { SourceProbe, SourceTiming, SubtitleConv
 public enum EncodingPreflightDisposition { Required, NotRequired }
 public enum EncodingPreflightStatus { Passed, Failed, Skipped }
 public enum EncodingRecoveryKind { VideoDecode, AudioStream, HardwareDecode, GpuFramePipeline }
-public enum EncodingRecoveryFailureClass { SourceVideoCorruption, SourceAudioCorruption, NvdecCudaFailure, GpuFramePipelineFailure, Cancellation, StorageFailure, NvencFailure, SourceTruncation, Unknown }
-public enum EncodingRecoveryMode { Strict, Tolerant, AudioTranscode, SoftwareDecodeWithNvenc, SoftwareFrames }
+public enum EncodingRecoveryFailureClass { SourceVideoCorruption, SourceAudioCorruption, NvdecCudaFailure, GpuFramePipelineFailure, FrameCadenceValidationFailure, Cancellation, StorageFailure, NvencFailure, SourceTruncation, Unknown }
+public enum EncodingRecoveryMode { Strict, Tolerant, AudioTranscode, SoftwareDecodeWithNvenc, SoftwareDecodeWithNvencAndCfrNormalization, SoftwareFrames }
 public enum EncodingRecoveryResult { NotAttempted, Succeeded, Failed, NotStarted }
 public enum EncodingLifecycleStatus { NotRequired, NotRun, Passed, Failed, Skipped, Canceled }
 public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, PreflightRejected, EncodeFailed, RecoveryFailed, ValidationFailed, FinalizationFailed, Canceled }

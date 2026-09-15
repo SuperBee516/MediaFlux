@@ -6,7 +6,8 @@ namespace MediaFlux.Services
     {
         Strict,
         RecoverAudio,
-        RecoverVideo
+        RecoverVideo,
+        RecoverVideoWithCfrNormalization
     }
 
     /// <summary>Maps replacement video separately from the original ancillary streams.</summary>
@@ -49,6 +50,7 @@ namespace MediaFlux.Services
         public bool DisableHardwareDecode { get; init; }
         public FfmpegSourceDecodeMode SourceDecodeMode { get; init; } = FfmpegSourceDecodeMode.Strict;
         public string SourcePixelFormat { get; init; } = "";
+        public double? RecoveryFrameRate { get; init; }
         public VideoOutputGeometryPlan? PlannedVideoGeometry { get; init; }
         public TimeSpan? SampleStart { get; init; }
         public TimeSpan? SampleDuration { get; init; }

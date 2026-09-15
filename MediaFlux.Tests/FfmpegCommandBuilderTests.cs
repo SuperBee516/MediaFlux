@@ -920,6 +920,20 @@ public sealed class FfmpegCommandBuilderTests
         Assert.DoesNotContain("-map 0:t?", arguments);
     }
 
+    [Fact]
+    public void CfrRecoveryUsesHostNormalizationButRetainsNvenc()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, tenBit: true, sourcePixelFormat: "yuv420p",
+            sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideoWithCfrNormalization,
+            disableHardwareDecode: true, recoveryFrameRate: 30000d / 1001d));
+
+        Assert.Contains("-fps_mode cfr", arguments);
+        Assert.Contains("-r 29.97003", arguments);
+        Assert.DoesNotContain("-hwaccel cuda", arguments);
+        Assert.Contains("hevc_nvenc", arguments);
+    }
+
     private static FfmpegCommandRequest CreateRequest(
         string ffmpegCodec,
         bool useGpu,
@@ -947,7 +961,8 @@ public sealed class FfmpegCommandBuilderTests
         OutputContainerDecision? containerDecision = null,
         FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
         VideoOutputGeometryPlan? plannedVideoGeometry = null,
-        bool nvencCudaFormatConversionSupported = false)
+        bool nvencCudaFormatConversionSupported = false,
+        double? recoveryFrameRate = null)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -977,8 +992,9 @@ public sealed class FfmpegCommandBuilderTests
              disableHardwareDecode,
              containerDecision,
              sourceDecodeMode,
-             plannedVideoGeometry,
-             nvencCudaFormatConversionSupported);
+            plannedVideoGeometry,
+            nvencCudaFormatConversionSupported,
+            recoveryFrameRate);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -1008,7 +1024,8 @@ public sealed class FfmpegCommandBuilderTests
         OutputContainerDecision? containerDecision = null,
         FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
         VideoOutputGeometryPlan? plannedVideoGeometry = null,
-        bool nvencCudaFormatConversionSupported = false)
+        bool nvencCudaFormatConversionSupported = false,
+        double? recoveryFrameRate = null)
     {
 
         return new FfmpegCommandRequest
@@ -1058,6 +1075,7 @@ public sealed class FfmpegCommandBuilderTests
                 nvencCudaFormatConversionSupported,
             DisableHardwareDecode = disableHardwareDecode,
             SourceDecodeMode = sourceDecodeMode,
+            RecoveryFrameRate = recoveryFrameRate,
             SourcePixelFormat = sourcePixelFormat,
             PlannedVideoGeometry = plannedVideoGeometry,
             SplitSource = splitSource,

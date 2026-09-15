@@ -285,7 +285,19 @@ namespace MediaFlux.Services
 
             string validationError = ValidateProbe(request, sourceProbe, outputProbe, _log);
             if (!string.IsNullOrWhiteSpace(validationError))
-                return Failed(validationError);
+            {
+                EncodeOutputValidationFailureEvidence? failureEvidence =
+                    validationError.Contains("video frames versus", StringComparison.OrdinalIgnoreCase) &&
+                    validationError.Contains("frame deficit", StringComparison.OrdinalIgnoreCase)
+                        ? TryGetMaterialFrameDeficitEvidence(request, sourceProbe, outputProbe)
+                        : null;
+                return new EncodeOutputValidationResult
+                {
+                    Success = false,
+                    ErrorMessage = validationError,
+                    FailureEvidence = failureEvidence
+                };
+            }
 
             try
             {
@@ -1042,5 +1054,49 @@ namespace MediaFlux.Services
             Success = false,
             ErrorMessage = message
         };
+
+        internal static EncodeOutputValidationFailureEvidence? TryGetMaterialFrameDeficitEvidence(
+            EncodeOutputValidationRequest request,
+            MediaProbeResult source,
+            MediaProbeResult output)
+        {
+            MediaProbeStreamInfo? sourceVideo = FirstStream(source, "video");
+            MediaProbeStreamInfo? outputVideo = FirstStream(output, "video");
+            if (request.ExpectedVideoFrameCount is not > 0 ||
+                sourceVideo?.FrameRate is not > 0 || outputVideo?.FrameCount is not > 0 ||
+                outputVideo.FrameCount >= request.ExpectedVideoFrameCount)
+                return null;
+
+            double deficitSeconds = (request.ExpectedVideoFrameCount.Value - outputVideo.FrameCount.Value) /
+                sourceVideo.FrameRate.Value;
+            double allowedSeconds = request.ExpectedVideoFrameCountProvenance == FrameCountProvenance.Measured
+                ? Math.Max(0.75, 3d / sourceVideo.FrameRate.Value)
+                : Math.Max(1.0, 4d / sourceVideo.FrameRate.Value);
+            double? sourceDuration = request.ExpectedDurationSeconds ?? ProgramDurationResolver.Resolve(source).DurationSeconds;
+            double? outputDuration = ProgramDurationResolver.Resolve(output).DurationSeconds;
+            if (!double.IsFinite(deficitSeconds) || deficitSeconds <= allowedSeconds ||
+                sourceDuration is not > 0 || outputDuration is not > 0)
+                return null;
+            if (Math.Abs(outputDuration.Value - sourceDuration.Value) > 0.75)
+                return null;
+
+            // This helper is intentionally limited to the same strict frame
+            // basis and tolerance used by ValidateProbe. If bounded VFR or
+            // timestamp-normalization evidence explains the delta, validation
+            // would not have rejected it as an unexplained deficit.
+            return new EncodeOutputValidationFailureEvidence
+            {
+                SourceProbe = source,
+                OutputProbe = output,
+                ExpectedFrameCount = request.ExpectedVideoFrameCount.Value,
+                ActualFrameCount = outputVideo.FrameCount.Value,
+                FrameDelta = outputVideo.FrameCount.Value - request.ExpectedVideoFrameCount.Value,
+                FrameRate = sourceVideo.FrameRate.Value,
+                DeficitSeconds = deficitSeconds,
+                AllowedSeconds = allowedSeconds,
+                SourceDurationSeconds = sourceDuration.Value,
+                OutputDurationSeconds = outputDuration.Value
+            };
+        }
     }
 }

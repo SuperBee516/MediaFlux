@@ -92,7 +92,7 @@ public static class EncodingPlanService
         EncodingRecoveryCapability[] recoveryCapabilities =
         [
             new(EncodingRecoveryKind.VideoDecode, EncodingRecoveryMode.Strict, intelligentRecovery, intelligentRecovery ? 1 : 0,
-                [EncodingRecoveryFailureClass.SourceVideoCorruption],
+                [EncodingRecoveryFailureClass.SourceVideoCorruption, EncodingRecoveryFailureClass.FrameCadenceValidationFailure],
                 [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.StorageFailure, EncodingRecoveryFailureClass.NvencFailure, EncodingRecoveryFailureClass.SourceTruncation, EncodingRecoveryFailureClass.SourceAudioCorruption],
                 "The existing video policy alone corroborates failure evidence and permits one tolerant retry."),
             new(EncodingRecoveryKind.AudioStream, EncodingRecoveryMode.Strict, intelligentRecovery && copiedAudioRecoveryCandidate, intelligentRecovery && copiedAudioRecoveryCandidate ? 1 : 0,

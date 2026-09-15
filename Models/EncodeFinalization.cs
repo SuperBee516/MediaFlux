@@ -65,6 +65,21 @@ namespace MediaFlux.Models
         public string ErrorMessage { get; init; } = "";
         public string Summary { get; init; } = "";
         public EncodeOutputValidationEvidence? Evidence { get; init; }
+        public EncodeOutputValidationFailureEvidence? FailureEvidence { get; init; }
+    }
+
+    public sealed class EncodeOutputValidationFailureEvidence
+    {
+        public required MediaProbeResult SourceProbe { get; init; }
+        public required MediaProbeResult OutputProbe { get; init; }
+        public long ExpectedFrameCount { get; init; }
+        public long ActualFrameCount { get; init; }
+        public long FrameDelta { get; init; }
+        public double FrameRate { get; init; }
+        public double DeficitSeconds { get; init; }
+        public double AllowedSeconds { get; init; }
+        public double SourceDurationSeconds { get; init; }
+        public double OutputDurationSeconds { get; init; }
     }
 
     public sealed class DecodeIntegritySpotCheckResult

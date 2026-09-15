@@ -169,6 +169,21 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void MaterialCfrFrameDeficitProducesStructuredRecoveryEvidenceOnlyWhenDurationAgrees()
+    {
+        EncodeOutputValidationRequest request = FrameRequest(3000, FrameCountProvenance.Measured, 100,
+            new SourceTimingAnalysis(SourceTimingClassification.Cfr, AiTimingEligibility.EligibleCurrentCfrPipeline, 80, 30, 30, 0, false, false, "stable"));
+        MediaProbeResult source = FrameProbe(100, 3000, 30, averageFps: 30, nominalFps: 30);
+        MediaProbeResult output = FrameProbe(100, 2900, 30, output: true, averageFps: 30, nominalFps: 30);
+
+        EncodeOutputValidationFailureEvidence? evidence = EncodeOutputValidationService.TryGetMaterialFrameDeficitEvidence(request, source, output);
+        Assert.NotNull(evidence);
+        Assert.Equal(-100, evidence!.FrameDelta);
+        Assert.Null(EncodeOutputValidationService.TryGetMaterialFrameDeficitEvidence(
+            request, source, FrameProbe(98.7, 2900, 30, output: true, averageFps: 30, nominalFps: 30)));
+    }
+
+    [Fact]
     public void PreExistingSourceAudioVideoDurationMismatchIsPreservedWithoutFalseSyncFailure()
     {
         string error = EncodeOutputValidationService.ValidateProbe(FrameRequest(3000, FrameCountProvenance.Measured),

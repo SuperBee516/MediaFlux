@@ -167,6 +167,19 @@ namespace MediaFlux.Services
 
             provider.AppendVideoFilters(builder, context);
 
+            if (request.SourceDecodeMode == FfmpegSourceDecodeMode.RecoverVideoWithCfrNormalization)
+            {
+                if (request.RecoveryFrameRate is not > 0 || !double.IsFinite(request.RecoveryFrameRate.Value))
+                    throw new InvalidOperationException("CFR recovery requires a finite source frame rate.");
+
+                // This is intentionally output-scoped and recovery-only. Software
+                // decoding supplies host timestamps; CFR output synchronization at
+                // the authoritative source rate prevents the GPU decode path from
+                // silently losing a tail of frames while NVENC remains selected.
+                builder.Append("-fps_mode cfr ");
+                builder.Append($"-r {request.RecoveryFrameRate.Value.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture)} ");
+            }
+
             if (request.TargetMb is > 0)
             {
                 AppendTargetSizeArguments(

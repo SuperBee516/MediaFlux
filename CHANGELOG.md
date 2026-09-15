@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-15
+
+### Encoding Reliability
+
+- Added Intelligent recovery for CFR encodes that complete successfully but produce a material unexplained video-frame deficit.
+- Recovery uses software decode and CFR timestamp normalization while retaining NVENC encoding and the original encoding intent, including quality, geometry, container, stream mappings, audio, subtitles, metadata, and restoration settings.
+- Recovery is strictly one-shot, and invalid staged output is safely discarded before retry.
+- Existing strict output validation remains unchanged; validation tolerances were not weakened.
+- Added regression coverage for recovery decisions, command construction, validation, finalization, cancellation, and failure behavior.
+
 ## [1.4.3] - 2026-09-13
 
 ### Compare Samples

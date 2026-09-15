@@ -189,6 +189,7 @@ public static class EncodingIntelligencePresentation
     private static string Failure(EncodingRecoveryFailureClass failure) => failure switch
     {
         EncodingRecoveryFailureClass.SourceVideoCorruption => "localized source video corruption",
+        EncodingRecoveryFailureClass.FrameCadenceValidationFailure => "material CFR frame-deficit validation failure",
         EncodingRecoveryFailureClass.SourceAudioCorruption => "source audio corruption",
         _ => failure.ToString()
     };
