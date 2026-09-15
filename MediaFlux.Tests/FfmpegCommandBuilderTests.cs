@@ -418,6 +418,32 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Theory]
+    [InlineData(VideoEncoderIds.Nvenc, "hevc_nvenc", true, "-cq 19")]
+    [InlineData(VideoEncoderIds.Libx265, "libx265", false, "-crf 20")]
+    [InlineData(VideoEncoderIds.Qsv, "hevc_qsv", true, "-global_quality 21")]
+    public void ResolvedQualityIsTheQualityArgumentSentToFfmpeg(
+        string encoderId, string ffmpegCodec, bool useGpu, string expected)
+    {
+        VideoEncoderSelection selection = new(encoderId, VideoCodecFamily.Hevc, ffmpegCodec);
+        string arguments = CreateBuilder().Build(CreateRequest(
+            selection, useGpu, qualityValue: expected.Contains("19") ? 19 : expected.Contains("20") ? 20 : 21));
+
+        Assert.Contains(expected, arguments);
+    }
+
+    [Fact]
+    public void TargetSizeDoesNotEmitConstantQualityArgument()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            new VideoEncoderSelection(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"),
+            useGpu: true, qualityValue: 19, targetMb: 500));
+
+        Assert.DoesNotContain("-cq ", arguments);
+        Assert.DoesNotContain("-crf ", arguments);
+        Assert.DoesNotContain("-global_quality ", arguments);
+    }
+
+    [Theory]
     [InlineData("libx264", "-c:v libx264 -crf 23 -preset slow ")]
     [InlineData("libx265", "-c:v libx265 -crf 24 -preset slow ")]
     [InlineData("libsvtav1", "-c:v libsvtav1 -crf 30 -preset 6 ")]

@@ -137,6 +137,10 @@ namespace MediaFlux.Models
         public string LastOutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
         public string ContainerCompatibilityPolicy { get; set; } = nameof(Models.ContainerCompatibilityPolicy.Intelligent);
         public int LastQualityValue { get; set; } = 22;
+        // Quality intent is persisted separately from the legacy numeric value.
+        // Missing fields intentionally remain Manual for backward compatibility.
+        public string LastQualityMode { get; set; } = "Manual";
+        public string LastQualityTarget { get; set; } = nameof(QualityTarget.Balanced);
         public VideoRestorationSettings VideoRestoration { get; set; } = new();
 
         // Persist the main window's last usable size and position.
@@ -304,6 +308,11 @@ namespace MediaFlux.Models
             }
 
             config.LastQualityValue = Math.Clamp(config.LastQualityValue, 12, 35);
+            if (!string.Equals(config.LastQualityMode, "Automatic", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(config.LastQualityMode, "Manual", StringComparison.OrdinalIgnoreCase))
+                config.LastQualityMode = "Manual";
+            if (!Enum.TryParse<QualityTarget>(config.LastQualityTarget, true, out _))
+                config.LastQualityTarget = nameof(QualityTarget.Balanced);
             config.VideoRestoration ??= new VideoRestorationSettings();
             if (!json.Contains("\"Mode\"", StringComparison.OrdinalIgnoreCase) &&
                 config.VideoRestoration.Preset != VideoRestorationPreset.Off)

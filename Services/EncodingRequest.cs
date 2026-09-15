@@ -19,6 +19,10 @@ namespace MediaFlux.Services
         public VideoRestorationSettings Restoration { get; init; } = new();
         public string? EncoderPreset { get; init; }
         public int? QualityValue { get; init; }
+        /// <summary>Optional source-adaptive intent. Omitted requests retain legacy numeric behavior.</summary>
+        public EncodingQualityIntent? QualityIntent { get; init; }
+        /// <summary>Publishes the immutable effective-quality result used by this encode.</summary>
+        public Action<EncodingQualityResolution>? QualityResolutionCallback { get; init; }
         public bool TenBit { get; init; }
         public int? AudioChannels { get; init; }
         public Action<string>? ProgressCallback { get; init; }

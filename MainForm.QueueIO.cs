@@ -34,6 +34,8 @@ namespace MediaFlux
             public string VideoCodec { get; set; } = "";
             public string EncoderPreset { get; set; } = "";
             public int? QualityValue { get; set; }
+            public string? QualityMode { get; set; }
+            public string? QualityTarget { get; set; }
             public bool? TenBit { get; set; }
             public string AudioChannels { get; set; } = "";
             public string OutputFolder { get; set; } = "";       // cmbEncodeOutput.Text
@@ -84,6 +86,8 @@ namespace MediaFlux
                 QualityValue = nudAutoQuality == null
                     ? null
                     : (int)nudAutoQuality.Value,
+                QualityMode = _config.LastQualityMode,
+                QualityTarget = _config.LastQualityTarget,
                 TenBit = chkTenBit?.Checked,
                 AudioChannels = comboAudioChannels?.Text ?? "",
                 OutputFolder = cmbEncodeOutput.Text ?? "",

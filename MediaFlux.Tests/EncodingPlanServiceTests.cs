@@ -25,6 +25,30 @@ public sealed class EncodingPlanServiceTests
     }
 
     [Fact]
+    public void PlanFreezesQualityTargetResolutionForExecution()
+    {
+        var context = new EncodingDecisionContext(
+            new MediaProbeResult { Success = true, Streams =
+            [new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080, FrameRate = 30, BitRate = 8_000_000 }] },
+            EncodingInputSource.FromFile("source.mkv"),
+            new VideoEncoderSelection(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
+            UseGpu: false, TargetMb: null, ScaleMode: EncodingService.ScaleMode.None,
+            Restoration: new VideoRestorationSettings(), EncoderPreset: "slow", QualityValue: 24,
+            TenBit: false, AudioChannels: null, MapMode: EncodingService.StreamMapMode.KeepAll,
+            CopySubtitles: true, CopyDataStreams: true, CopyAttachments: true,
+            ContainerConfigured: OutputContainerSelection.Mp4,
+            CompatibilityPolicy: ContainerCompatibilityPolicy.Intelligent,
+            KnownDuration: TimeSpan.FromMinutes(10),
+            QualityIntent: EncodingQualityIntent.Automatic(QualityTarget.Balanced));
+
+        EncodingPlan plan = EncodingPlanService.Create(context);
+
+        Assert.NotNull(plan.Quality);
+        Assert.Equal(QualityTarget.Balanced, plan.Quality!.Intent.Target);
+        Assert.Equal(plan.Quality, EncodingPlanService.GetExecutionValues(plan).QualityResolution);
+    }
+
+    [Fact]
     public void ShadowPlanReportsMp4CompatibilityWithoutChangingStrictPolicyDecision()
     {
         EncodingPlan plan = EncodingPlanService.Create(Context(

@@ -62,6 +62,37 @@ public sealed class EncoderConfigPersistenceTests : IDisposable
     }
 
     [Fact]
+    public void MissingQualityIntentFieldsRemainLegacyManual()
+    {
+        string path = Path.Combine(_root, "old-quality-config.json");
+        File.WriteAllText(path, "{ \"LastQualityValue\": 29 }");
+
+        Config loaded = Config.Load(path);
+
+        Assert.Equal(29, loaded.LastQualityValue);
+        Assert.Equal("Manual", loaded.LastQualityMode);
+    }
+
+    [Fact]
+    public void AutomaticQualityTargetRoundTripsSeparatelyFromLegacyNumericValue()
+    {
+        string path = Path.Combine(_root, "automatic-quality-config.json");
+        var config = new Config
+        {
+            LastQualityValue = 31,
+            LastQualityMode = "Automatic",
+            LastQualityTarget = nameof(QualityTarget.HighQuality)
+        };
+
+        config.Save(path);
+        Config loaded = Config.Load(path);
+
+        Assert.Equal("Automatic", loaded.LastQualityMode);
+        Assert.Equal(nameof(QualityTarget.HighQuality), loaded.LastQualityTarget);
+        Assert.Equal(31, loaded.LastQualityValue);
+    }
+
+    [Fact]
     public void UnknownEncoderFallsBackToNvenc()
     {
         string path = Path.Combine(_root, "unknown.json");

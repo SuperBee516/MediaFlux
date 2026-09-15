@@ -31,7 +31,8 @@ public sealed record EncodingDecisionContext(
     bool CopySubtitles, bool CopyDataStreams, bool CopyAttachments,
     OutputContainerSelection ContainerConfigured, ContainerCompatibilityPolicy CompatibilityPolicy,
     TimeSpan KnownDuration,
-    EncodeOutputValidationProfile ValidationProfile = EncodeOutputValidationProfile.Production);
+    EncodeOutputValidationProfile ValidationProfile = EncodeOutputValidationProfile.Production,
+    EncodingQualityIntent? QualityIntent = null);
 
 public sealed record EncodingPlanSource(string Codec, int? Width, int? Height, double? FrameRate, double? DurationSeconds);
 public sealed record EncodingPlanVideo(string Action, string Codec, string Encoder, int? ConfiguredWidth, int? ConfiguredHeight, int? EffectiveWidth, int? EffectiveHeight, string? PixelFormat);
@@ -76,6 +77,7 @@ public sealed class EncodingPlan
     public EncodingValidationIntent? ValidationIntent { get; init; }
     public EncodingFinalizationIntent? FinalizationIntent { get; init; }
     public EncodingPlanValidation? Validation { get; init; }
+    public EncodingQualityResolution? Quality { get; init; }
     public EncodingPlanEstimates Estimates { get; init; } = new(null, null, null);
     public IReadOnlyList<EncodingRisk> Risks { get; init; } = Array.Empty<EncodingRisk>();
     public IReadOnlyList<EncodingDecisionReason> DecisionReasons { get; init; } = Array.Empty<EncodingDecisionReason>();

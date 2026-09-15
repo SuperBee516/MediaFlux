@@ -1,5 +1,6 @@
 using MediaFlux.Models;
 using MediaFlux.Services;
+using System.Reflection;
 using System.Windows.Forms;
 using Xunit;
 
@@ -77,6 +78,136 @@ public sealed class UiConfigPersistenceTests : IDisposable
         Assert.Equal(DockStyle.Top, behavior.Dock);
         Assert.Equal(DockStyle.Top, actions.Dock);
     }
+
+    [Fact]
+    public void QualityTargetTrackPositionsUseThumbInsetAndRemainOrdered()
+    {
+        const int trackWidth = 500;
+        const int thumbInset = 5;
+        int[] positions = Enumerable.Range(0, 5)
+            .Select(index => MainForm.GetQualityTrackPosition(trackWidth, thumbInset, index, 5))
+            .ToArray();
+
+        Assert.Equal(new[] { 5, 127, 250, 373, 495 }, positions);
+        Assert.Equal(250, positions[2]);
+        Assert.Equal(5, positions[0]);
+        Assert.Equal(495, positions[4]);
+        Assert.Equal(positions.OrderBy(value => value), positions);
+    }
+
+    [Fact]
+    public void QualityModeVisibilityCollapsesAndPreservesBothModes()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm();
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                TabControl tabs = Field<TabControl>(form, "_encodeInfoTabs");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Encoding Options");
+                Application.DoEvents();
+                ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
+                TrackBar target = Field<TrackBar>(form, "trkQualityTarget");
+                NumericUpDown manual = Field<NumericUpDown>(form, "nudAutoQuality");
+                Label manualLabel = Field<Label>(form, "lblManualQuality");
+                Panel labels = Field<Panel>(form, "pnlQualityTargetLabels");
+                Panel qualityIntent = Field<Panel>(form, "pnlQualityIntent");
+
+                target.Value = 3;
+                manual.Value = 27;
+                mode.SelectedIndex = 0;
+                Application.DoEvents();
+                Assert.True(target.Visible);
+                Assert.True(labels.Visible);
+                Assert.False(manual.Visible);
+                Assert.False(manualLabel.Visible);
+                int automaticHeight = qualityIntent.PreferredSize.Height;
+
+                mode.SelectedIndex = 1;
+                Application.DoEvents();
+                Assert.False(target.Visible);
+                Assert.False(labels.Visible);
+                Assert.True(manual.Visible);
+                Assert.True(manualLabel.Visible);
+                Assert.Equal(27, manual.Value);
+                Assert.True(qualityIntent.PreferredSize.Height < automaticHeight);
+
+                mode.SelectedIndex = 0;
+                Application.DoEvents();
+                Assert.Equal(3, target.Value);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Quality mode UI test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void EncodingProfileUsesIndependentColumnsAndKeepsQualityRowTogether()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm();
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+                TabControl tabs = Field<TabControl>(form, "_encodeInfoTabs");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Encoding Options");
+                Application.DoEvents();
+
+                Label qualityLabel = Field<Label>(form, "lblCompressionProfile");
+                ComboBox quality = Field<ComboBox>(form, "comboCompressionProfile");
+                Label speedLabel = Field<Label>(form, "lblEncodingSpeed");
+                ComboBox speed = Field<ComboBox>(form, "comboEncoderPreset");
+                TableLayoutPanel profile = Field<TableLayoutPanel>(form, "tlEncodingProfileFields");
+
+                Assert.Same(qualityLabel.Parent, quality.Parent);
+                Assert.Same(speedLabel.Parent, speed.Parent);
+                Assert.Equal(2, profile.ColumnCount);
+                Assert.Equal(1, profile.RowCount);
+                Assert.True(Math.Abs(qualityLabel.Bounds.Top + qualityLabel.Height / 2 -
+                    (quality.Bounds.Top + quality.Height / 2)) <= 8);
+                Assert.True(speed.Bounds.Top >= quality.Bounds.Bottom);
+
+                Control left = qualityLabel.Parent!;
+                Control right = Field<Panel>(form, "pnlQualityIntent").Parent!.Parent!;
+                Assert.NotSame(left, right);
+                Assert.True(left.Bounds.Height > 0);
+                Assert.True(right.Bounds.Height > 0);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Independent profile layout test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    private static T Field<T>(MainForm form, string name) where T : class =>
+        (T)(typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(form)
+            ?? throw new MissingFieldException(name));
 
     [Fact]
     public void OlderConfigUsesDefaultSummaryPreviewHeight()

@@ -13,6 +13,7 @@ public sealed class QueueAnalysisPresentation
         string? estimatedResult,
         string? savingsLabel,
         string? savingsValue,
+        EncodingQualityResolution? quality,
         IReadOnlyList<string> reasons)
     {
         Status = status;
@@ -21,6 +22,7 @@ public sealed class QueueAnalysisPresentation
         EstimatedResult = estimatedResult;
         SavingsLabel = savingsLabel;
         SavingsValue = savingsValue;
+        Quality = quality;
         Reasons = reasons;
     }
 
@@ -30,19 +32,21 @@ public sealed class QueueAnalysisPresentation
     public string? EstimatedResult { get; }
     public string? SavingsLabel { get; }
     public string? SavingsValue { get; }
+    public EncodingQualityResolution? Quality { get; }
     public IReadOnlyList<string> Reasons { get; }
-    public bool IsAvailable => Recommendation != null;
+    public bool IsAvailable => Recommendation != null || Quality != null;
 
     public static QueueAnalysisPresentation Create(
         SmartEncodeRecommendation? recommendation,
         double sourceMb = 0,
-        double estimatedOutputMb = 0)
+        double estimatedOutputMb = 0,
+        EncodingQualityResolution? quality = null)
     {
         if (recommendation == null)
         {
             return new QueueAnalysisPresentation(
                 "Queue analysis has not been performed for this file.",
-                null, null, null, null, null, Array.Empty<string>());
+                null, null, null, null, null, quality, Array.Empty<string>());
         }
 
         string? estimatedResult = sourceMb > 0 && estimatedOutputMb > 0
@@ -67,6 +71,7 @@ public sealed class QueueAnalysisPresentation
             estimatedResult,
             savingsLabel,
             savingsValue,
+            quality,
             recommendation.Reasons
                 .Where(reason => !string.IsNullOrWhiteSpace(reason))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -78,12 +83,18 @@ public sealed class QueueAnalysisPresentation
         if (!IsAvailable)
             return Status;
 
-        var lines = new List<string> { Recommendation! };
+        var lines = new List<string>();
+        if (Recommendation != null)
+            lines.Add(Recommendation);
+        if (Quality != null)
+            lines.AddRange(EncodingQualityPresentation.CreateItems(Quality)
+                .Select(item => $"{item.Label}: {item.Value}"));
         if (SavingsLabel != null && SavingsValue != null)
             lines.Add($"{SavingsLabel}: {SavingsValue}");
         if (Confidence != null)
             lines.Add($"Confidence: {Confidence}");
         lines.AddRange(Reasons.Select(reason => $"• {reason}"));
+        lines.AddRange(EncodingQualityPresentation.CreateReasons(Quality).Select(reason => $"• {reason}"));
         return string.Join(Environment.NewLine, lines);
     }
 

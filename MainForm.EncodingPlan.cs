@@ -125,6 +125,7 @@ public partial class MainForm
 
         RowMeta meta = EnsureRowMeta(rows[0]);
         RenderQueueAnalysis(rows[0], meta, null);
+        RequestQualityPreview(rows[0], meta);
         if (meta.IntelligencePlan == null)
         {
             RenderEncodingPlanStatus("Encoding Intelligence will appear when the existing encode preflight publishes its plan.");
@@ -160,7 +161,8 @@ public partial class MainForm
         if (!presentation.IsAvailable)
             return;
 
-        AddQueueAnalysisItem("Recommendation", presentation.Recommendation!);
+        if (presentation.Recommendation != null)
+            AddQueueAnalysisItem("Recommendation", presentation.Recommendation);
         if (presentation.Confidence != null)
             AddQueueAnalysisItem("Confidence", presentation.Confidence);
         if (presentation.EstimatedResult != null)
@@ -183,7 +185,79 @@ public partial class MainForm
         return QueueAnalysisPresentation.Create(
             meta.EncodeRecommendation,
             sourceMb,
-            estimatedOutputMb);
+            estimatedOutputMb,
+            meta.IntelligencePlan?.Quality ?? meta.QualityPreview);
+    }
+
+    private void InvalidateEncodingPlansForConfigurationChange()
+    {
+        Interlocked.Increment(ref _qualityPreviewGeneration);
+        foreach (DataGridViewRow row in dgvEncodeQueue?.Rows.Cast<DataGridViewRow>() ?? Enumerable.Empty<DataGridViewRow>())
+        {
+            if (row.Tag is RowMeta meta)
+            {
+                meta.IntelligencePlan = null;
+                meta.IntelligenceOutcome = null;
+                meta.QualityPreview = null;
+            }
+        }
+    }
+
+    private void RequestQualityPreview(DataGridViewRow row, RowMeta meta)
+    {
+        if (!IsAutomaticQualitySelected() || meta.IntelligencePlan != null ||
+            meta.HasCustomSettings || string.IsNullOrWhiteSpace(meta.Path) ||
+            !File.Exists(meta.Path) || meta.QualityPreview != null)
+            return;
+
+        int generation = _qualityPreviewGeneration;
+        string path = meta.Path;
+        QualityTarget target = GetSelectedQualityTarget();
+        VideoEncoderSelection encoder = GetSelectedVideoEncoderSelection();
+        EncodingService.ScaleMode scaleMode = GetSelectedScaleMode();
+        bool tenBit = chkTenBit?.Checked == true;
+        double? targetMb = null;
+        if (!chkAutoTargetSize.Checked && double.TryParse(txtTargetSize.Text, out double manualMb) && manualMb > 0)
+            targetMb = manualMb;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var probe = await new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath)
+                    .ProbeAsync(path).ConfigureAwait(false);
+                if (!probe.Success)
+                    return;
+                MediaProbeStreamInfo? video = probe.Streams.FirstOrDefault(stream =>
+                    stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+                VideoOutputGeometryPlan? geometry = null;
+                if (video?.Width is > 0 && video.Height is > 0)
+                {
+                    VideoOutputResolutionPlan resolution = VideoRestorationPipeline.ResolveFinalOutputResolution(
+                        video.Width.Value, video.Height.Value, _config.VideoRestoration, scaleMode);
+                    geometry = VideoOutputGeometryPlanner.Resolve(
+                        video.Width.Value, video.Height.Value, resolution, encoder, tenBit);
+                }
+                EncodingQualityResolution quality = new EncodingQualityPolicyService().Resolve(
+                    new EncodingQualityPolicyRequest(
+                        EncodingQualityIntent.Automatic(target), probe, encoder,
+                        geometry, scaleMode, targetMb));
+                Ui(() =>
+                {
+                    if (generation != _qualityPreviewGeneration || IsDisposed ||
+                        !ReferenceEquals(dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault(), row) ||
+                        !string.Equals(meta.Path, path, StringComparison.OrdinalIgnoreCase) ||
+                        meta.IntelligencePlan != null)
+                        return;
+                    meta.QualityPreview = quality;
+                    RenderQueueAnalysis(row, meta, null);
+                });
+            }
+            catch
+            {
+                // Queue preview is advisory; encode-time preflight remains authoritative.
+            }
+        });
     }
 
     private void AddQueueAnalysisSection(string title, IReadOnlyList<string> reasons)

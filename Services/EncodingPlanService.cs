@@ -16,6 +16,7 @@ public static class EncodingPlanService
         VideoEncoderSelection Encoder,
         bool UseGpu,
         double? TargetMb,
+        EncodingQualityResolution QualityResolution,
         int? AudioChannels,
         EncodingService.StreamMapMode MapMode,
         bool CopySubtitles,
@@ -108,6 +109,13 @@ public static class EncodingPlanService
                 "The existing GPU-frame fallback uses software-frame conversion when negotiation fails.")
         ];
 
+        EncodingQualityIntent qualityIntent = context.QualityIntent ??
+            EncodingQualityIntent.LegacyNumeric(context.QualityValue);
+        EncodingQualityResolution quality = new EncodingQualityPolicyService().Resolve(
+            new EncodingQualityPolicyRequest(
+                qualityIntent, context.Source, context.Encoder, geometry,
+                context.ScaleMode, context.TargetMb));
+
         double? targetKbps = context.TargetMb is > 0 && context.KnownDuration > TimeSpan.Zero
             ? context.TargetMb.Value * 8192d / context.KnownDuration.TotalSeconds : null;
         double? sourceBytes = context.Input.Kind == EncodingInputKind.File && File.Exists(context.Input.SourcePath)
@@ -147,11 +155,12 @@ public static class EncodingPlanService
             ValidationIntent = new EncodingValidationIntent(true, true, true, true, true, true, true, context.ValidationProfile.ToString()),
             FinalizationIntent = new EncodingFinalizationIntent(true, true, true, true, "Collision-safe, no-overwrite promotion"),
             Validation = new EncodingPlanValidation(context.ValidationProfile.ToString(), true, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison),
+            Quality = quality,
             Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio, historicalPrediction),
             Risks = risks,
             DecisionReasons = reasons,
             ExecutionValues = new EncodingPlanExecutionValues(
-                container, geometry, context.Encoder, context.UseGpu, context.TargetMb,
+                container, geometry, context.Encoder, context.UseGpu, context.TargetMb, quality,
                 context.AudioChannels, context.MapMode, context.CopySubtitles,
                 context.CopyDataStreams, context.CopyAttachments)
         };

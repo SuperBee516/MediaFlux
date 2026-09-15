@@ -106,13 +106,29 @@ public sealed class EncodingIntelligencePresentationTests
     }
 
     private static string Item(EncodingIntelligencePresentation.Model model, string label) => Assert.Single(model.Summary, item => item.Label == label).Value;
+
+    [Fact]
+    public void QualitySectionUsesMechanismSpecificWordingAndReasons()
+    {
+        EncodingPlan plan = Plan(quality: new EncodingQualityResolution(
+            EncodingQualityIntent.Automatic(QualityTarget.Balanced), 19,
+            EncoderQualityMechanism.Cq, EncodingQualityAssessment.HighQualitySource, false,
+            [new(EncodingQualityReasonCode.HighQualitySource, "test")]));
+
+        EncodingIntelligencePresentation.Model model = EncodingIntelligencePresentation.Create(plan);
+
+        Assert.Equal("CQ 19", Item(model, "Effective quality"));
+        Assert.Equal("Automatic / Source Adaptive", Item(model, "Quality mode"));
+        Assert.Contains(model.Reasons, item => item.Label == "Why this quality?" && item.Value.Contains("High source density"));
+    }
     private static EncodingPlan Plan(
         EncodingPlanContainer? container = null,
         IReadOnlyList<EncodingPlanStream>? audio = null,
         IReadOnlyList<EncodingPlanStream>? subtitles = null,
         EncodingPlanEstimates? estimates = null,
         IReadOnlyList<EncodingDecisionReason>? reasons = null,
-        IReadOnlyList<EncodingRisk>? risks = null) => new()
+        IReadOnlyList<EncodingRisk>? risks = null,
+        EncodingQualityResolution? quality = null) => new()
     {
         IsAvailable = true,
         Source = new("h264", 1920, 1080, 24, 600),
@@ -124,6 +140,7 @@ public sealed class EncodingIntelligencePresentationTests
         Estimates = estimates ?? new(null, null, null),
         DecisionReasons = reasons ?? Array.Empty<EncodingDecisionReason>(),
         Risks = risks ?? Array.Empty<EncodingRisk>(),
+        Quality = quality,
         RecoveryCapabilities = new([new(EncodingRecoveryKind.VideoDecode, EncodingRecoveryMode.Strict, true, 1, [EncodingRecoveryFailureClass.SourceVideoCorruption], [], "")])
     };
 }

@@ -53,9 +53,19 @@ namespace MediaFlux
         private int _encodeSucceededCount;
         private NumericUpDown? nudAutoQuality;
         private Label? lblAutoQuality;
+        private ComboBox? comboQualityMode;
+        private TrackBar? trkQualityTarget;
+        private Label? lblQualityTargetValue;
+        private Label? lblQualityTargetDescription;
+        private Panel? pnlQualityIntent;
+        private Panel? pnlQualityTargetLabels;
+        private Label? lblManualQuality;
+        private bool _independentEncodingProfileLayout;
+        private Label[] _qualityTargetLabels = Array.Empty<Label>();
         private Label? lblEncodingSpeed;
         private System.Windows.Forms.Timer? _estSmartUiTimer;
         private System.Windows.Forms.Timer? _estimateRefreshTimer;
+        private int _qualityPreviewGeneration;
 
         private SplitContainer? _encodeQueueSplit;
         private Control? _encodeInfoHeader;
@@ -349,6 +359,10 @@ namespace MediaFlux
                 chkTenBit.CheckedChanged += (_, __) => ScheduleEstimateRefresh();
             txtTargetSize.TextChanged += (_, __) => ScheduleEstimateRefresh();
             nudAutoQuality!.ValueChanged += (_, __) => ScheduleEstimateRefresh();
+            if (comboQualityMode != null)
+                comboQualityMode.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+            if (trkQualityTarget != null)
+                trkQualityTarget.ValueChanged += (_, __) => ScheduleEstimateRefresh();
 
             chkIncludeSubfolders.CheckedChanged += (s, e) =>
             {
@@ -1860,6 +1874,10 @@ namespace MediaFlux
                         (int)nudAutoQuality.Minimum,
                         (int)nudAutoQuality.Maximum);
                 }
+                SelectComboText(comboQualityMode!, _config.LastQualityMode);
+                if (trkQualityTarget != null)
+                    trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(_config.LastQualityTarget));
+                UpdateQualityIntentUi();
             }
             finally
             {
@@ -1910,6 +1928,10 @@ namespace MediaFlux
                 comboEncoderPreset?.Text ?? _config.LastEncodingSpeedPreset;
             if (nudAutoQuality != null)
                 _config.LastQualityValue = (int)nudAutoQuality.Value;
+            if (comboQualityMode != null)
+                _config.LastQualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual";
+            if (trkQualityTarget != null)
+                _config.LastQualityTarget = GetSelectedQualityTarget().ToString();
 
             if (saveImmediately)
                 _config.Save(_configPath);
@@ -1930,6 +1952,7 @@ namespace MediaFlux
 
         private void UpdateEncodePreview()
         {
+            InvalidateEncodingPlansForConfigurationChange();
             UpdateActiveConfigurationSummary();
             ScheduleEncodingPlanRefresh();
             if (_previewValueLabels.Count == 0 || dgvEncodeQueue == null)
@@ -2435,6 +2458,7 @@ namespace MediaFlux
             public EncodeFailureAnalysis? FailureAnalysis;
             public EncodingPlan? IntelligencePlan;
             public EncodingExecutionOutcome? IntelligenceOutcome;
+            public EncodingQualityResolution? QualityPreview;
 
             public bool HasCustomSettings =>
                 CustomTargetMb.HasValue ||
@@ -2885,27 +2909,159 @@ namespace MediaFlux
             lblAutoQuality = new Label
             {
                 AutoSize = true,
-                Text = "Auto quality (CRF/CQ)",
+                Text = "Quality Target",
                 TextAlign = ContentAlignment.MiddleLeft,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(18, 5, 14, 3)
             };
 
+            comboQualityMode = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 190,
+                Name = "comboQualityMode",
+                TabIndex = (chkAutoTargetSize?.TabIndex ?? 0) + 1
+            };
+            comboQualityMode.Items.AddRange(new object[]
+            {
+                "Automatic • Source Adaptive",
+                "Manual • Legacy Numeric"
+            });
+            comboQualityMode.SelectedIndexChanged += (_, __) =>
+            {
+                UpdateQualityIntentUi();
+                if (!_applyingEncodeDropdownSettings)
+                    PersistEncoderSelection();
+                UpdateEncodePreview();
+            };
+
+            trkQualityTarget = new TrackBar
+            {
+                Minimum = 0,
+                Maximum = 4,
+                TickFrequency = 1,
+                SmallChange = 1,
+                LargeChange = 1,
+                Value = 2,
+                Height = 38,
+                Dock = DockStyle.Fill,
+                AccessibleName = "Quality target",
+                TabIndex = comboQualityMode.TabIndex + 1
+            };
+            trkQualityTarget.ValueChanged += (_, __) =>
+            {
+                UpdateQualityIntentUi();
+                if (!_applyingEncodeDropdownSettings)
+                    PersistEncoderSelection();
+                UpdateEncodePreview();
+            };
+            trkQualityTarget.Resize += (_, __) => LayoutQualityTargetLabels();
+            lblQualityTargetValue = new Label { AutoSize = true, TextAlign = ContentAlignment.MiddleLeft };
+            lblQualityTargetDescription = new Label
+            {
+                AutoSize = true,
+                ForeColor = SystemColors.GrayText,
+                MaximumSize = new Size(360, 0),
+                Margin = new Padding(0, 0, 0, 3)
+            };
+            pnlQualityTargetLabels = new Panel
+            {
+                AutoSize = false,
+                Height = 24,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, 0, 3),
+                AccessibleName = "Quality target labels"
+            };
+            foreach (QualityTarget target in QualityTargetOrder)
+                pnlQualityTargetLabels.Controls.Add(new Label
+                {
+                    AutoSize = false,
+                    Text = QualityTargetDisplayName(target),
+                    TextAlign = ContentAlignment.TopCenter,
+                    Font = new Font("Segoe UI", 8.25F),
+                    Height = 24
+                });
+            _qualityTargetLabels = pnlQualityTargetLabels.Controls.OfType<Label>().ToArray();
+            pnlQualityTargetLabels.Resize += (_, __) => LayoutQualityTargetLabels();
+            lblManualQuality = new Label { AutoSize = true, Text = "Manual quality (CRF/CQ)", Margin = new Padding(0, 5, 8, 3) };
+            var qualityLayout = new TableLayoutPanel
+            {
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2, Dock = DockStyle.Top, Margin = Padding.Empty
+            };
+            qualityLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            qualityLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            qualityLayout.Controls.Add(new Label { AutoSize = true, Text = "Mode", Margin = new Padding(0, 5, 8, 3) }, 0, 0);
+            qualityLayout.Controls.Add(comboQualityMode, 1, 0);
+            qualityLayout.Controls.Add(lblQualityTargetValue, 0, 1);
+            qualityLayout.SetColumnSpan(lblQualityTargetValue, 2);
+            qualityLayout.Controls.Add(trkQualityTarget, 0, 2);
+            qualityLayout.SetColumnSpan(trkQualityTarget, 2);
+            qualityLayout.Controls.Add(pnlQualityTargetLabels, 0, 3);
+            qualityLayout.SetColumnSpan(pnlQualityTargetLabels, 2);
+            qualityLayout.Controls.Add(lblQualityTargetDescription, 0, 4);
+            qualityLayout.SetColumnSpan(lblQualityTargetDescription, 2);
+            qualityLayout.Controls.Add(lblManualQuality, 0, 5);
+            qualityLayout.Controls.Add(nudAutoQuality, 1, 5);
+            pnlQualityIntent = new Panel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Top, Margin = new Padding(0, 2, 0, 3) };
+            pnlQualityIntent.Controls.Add(qualityLayout);
+
             const int autoQualityRow = 2;
             tlEncodingProfileFields.Controls.Add(lblAutoQuality, 2, autoQualityRow);
-            tlEncodingProfileFields.Controls.Add(nudAutoQuality, 3, autoQualityRow);
+            tlEncodingProfileFields.Controls.Add(pnlQualityIntent, 3, autoQualityRow);
 
             // when Auto is unchecked, disable quality
-            nudAutoQuality.Enabled = chkAutoTargetSize?.Checked ?? true;
+            nudAutoQuality.Enabled = false;
             if (chkAutoTargetSize != null)
                 chkAutoTargetSize.CheckedChanged += (_, __) =>
-                    nudAutoQuality!.Enabled = chkAutoTargetSize.Checked;
+                    UpdateQualityIntentUi();
 
             // This control adds a row participant after the initial table sizing.
             // Allow the explicit pass below even if an earlier SizeChanged applied
             // the same responsive mode.
             _encodingProfileStacked = null;
             UpdateEncodingProfileResponsiveLayout();
+            comboQualityMode.SelectedIndex = 1;
+            UpdateQualityIntentUi();
+            LayoutQualityTargetLabels();
+        }
+
+        private void LayoutQualityTargetLabels()
+        {
+            if (pnlQualityTargetLabels == null || trkQualityTarget == null ||
+                _qualityTargetLabels.Length != QualityTargetOrder.Length)
+                return;
+
+            int width = trkQualityTarget.ClientSize.Width;
+            if (width <= 0 || pnlQualityTargetLabels.ClientSize.Width <= 0)
+                return;
+            int inset = GetQualityTrackThumbInset(trkQualityTarget);
+            for (int index = 0; index < _qualityTargetLabels.Length; index++)
+            {
+                Label label = _qualityTargetLabels[index];
+                label.Width = TextRenderer.MeasureText(label.Text, label.Font).Width + 4;
+                int center = trkQualityTarget.Left +
+                    GetQualityTrackPosition(width, inset, index, QualityTargetOrder.Length);
+                int left = Math.Clamp(center - label.Width / 2, 0,
+                    Math.Max(0, pnlQualityTargetLabels.ClientSize.Width - label.Width));
+                label.SetBounds(left, 0, label.Width, label.Height);
+            }
+        }
+
+        internal static int GetQualityTrackThumbInset(TrackBar trackBar)
+        {
+            int dpi = trackBar.DeviceDpi > 0 ? trackBar.DeviceDpi : 96;
+            int estimatedThumbWidth = Math.Max(8, (int)Math.Round(10 * dpi / 96d));
+            return Math.Max(1, estimatedThumbWidth / 2);
+        }
+
+        internal static int GetQualityTrackPosition(int trackWidth, int thumbInset, int valueIndex, int valueCount)
+        {
+            if (valueCount <= 1)
+                return Math.Max(0, trackWidth / 2);
+            int usableWidth = Math.Max(0, trackWidth - thumbInset * 2);
+            return Math.Clamp(thumbInset +
+                (int)Math.Round(usableWidth * valueIndex / (double)(valueCount - 1)), 0, Math.Max(0, trackWidth));
         }
 
         private void CreateAdvancedVideoControls()
@@ -3093,6 +3249,82 @@ namespace MediaFlux
             };
             RefreshEncoderPresetItems(_config.LastEncoderPreset);
             UpdateEncoderUiState();
+            BuildIndependentEncodingProfileLayout();
+        }
+
+        private static TableLayoutPanel CreateCompactFieldColumn()
+        {
+            var column = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2,
+                RowCount = 0,
+                Dock = DockStyle.Top,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            column.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            return column;
+        }
+
+        private static void AddCompactFieldRow(
+            TableLayoutPanel column, Control label, Control editor)
+        {
+            int row = column.RowCount++;
+            column.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            column.Controls.Add(label, 0, row);
+            column.Controls.Add(editor, 1, row);
+            editor.Dock = DockStyle.Fill;
+            label.Anchor = AnchorStyles.Left;
+        }
+
+        private void BuildIndependentEncodingProfileLayout()
+        {
+            if (tlEncodingProfileFields == null || _independentEncodingProfileLayout ||
+                lblVideoFormat == null || lblCompressionProfile == null ||
+                pnlQualityIntent == null || comboEncoderPreset == null)
+                return;
+
+            _independentEncodingProfileLayout = true;
+            tlEncodingProfileFields.SuspendLayout();
+            try
+            {
+                tlEncodingProfileFields.Controls.Clear();
+                tlEncodingProfileFields.ColumnStyles.Clear();
+                tlEncodingProfileFields.RowStyles.Clear();
+                tlEncodingProfileFields.ColumnCount = 2;
+                tlEncodingProfileFields.RowCount = 1;
+                tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+                tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+                tlEncodingProfileFields.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+                TableLayoutPanel left = CreateCompactFieldColumn();
+                AddCompactFieldRow(left, lblEncoderMode, comboEncoderMode);
+                AddCompactFieldRow(left, lblTargetSize, txtTargetSize);
+                AddCompactFieldRow(left, lblCompressionProfile, comboCompressionProfile);
+                AddCompactFieldRow(left, lblEncodingSpeed!, comboEncoderPreset);
+
+                TableLayoutPanel right = CreateCompactFieldColumn();
+                AddCompactFieldRow(right, lblVideoFormat, comboVideoFormat);
+                right.Controls.Add(chkAutoTargetSize, 0, right.RowCount++);
+                right.SetColumnSpan(chkAutoTargetSize, 2);
+                right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                lblAutoQuality!.Visible = false;
+                pnlQualityIntent.Margin = new Padding(0, 2, 0, 3);
+                right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                right.Controls.Add(pnlQualityIntent, 0, right.RowCount++);
+                right.SetColumnSpan(pnlQualityIntent, 2);
+
+                tlEncodingProfileFields.Controls.Add(left, 0, 0);
+                tlEncodingProfileFields.Controls.Add(right, 1, 0);
+            }
+            finally
+            {
+                tlEncodingProfileFields.ResumeLayout(true);
+            }
+            LayoutQualityTargetLabels();
         }
 
         private static Label CreateCodecCountLabel()
@@ -3110,6 +3342,8 @@ namespace MediaFlux
 
         private void UpdateEncodingProfileResponsiveLayout()
         {
+            if (_independentEncodingProfileLayout)
+                return;
             if (tlEncodingProfileFields == null || lblVideoFormat == null)
                 return;
 
@@ -3140,8 +3374,8 @@ namespace MediaFlux
                     tlEncodingProfileFields.SetCellPosition(comboCompressionProfile, new TableLayoutPanelCellPosition(1, 4));
                     if (lblAutoQuality != null)
                         tlEncodingProfileFields.SetCellPosition(lblAutoQuality, new TableLayoutPanelCellPosition(0, 5));
-                    if (nudAutoQuality != null)
-                        tlEncodingProfileFields.SetCellPosition(nudAutoQuality, new TableLayoutPanelCellPosition(1, 5));
+                    if (pnlQualityIntent != null)
+                        tlEncodingProfileFields.SetCellPosition(pnlQualityIntent, new TableLayoutPanelCellPosition(1, 5));
                     if (lblEncodingSpeed != null)
                         tlEncodingProfileFields.SetCellPosition(lblEncodingSpeed, new TableLayoutPanelCellPosition(0, 6));
                     if (comboEncoderPreset != null)
@@ -3181,8 +3415,8 @@ namespace MediaFlux
                     tlEncodingProfileFields.SetCellPosition(comboCompressionProfile, new TableLayoutPanelCellPosition(1, 2));
                     if (lblAutoQuality != null)
                         tlEncodingProfileFields.SetCellPosition(lblAutoQuality, new TableLayoutPanelCellPosition(2, 2));
-                    if (nudAutoQuality != null)
-                        tlEncodingProfileFields.SetCellPosition(nudAutoQuality, new TableLayoutPanelCellPosition(3, 2));
+                    if (pnlQualityIntent != null)
+                        tlEncodingProfileFields.SetCellPosition(pnlQualityIntent, new TableLayoutPanelCellPosition(3, 2));
                     if (lblEncodingSpeed != null)
                         tlEncodingProfileFields.SetCellPosition(lblEncodingSpeed, new TableLayoutPanelCellPosition(0, 3));
                     if (comboEncoderPreset != null)
@@ -3293,12 +3527,7 @@ namespace MediaFlux
             if (comboEncoderPreset != null)
                 comboEncoderPreset.Enabled = capabilities.Presets.Count > 1;
 
-            if (lblAutoQuality != null)
-            {
-                string qualityName =
-                    capabilities.QualityRange?.Name ?? "Quality";
-                lblAutoQuality.Text = $"Auto quality ({qualityName})";
-            }
+            UpdateQualityIntentUi();
 
             if (chkTenBit != null)
             {
@@ -3316,6 +3545,84 @@ namespace MediaFlux
                         VideoEncoderIds.Libx265,
                         StringComparison.OrdinalIgnoreCase);
         }
+
+        private static readonly QualityTarget[] QualityTargetOrder =
+        {
+            QualityTarget.SmallerFile, QualityTarget.Efficient,
+            QualityTarget.Balanced, QualityTarget.HighQuality,
+            QualityTarget.MaximumQuality
+        };
+
+        private static QualityTarget ParseQualityTarget(string? value) =>
+            Enum.TryParse<QualityTarget>(value, true, out var target)
+                ? target : QualityTarget.Balanced;
+
+        private static int QualityTargetToTrackValue(QualityTarget target)
+        {
+            int index = Array.IndexOf(QualityTargetOrder, target);
+            return index >= 0 ? index : 2;
+        }
+
+        private QualityTarget GetSelectedQualityTarget() =>
+            trkQualityTarget == null ? QualityTarget.Balanced : QualityTargetOrder[Math.Clamp(trkQualityTarget.Value, 0, 4)];
+
+        private bool IsAutomaticQualitySelected() => comboQualityMode?.SelectedIndex == 0;
+
+        private static string QualityTargetDescription(QualityTarget target) => target switch
+        {
+            QualityTarget.SmallerFile => "Prioritizes storage savings. More compression may reduce fine detail.",
+            QualityTarget.Efficient => "Favors smaller files while maintaining good visual quality.",
+            QualityTarget.Balanced => "Recommended for most videos. Balances visual quality and storage efficiency.",
+            QualityTarget.HighQuality => "Preserves additional source detail at the cost of larger output files.",
+            QualityTarget.MaximumQuality => "Prioritizes preservation of source quality. File size is secondary.",
+            _ => string.Empty
+        };
+
+        private static string QualityTargetDisplayName(QualityTarget target) => target switch
+        {
+            QualityTarget.SmallerFile => "Smaller File",
+            QualityTarget.Efficient => "Efficient",
+            QualityTarget.Balanced => "Balanced",
+            QualityTarget.HighQuality => "High Quality",
+            QualityTarget.MaximumQuality => "Maximum Quality",
+            _ => target.ToString()
+        };
+
+        private void UpdateQualityIntentUi()
+        {
+            QualityTarget target = GetSelectedQualityTarget();
+            bool automatic = IsAutomaticQualitySelected();
+            if (lblQualityTargetValue != null)
+                lblQualityTargetValue.Text = $"{QualityTargetDisplayName(target)}  ({QualityTargetToTrackValue(target) + 1} of 5)";
+            if (lblQualityTargetDescription != null)
+                lblQualityTargetDescription.Text = automatic
+                    ? QualityTargetDescription(target)
+                    : "Manual numeric quality is used. Lower values generally preserve more detail.";
+            if (trkQualityTarget != null)
+                trkQualityTarget.Enabled = automatic;
+            if (pnlQualityTargetLabels != null)
+                pnlQualityTargetLabels.Visible = automatic;
+            if (lblQualityTargetValue != null)
+                lblQualityTargetValue.Visible = automatic;
+            if (lblQualityTargetDescription != null)
+                lblQualityTargetDescription.Visible = automatic;
+            if (trkQualityTarget != null)
+                trkQualityTarget.Visible = automatic;
+            if (nudAutoQuality != null)
+            {
+                nudAutoQuality.Enabled = !automatic;
+                nudAutoQuality.Visible = !automatic;
+            }
+            if (lblManualQuality != null)
+                lblManualQuality.Visible = !automatic;
+            pnlQualityIntent?.PerformLayout();
+            pnlQualityIntent?.Parent?.PerformLayout();
+            if (lblAutoQuality != null)
+                lblAutoQuality.Text = automatic ? "Quality Target" : "Quality";
+        }
+
+        private EncodingQualityIntent? GetQualityIntentFromUi() =>
+            IsAutomaticQualitySelected() ? EncodingQualityIntent.Automatic(GetSelectedQualityTarget()) : null;
 
         private int GetDefaultQualityForSelection()
         {
@@ -5384,6 +5691,11 @@ namespace MediaFlux
                         (int)nudAutoQuality.Minimum,
                         (int)nudAutoQuality.Maximum);
                 }
+                if (comboQualityMode != null)
+                    SelectComboText(comboQualityMode, s.QualityMode);
+                if (trkQualityTarget != null)
+                    trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(s.QualityTarget));
+                UpdateQualityIntentUi();
                 if (comboAudioChannels != null &&
                     !string.IsNullOrWhiteSpace(s.AudioChannels))
                 {

@@ -353,7 +353,9 @@ namespace MediaFlux.Services
                 request.StructuredProgressCallback,
                 request.EncodingPlanSnapshotCallback,
                 request.EncodingPlanDivergenceCallback,
-                request.EncodingExecutionOutcomeCallback);
+                request.EncodingExecutionOutcomeCallback,
+                request.QualityIntent,
+                request.QualityResolutionCallback);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -521,7 +523,9 @@ namespace MediaFlux.Services
             Action<EncodeProgress>? structuredProgressCallback = null,
             Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
             Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
-            Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null)
+            Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
+            EncodingQualityIntent? qualityIntent = null,
+            Action<EncodingQualityResolution>? qualityResolutionCallback = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -561,7 +565,9 @@ namespace MediaFlux.Services
                 structuredProgressCallback,
                 encodingPlanSnapshotCallback,
                 encodingPlanDivergenceCallback,
-                encodingExecutionOutcomeCallback);
+                encodingExecutionOutcomeCallback,
+                qualityIntent,
+                qualityResolutionCallback);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -602,7 +608,9 @@ namespace MediaFlux.Services
             Action<EncodeProgress>? structuredProgressCallback = null,
             Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
             Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
-            Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null)
+            Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
+            EncodingQualityIntent? qualityIntent = null,
+            Action<EncodingQualityResolution>? qualityResolutionCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -722,7 +730,8 @@ namespace MediaFlux.Services
                 sourceProbe, inputSource, legacyEncoder, useGpu, targetMb, scaleMode,
                 restoration?.Clone() ?? new VideoRestorationSettings(), encoderPreset ?? "", qualityValue, tenBit, audioChannels,
                 mapMode, copySubtitles, copyDataStreams, copyAttachments, outputContainer,
-                compatibilityPolicy, planKnownDuration, validationProfile);
+                compatibilityPolicy, planKnownDuration, validationProfile,
+                qualityIntent ?? EncodingQualityIntent.LegacyNumeric(qualityValue));
             EncodingPlan shadowPlan = EncodingPlanService.Create(planContext);
             var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
             var preflightOutcomes = new List<EncodingPreflightOutcome>
@@ -766,6 +775,8 @@ namespace MediaFlux.Services
             videoCodec = requestedEncoder.FfmpegCodec;
             useGpu = planExecution.UseGpu;
             targetMb = planExecution.TargetMb;
+            qualityValue = planExecution.QualityResolution.EffectiveQuality ?? qualityValue;
+            qualityResolutionCallback?.Invoke(planExecution.QualityResolution);
             encoderSelection = requestedEncoder;
             audioChannels = planExecution.AudioChannels;
             mapMode = planExecution.MapMode;

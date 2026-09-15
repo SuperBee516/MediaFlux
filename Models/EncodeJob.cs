@@ -39,6 +39,8 @@ public sealed class EncodeJobSettings
     public string EncoderPreset { get; set; } = "";
     public string OutputContainer { get; set; } = "";
     public int QualityValue { get; set; }
+    public string QualityMode { get; set; } = "Manual";
+    public string QualityTarget { get; set; } = nameof(MediaFlux.Models.QualityTarget.Balanced);
     public bool TenBit { get; set; }
     public string AudioChannels { get; set; } = "";
     public string VideoFormat { get; set; } = "";

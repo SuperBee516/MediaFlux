@@ -26,6 +26,7 @@ public static class EncodingIntelligencePresentation
             new("Recovery", RecoverySummary(plan, outcome)),
             new("Lifecycle", LifecycleSummary(outcome))
         };
+        summary.InsertRange(0, EncodingQualityPresentation.CreateItems(plan.Quality));
         if (plan.Estimates.EstimatedOutputSizeMb is > 0)
             summary.Insert(1, new("Target", FormatSize(plan.Estimates.EstimatedOutputSizeMb.Value)));
 
@@ -43,7 +44,10 @@ public static class EncodingIntelligencePresentation
         }
 
         return new(summary,
-            plan.DecisionReasons.Select(reason => new EncodingPlanItem("Why MediaFlux chose this", DescribeReason(reason))).ToArray(),
+            plan.DecisionReasons.Select(reason => new EncodingPlanItem("Why MediaFlux chose this", DescribeReason(reason)))
+                .Concat(EncodingQualityPresentation.CreateReasons(plan.Quality)
+                    .Select(reason => new EncodingPlanItem("Why this quality?", reason)))
+                .ToArray(),
             technical);
     }
 

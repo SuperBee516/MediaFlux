@@ -86,6 +86,35 @@ public sealed class QueueAnalysisPresentationTests
         Assert.Equal("Queue analysis has not been performed for this file.", notAnalyzed.Status);
     }
 
+    [Fact]
+    public void QualityTargetIsPresentedFromTheStructuredResolution()
+    {
+        EncodingQualityResolution quality = Quality(QualityTarget.Balanced, EncoderQualityMechanism.Cq, 19);
+        QueueAnalysisPresentation presentation = QueueAnalysisPresentation.Create(null, quality: quality);
+
+        Assert.True(presentation.IsAvailable);
+        Assert.Contains("Quality target: Balanced", presentation.BuildTooltip());
+        Assert.Contains("Quality mode: Automatic / Source Adaptive", presentation.BuildTooltip());
+        Assert.Contains("Effective quality: CQ 19", presentation.BuildTooltip());
+    }
+
+    [Fact]
+    public void TargetSizeAndLegacyQualityRemainDistinct()
+    {
+        QueueAnalysisPresentation targetSize = QueueAnalysisPresentation.Create(null,
+            quality: new EncodingQualityResolution(
+                EncodingQualityIntent.Automatic(QualityTarget.Balanced), null,
+                EncoderQualityMechanism.Cq, EncodingQualityAssessment.Unknown, true,
+                [new(EncodingQualityReasonCode.TargetSizeSupersedesQuality, "test")]));
+        QueueAnalysisPresentation legacy = QueueAnalysisPresentation.Create(null,
+            quality: Quality(null, EncoderQualityMechanism.Crf, 24, legacy: true));
+
+        Assert.Contains("Target Size / Bitrate", targetSize.BuildTooltip());
+        Assert.Contains("Effective quality: Not used", targetSize.BuildTooltip());
+        Assert.Contains("Quality mode: Manual / Legacy Numeric", legacy.BuildTooltip());
+        Assert.DoesNotContain("Automatic / Source Adaptive", legacy.BuildTooltip());
+    }
+
     private static SmartEncodeRecommendation Recommendation(
         SmartEncodeRecommendationKind kind,
         double savingsPercent = 35,
@@ -99,4 +128,10 @@ public sealed class QueueAnalysisPresentationTests
         PrimaryReason = "First reason.",
         Reasons = reasons ?? ["First reason."]
     };
+
+    private static EncodingQualityResolution Quality(
+        QualityTarget? target, EncoderQualityMechanism mechanism, int value, bool legacy = false) =>
+        new(legacy ? EncodingQualityIntent.LegacyNumeric(value) : EncodingQualityIntent.Automatic(target!.Value),
+            value, mechanism, legacy ? EncodingQualityAssessment.Unknown : EncodingQualityAssessment.HighQualitySource,
+            false, [new(legacy ? EncodingQualityReasonCode.LegacyNumericIntent : EncodingQualityReasonCode.QualityTargetSelected, "test")]);
 }

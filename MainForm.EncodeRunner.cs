@@ -585,9 +585,14 @@ namespace MediaFlux
                     "No Compression",
                     StringComparison.OrdinalIgnoreCase);
             bool useStorageQualityTarget =
-                storageSavingsApplies && storageSavings.UsesQualityTarget;
+                storageSavingsApplies && storageSavings.UsesQualityTarget &&
+                !UiGet(IsAutomaticQualitySelected, false);
             if (useStorageQualityTarget)
                 estimateQuality = storageSavings.QualityValue;
+
+            EncodingQualityIntent? qualityIntent = policyIntent == null
+                ? UiGet(GetQualityIntentFromUi, null)
+                : null;
 
             if (policyIntent != null)
             {
@@ -765,6 +770,7 @@ namespace MediaFlux
                     EncoderPreset = encoderPreset,
                     QualityValue =
                         estimateQuality,
+                    QualityIntent = qualityIntent,
                     TenBit = tenBit,
                     AudioChannels = audioChannels,
                     ProgressCallback = jobCallback,
