@@ -40,8 +40,9 @@ public sealed class FfmpegCommandBuilderTests
         string arguments = CreateBuilder().Build(request);
 
         Assert.Contains("-hwaccel cuda -i ", arguments);
-        Assert.Contains("-vf format=nv12 ", arguments);
-        Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
+        Assert.Contains("-vf format=nv12,hwupload_cuda ", arguments);
+        Assert.Contains("-profile:v main ", arguments);
+        Assert.DoesNotContain("-pix_fmt nv12", arguments);
         Assert.Contains("-metadata:s:v:0 BPS= ", arguments);
         Assert.Contains("-xerror -err_detect explode", arguments);
         Assert.DoesNotContain("ignore_err", arguments, StringComparison.OrdinalIgnoreCase);
@@ -80,7 +81,8 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Contains("-c:v hevc_nvenc", arguments);
         Assert.Contains("-preset p6", arguments);
         Assert.Contains("-b:v", arguments);
-        Assert.Contains("-profile:v main10 -pix_fmt p010le", arguments);
+        Assert.Contains("-profile:v main10", arguments);
+        Assert.DoesNotContain("-pix_fmt p010le", arguments);
         Assert.Contains("-f mp4", arguments);
     }
 
@@ -315,9 +317,9 @@ public sealed class FfmpegCommandBuilderTests
         string arguments = CreateBuilder().Build(request);
 
         Assert.Contains("-hwaccel cuda -i ", arguments);
-        Assert.Contains("-vf format=p010le ", arguments);
+        Assert.Contains("-vf format=p010le,hwupload_cuda ", arguments);
         Assert.Contains(
-            "-profile:v main10 -pix_fmt p010le -highbitdepth 1 ",
+            "-profile:v main10 -highbitdepth 1 ",
             arguments);
     }
 
@@ -333,7 +335,7 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=p010le ", arguments);
+        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=p010le,hwupload_cuda ", arguments);
         Assert.Contains("-highbitdepth 1 ", arguments);
         Assert.DoesNotContain("scale_cuda", arguments);
     }
@@ -347,9 +349,10 @@ public sealed class FfmpegCommandBuilderTests
             sourcePixelFormat: "yuv420p10le"));
 
         Assert.Contains("-hwaccel cuda -i ", arguments);
-        Assert.Contains("-vf format=nv12 ", arguments);
+        Assert.Contains("-vf format=nv12,hwupload_cuda ", arguments);
         Assert.DoesNotContain("scale_cuda", arguments);
-        Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
+        Assert.Contains("-profile:v main ", arguments);
+        Assert.DoesNotContain("-pix_fmt nv12", arguments);
     }
 
     [Fact]
@@ -361,7 +364,7 @@ public sealed class FfmpegCommandBuilderTests
             sourcePixelFormat: "yuv420p10le",
             scaleMode: EncodingService.ScaleMode.To1080p));
 
-        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=nv12 ", arguments);
+        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=nv12,hwupload_cuda ", arguments);
         Assert.DoesNotContain("scale_cuda", arguments);
     }
 
@@ -376,9 +379,9 @@ public sealed class FfmpegCommandBuilderTests
         string arguments = CreateBuilder().Build(request);
 
         Assert.StartsWith("-y -xerror -err_detect explode -hwaccel cuda -i ", arguments);
-        Assert.Contains("-vf format=p010le ", arguments);
+        Assert.Contains("-vf format=p010le,hwupload_cuda ", arguments);
         Assert.Contains(
-            "-profile:v main10 -pix_fmt p010le ",
+            "-profile:v main10 ",
             arguments);
         Assert.DoesNotContain("-highbitdepth", arguments);
     }
@@ -398,6 +401,24 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Contains("-vf scale_cuda=format=p010le ", arguments);
         Assert.DoesNotContain("-vf format=p010le", arguments);
         Assert.DoesNotContain("-pix_fmt p010le ", arguments);
+    }
+
+    [Fact]
+    public void AsfSoftwareDecodeUsesHostConversionAndCudaUploadForNvenc()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, tenBit: true,
+            nvencHighBitDepthOutputSupported: true,
+            inputPath: "C:\\Media\\source.wmv",
+            nvencCudaFormatConversionSupported: true));
+
+        // The helper's default is MKV; use a WMV path to exercise the
+        // generalized software-decode residency decision.
+        Assert.DoesNotContain("-hwaccel cuda", arguments);
+        Assert.DoesNotContain("scale_cuda", arguments);
+        Assert.Contains("-vf format=p010le,hwupload_cuda ", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-profile:v main10", arguments);
     }
 
     [Fact]
@@ -592,7 +613,7 @@ public sealed class FfmpegCommandBuilderTests
     [InlineData("hevc_nvenc", false, "nv12", "main")]
     [InlineData("hevc_nvenc", true, "p010le", "main10")]
     [InlineData("h264_nvenc", false, "nv12", "high")]
-    public void NvencAlwaysExplicitlySelectsRequestedOutputFormat(
+    public void NvencFilterAndProfileExpressRequestedOutputFormat(
         string encoder,
         bool tenBit,
         string pixelFormat,
@@ -605,7 +626,8 @@ public sealed class FfmpegCommandBuilderTests
             nvencHighBitDepthOutputSupported: tenBit));
 
         Assert.Contains($"format={pixelFormat}", arguments);
-        Assert.Contains($"-profile:v {profile} -pix_fmt {pixelFormat}", arguments);
+        Assert.Contains($"-profile:v {profile}", arguments);
+        Assert.DoesNotContain($"-pix_fmt {pixelFormat}", arguments);
     }
 
     [Fact]
@@ -966,7 +988,8 @@ public sealed class FfmpegCommandBuilderTests
         VideoOutputGeometryPlan? plannedVideoGeometry = null,
         bool nvencCudaFormatConversionSupported = false,
         string? recoveryFrameRateRational = null,
-        string? timestampReconstructionFilter = null)
+        string? timestampReconstructionFilter = null,
+        string inputPath = "C:\\Media\\source.mkv")
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -999,7 +1022,8 @@ public sealed class FfmpegCommandBuilderTests
             plannedVideoGeometry,
             nvencCudaFormatConversionSupported,
              recoveryFrameRateRational,
-             timestampReconstructionFilter);
+             timestampReconstructionFilter,
+             inputPath);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -1031,7 +1055,8 @@ public sealed class FfmpegCommandBuilderTests
         VideoOutputGeometryPlan? plannedVideoGeometry = null,
         bool nvencCudaFormatConversionSupported = false,
         string? recoveryFrameRateRational = null,
-        string? timestampReconstructionFilter = null)
+        string? timestampReconstructionFilter = null,
+        string inputPath = "C:\\Media\\source.mkv")
     {
 
         return new FfmpegCommandRequest
@@ -1039,8 +1064,8 @@ public sealed class FfmpegCommandBuilderTests
             Input = new EncodingInputSource
             {
                 Kind = EncodingInputKind.File,
-                InputPath = "C:\\Media\\source.mkv",
-                SourcePath = "C:\\Media\\source.mkv",
+                InputPath = inputPath,
+                SourcePath = inputPath,
                 OutputBaseName = "source",
                 KnownAudioBitrateKbps = knownAudioBitrateKbps,
                 KnownAudioStreamCount = knownAudioStreamCount,

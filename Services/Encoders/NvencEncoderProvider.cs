@@ -97,7 +97,12 @@ namespace MediaFlux.Services.Encoders
                 return;
             }
 
-            EncoderProviderUtilities.AppendSoftwareVideoFilters(builder, context);
+            // Software decode produces host frames. Upload only this host-frame
+            // path before NVENC; CUDA-resident decode keeps the zero-copy path.
+            EncoderProviderUtilities.AppendSoftwareVideoFilters(
+                builder,
+                context,
+                uploadToCuda: context.UseGpu && !context.UseGpuResidentFrames);
         }
 
         public void AppendTargetSizeArguments(

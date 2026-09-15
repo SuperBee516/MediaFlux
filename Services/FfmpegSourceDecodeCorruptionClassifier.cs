@@ -15,9 +15,6 @@ internal sealed record FfmpegSourceDecodeCorruption(
 
 internal static class FfmpegSourceDecodeCorruptionClassifier
 {
-    // Require both a bitstream/access-unit parse failure and decoder rejection.
-    // This prevents a lone, version-specific FFmpeg diagnostic from changing the
-    // user-visible error while retaining the concrete evidence in the log.
     private static readonly string[] BitstreamFailureSignatures =
     [
         "Invalid NAL unit size",
@@ -25,8 +22,11 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
         "Error splitting the input into NAL units"
     ];
 
-    private const string DecoderRejectionSignature =
-        "Error submitting packet to decoder: Invalid data found when processing input";
+    private static readonly string[] DecoderRejectionSignatures =
+    [
+        "Error submitting packet to decoder: Invalid data found when processing input",
+        "Error processing packet in decoder: Invalid data found when processing input"
+    ];
 
     public static FfmpegSourceDecodeCorruption Classify(string? standardError)
     {
@@ -36,13 +36,10 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
         string[] bitstreamMatches = BitstreamFailureSignatures
             .Where(signature => standardError.Contains(signature, StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        bool decoderRejected = standardError.Contains(
-            DecoderRejectionSignature,
-            StringComparison.OrdinalIgnoreCase);
-        IReadOnlyList<string> evidence = bitstreamMatches
-            .Concat(decoderRejected ? [DecoderRejectionSignature] : Array.Empty<string>())
+        string[] decoderMatches = DecoderRejectionSignatures
+            .Where(signature => standardError.Contains(signature, StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        return new(bitstreamMatches.Length > 0 && decoderRejected, evidence);
+        return new(decoderMatches.Length > 0, bitstreamMatches.Concat(decoderMatches).ToArray());
     }
 
     /// <summary>

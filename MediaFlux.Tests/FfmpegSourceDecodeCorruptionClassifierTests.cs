@@ -16,11 +16,20 @@ public sealed class FfmpegSourceDecodeCorruptionClassifierTests
     }
 
     [Fact]
-    public void LoneDecoderDiagnosticIsNotTreatedAsReliableCorruption()
+    public void DecoderInvalidDataDiagnosticIsReliableWithoutCodecSpecificBitstreamText()
     {
         FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
             "Error submitting packet to decoder: Invalid data found when processing input");
 
-        Assert.False(result.IsReliable);
+        Assert.True(result.IsReliable);
+    }
+
+    [Fact]
+    public void DecoderProcessingFailureIsReliable()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Error processing packet in decoder: Invalid data found when processing input");
+
+        Assert.True(result.IsReliable);
     }
 }

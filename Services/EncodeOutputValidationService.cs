@@ -444,9 +444,8 @@ namespace MediaFlux.Services
                     long delta = outputVideoForFrames.FrameCount.Value - request.ExpectedVideoFrameCount.Value;
                     double fps = sourceVideo.FrameRate is > 0 ? sourceVideo.FrameRate.Value : outputVideoForFrames.FrameRate ?? 0;
                     double deltaSeconds = fps > 0 ? Math.Abs(delta) / fps : double.PositiveInfinity;
-                    double allowedSeconds = request.ExpectedVideoFrameCountProvenance == FrameCountProvenance.Measured
-                        ? Math.Max(0.75, fps > 0 ? 3d / fps : 0.75)
-                        : Math.Max(1.0, fps > 0 ? 4d / fps : 1.0);
+                    (double baseAllowanceSeconds, double frameAwareEpsilonSeconds, double allowedSeconds) =
+                        FrameDeficitAllowance(request.ExpectedVideoFrameCountProvenance, fps);
                     if (CanExplainFrameDeltaByVerifiedVfr(
                             request.SourceTiming,
                             authoritativeDuration,
@@ -467,7 +466,7 @@ namespace MediaFlux.Services
                     }
                     else
                     {
-                        log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount} ({request.ExpectedVideoFrameCountProvenance}); output={outputVideoForFrames.FrameCount}; delta={delta}; time-equivalent={deltaSeconds:0.###}s; allowed={allowedSeconds:0.###}s; duration-basis=authoritative; result={(deltaSeconds <= allowedSeconds ? "accepted" : "rejected")}.");
+                        log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount} ({request.ExpectedVideoFrameCountProvenance}); output={outputVideoForFrames.FrameCount}; delta={delta}; fps={fps:0.######}; frame-period={frameAwareEpsilonSeconds:0.######}s; time-equivalent={deltaSeconds:0.###}s; base-allowance={baseAllowanceSeconds:0.###}s; frame-aware-epsilon={frameAwareEpsilonSeconds:0.######}s; effective-allowance={allowedSeconds:0.######}s; duration-basis=authoritative; result={(deltaSeconds <= allowedSeconds ? "accepted" : "rejected")}.");
                         if (deltaSeconds > allowedSeconds)
                             return $"The encoded output contains {outputVideoForFrames.FrameCount} video frames versus {request.ExpectedVideoFrameCount} expected; the {deltaSeconds:0.###}-second frame deficit exceeds the time-aware {allowedSeconds:0.###}-second boundary allowance.";
                     }
@@ -1069,9 +1068,9 @@ namespace MediaFlux.Services
 
             double deficitSeconds = (request.ExpectedVideoFrameCount.Value - outputVideo.FrameCount.Value) /
                 sourceVideo.FrameRate.Value;
-            double allowedSeconds = request.ExpectedVideoFrameCountProvenance == FrameCountProvenance.Measured
-                ? Math.Max(0.75, 3d / sourceVideo.FrameRate.Value)
-                : Math.Max(1.0, 4d / sourceVideo.FrameRate.Value);
+            double allowedSeconds = FrameDeficitAllowance(
+                request.ExpectedVideoFrameCountProvenance,
+                sourceVideo.FrameRate.Value).effectiveAllowance;
             double? sourceDuration = request.ExpectedDurationSeconds ?? ProgramDurationResolver.Resolve(source).DurationSeconds;
             double? outputDuration = ProgramDurationResolver.Resolve(output).DurationSeconds;
             if (!double.IsFinite(deficitSeconds) || deficitSeconds <= allowedSeconds ||
@@ -1097,6 +1096,14 @@ namespace MediaFlux.Services
                 SourceDurationSeconds = sourceDuration.Value,
                 OutputDurationSeconds = outputDuration.Value
             };
+        }
+
+        private static (double baseAllowance, double frameAwareEpsilon, double effectiveAllowance)
+            FrameDeficitAllowance(FrameCountProvenance provenance, double fps)
+        {
+            double baseAllowance = provenance == FrameCountProvenance.Measured ? 0.75 : 1.0;
+            double epsilon = fps > 0 && double.IsFinite(fps) ? 1d / fps : 0;
+            return (baseAllowance, epsilon, baseAllowance + epsilon);
         }
     }
 }

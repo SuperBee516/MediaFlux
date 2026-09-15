@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-09-15
+
+### Encoding Reliability
+
+- Improved software-decoded media handling when encoding with NVIDIA NVENC.
+- Improved compatibility with legacy WMV/ASF and other host-decoded sources.
+- Improved recovery from certain malformed or corrupt video packets.
+- Improved frame-completeness validation around normal end-of-stream timing boundaries.
+
 ## [1.5.1] - 2026-09-15
 
 ### Encoding Reliability

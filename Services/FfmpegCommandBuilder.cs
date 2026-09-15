@@ -61,6 +61,9 @@ namespace MediaFlux.Services
                 _ => string.Empty
             };
             bool sourceIsTenBit = IsTenBitPixelFormat(request.SourcePixelFormat);
+            bool useHardwareDecode = validated.UseGpu &&
+                !request.DisableHardwareDecode &&
+                !isAsfFamilyInput;
             VideoRestorationSettings effectiveRestoration = VideoRestorationModeResolver.Resolve(request.Restoration);
             string restorationFilterChain = request.RestorationFilterOverride ?? VideoRestorationPipeline.BuildFilterChain(effectiveRestoration, request.ScaleMode);
             bool requiresVideoFilter =
@@ -73,7 +76,9 @@ namespace MediaFlux.Services
             {
                 Selection = selection,
                 UseGpu = validated.UseGpu,
-                UseHardwareDecode = validated.UseGpu && !request.DisableHardwareDecode,
+                // ASF/WMV compatibility deliberately selects host-frame software
+                // decode. Keep that residency decision authoritative downstream.
+                UseHardwareDecode = useHardwareDecode,
                 WantsTenBit = wantsTenBit,
                 TenBitPixelFormat = wantsTenBit ? outputPixelFormat : null,
                 OutputPixelFormat = outputPixelFormat,
@@ -98,7 +103,9 @@ namespace MediaFlux.Services
                         VideoEncoderIds.Nvenc,
                         StringComparison.OrdinalIgnoreCase) &&
                     request.PreferNvencGpuResidentFrames &&
-                    !request.DisableHardwareDecode &&
+                    // Residency must follow the same authoritative decode
+                    // decision used by input acceleration, including ASF/WMV.
+                    useHardwareDecode &&
                     (request.NvencCudaFormatConversionSupported || !requiresVideoFilter) &&
                     // Restoration filters remain on the explicit software path.
                     string.IsNullOrEmpty(restorationFilterChain),

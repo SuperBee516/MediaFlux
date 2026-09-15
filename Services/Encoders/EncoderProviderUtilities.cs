@@ -7,15 +7,17 @@ namespace MediaFlux.Services.Encoders
     {
         public static void AppendSoftwareVideoFilters(
             StringBuilder builder,
-            EncoderArgumentContext context)
+            EncoderArgumentContext context,
+            bool uploadToCuda = false)
         {
-            if (!context.RequiresVideoFilter && string.IsNullOrEmpty(context.RestorationFilterChain))
+            if (!context.RequiresVideoFilter && string.IsNullOrEmpty(context.RestorationFilterChain) && !uploadToCuda)
                 return;
             var filters = new List<string>();
             if (!string.IsNullOrEmpty(context.TimestampReconstructionFilter)) filters.Add(context.TimestampReconstructionFilter);
             if (!string.IsNullOrEmpty(context.RestorationFilterChain)) filters.Add(context.RestorationFilterChain);
             if (!string.IsNullOrEmpty(context.ScaleExpression)) filters.Add($"scale={context.ScaleExpression}:flags=lanczos");
             filters.Add($"format={context.OutputPixelFormat}");
+            if (uploadToCuda) filters.Add("hwupload_cuda");
             builder.Append($"-vf {string.Join(',', filters)} ");
         }
 
@@ -48,8 +50,14 @@ namespace MediaFlux.Services.Encoders
             // FFmpeg to force nv12/p010le at this boundary inserts auto_scale
             // and breaks otherwise compatible zero-copy jobs.  The matching
             // source format and explicit Main/Main10 profile remain the output
-            // contract; conversion paths always emit the software pix_fmt.
-            if (!context.UseGpuResidentFrames)
+            // contract; CUDA-upload paths also leave the hardware-frame format
+            // selected by the filter graph rather than forcing a software pix_fmt.
+            bool nvencReceivesCudaFrames =
+                context.UseGpu &&
+                context.Selection.EncoderId.Equals(
+                    VideoEncoderIds.Nvenc,
+                    StringComparison.OrdinalIgnoreCase);
+            if (!nvencReceivesCudaFrames && !context.UseGpuResidentFrames)
                 builder.Append($"-pix_fmt {context.OutputPixelFormat} ");
             if (context.WantsTenBit && context.UseGpuResidentHighBitDepthOutput)
                 builder.Append("-highbitdepth 1 ");

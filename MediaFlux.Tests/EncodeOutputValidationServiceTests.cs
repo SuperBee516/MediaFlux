@@ -52,6 +52,25 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void MeasuredCfrBoundaryUsesOneFrameQuantizationEpsilon()
+    {
+        const double fps = 29.969;
+        const long expected = 38_482;
+
+        string accepted = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(expected, FrameCountProvenance.Measured),
+            FrameProbe(100, expected, fps),
+            FrameProbe(100, expected - 23, fps, output: true));
+        string rejected = EncodeOutputValidationService.ValidateProbe(
+            FrameRequest(expected, FrameCountProvenance.Measured),
+            FrameProbe(100, expected, fps),
+            FrameProbe(100, expected - 24, fps, output: true));
+
+        Assert.Equal("", accepted);
+        Assert.Contains("frame deficit", rejected, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void SameFrameDeltaWithMaterialDurationLossFails()
     {
         string error = EncodeOutputValidationService.ValidateProbe(
