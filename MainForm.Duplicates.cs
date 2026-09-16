@@ -35,6 +35,7 @@ namespace MediaFlux
         private const string DuplicateFilterProtected = "Protected/reference";
         private bool _duplicateCleanupAutoDisablePending;
         private readonly DuplicateManagerDeleteSelectionState _duplicateManagerDeleteSelections = new();
+        private Label? _duplicateManagerSummaryLabel;
 
         private void StartDuplicateScanIfEnabled()
         {
@@ -738,6 +739,54 @@ namespace MediaFlux
                 Size = new Size(1100, 650)
             };
 
+            var grid = CreateDuplicateManagerGrid();
+            RefreshDuplicateManagerGrid(grid);
+            InitializeDuplicateManagerContextMenu(dialog, grid);
+
+            var bar = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                FlowDirection = FlowDirection.RightToLeft,
+                Height = 48,
+                Padding = new Padding(8)
+            };
+
+            var actionPanel = CreateDuplicateActionPanel(dialog, grid);
+            var headerPanel = CreateDuplicateManagerHeaderPanel(grid);
+            var close = new Button { Text = "Close", DialogResult = DialogResult.OK, Width = 90 };
+            var selectInQueue = new Button { Text = "Select in Queue", Width = 120 };
+            var openLocation = new Button { Text = "Open Location", Width = 112 };
+            var reviewGroup = new Button
+            {
+                Text = "Review Duplicate Videos",
+                Width = 170,
+                Font = new Font(Font, FontStyle.Bold)
+            };
+            var exportReport = new Button { Text = "Export Report", Width = 112 };
+            selectInQueue.Click += (_, __) =>
+            {
+                SelectDuplicateManagerRowsInQueue(grid);
+                dialog.Close();
+            };
+            openLocation.Click += (_, __) => OpenDuplicateManagerSelectedLocation(grid);
+            reviewGroup.Click += (_, __) => ShowDuplicateGroupReview(dialog, grid);
+            exportReport.Click += (_, __) => ExportDuplicateReport();
+
+            bar.Controls.Add(close);
+            bar.Controls.Add(exportReport);
+            bar.Controls.Add(reviewGroup);
+            bar.Controls.Add(openLocation);
+            bar.Controls.Add(selectInQueue);
+            dialog.Controls.Add(grid);
+            dialog.Controls.Add(bar);
+            dialog.Controls.Add(actionPanel);
+            dialog.Controls.Add(headerPanel);
+            dialog.AcceptButton = close;
+            dialog.ShowDialog(this);
+        }
+
+        private DataGridView CreateDuplicateManagerGrid()
+        {
             var grid = new DataGridView
             {
                 Dock = DockStyle.Fill,
@@ -789,52 +838,23 @@ namespace MediaFlux
                 bool selected = row.Cells["Delete"].Value is bool value && value;
                 row.Cells["Delete"].Value = _duplicateManagerDeleteSelections.Record(
                     managed.Group, managed.Item, selected);
+                UpdateDuplicateManagerDeleteEditability(grid, managed.Group.Id);
             };
 
             grid.Tag = DuplicateFilterAll;
-            RefreshDuplicateManagerGrid(grid);
-            InitializeDuplicateManagerContextMenu(dialog, grid);
+            return grid;
+        }
 
-            var bar = new FlowLayoutPanel
+        private void UpdateDuplicateManagerDeleteEditability(DataGridView grid, int groupId)
+        {
+            foreach (DataGridViewRow row in grid.Rows)
             {
-                Dock = DockStyle.Bottom,
-                FlowDirection = FlowDirection.RightToLeft,
-                Height = 48,
-                Padding = new Padding(8)
-            };
+                if (row.Tag is not string path || FindDuplicateManagedFile(path) is not { } managed || managed.Group.Id != groupId)
+                    continue;
 
-            var actionPanel = CreateDuplicateActionPanel(dialog, grid);
-            var headerPanel = CreateDuplicateManagerHeaderPanel(grid);
-            var close = new Button { Text = "Close", DialogResult = DialogResult.OK, Width = 90 };
-            var selectInQueue = new Button { Text = "Select in Queue", Width = 120 };
-            var openLocation = new Button { Text = "Open Location", Width = 112 };
-            var reviewGroup = new Button
-            {
-                Text = "Review Duplicate Videos",
-                Width = 170,
-                Font = new Font(Font, FontStyle.Bold)
-            };
-            var exportReport = new Button { Text = "Export Report", Width = 112 };
-            selectInQueue.Click += (_, __) =>
-            {
-                SelectDuplicateManagerRowsInQueue(grid);
-                dialog.Close();
-            };
-            openLocation.Click += (_, __) => OpenDuplicateManagerSelectedLocation(grid);
-            reviewGroup.Click += (_, __) => ShowDuplicateGroupReview(dialog, grid);
-            exportReport.Click += (_, __) => ExportDuplicateReport();
-
-            bar.Controls.Add(close);
-            bar.Controls.Add(exportReport);
-            bar.Controls.Add(reviewGroup);
-            bar.Controls.Add(openLocation);
-            bar.Controls.Add(selectInQueue);
-            dialog.Controls.Add(grid);
-            dialog.Controls.Add(bar);
-            dialog.Controls.Add(actionPanel);
-            dialog.Controls.Add(headerPanel);
-            dialog.AcceptButton = close;
-            dialog.ShowDialog(this);
+                row.Cells["Delete"].ReadOnly = !_duplicateManagerDeleteSelections.CanSelectForDeletion(
+                    managed.Group, managed.Item);
+            }
         }
 
         private Control CreateDuplicateManagerHeaderPanel(DataGridView grid)
@@ -867,6 +887,7 @@ namespace MediaFlux
                 Margin = new Padding(0, 4, 16, 4),
                 Text = BuildDuplicateManagerSummary(DuplicateFilterAll)
             };
+            _duplicateManagerSummaryLabel = summary;
             var filterLabel = new Label
             {
                 Text = "Filter:",
@@ -1011,11 +1032,13 @@ namespace MediaFlux
             var recycle = new Button { Text = "Move Selected to Recycle Bin", Width = 190, Visible = _config.AllowDuplicateRecycleBin };
             var quarantine = new Button { Text = "Move Selected to Quarantine", Width = 200, Visible = _config.AllowDuplicateQuarantine };
             var deletePermanent = new Button { Text = "Delete Selected Permanently", Width = 190, Visible = _config.AllowDuplicatePermanentDelete };
+            var markAllReviewed = new Button { Text = "Mark All Reviewed", Width = 130 };
 
             preview.Click += (_, __) => PreviewDuplicateAction(grid, rule.Text, includeReviewOnly.Checked);
             recycle.Click += (_, __) => ExecuteDuplicateFileAction(dialog, grid, rule.Text, DuplicateFileAction.Recycle);
             quarantine.Click += (_, __) => ExecuteDuplicateFileAction(dialog, grid, rule.Text, DuplicateFileAction.Quarantine);
             deletePermanent.Click += (_, __) => ExecuteDuplicateFileAction(dialog, grid, rule.Text, DuplicateFileAction.DeletePermanent);
+            markAllReviewed.Click += (_, __) => MarkDuplicateManagerGroupsReviewed(grid);
             _uiToolTip.SetToolTip(preview, "Selects the files that match the current cleanup rule without moving or deleting anything.");
             _uiToolTip.SetToolTip(recycle, "Moves matching duplicate files to the Windows Recycle Bin.");
             _uiToolTip.SetToolTip(quarantine, "Moves matching duplicate files into the configured duplicate quarantine folder.");
@@ -1028,7 +1051,24 @@ namespace MediaFlux
             panel.Controls.Add(recycle, 4, 0);
             panel.Controls.Add(quarantine, 5, 0);
             panel.Controls.Add(deletePermanent, 6, 0);
+            panel.Controls.Add(markAllReviewed, 7, 0);
             return panel;
+        }
+
+        private void MarkDuplicateManagerGroupsReviewed(DataGridView grid)
+        {
+            var groups = GetDuplicateManagerGroups(GetDuplicateManagerFilter(grid)).ToList();
+            int reviewed = 0;
+            foreach (DuplicateGroup group in groups)
+            {
+                if (_duplicateManagerDeleteSelections.MarkReviewed(group))
+                    reviewed++;
+            }
+
+            RefreshDuplicateManagerGrid(grid);
+            if (_duplicateManagerSummaryLabel != null)
+                _duplicateManagerSummaryLabel.Text = BuildDuplicateManagerSummary(GetDuplicateManagerFilter(grid));
+            ShowStatusInfo($"{reviewed:N0} duplicate group(s) marked reviewed.");
         }
 
         private void PreviewDuplicateAction(DataGridView grid, string rule, bool includeReviewOnly)
@@ -1993,6 +2033,9 @@ namespace MediaFlux
                 .ToList();
 
             _lastDuplicateScanResult = BuildDuplicateScanResult(groups);
+            DuplicateGroup? updated = groups.FirstOrDefault(group => group.Id == groupId);
+            if (updated != null)
+                _duplicateManagerDeleteSelections.MarkReviewed(updated);
             ApplyDuplicateScanResult(_lastDuplicateScanResult);
             ShowStatusInfo($"Group {groupId}: {Path.GetFileName(keeperPath)} marked to keep.");
         }
@@ -2380,14 +2423,15 @@ namespace MediaFlux
             int strongCount = groups.Count(group => string.Equals(group.ConfidenceLabel, "Strong visual match", StringComparison.OrdinalIgnoreCase));
             int reviewCount = groups.Count(group => string.Equals(group.ConfidenceLabel, "Review only", StringComparison.OrdinalIgnoreCase));
             int keeperReviewCount = groups.Count(group => group.Items.Any(item =>
-                string.Equals(item.Recommendation, "Review required", StringComparison.OrdinalIgnoreCase)));
+                string.Equals(item.Recommendation, "Review required", StringComparison.OrdinalIgnoreCase) &&
+                !_duplicateManagerDeleteSelections.IsReviewed(group)));
 
-            return $"Groups: {groups.Count:N0}   Files: {fileCount:N0}   Duplicates: {duplicateCount:N0}   Recoverable: {FormatSize(recoverableBytes)}   Exact: {exactCount:N0}   Strong: {strongCount:N0}   Match review: {reviewCount:N0}   Keeper review: {keeperReviewCount:N0}";
+            return $"Groups: {groups.Count:N0}   Files: {fileCount:N0}   Duplicates: {duplicateCount:N0}   Recoverable: {FormatSize(recoverableBytes)}   Exact: {exactCount:N0}   Strong: {strongCount:N0}   Match review: {reviewCount:N0}   Pending review: {keeperReviewCount:N0}";
         }
 
         private void AddDuplicateManagerGridRow(DataGridView grid, DuplicateGroup group, DuplicateItem item)
         {
-            bool canSelectForCleanup = DuplicateCleanupPolicy.CanCleanupItem(group, item);
+            bool canSelectForCleanup = _duplicateManagerDeleteSelections.CanSelectForDeletion(group, item);
             bool checkedForCleanup = _duplicateManagerDeleteSelections.Resolve(group, item);
             int rowIndex = grid.Rows.Add(
                 checkedForCleanup,
@@ -2415,7 +2459,7 @@ namespace MediaFlux
             row.Cells["Delete"].Value = checkedForCleanup;
             row.Cells["Delete"].ToolTipText = canSelectForCleanup
                 ? "Checked rows are used by cleanup buttons before the rule dropdown is applied."
-                : "Keepers, protected references, and review-only matches cannot be selected for cleanup.";
+                : "Explicit keepers, protected references, and ineligible matches cannot be selected for cleanup.";
             if (checkedForCleanup)
                 row.DefaultCellStyle.BackColor = Color.FromArgb(255, 248, 225);
         }
@@ -2536,8 +2580,7 @@ namespace MediaFlux
 
                 var selected = groupItems
                     .Where(item => checkedPaths.Contains(item.Path) &&
-                                   DuplicateCleanupPolicy.CanCleanupItem(item.Group, item.Item) &&
-                                   !item.IsSuggestedKeeper)
+                                   _duplicateManagerDeleteSelections.CanSelectForDeletion(item.Group, item.Item))
                     .ToList();
                 selected = EnsureOneFileRemainsInGroup(groupItems, selected);
                 candidates.AddRange(selected);

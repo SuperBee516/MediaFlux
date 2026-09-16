@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-09-16
+
+### Duplicate Manager
+
+- Fixed manual Duplicate Manager deletion workflow so unresolved duplicate groups can be selected directly in the grid without requiring prior keeper review. Bulk review now acknowledges groups without manufacturing keeper decisions, while keeper and final-survivor safeguards remain enforced.
+
 ## [1.5.3] - 2026-09-16
 
 ### Duplicate Manager
