@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-09-16
+
+### Duplicate Manager
+
+- Fixed manual Delete? selections being lost when the Duplicate Manager grid refreshed or rebound. Keeper and protected-row deletion safeguards remain enforced.
+
 ## [1.5.2] - 2026-09-15
 
 ### Encoding Reliability

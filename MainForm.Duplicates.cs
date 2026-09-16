@@ -34,6 +34,7 @@ namespace MediaFlux
         private const string DuplicateFilterActionable = "Actionable only";
         private const string DuplicateFilterProtected = "Protected/reference";
         private bool _duplicateCleanupAutoDisablePending;
+        private readonly DuplicateManagerDeleteSelectionState _duplicateManagerDeleteSelections = new();
 
         private void StartDuplicateScanIfEnabled()
         {
@@ -474,6 +475,7 @@ namespace MediaFlux
         private void ResetDuplicateAnnotations(string status)
         {
             _lastDuplicateScanResult = null;
+            _duplicateManagerDeleteSelections.Clear();
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
             {
                 if (row.IsNewRow)
@@ -499,7 +501,10 @@ namespace MediaFlux
         private void ClearDuplicateAnnotations(bool resetResult = true)
         {
             if (resetResult)
+            {
                 _lastDuplicateScanResult = null;
+                _duplicateManagerDeleteSelections.Clear();
+            }
 
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
             {
@@ -778,8 +783,12 @@ namespace MediaFlux
                     return;
 
                 var row = grid.Rows[e.RowIndex];
-                if (row.Cells["Delete"].ReadOnly)
-                    row.Cells["Delete"].Value = false;
+                if (row.Tag is not string path || FindDuplicateManagedFile(path) is not { } managed)
+                    return;
+
+                bool selected = row.Cells["Delete"].Value is bool value && value;
+                row.Cells["Delete"].Value = _duplicateManagerDeleteSelections.Record(
+                    managed.Group, managed.Item, selected);
             };
 
             grid.Tag = DuplicateFilterAll;
@@ -2376,13 +2385,10 @@ namespace MediaFlux
             return $"Groups: {groups.Count:N0}   Files: {fileCount:N0}   Duplicates: {duplicateCount:N0}   Recoverable: {FormatSize(recoverableBytes)}   Exact: {exactCount:N0}   Strong: {strongCount:N0}   Match review: {reviewCount:N0}   Keeper review: {keeperReviewCount:N0}";
         }
 
-        private static void AddDuplicateManagerGridRow(DataGridView grid, DuplicateGroup group, DuplicateItem item)
+        private void AddDuplicateManagerGridRow(DataGridView grid, DuplicateGroup group, DuplicateItem item)
         {
-            bool canSelectForCleanup = IsActionableDuplicateGroup(group) &&
-                                       !item.IsReferenceProtected &&
-                                       string.Equals(item.Recommendation, "Trash candidate", StringComparison.OrdinalIgnoreCase);
-            bool checkedForCleanup = canSelectForCleanup &&
-                                     string.Equals(item.Recommendation, "Trash candidate", StringComparison.OrdinalIgnoreCase);
+            bool canSelectForCleanup = DuplicateCleanupPolicy.CanCleanupItem(group, item);
+            bool checkedForCleanup = _duplicateManagerDeleteSelections.Resolve(group, item);
             int rowIndex = grid.Rows.Add(
                 checkedForCleanup,
                 group.Id,
@@ -2406,6 +2412,7 @@ namespace MediaFlux
             row.Tag = item.Path;
             row.Cells["Reason"].ToolTipText = group.Reason;
             row.Cells["Delete"].ReadOnly = !canSelectForCleanup;
+            row.Cells["Delete"].Value = checkedForCleanup;
             row.Cells["Delete"].ToolTipText = canSelectForCleanup
                 ? "Checked rows are used by cleanup buttons before the rule dropdown is applied."
                 : "Keepers, protected references, and review-only matches cannot be selected for cleanup.";
@@ -2528,7 +2535,9 @@ namespace MediaFlux
                     continue;
 
                 var selected = groupItems
-                    .Where(item => checkedPaths.Contains(item.Path) && !item.IsReferenceProtected && !item.IsSuggestedKeeper)
+                    .Where(item => checkedPaths.Contains(item.Path) &&
+                                   DuplicateCleanupPolicy.CanCleanupItem(item.Group, item.Item) &&
+                                   !item.IsSuggestedKeeper)
                     .ToList();
                 selected = EnsureOneFileRemainsInGroup(groupItems, selected);
                 candidates.AddRange(selected);
