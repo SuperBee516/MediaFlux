@@ -22,6 +22,23 @@ public sealed class FfmpegVideoDecodeRecoveryPolicyTests
         Assert.False(Evaluate(ReliableVideoCorruption, alreadyAttempted: true).Eligible);
     }
 
+    [Fact]
+    public void MatroskaCorruptionEvidenceAllowsOneTolerantValidationRecovery()
+    {
+        FfmpegVideoDecodeRecoveryDecision decision = Evaluate(
+            "invalid as first byte of an EBML number");
+
+        Assert.True(decision.Eligible);
+        Assert.Contains("EBML", decision.Evidence);
+        Assert.False(Evaluate("invalid as first byte of an EBML number", alreadyAttempted: true).Eligible);
+    }
+
+    [Fact]
+    public void DurationFailureWithoutCurrentCorruptionEvidenceIsNotRecoverable()
+    {
+        Assert.False(Evaluate("FFmpeg completed; staged output duration is 25 seconds short").Eligible);
+    }
+
     [Theory]
     [InlineData(ContainerCompatibilityPolicy.Strict, false, false)]
     [InlineData(ContainerCompatibilityPolicy.AlwaysAsk, false, false)]

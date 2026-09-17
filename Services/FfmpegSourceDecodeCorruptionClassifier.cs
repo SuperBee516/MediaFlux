@@ -28,6 +28,11 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
         "Error processing packet in decoder: Invalid data found when processing input"
     ];
 
+    private static readonly string[] ContainerCorruptionSignatures =
+    [
+        "invalid as first byte of an EBML number"
+    ];
+
     public static FfmpegSourceDecodeCorruption Classify(string? standardError)
     {
         if (string.IsNullOrWhiteSpace(standardError))
@@ -39,7 +44,11 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
         string[] decoderMatches = DecoderRejectionSignatures
             .Where(signature => standardError.Contains(signature, StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        return new(decoderMatches.Length > 0, bitstreamMatches.Concat(decoderMatches).ToArray());
+        string[] containerMatches = ContainerCorruptionSignatures
+            .Where(signature => standardError.Contains(signature, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        return new(decoderMatches.Length > 0 || containerMatches.Length > 0,
+            bitstreamMatches.Concat(decoderMatches).Concat(containerMatches).ToArray());
     }
 
     /// <summary>

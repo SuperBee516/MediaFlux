@@ -30,7 +30,7 @@ namespace MediaFlux
         private void HandleFfmpegProgressLine(string line)
         {
             // Always capture raw ffmpeg output for the active job log
-            _activeJobLogSb?.AppendLine(line);
+            _activeJobLog.Value?.AppendLine(line);
 
             var match = ffmpegProgressRegex.Match(line);
             if (match.Success)

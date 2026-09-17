@@ -1376,6 +1376,88 @@ namespace MediaFlux.Services
             PublishExecutionOutcome();
             if (!finalization.Success)
             {
+                // FFmpeg can exit successfully after a recoverable demux/container
+                // error. Validation remains authoritative, but the current
+                // attempt's diagnostics can still justify the existing one-time
+                // tolerant source-video retry.
+                FfmpegVideoDecodeRecoveryDecision truncatedOutputRecovery =
+                    FfmpegVideoDecodeRecoveryPolicy.Evaluate(
+                        runResult.StandardError,
+                        compatibilityPolicy,
+                        cancellationToken.IsCancellationRequested,
+                        videoRecoveryAttempted,
+                        requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
+                        output);
+                _log?.Invoke(
+                    $"[EncodingRecovery] Validation failed after FFmpeg completion; " +
+                    $"source-corruption-evidence={(truncatedOutputRecovery.Eligible ? truncatedOutputRecovery.Evidence : "none")}; " +
+                    $"recovery-permitted={truncatedOutputRecovery.Eligible}; " +
+                    $"strict-validation={(finalization.Success ? "passed" : "failed")}." );
+                if (!disableAutomaticFfmpegRecovery &&
+                    finalization.FailureKind == EncodeFinalizationFailureKind.Validation &&
+                    runResult.ExitCode == 0 &&
+                    truncatedOutputRecovery.Eligible)
+                {
+                    videoRecoveryAttempted = true;
+                    recoveryDiagnostics +=
+                        $"Strict attempt completed with rejected staged output; recognized source corruption evidence: {truncatedOutputRecovery.Evidence}.{Environment.NewLine}";
+                    _log?.Invoke(
+                        $"[EncodingRecovery] Tolerant retry started; reason=completed-encode-validation-rejected; " +
+                        $"evidence={truncatedOutputRecovery.Evidence}; attempt=1; " +
+                        "only strict source-fatal flags will be relaxed; encoding plan is unchanged.");
+                    callback("[MediaFlux] Output was truncated after recoverable source corruption; retrying once with tolerant source decode.");
+                    if (TryDeleteFailedStagingOutput(output))
+                    {
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                        {
+                            ffArgs = BuildFfmpegArgs(
+                                inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                sourcePixelFormat, restoration: restoration,
+                                splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                plannedVideoGeometry: plannedOutputGeometry,
+                                sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideo);
+                            scope.Complete();
+                        }
+                        _log?.Invoke($"[EncodingRecovery] Tolerant retry arguments differ from strict attempt only by source decode handling; ffmpeg arguments: {ffArgs}");
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
+                        {
+                            runResult = await RunFfmpegAsync(
+                                ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
+                                progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback,
+                                sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                            scope.Complete();
+                        }
+                        if (runResult.ExitCode == 0)
+                        {
+                            finalization = await _finalizationService.FinalizeAsync(
+                                BuildValidationRequest(), finalizationStatusCallback, cancellationToken).ConfigureAwait(false);
+                            _log?.Invoke($"[EncodingRecovery] Tolerant retry completed; retry-validation={(finalization.Success ? "passed" : "failed")}; terminal-promotion={(finalization.Success ? "allowed" : "blocked")}");
+                        }
+                        else
+                        {
+                            _log?.Invoke($"[EncodingRecovery] Tolerant retry completed; exit={runResult.ExitCode}; retry-validation=not-reached; terminal-promotion=blocked");
+                        }
+                        RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
+                            EncodingRecoveryMode.Tolerant, 1,
+                            runResult.ExitCode == 0 && finalization.Success ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                            $"{truncatedOutputRecovery.Evidence}; strict-validation=failed; retry-exit={runResult.ExitCode}; retry-validation={(runResult.ExitCode == 0 ? (finalization.Success ? "passed" : "failed") : "not-reached")}");
+                        validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                        finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                        PublishExecutionOutcome();
+                    }
+                    else
+                    {
+                        _log?.Invoke("[EncodingRecovery] Tolerant retry was not started because the rejected staged output could not be removed safely.");
+                        RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
+                            EncodingRecoveryMode.Tolerant, 1, EncodingRecoveryResult.NotStarted,
+                            "Rejected staged output could not be removed safely.");
+                    }
+                }
                 FfmpegVideoDecodeRecoveryDecision frameRecovery =
                     FfmpegVideoDecodeRecoveryPolicy.EvaluateFrameDeficit(
                         finalization.StagedValidationResult?.FailureEvidence,

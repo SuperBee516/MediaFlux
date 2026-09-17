@@ -454,7 +454,12 @@ namespace MediaFlux
 
             // Start per-job log capture
             var jobLog = new StringBuilder();
-            _activeJobLogSb = jobLog;
+            var jobLogCapture = new JobLogCapture();
+            _activeJobLog.Value = jobLogCapture;
+            void AppendJobLog(string line)
+            {
+                lock (jobLog) jobLog.AppendLine(line);
+            }
             var jobStartUtc = DateTime.UtcNow;
             if (meta.StatisticsStartUtc == default)
                 meta.StatisticsStartUtc = jobStartUtc;
@@ -750,7 +755,7 @@ namespace MediaFlux
                 // Per-job ffmpeg output callback
                 Action<string> jobCallback = line =>
                 {
-                    jobLog.AppendLine(line);
+                    AppendJobLog(line);
                     _encodingDiagnosticsService.UpdateProgress(meta.StatisticsOperationId, line, durationSec > 0 ? durationSec : null);
                     HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
                 };
@@ -787,7 +792,7 @@ namespace MediaFlux
                     FinalizationStatusCallback = status =>
                     {
                         finalizationStartedUtc ??= DateTime.UtcNow;
-                        jobLog.AppendLine($"[MediaFlux] {status}.");
+                        AppendJobLog($"[MediaFlux] {status}.");
                         UiInvoke(() =>
                         {
                             if (row.DataGridView == dgvEncodeQueue)
@@ -808,16 +813,16 @@ namespace MediaFlux
                     EncodingPlanSnapshotCallback = snapshot =>
                     {
                         meta.IntelligencePlan = snapshot.Plan;
-                        jobLog.AppendLine(EncodingPlanService.DescribeSummary(snapshot.Plan));
+                        AppendJobLog(EncodingPlanService.DescribeSummary(snapshot.Plan));
                         Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
                     },
                     EncodingPlanDivergenceCallback = divergence =>
-                        jobLog.AppendLine($"[EncodingPlan] Shadow divergence: {divergence}"),
+                        AppendJobLog($"[EncodingPlan] Shadow divergence: {divergence}"),
                     EncodingExecutionOutcomeCallback = outcome =>
                     {
                         meta.IntelligenceOutcome = outcome;
-                        jobLog.AppendLine(EncodingPlanService.DescribeRecovery(outcome));
-                        jobLog.AppendLine(EncodingPlanService.DescribeLifecycle(outcome));
+                        AppendJobLog(EncodingPlanService.DescribeRecovery(outcome));
+                        AppendJobLog(EncodingPlanService.DescribeLifecycle(outcome));
                         Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
                     }
                 };
@@ -1226,8 +1231,8 @@ namespace MediaFlux
                     _encodingDiagnosticsService.Cancel(meta.StatisticsOperationId);
                 _runningEncodeJobs.TryRemove(row, out _);
                 UpdateTrayStatus();
-                if (ReferenceEquals(_activeJobLogSb, jobLog))
-                    _activeJobLogSb = null; // stop log capture for this job
+                if (ReferenceEquals(_activeJobLog.Value, jobLogCapture))
+                    _activeJobLog.Value = null; // stop log capture for this job
                 Ui(() =>
                 {
                     if (ReferenceEquals(_activeEncodeRow, row))

@@ -48,7 +48,15 @@ namespace MediaFlux
         private readonly EncodingDiagnosticsService _encodingDiagnosticsService;
 
         private CancellationTokenSource? _encodeCts = null;
-        private StringBuilder? _activeJobLogSb;
+        private sealed class JobLogCapture
+        {
+            private readonly object _sync = new();
+            private readonly StringBuilder _builder = new();
+            public void AppendLine(string line) { lock (_sync) _builder.AppendLine(line); }
+            public override string ToString() { lock (_sync) return _builder.ToString(); }
+        }
+
+        private readonly System.Threading.AsyncLocal<JobLogCapture?> _activeJobLog = new();
         private int _encodeFailedCount;
         private int _encodeSucceededCount;
         private NumericUpDown? nudAutoQuality;
@@ -5023,7 +5031,7 @@ namespace MediaFlux
             _encodingService = new EncodingService(
                 AppPaths.InstallDirectory,
                 HandleFfmpegProgressLine,
-                message => _activeJobLogSb?.AppendLine(message),
+                message => _activeJobLog.Value?.AppendLine(message),
                 _config.FfmpegPath,
                 _config.FfprobePath);
 

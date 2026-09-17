@@ -32,4 +32,14 @@ public sealed class FfmpegSourceDecodeCorruptionClassifierTests
 
         Assert.True(result.IsReliable);
     }
+
+    [Fact]
+    public void MatroskaEbmlCorruptionIsReliableEvenWhenFfmpegExitsSuccessfully()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "[matroska,webm @ 000001] invalid as first byte of an EBML number");
+
+        Assert.True(result.IsReliable);
+        Assert.Contains("invalid as first byte of an EBML number", result.MatchedEvidence);
+    }
 }
