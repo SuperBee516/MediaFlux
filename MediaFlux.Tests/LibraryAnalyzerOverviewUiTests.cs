@@ -29,6 +29,12 @@ public sealed class LibraryAnalyzerOverviewUiTests : IDisposable
                 catalog.Initialize();
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 using var form = new LibraryAnalyzerForm(runtime);
+                form.TopLevel = false;
+                form.FormBorderStyle = FormBorderStyle.None;
+                form.Dock = DockStyle.Fill;
+                using var host = new Panel { Size = new Size(1800, 1100) };
+                host.Controls.Add(form);
+                host.CreateControl();
                 form.Show();
                 TabControl tabs = Field<TabControl>(form, "_tabs");
                 TabPage overview = tabs.TabPages.Cast<TabPage>().Single(x => x.Text == "Overview");
@@ -36,9 +42,9 @@ public sealed class LibraryAnalyzerOverviewUiTests : IDisposable
                 Assert.Contains(overview.Controls.OfType<TableLayoutPanel>(), x => x.RowCount >= 4);
                 Task refresh = (Task)(form.GetType().GetMethod("RefreshOverviewAsync", BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(form, null) ?? throw new MissingMethodException());
                 Pump(refresh);
-                form.Size = new Size(1100, 700); Application.DoEvents(); AssertOverviewGeometry(form, overview);
-                form.Size = new Size(1360, 840); Application.DoEvents(); AssertOverviewGeometry(form, overview);
-                form.Size = new Size(1800, 1100); Application.DoEvents(); AssertOverviewGeometry(form, overview);
+                host.Size = new Size(1100, 700); Application.DoEvents(); AssertOverviewGeometry(form, overview);
+                host.Size = new Size(1360, 840); Application.DoEvents(); AssertOverviewGeometry(form, overview);
+                host.Size = new Size(1800, 1100); Application.DoEvents(); AssertOverviewGeometry(form, overview);
                 ComboBox selector = Field<ComboBox>(form, "_overviewCompositionSelector");
                 Assert.Equal(new[] { "Resolution", "Video codec", "Container" }, selector.Items.Cast<string>());
                 ComboBox growthSelector = Field<ComboBox>(form, "_overviewGrowthMetricSelector");
@@ -70,7 +76,7 @@ public sealed class LibraryAnalyzerOverviewUiTests : IDisposable
                 Assert.Contains("Live: Scanning", Field<Label>(form, "_overviewLiveStatus").Text);
                 form.GetType().GetMethod("SetActivity", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form, new object[] { "Ready", "", false, 0L, 0L, false });
                 Assert.Equal("Live: Idle", Field<Label>(form, "_overviewLiveStatus").Text);
-                form.Close(); Application.DoEvents();
+                form.Dispose(); Application.DoEvents();
             }
             catch (Exception ex) { failure = ex; }
         });

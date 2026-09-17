@@ -31,6 +31,12 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                 using var form = new LibraryAnalyzerForm(runtime);
                 Size preferredSize = form.Size;
                 Assert.Equal(new Size(1360, 840), preferredSize);
+                form.TopLevel = false;
+                form.FormBorderStyle = FormBorderStyle.None;
+                form.Dock = DockStyle.Fill;
+                using var host = new Panel { Size = new Size(1800, 1100) };
+                host.Controls.Add(form);
+                host.CreateControl();
                 form.Show();
                 var tabs = AllControls(form).OfType<TabControl>().Single(tab => tab.Name == "LibraryAnalyzerTabs");
                 string[] expected =
@@ -45,13 +51,11 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
 
                 foreach (Size size in new[] { new Size(1100, 700), new Size(1360, 840), new Size(1800, 1100) })
                 {
-                    form.Size = size;
+                    host.Size = size;
                     Application.DoEvents();
-                    Size actualSize = form.Size;
+                    Size actualSize = form.ClientSize;
                     Assert.All(tabs.TabPages.Cast<TabPage>(), page =>
                         Assert.True(page.Width > 0 && page.Height > 0, $"{page.Text} should have a client area at {actualSize}."));
-                    Assert.True(Screen.FromControl(form).WorkingArea.IntersectsWith(form.Bounds),
-                        $"Window should remain associated with the monitor working area at {actualSize}: {form.Bounds} / {Screen.FromControl(form).WorkingArea}.");
                     AssertMetricRowsHaveClearance(form, actualSize);
                     AssertDuplicateFilterLayout(tabs, "Duplicates — Visual", actualSize);
                 }

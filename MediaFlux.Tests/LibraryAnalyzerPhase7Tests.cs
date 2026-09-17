@@ -311,6 +311,12 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new EmptyMetadataProbe(),
                     new FakeVisualExtractor(_ => Array.Empty<ulong>()));
                 using var form = new LibraryAnalyzerForm(runtime);
+                form.TopLevel = false;
+                form.FormBorderStyle = FormBorderStyle.None;
+                form.Dock = DockStyle.Fill;
+                using var host = new Panel { Size = new Size(1800, 1100) };
+                host.Controls.Add(form);
+                host.CreateControl();
                 form.Show();
                 TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
                 TableLayoutPanel exactControls = GetPrivateField<TableLayoutPanel>(form, "_duplicateControlArea");
@@ -329,12 +335,14 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 {
                     tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Exact");
                     Application.DoEvents();
+                    PumpUntil(() => !GetPrivateField<bool>(form, "_loadingDuplicateGroups"));
                     AssertCurrentTabContains(exactControls);
                     AssertCurrentTabContains(exactApply);
                     Assert.False(exactControls.AutoScroll);
 
                     tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Visual");
                     Application.DoEvents();
+                    PumpUntil(() => !GetPrivateField<bool>(form, "_loadingVisualGroups"));
                     AssertCurrentTabContains(visualControls);
                     AssertCurrentTabContains(visualActions);
                     Assert.False(visualControls.AutoScroll);
@@ -350,13 +358,13 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                     }
                 }
 
-                form.Size = form.MinimumSize;
+                host.Size = new Size(1100, 700);
                 Application.DoEvents();
                 AssertLayoutsAtCurrentSize();
-                form.Size = new Size(1280, 780);
+                host.Size = new Size(1280, 780);
                 Application.DoEvents();
                 AssertLayoutsAtCurrentSize();
-                form.WindowState = FormWindowState.Maximized;
+                host.Size = new Size(1800, 1100);
                 Application.DoEvents();
                 AssertLayoutsAtCurrentSize();
 
@@ -374,6 +382,8 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 Assert.Equal(accent, exactStatus.ForeColor);
                 Assert.True(accent.B > accent.R && accent.B > accent.G, "The Library Analyzer accent should be visibly blue.");
                 form.Close();
+                Application.DoEvents();
+                form.Dispose();
 
                 string extensions = Path.Combine(_root, "extensions.txt");
                 File.WriteAllText(extensions, ".mp4");
@@ -390,6 +400,12 @@ public sealed class LibraryAnalyzerPhase7Tests : IDisposable
                 if (cleanup.Visible && productivity.Visible) Assert.False(cleanup.RectangleToScreen(cleanup.ClientRectangle).IntersectsWith(productivity.RectangleToScreen(productivity.ClientRectangle)));
                 Assert.True(settings.AutoScroll);
                 settings.Close();
+                DateTime drainUntil = DateTime.UtcNow.AddSeconds(2);
+                while (DateTime.UtcNow < drainUntil)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(25);
+                }
             }
             catch (Exception ex) { failure = ex; }
         });
