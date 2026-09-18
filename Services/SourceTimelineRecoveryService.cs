@@ -3,11 +3,14 @@ using System.Globalization;
 
 namespace MediaFlux.Services;
 
+internal enum SourceTimelineRecoveryFailureKind { None, StreamCopyPreservedUnsafeTiming, Other }
+
 internal sealed record SourceTimelineRecoveryResult(
     bool Success, string RepairedPath, MediaProbeResult? RepairedProbe,
-    SourceTimingAnalysis? RepairedTiming, string Reason)
+    SourceTimingAnalysis? RepairedTiming, string Reason,
+    SourceTimelineRecoveryFailureKind FailureKind = SourceTimelineRecoveryFailureKind.None)
 {
-    public static SourceTimelineRecoveryResult Failed(string reason) => new(false, "", null, null, reason);
+    public static SourceTimelineRecoveryResult Failed(string reason, SourceTimelineRecoveryFailureKind failureKind = SourceTimelineRecoveryFailureKind.Other) => new(false, "", null, null, reason, failureKind);
 }
 
 /// <summary>One-shot, non-destructive timestamp normalization for a classified timeline defect.</summary>
@@ -48,7 +51,7 @@ internal sealed class SourceTimelineRecoveryService
 
             SourceTimingAnalysis timing = await new SourceTimingAnalysisService(_ffprobePath, _runner, _log).AnalyzeAsync(stagingPath, token).ConfigureAwait(false);
             if (timing.Classification == SourceTimingClassification.IrregularUnsafe || timing.Classification == SourceTimingClassification.Unknown)
-                return SourceTimelineRecoveryResult.Failed($"The normalized temporary source did not prove a safe monotonic timeline: {timing.Reason}");
+                return SourceTimelineRecoveryResult.Failed($"The normalized temporary source did not prove a safe monotonic timeline: {timing.Reason}", SourceTimelineRecoveryFailureKind.StreamCopyPreservedUnsafeTiming);
             File.Move(stagingPath, outputPath, overwrite: false);
             return new(true, outputPath, repairedProbe, timing, $"Temporary stream-copy normalization produced an equivalent {timing.Classification} timeline.");
         }
@@ -62,8 +65,12 @@ internal sealed class SourceTimelineRecoveryService
         if (!original.Success || !repaired.Success) { reason = "Source equivalence requires successful original and repaired probes."; return false; }
         MediaProbeStreamInfo[] originalRequired = original.Streams.Where(IsRequired).ToArray();
         MediaProbeStreamInfo[] repairedRequired = repaired.Streams.Where(IsRequired).ToArray();
-        if (originalRequired.Length != repairedRequired.Length || originalRequired.Select(Key).OrderBy(x => x).SequenceEqual(repairedRequired.Select(Key).OrderBy(x => x)) == false)
-        { reason = "The normalized source changed required video/audio/subtitle/attachment stream topology."; return false; }
+        if (originalRequired.Length != repairedRequired.Length ||
+            !HaveEquivalentRequiredTopology(originalRequired, repairedRequired))
+        {
+            reason = DescribeTopologyMismatch(originalRequired, repairedRequired);
+            return false;
+        }
         double originalDuration = ProgramDurationResolver.Resolve(original).DurationSeconds ?? original.DurationSeconds ?? 0;
         double repairedDuration = ProgramDurationResolver.Resolve(repaired).DurationSeconds ?? repaired.DurationSeconds ?? 0;
         if (originalDuration > 0 && repairedDuration > 0 && Math.Abs(originalDuration - repairedDuration) > .75)
@@ -76,6 +83,49 @@ internal sealed class SourceTimelineRecoveryService
     }
 
     private static bool IsRequired(MediaProbeStreamInfo stream) => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase) || stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase) || stream.CodecType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) || stream.CodecType.Equals("attachment", StringComparison.OrdinalIgnoreCase);
-    private static string Key(MediaProbeStreamInfo stream) => $"{stream.CodecType}|{stream.CodecName}|{stream.Language}";
+    private static bool HaveEquivalentRequiredTopology(
+        IReadOnlyList<MediaProbeStreamInfo> original,
+        IReadOnlyList<MediaProbeStreamInfo> repaired)
+    {
+        var remaining = repaired.Select((stream, index) => (stream, index)).ToList();
+        foreach (MediaProbeStreamInfo source in original)
+        {
+            int match = remaining.FindIndex(candidate => SemanticKey(candidate.stream) == SemanticKey(source));
+            if (match < 0) return false;
+            remaining.RemoveAt(match);
+        }
+        return remaining.Count == 0;
+    }
+
+    private static string DescribeTopologyMismatch(
+        IReadOnlyList<MediaProbeStreamInfo> original,
+        IReadOnlyList<MediaProbeStreamInfo> repaired)
+    {
+        var remaining = repaired.Select((stream, index) => (stream, index)).ToList();
+        var missing = new List<string>();
+        foreach (MediaProbeStreamInfo source in original)
+        {
+            int match = remaining.FindIndex(candidate => SemanticKey(candidate.stream) == SemanticKey(source));
+            if (match >= 0) remaining.RemoveAt(match);
+            else missing.Add(DescribeStream(source));
+        }
+        string missingText = missing.Count == 0 ? "none" : string.Join(", ", missing);
+        string extraText = remaining.Count == 0 ? "none" : string.Join(", ", remaining.Select(candidate => DescribeStream(candidate.stream)));
+        return $"The normalized source changed required video/audio/subtitle/attachment stream topology. " +
+            $"Counts(original→normalized): video={Count(original, "video")}→{Count(repaired, "video")}, " +
+            $"audio={Count(original, "audio")}→{Count(repaired, "audio")}, " +
+            $"subtitle={Count(original, "subtitle")}→{Count(repaired, "subtitle")}, " +
+            $"attachment={Count(original, "attachment")}→{Count(repaired, "attachment")}. " +
+            $"Missing-after={missingText}; extra-after={extraText}.";
+    }
+
+    private static string SemanticKey(MediaProbeStreamInfo stream) =>
+        $"{stream.CodecType.Trim().ToLowerInvariant()}|{stream.CodecName.Trim().ToLowerInvariant()}|{LanguageMetadataNormalizer.Normalize(stream.Language)}";
+
+    private static string DescribeStream(MediaProbeStreamInfo stream) =>
+        $"{stream.CodecType}/{stream.CodecName}/language={LanguageMetadataNormalizer.Normalize(stream.Language)}";
+
+    private static int Count(IEnumerable<MediaProbeStreamInfo> streams, string type) =>
+        streams.Count(stream => stream.CodecType.Equals(type, StringComparison.OrdinalIgnoreCase));
     private static void TryDelete(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
 }

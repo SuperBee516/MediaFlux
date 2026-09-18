@@ -1,6 +1,6 @@
 namespace MediaFlux.Models
 {
-    public enum FrameCountProvenance { Unavailable, InferredFromDurationAndRate, Measured }
+    public enum FrameCountProvenance { Unavailable, InferredFromDurationAndRate, Measured, RecoverableDecoded }
 
     public sealed class MediaProbeResult
     {

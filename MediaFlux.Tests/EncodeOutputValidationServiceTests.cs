@@ -39,6 +39,19 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         Assert.Contains("decode-integrity", result.Summary);
     }
 
+    [Fact]
+    public async Task RegeneratedTimelineOutputMustProveMonotonicity()
+    {
+        var probe = new FakeProbeService(path => path.Equals(_sourcePath, StringComparison.OrdinalIgnoreCase) ? SourceProbe() : OutputProbe());
+        var unsafeTiming = new SourceTimingAnalysis(SourceTimingClassification.IrregularUnsafe, AiTimingEligibility.UnsafeUnsupported, 50, 25, 25, 0, false, true, "non-monotonic output");
+        var service = new EncodeOutputValidationService(probe, new FakeDecodeService(), outputTimingAnalyzer: (_, _) => Task.FromResult(unsafeTiming));
+
+        EncodeOutputValidationResult result = await service.ValidateStagedAsync(Request(requireMonotonicOutputTimeline: true));
+
+        Assert.False(result.Success);
+        Assert.Contains("did not prove a safe monotonic", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData(189871L, 189840L, 59.94)]
     [InlineData(215130L, 215102L, 59.94)]
@@ -135,6 +148,50 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
             FrameRequest(6522, FrameCountProvenance.Measured, duration),
             FrameProbe(duration, 6522, 25, averageFps: 25, nominalFps: 25),
             FrameProbe(duration, 6164, 25, output: true, averageFps: 25, nominalFps: 25));
+
+        Assert.Contains("frame deficit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RecoverableBaselineCannotActivateWithoutSpecificCorruptionEvidence()
+    {
+        EncodeOutputValidationRequest request = CorruptRecoveryFrameRequest(
+            advertisedFrames: 3000, recoverableFrames: 2900, tailSeconds: 100, sourceFailure: null);
+
+        string error = EncodeOutputValidationService.ValidateProbe(
+            request, FrameProbe(100, 3000, 30), FrameProbe(100, 2900, 30, output: true));
+
+        Assert.Contains("frame deficit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ProvenCorruptSourceCanValidateAgainstMeasuredRecoverableCoverage()
+    {
+        EncodeOutputValidationRequest request = CorruptRecoveryFrameRequest(
+            advertisedFrames: 3000, recoverableFrames: 2900, tailSeconds: 100,
+            sourceFailure: new EncodingSourceFailureClassification(
+                EncodingSourceFailureType.VideoBitstreamCorruption, true,
+                "Invalid NAL unit size | Error splitting the input into NAL units",
+                "Specific H.264 bitstream corruption."));
+
+        string error = EncodeOutputValidationService.ValidateProbe(
+            request, FrameProbe(100, 3000, 30), FrameProbe(100, 2900, 30, output: true));
+
+        Assert.Equal("", error);
+        Assert.Equal(3000, request.ExpectedVideoFrameCount);
+    }
+
+    [Fact]
+    public void ProvenCorruptSourceStillRejectsOutputMissingRecoverableTail()
+    {
+        EncodeOutputValidationRequest request = CorruptRecoveryFrameRequest(
+            advertisedFrames: 3000, recoverableFrames: 2900, tailSeconds: 100,
+            sourceFailure: new EncodingSourceFailureClassification(
+                EncodingSourceFailureType.VideoBitstreamCorruption, true,
+                "Invalid NAL unit size", "Specific H.264 bitstream corruption."));
+
+        string error = EncodeOutputValidationService.ValidateProbe(
+            request, FrameProbe(100, 3000, 30), FrameProbe(98.7, 2860, 30, output: true));
 
         Assert.Contains("frame deficit", error, StringComparison.OrdinalIgnoreCase);
     }
@@ -835,14 +892,15 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     private EncodeOutputValidationService CreateService(
         MediaProbeResult source,
         MediaProbeResult output,
-        IDecodeIntegritySpotCheckService decode)
+        IDecodeIntegritySpotCheckService decode,
+        Func<string, CancellationToken, Task<SourceTimingAnalysis>>? outputTimingAnalyzer = null)
     {
         var probe = new FakeProbeService(path =>
             path.Equals(_sourcePath, StringComparison.OrdinalIgnoreCase)
                 ? source
                 : output);
         serviceProbe = probe;
-        return new EncodeOutputValidationService(probe, decode);
+        return new EncodeOutputValidationService(probe, decode, outputTimingAnalyzer: outputTimingAnalyzer);
     }
 
     private EncodeOutputValidationRequest Request(
@@ -851,7 +909,8 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         int? expectedWidth = null,
         int? expectedHeight = null,
         EncodeOutputValidationProfile profile = EncodeOutputValidationProfile.Production,
-        OutputContainerDecision? containerDecision = null) => new()
+        OutputContainerDecision? containerDecision = null,
+        bool requireMonotonicOutputTimeline = false) => new()
     {
         Input = EncodingInputSource.FromFile(_sourcePath),
         OutputPath = _outputPath,
@@ -866,6 +925,7 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         CopySubtitles = copySubtitles,
         ExpectedVideoWidth = expectedWidth,
         ExpectedVideoHeight = expectedHeight,
+        RequireMonotonicOutputTimeline = requireMonotonicOutputTimeline,
         Profile = profile,
         ContainerDecision = containerDecision ?? new OutputContainerDecision
         {
@@ -885,6 +945,20 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         SourceTiming = sourceTiming,
         CopySubtitles = copySubtitles,
         ContainerDecision = containerDecision ?? new OutputContainerDecision { Requested = OutputContainerSelection.Mp4, Resolved = OutputContainer.Mp4, Reason = "test" }
+    };
+
+    private static EncodeOutputValidationRequest CorruptRecoveryFrameRequest(
+        long advertisedFrames, long recoverableFrames, double tailSeconds,
+        EncodingSourceFailureClassification? sourceFailure) => new()
+    {
+        Input = EncodingInputSource.FromFile("frame-topology.mkv"),
+        Encoder = new VideoEncoderSelection(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
+        ExpectedVideoFrameCount = advertisedFrames,
+        ExpectedVideoFrameCountProvenance = FrameCountProvenance.Measured,
+        ExpectedDurationSeconds = 100,
+        RecoverableSourceBaseline = new RecoverableSourceBaseline(recoverableFrames, tailSeconds, "full tolerant decode reached EOF"),
+        SourceFailureClassification = sourceFailure,
+        ContainerDecision = new OutputContainerDecision { Requested = OutputContainerSelection.Mp4, Resolved = OutputContainer.Mp4, Reason = "test" }
     };
 
     private static SourceTimingAnalysis VfrTiming() => new(SourceTimingClassification.Vfr, AiTimingEligibility.PotentialFutureTimestampAware, 80, 30, 18, .02, false, false, "verified monotonic VFR");

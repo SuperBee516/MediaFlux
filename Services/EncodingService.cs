@@ -174,7 +174,9 @@ namespace MediaFlux.Services
                             new MediaToolProcessRunner()),
                         new FfmpegDecodeIntegritySpotCheckService(
                             _ffmpegPath),
-                        _log));
+                        _log,
+                        (path, token) => new SourceTimingAnalysisService(_ffprobePath, log: _log).AnalyzeAsync(path, token),
+                        new FfmpegFullVideoDecodeCoverageService(_ffmpegPath)));
 
             // Capture the current SynchronizationContext (WinForms UI thread) to marshal progress callbacks safely.
             _syncContext = SynchronizationContext.Current;
@@ -707,6 +709,8 @@ namespace MediaFlux.Services
             SourceTimingAnalysis? sourceTiming = null;
             SourceTimingAnalysis? originalSourceTiming = null;
             SourceTimelineRecoveryResult? timelineRecovery = null;
+            RationalFrameRate? preplannedTimelineReconstructionRate = null;
+            bool requireRegeneratedOutputTimeline = false;
             if (inputSource.Kind == EncodingInputKind.File)
             {
                 using PerformanceTimingService.PerformanceScope timingScope = performance.Measure(PerformanceTimingStage.SourceTimingAnalysis);
@@ -725,14 +729,40 @@ namespace MediaFlux.Services
                     timelineRecovery = await new SourceTimelineRecoveryService(_ffmpegPath, _ffprobePath, log: _log)
                         .TryNormalizeAsync(inputSource.SourcePath, sourceTimelineRepairPath, sourceProbe, cancellationToken).ConfigureAwait(false);
                     if (!timelineRecovery.Success)
-                        throw new InvalidOperationException($"The source video has a material timestamp defect and the bounded normalization attempt did not prove a safe timeline. {timelineRecovery.Reason} The original source was retained.");
+                    {
+                        bool aiRestorationRequested = restoration is { AiMode: not AiRestorationMode.Off };
+                        if (!sourceTiming.HasNonMonotonicTimestamps ||
+                            timelineRecovery.FailureKind != SourceTimelineRecoveryFailureKind.StreamCopyPreservedUnsafeTiming || aiRestorationRequested || sourceVideo is null)
+                            throw new InvalidOperationException($"The source video has a material timestamp defect and the bounded normalization attempt did not prove a safe timeline. {timelineRecovery.Reason} The original source was retained.");
 
-                    inputSource = inputSource.WithInputPath(timelineRecovery.RepairedPath);
-                    physicalProbe = timelineRecovery.RepairedProbe!;
-                    sourceVideo = physicalProbe.Streams.FirstOrDefault(stream =>
-                        stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
-                    sourceTiming = timelineRecovery.RepairedTiming;
-                    _log?.Invoke($"[EncodingRecovery] Type=Timeline; Failure=SourceTimelineCorruption; InitialMode=Strict; RecoveryMode=TimestampNormalization; ProcessResult=Succeeded; MediaDisposition=Salvaged; Reason={timelineRecovery.Reason}");
+                        MediaProbeStreamInfo[] reconstructionAudio = inputSource.HasExplicitStreamSelection
+                            ? sourceProbe.Streams.Where(stream =>
+                                stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                                inputSource.AudioStreamIndexes.Contains(stream.Index)).ToArray()
+                            : mapMode == StreamMapMode.FirstAudioOnly
+                                ? sourceProbe.Streams.Where(stream => stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase)).Take(1).ToArray()
+                                : sourceProbe.Streams.Where(stream => stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase)).ToArray();
+                        TimelineReconstructionEligibility reconstruction = await new TimelineReconstructionEligibilityService(_ffmpegPath, _ffprobePath, log: _log)
+                            .EvaluateAsync(inputSource.SourcePath, sourceVideo, programDuration.DurationSeconds, reconstructionAudio, cancellationToken)
+                            .ConfigureAwait(false);
+                        _log?.Invoke($"[EncodingRecovery] TimelineReconstructionEligibility: source-non-monotonic-PTS=yes; stream-copy-still-non-monotonic=yes; ai-restoration=disabled; {reconstruction.DescribeEvidence()}");
+                        if (!reconstruction.IsEligible || reconstruction.FrameRate is not { } provenRate)
+                            throw new InvalidOperationException($"The source video has a material timestamp defect and stream-copy normalization preserved it. MediaFlux could not prove that deterministic decode/re-encode timestamp reconstruction is safe. {reconstruction.Reason} The original source was retained.");
+
+                        preplannedTimelineReconstructionRate = provenRate;
+                        requireRegeneratedOutputTimeline = true;
+                        _log?.Invoke($"[EncodingRecovery] Stream-copy normalization preserved unsafe timing; using the existing encode once with proven frame-index timestamp reconstruction at {provenRate.Text}. {reconstruction.DescribeEvidence()}");
+                    }
+
+                    if (timelineRecovery.Success)
+                    {
+                        inputSource = inputSource.WithInputPath(timelineRecovery.RepairedPath);
+                        physicalProbe = timelineRecovery.RepairedProbe!;
+                        sourceVideo = physicalProbe.Streams.FirstOrDefault(stream =>
+                            stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+                        sourceTiming = timelineRecovery.RepairedTiming;
+                        _log?.Invoke($"[EncodingRecovery] Type=Timeline; Failure=SourceTimelineCorruption; InitialMode=Strict; RecoveryMode=TimestampNormalization; ProcessResult=Succeeded; MediaDisposition=Salvaged; Reason={timelineRecovery.Reason}");
+                    }
                 }
             }
             VideoEncoderSelection legacyEncoder =
@@ -769,7 +799,7 @@ namespace MediaFlux.Services
                 new(EncodingPreflightCheckKind.SourceProbe, EncodingPreflightStatus.Passed),
                 new(EncodingPreflightCheckKind.SourceTiming,
                     inputSource.Kind == EncodingInputKind.File ? EncodingPreflightStatus.Passed : EncodingPreflightStatus.Skipped,
-                    inputSource.Kind == EncodingInputKind.File ? timelineRecovery is null ? "Existing source timing analysis passed." : timelineRecovery.Reason : "Not applicable to this input source.")
+                    inputSource.Kind == EncodingInputKind.File ? preplannedTimelineReconstructionRate is { } approvedRate ? $"Stream-copy normalization preserved unsafe timing; full-stream evidence approved one deterministic {approvedRate.Text} reconstruction encode with mandatory output timeline validation." : timelineRecovery is null ? "Existing source timing analysis passed." : timelineRecovery.Reason : "Not applicable to this input source.")
             };
             var recoveryOutcomes = new List<EncodingRecoveryOutcome>();
             if (timelineRecovery is { Success: true })
@@ -1106,9 +1136,16 @@ namespace MediaFlux.Services
                 sampleStart,
                 sampleDuration,
                 sourcePixelFormat,
+                recoveryFrameRateRational: preplannedTimelineReconstructionRate?.Text,
+                timestampReconstructionFilter: preplannedTimelineReconstructionRate is { } plannedReconstructionRate
+                    ? $"setpts=N*{plannedReconstructionRate.Denominator}/{plannedReconstructionRate.Numerator}/TB"
+                    : null,
+                disableHardwareDecode: preplannedTimelineReconstructionRate is not null,
                 restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain,
                 plannedVideoGeometry: plannedOutputGeometry,
-                sourceDecodeMode: sourceDecodeMode);
+                sourceDecodeMode: preplannedTimelineReconstructionRate is null
+                    ? sourceDecodeMode
+                    : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
             scope.Complete();
             }
 
@@ -1308,7 +1345,7 @@ namespace MediaFlux.Services
                 }
             }
 
-            bool videoRecoveryAttempted = false;
+            bool videoRecoveryAttempted = preplannedTimelineReconstructionRate is not null;
             if (!disableAutomaticFfmpegRecovery && runResult.ExitCode != 0)
             {
                 FfmpegVideoDecodeRecoveryDecision recovery = FfmpegVideoDecodeRecoveryPolicy.Evaluate(
@@ -1416,7 +1453,9 @@ namespace MediaFlux.Services
             }
             _log?.Invoke(
                 "[EncodingService] ffmpeg completed successfully; validating staged output.");
-            EncodeOutputValidationRequest BuildValidationRequest() => new()
+            EncodeOutputValidationRequest BuildValidationRequest(
+                RecoverableSourceBaseline? recoverableBaseline = null,
+                EncodingSourceFailureClassification? sourceFailure = null) => new()
             {
                         Input = inputSource,
                         OutputPath = output,
@@ -1436,9 +1475,13 @@ namespace MediaFlux.Services
                         ExpectedVideoFrameCountProvenance = sampleDuration is null && programDuration.PrimaryVideo?.FrameCount is > 0
                             ? FrameCountProvenance.Measured
                             : FrameCountProvenance.Unavailable,
+                        RecoverableSourceBaseline = recoverableBaseline,
+                        SourceFailureClassification = sourceFailure,
                         // Only the original source timing can justify existing
                         // frame-deficit exceptions; repaired timing is execution-only.
                         SourceTiming = originalSourceTiming,
+                        RequireMonotonicOutputTimeline = requireRegeneratedOutputTimeline,
+                        RequireFullVideoDecodeCoverage = requireRegeneratedOutputTimeline,
                         ExpectedVideoWidth = plannedOutputGeometry?.Width,
                         ExpectedVideoHeight = plannedOutputGeometry?.Height,
                         PerformanceTiming = performance
@@ -1451,6 +1494,12 @@ namespace MediaFlux.Services
                     cancellationToken).ConfigureAwait(false);
             validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
             finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+            if (preplannedTimelineReconstructionRate is { } reconstructionRate)
+                RecordRecovery(EncodingRecoveryKind.TimelineNormalization,
+                    EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
+                    EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction, 1,
+                    runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                    $"Stream-copy normalization preserved unsafe timing; deterministic frame-index reconstruction at {reconstructionRate.Text}; output-monotonic-validation={(finalization.Success ? "passed" : "failed")}; no retry was scheduled.");
             PublishExecutionOutcome();
             if (!finalization.Success)
             {
@@ -1522,7 +1571,7 @@ namespace MediaFlux.Services
                         }
                         RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
                             EncodingRecoveryMode.Tolerant, 1,
-                            runResult.ExitCode == 0 && finalization.Success ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                            runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
                             $"{truncatedOutputRecovery.Evidence}; strict-validation=failed; retry-exit={runResult.ExitCode}; retry-validation={(runResult.ExitCode == 0 ? (finalization.Success ? "passed" : "failed") : "not-reached")}");
                         validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
                         finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
@@ -1534,6 +1583,55 @@ namespace MediaFlux.Services
                         RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
                             EncodingRecoveryMode.Tolerant, 1, EncodingRecoveryResult.NotStarted,
                             "Rejected staged output could not be removed safely.");
+                    }
+                }
+                if (!finalization.Success &&
+                    finalization.FailureKind == EncodeFinalizationFailureKind.Validation &&
+                    !requireRegeneratedOutputTimeline &&
+                    videoRecoveryAttempted && runResult.ExitCode == 0 &&
+                    IsFrameDeficitValidationFailure(finalization.ErrorMessage))
+                {
+                    EncodingSourceFailureClassification sourceFailure =
+                        EncodingSourceFailureClassifier.Classify(runResult.StandardError);
+                    if (sourceFailure is
+                        {
+                            Type: EncodingSourceFailureType.VideoBitstreamCorruption,
+                            IsRecoveryCandidate: true,
+                            Evidence.Length: > 0
+                        } && programDuration.DurationSeconds is > 0)
+                    {
+                        EncodeOutputValidationFailureEvidence? advertisedFailure =
+                            finalization.StagedValidationResult?.FailureEvidence;
+                        _log?.Invoke(
+                            $"[EncodingRecovery] Measuring recoverable source coverage after bounded tolerant decode; " +
+                            $"evidence={sourceFailure.Evidence}; advertised-frames={programDuration.PrimaryVideo?.FrameCount?.ToString() ?? "unknown"}; " +
+                            $"output-frames={advertisedFailure?.ActualFrameCount.ToString() ?? "unknown"}; " +
+                            $"advertised-duration={programDuration.DurationSeconds:0.###}s.");
+                        RecoverableSourceBaselineResult baselineResult =
+                            await new RecoverableSourceBaselineService(_ffmpegPath)
+                                .MeasureAsync(inputSource.InputPath, programDuration.DurationSeconds.Value, cancellationToken)
+                                .ConfigureAwait(false);
+                        if (baselineResult.Success && baselineResult.Baseline is { } baseline)
+                        {
+                            _log?.Invoke(
+                                $"[EncodingRecovery] Recoverable source coverage established; " +
+                                $"advertised-frames={programDuration.PrimaryVideo?.FrameCount?.ToString() ?? "unknown"}; " +
+                                $"recoverable-frames={baseline.DecodedVideoFrameCount}; " +
+                                $"recoverable-tail={baseline.TailPresentationSeconds:0.###}s; {baseline.Evidence}.");
+                            finalization = await _finalizationService.FinalizeAsync(
+                                BuildValidationRequest(baseline, sourceFailure), finalizationStatusCallback, cancellationToken)
+                                .ConfigureAwait(false);
+                            _log?.Invoke(
+                                $"[EncodingRecovery] Recoverable-baseline validation={(finalization.Success ? "passed" : "failed")}; " +
+                                $"terminal-promotion={(finalization.Success ? "allowed" : "blocked")}.");
+                            validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                            finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                            PublishExecutionOutcome();
+                        }
+                        else
+                        {
+                            _log?.Invoke($"[EncodingRecovery] Recoverable source coverage was not proven; strict advertised-source validation remains authoritative. {baselineResult.Reason}");
+                        }
                     }
                 }
                 FfmpegVideoDecodeRecoveryDecision frameRecovery =
@@ -1596,7 +1694,7 @@ namespace MediaFlux.Services
                                     BuildValidationRequest(), finalizationStatusCallback, cancellationToken).ConfigureAwait(false);
                                 RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
                                     EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction, 1,
-                                    finalization.Success ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                                    EncodingRecoveryResult.Succeeded,
                                     localizedTimelineRecovery.DescribeEvidence() + $"; recovered-validation={(finalization.Success ? "passed" : "failed")}");
                                 validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
                                 finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);

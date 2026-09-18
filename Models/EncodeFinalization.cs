@@ -41,13 +41,30 @@ namespace MediaFlux.Models
         public double? ExpectedDurationSeconds { get; init; }
         public long? ExpectedVideoFrameCount { get; init; }
         public FrameCountProvenance ExpectedVideoFrameCountProvenance { get; init; } = FrameCountProvenance.Unavailable;
+        /// <summary>
+        /// A full, tolerant decode measurement used only after specific source-video
+        /// corruption was proven and the bounded recovery encode completed.
+        /// The original advertised source expectation remains available above.
+        /// </summary>
+        public RecoverableSourceBaseline? RecoverableSourceBaseline { get; init; }
+        public EncodingSourceFailureClassification? SourceFailureClassification { get; init; }
         /// <summary>Bounded FFprobe timestamp evidence captured before the encode.</summary>
         public SourceTimingAnalysis? SourceTiming { get; init; }
+        /// <summary>Requires bounded FFprobe evidence that the encoded output has a safe presentation timeline.</summary>
+        public bool RequireMonotonicOutputTimeline { get; init; }
+        /// <summary>Requires strict EOF video decoding before a reconstructed-timeline output can be promoted.</summary>
+        public bool RequireFullVideoDecodeCoverage { get; init; }
         public int? ExpectedVideoWidth { get; init; }
         public int? ExpectedVideoHeight { get; init; }
         public PerformanceTimingService? PerformanceTiming { get; init; }
         public EncodeOutputValidationProfile Profile { get; init; } = EncodeOutputValidationProfile.Production;
     }
+
+    /// <summary>Conservative evidence of the video frames and presentation tail that remained decodable from a proven-corrupt source.</summary>
+    public sealed record RecoverableSourceBaseline(
+        long DecodedVideoFrameCount,
+        double TailPresentationSeconds,
+        string Evidence);
 
     public sealed class EncodeOutputValidationEvidence
     {

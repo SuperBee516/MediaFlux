@@ -69,6 +69,56 @@ public sealed class EncodingRecoverySemanticsTests
     {
         Assert.False(SourceTimelineRecoveryService.IsEquivalent(Probe(100, 3000, "video", "audio"), Probe(100, 3000, "video"), out string reason));
         Assert.Contains("topology", reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("audio=1→0", reason, StringComparison.Ordinal);
+        Assert.Contains("Missing-after=audio/aac", reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Mp4ToMatroskaTopologyIgnoresUnspecifiedLanguageIdentityChanges()
+    {
+        MediaProbeResult original = new()
+        {
+            Success = true, DurationSeconds = 100,
+            Streams = new[]
+            {
+                new MediaProbeStreamInfo { Index = 0, Id = "1", CodecType = "video", CodecName = "H264", DurationSeconds = 100, FrameCount = 3000 },
+                new MediaProbeStreamInfo { Index = 1, Id = "2", CodecType = "audio", CodecName = "AAC", Language = "und", DurationSeconds = 100 }
+            }
+        };
+        MediaProbeResult normalized = new()
+        {
+            Success = true, DurationSeconds = 100,
+            Streams = new[]
+            {
+                new MediaProbeStreamInfo { Index = 0, Id = "V_MPEG4/ISO/AVC", CodecType = "video", CodecName = "h264", DurationSeconds = 100, FrameCount = 3000 },
+                new MediaProbeStreamInfo { Index = 1, Id = "A_AAC", CodecType = "audio", CodecName = "aac", Language = "", DurationSeconds = 100 }
+            }
+        };
+
+        Assert.True(SourceTimelineRecoveryService.IsEquivalent(original, normalized, out string reason), reason);
+    }
+
+    [Theory]
+    [InlineData("subtitle")]
+    [InlineData("attachment")]
+    public void MissingRequiredAncillaryStreamRemainsRejected(string missingType)
+    {
+        MediaProbeResult original = Probe(100, 3000, "video", "audio", missingType);
+        MediaProbeResult normalized = Probe(100, 3000, "video", "audio");
+
+        Assert.False(SourceTimelineRecoveryService.IsEquivalent(original, normalized, out string reason));
+        Assert.Contains($"{missingType}=1→0", reason, StringComparison.Ordinal);
+        Assert.Contains("Missing-after=", reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LostRequiredVideoTopologyRemainsRejected()
+    {
+        Assert.False(SourceTimelineRecoveryService.IsEquivalent(
+            Probe(100, 3000, "video", "video", "audio"),
+            Probe(100, 3000, "video", "audio"),
+            out string reason));
+        Assert.Contains("video=2→1", reason, StringComparison.Ordinal);
     }
 
     private static MediaProbeResult Probe(double duration, long frames, params string[] types) => new()
@@ -148,6 +198,46 @@ public sealed class EncodingRecoverySemanticsTests
         Assert.Contains("-map_chapters", arguments);
         Assert.DoesNotContain("0:d?", arguments);
         Assert.DoesNotContain("0", arguments.Where((value, index) => index > 0 && arguments[index - 1] == "-map"));
+    }
+
+    [Fact]
+    public async Task StreamCopyNormalizationThatPreservesNonMonotonicTimingIsNotAccepted()
+    {
+        using TempFiles files = new();
+        SourceTimelineRecoveryResult result = await new SourceTimelineRecoveryService("ffmpeg", files.FfprobePath, new NonMonotonicTimingRunner())
+            .TryNormalizeAsync(files.SourcePath, files.OutputPath, files.Probe, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(SourceTimelineRecoveryFailureKind.StreamCopyPreservedUnsafeTiming, result.FailureKind);
+        Assert.Contains("safe monotonic timeline", result.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(files.OutputPath));
+    }
+
+    [Fact]
+    public async Task RecoverableBaselineRequiresCompleteDecodeCoverageBeforeItCanBeUsed()
+    {
+        var runner = new BaselineRunner("frame=2900\nout_time=00:01:40.000000\nprogress=end\n");
+        RecoverableSourceBaselineResult result = await new RecoverableSourceBaselineService("ffmpeg", runner)
+            .MeasureAsync("corrupt-source.mp4", 100, CancellationToken.None);
+
+        Assert.True(result.Success, result.Reason);
+        Assert.Equal(2900, result.Baseline!.DecodedVideoFrameCount);
+        Assert.Equal(100, result.Baseline.TailPresentationSeconds);
+        Assert.Contains("0:v:0", runner.Request!.Arguments);
+        Assert.Contains("-fps_mode", runner.Request.Arguments);
+        Assert.Contains("passthrough", runner.Request.Arguments);
+        Assert.Contains("null", runner.Request.Arguments);
+    }
+
+    [Fact]
+    public async Task RecoverableBaselineRejectsPrematureDecodeTail()
+    {
+        var runner = new BaselineRunner("frame=2900\nout_time=00:01:38.700000\nprogress=end\n");
+        RecoverableSourceBaselineResult result = await new RecoverableSourceBaselineService("ffmpeg", runner)
+            .MeasureAsync("corrupt-source.mp4", 100, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("does not reach", result.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -256,6 +346,39 @@ public sealed class EncodingRecoverySemanticsTests
             if (Interlocked.Increment(ref _started) == expected) AllStarted.TrySetResult(true);
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
             return new MediaToolProcessResult();
+        }
+    }
+
+    private sealed class NonMonotonicTimingRunner : IMediaToolProcessRunner
+    {
+        public Task<MediaToolProcessResult> RunAsync(MediaToolProcessRequest request, CancellationToken token = default)
+        {
+            if (request.FileName.Equals("ffmpeg", StringComparison.OrdinalIgnoreCase))
+            {
+                File.WriteAllText(request.Arguments[^1], "partial");
+                return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
+            }
+            if (request.Arguments.Any(argument => argument.Contains("frame=best_effort_timestamp_time", StringComparison.OrdinalIgnoreCase)))
+                return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardOutput = "0\n0.033\n0.066\n0.020\n" });
+            if (request.Arguments.Contains("-print_format"))
+                return Task.FromResult(new MediaToolProcessResult
+                {
+                    ExitCode = 0,
+                    StandardOutput = "{\"format\":{\"duration\":\"10\"},\"streams\":[{\"index\":0,\"codec_type\":\"video\",\"codec_name\":\"h264\",\"duration\":\"10\",\"nb_frames\":\"300\",\"r_frame_rate\":\"30/1\",\"avg_frame_rate\":\"30/1\"},{\"index\":1,\"codec_type\":\"audio\",\"codec_name\":\"aac\",\"duration\":\"10\"}],\"chapters\":[]}"
+                });
+            return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardOutput = "r_frame_rate=30/1\navg_frame_rate=30/1\ntime_base=1/1000\nstart_time=0\nduration=10\n" });
+        }
+    }
+
+    private sealed class BaselineRunner(string progress) : IMediaToolProcessRunner
+    {
+        public MediaToolProcessRequest? Request { get; private set; }
+        public Task<MediaToolProcessResult> RunAsync(MediaToolProcessRequest request, CancellationToken token = default)
+        {
+            Request = request;
+            foreach (string line in progress.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                request.StandardOutputLineCallback?.Invoke(line);
+            return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardOutput = progress });
         }
     }
 }

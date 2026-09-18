@@ -11,6 +11,60 @@ namespace MediaFlux.Services
             CancellationToken cancellationToken = default);
     }
 
+    public sealed record FullVideoDecodeCoverageResult(bool Success, string ErrorMessage = "");
+
+    public interface IFullVideoDecodeCoverageService
+    {
+        Task<FullVideoDecodeCoverageResult> CheckAsync(string outputPath, double? durationSeconds,
+            long? expectedFrameCount, CancellationToken cancellationToken = default);
+    }
+
+    public sealed class FfmpegFullVideoDecodeCoverageService : IFullVideoDecodeCoverageService
+    {
+        private const double DurationBoundarySeconds = .75;
+        private readonly string _ffmpegPath;
+        private readonly IMediaToolProcessRunner _runner;
+
+        public FfmpegFullVideoDecodeCoverageService(string ffmpegPath, IMediaToolProcessRunner? runner = null)
+        { _ffmpegPath = ffmpegPath; _runner = runner ?? new MediaToolProcessRunner(); }
+
+        public async Task<FullVideoDecodeCoverageResult> CheckAsync(string outputPath,
+            double? durationSeconds, long? expectedFrameCount, CancellationToken cancellationToken = default)
+        {
+            var progress = new FullDecodeProgress();
+            MediaToolProcessResult result = await _runner.RunAsync(new MediaToolProcessRequest
+            {
+                FileName = _ffmpegPath,
+                Timeout = TimeSpan.FromMinutes(30),
+                SendQuitOnCancellation = true,
+                Arguments = ["-hide_banner", "-nostats", "-loglevel", "error", "-xerror", "-err_detect", "explode", "-progress", "pipe:1", "-i", outputPath, "-map", "0:v:0", "-an", "-sn", "-dn", "-fps_mode", "passthrough", "-f", "null", "-"],
+                StandardOutputLineCallback = progress.Consume
+            }, cancellationToken).ConfigureAwait(false);
+            if (result.ExitCode != 0 || result.TimedOut || !progress.ReachedEnd || progress.Frames <= 0)
+                return new(false, $"Full output video decode was not proven: exit={result.ExitCode}; timed-out={result.TimedOut}; eof={progress.ReachedEnd}; frames={progress.Frames}.");
+            if (expectedFrameCount is > 0 && progress.Frames != expectedFrameCount.Value)
+                return new(false, $"Full output decode produced {progress.Frames} frames, but FFprobe reported {expectedFrameCount.Value}.");
+            if (durationSeconds is > 0 && (!double.IsFinite(progress.TailSeconds) || Math.Abs(progress.TailSeconds - durationSeconds.Value) > DurationBoundarySeconds))
+                return new(false, $"Full output decode reached {progress.TailSeconds:0.###}s, not the expected {durationSeconds.Value:0.###}s presentation tail.");
+            return new(true);
+        }
+
+        private sealed class FullDecodeProgress
+        {
+            public long Frames { get; private set; }
+            public double TailSeconds { get; private set; }
+            public bool ReachedEnd { get; private set; }
+            public void Consume(string line)
+            {
+                int separator = line.IndexOf('='); if (separator <= 0) return;
+                string key = line[..separator], value = line[(separator + 1)..].Trim();
+                if (key.Equals("frame", StringComparison.OrdinalIgnoreCase) && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long frames)) Frames = Math.Max(Frames, frames);
+                else if (key.Equals("out_time", StringComparison.OrdinalIgnoreCase) && TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out TimeSpan tail)) TailSeconds = Math.Max(TailSeconds, tail.TotalSeconds);
+                else if (key.Equals("progress", StringComparison.OrdinalIgnoreCase) && value.Equals("end", StringComparison.OrdinalIgnoreCase)) ReachedEnd = true;
+            }
+        }
+    }
+
     public sealed class FfmpegDecodeIntegritySpotCheckService :
         IDecodeIntegritySpotCheckService
     {
@@ -145,18 +199,24 @@ namespace MediaFlux.Services
 
         private readonly IMediaProbeService _probeService;
         private readonly IDecodeIntegritySpotCheckService _decodeIntegrityService;
+        private readonly IFullVideoDecodeCoverageService? _fullVideoDecodeCoverageService;
+        private readonly Func<string, CancellationToken, Task<SourceTimingAnalysis>>? _outputTimingAnalyzer;
         private readonly Action<string>? _log;
 
         public EncodeOutputValidationService(
             IMediaProbeService probeService,
             IDecodeIntegritySpotCheckService decodeIntegrityService,
-            Action<string>? log = null)
+            Action<string>? log = null,
+            Func<string, CancellationToken, Task<SourceTimingAnalysis>>? outputTimingAnalyzer = null,
+            IFullVideoDecodeCoverageService? fullVideoDecodeCoverageService = null)
         {
             _probeService = probeService ??
                 throw new ArgumentNullException(nameof(probeService));
             _decodeIntegrityService = decodeIntegrityService ??
                 throw new ArgumentNullException(nameof(decodeIntegrityService));
             _log = log;
+            _outputTimingAnalyzer = outputTimingAnalyzer;
+            _fullVideoDecodeCoverageService = fullVideoDecodeCoverageService;
         }
 
         public async Task<EncodeOutputValidationResult> ValidateStagedAsync(
@@ -281,6 +341,30 @@ namespace MediaFlux.Services
             {
                 return Failed(
                     $"FFprobe could not read the encoded output: {outputProbe.ErrorMessage}");
+            }
+
+            if (request.RequireMonotonicOutputTimeline)
+            {
+                if (_outputTimingAnalyzer is null)
+                    return Failed("The regenerated-timeline output could not be checked for monotonic presentation timestamps.");
+                SourceTimingAnalysis outputTiming = await _outputTimingAnalyzer(outputPath, cancellationToken).ConfigureAwait(false);
+                if (outputTiming.Classification is SourceTimingClassification.IrregularUnsafe or SourceTimingClassification.Unknown ||
+                    outputTiming.HasNonMonotonicTimestamps)
+                    return Failed("The regenerated-timeline output did not prove a safe monotonic presentation timeline: " + outputTiming.Reason);
+                _log?.Invoke($"[OutputValidation] Regenerated timeline is monotonic; samples={outputTiming.SamplesInspected}; classification={outputTiming.Classification}.");
+            }
+
+            if (request.RequireFullVideoDecodeCoverage)
+            {
+                if (_fullVideoDecodeCoverageService is null)
+                    return Failed("The reconstructed-timeline output could not be checked for full video decode coverage.");
+                MediaProbeStreamInfo? outputVideoForCoverage = FirstStream(outputProbe, "video");
+                FullVideoDecodeCoverageResult coverage = await _fullVideoDecodeCoverageService.CheckAsync(
+                    outputPath, ProgramDurationResolver.Resolve(outputProbe).DurationSeconds,
+                    outputVideoForCoverage?.FrameCount, cancellationToken).ConfigureAwait(false);
+                if (!coverage.Success)
+                    return Failed("The reconstructed-timeline output did not prove full video decode coverage: " + coverage.ErrorMessage);
+                _log?.Invoke("[OutputValidation] Reconstructed timeline passed full strict video decode coverage.");
             }
 
             string validationError = ValidateProbe(request, sourceProbe, outputProbe, _log);
@@ -436,16 +520,18 @@ namespace MediaFlux.Services
             if (!string.IsNullOrWhiteSpace(durationError))
                 return durationError;
 
-            if (request.ExpectedVideoFrameCount is > 0)
+            (long? expectedFrameCount, FrameCountProvenance expectedFrameProvenance, string frameBasis) =
+                ResolveExpectedVideoFrames(request, source);
+            if (expectedFrameCount is > 0)
             {
                 MediaProbeStreamInfo? outputVideoForFrames = FirstStream(output, "video");
                 if (outputVideoForFrames?.FrameCount is > 0)
                 {
-                    long delta = outputVideoForFrames.FrameCount.Value - request.ExpectedVideoFrameCount.Value;
+                    long delta = outputVideoForFrames.FrameCount.Value - expectedFrameCount.Value;
                     double fps = sourceVideo.FrameRate is > 0 ? sourceVideo.FrameRate.Value : outputVideoForFrames.FrameRate ?? 0;
                     double deltaSeconds = fps > 0 ? Math.Abs(delta) / fps : double.PositiveInfinity;
                     (double baseAllowanceSeconds, double frameAwareEpsilonSeconds, double allowedSeconds) =
-                        FrameDeficitAllowance(request.ExpectedVideoFrameCountProvenance, fps);
+                        FrameDeficitAllowance(expectedFrameProvenance, fps);
                     if (CanExplainFrameDeltaByVerifiedVfr(
                             request.SourceTiming,
                             authoritativeDuration,
@@ -459,20 +545,20 @@ namespace MediaFlux.Services
                             outputVideoForFrames,
                             authoritativeDuration,
                             ProgramDurationResolver.Resolve(output).DurationSeconds,
-                            request.ExpectedVideoFrameCount.Value,
+                            expectedFrameCount.Value,
                             log))
                     {
                         log?.Invoke($"[EncodeOutputValidation] Frame deficit={-delta} is accepted because FFprobe proves nominal-rate timestamp normalization while the output presentation duration remains within the existing 0.75s boundary. source-start={sourceVideo.StartTimeSeconds?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}s.");
                     }
                     else
                     {
-                        log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount} ({request.ExpectedVideoFrameCountProvenance}); output={outputVideoForFrames.FrameCount}; delta={delta}; fps={fps:0.######}; frame-period={frameAwareEpsilonSeconds:0.######}s; time-equivalent={deltaSeconds:0.###}s; base-allowance={baseAllowanceSeconds:0.###}s; frame-aware-epsilon={frameAwareEpsilonSeconds:0.######}s; effective-allowance={allowedSeconds:0.######}s; duration-basis=authoritative; result={(deltaSeconds <= allowedSeconds ? "accepted" : "rejected")}.");
+                        log?.Invoke($"[EncodeOutputValidation] Frame basis={frameBasis} {expectedFrameCount} ({expectedFrameProvenance}); output={outputVideoForFrames.FrameCount}; delta={delta}; fps={fps:0.######}; frame-period={frameAwareEpsilonSeconds:0.######}s; time-equivalent={deltaSeconds:0.###}s; base-allowance={baseAllowanceSeconds:0.###}s; frame-aware-epsilon={frameAwareEpsilonSeconds:0.######}s; effective-allowance={allowedSeconds:0.######}s; duration-basis=authoritative; result={(deltaSeconds <= allowedSeconds ? "accepted" : "rejected")}.");
                         if (deltaSeconds > allowedSeconds)
-                            return $"The encoded output contains {outputVideoForFrames.FrameCount} video frames versus {request.ExpectedVideoFrameCount} expected; the {deltaSeconds:0.###}-second frame deficit exceeds the time-aware {allowedSeconds:0.###}-second boundary allowance.";
+                            return $"The encoded output contains {outputVideoForFrames.FrameCount} video frames versus {expectedFrameCount} expected; the {deltaSeconds:0.###}-second frame deficit exceeds the time-aware {allowedSeconds:0.###}-second boundary allowance.";
                     }
                 }
                 else
-                    log?.Invoke($"[EncodeOutputValidation] Frame basis=source {request.ExpectedVideoFrameCount} ({request.ExpectedVideoFrameCountProvenance}); output=unavailable; duration validation remains authoritative.");
+                    log?.Invoke($"[EncodeOutputValidation] Frame basis={frameBasis} {expectedFrameCount} ({expectedFrameProvenance}); output=unavailable; duration validation remains authoritative.");
             }
 
             string topologyError = ValidatePlannedStreamTopology(request, source, output);
@@ -1061,15 +1147,17 @@ namespace MediaFlux.Services
         {
             MediaProbeStreamInfo? sourceVideo = FirstStream(source, "video");
             MediaProbeStreamInfo? outputVideo = FirstStream(output, "video");
-            if (request.ExpectedVideoFrameCount is not > 0 ||
+            (long? expectedFrameCount, FrameCountProvenance expectedFrameProvenance, _) =
+                ResolveExpectedVideoFrames(request, source);
+            if (expectedFrameCount is not > 0 ||
                 sourceVideo?.FrameRate is not > 0 || outputVideo?.FrameCount is not > 0 ||
-                outputVideo.FrameCount >= request.ExpectedVideoFrameCount)
+                outputVideo.FrameCount >= expectedFrameCount)
                 return null;
 
-            double deficitSeconds = (request.ExpectedVideoFrameCount.Value - outputVideo.FrameCount.Value) /
+            double deficitSeconds = (expectedFrameCount.Value - outputVideo.FrameCount.Value) /
                 sourceVideo.FrameRate.Value;
             double allowedSeconds = FrameDeficitAllowance(
-                request.ExpectedVideoFrameCountProvenance,
+                expectedFrameProvenance,
                 sourceVideo.FrameRate.Value).effectiveAllowance;
             double? sourceDuration = request.ExpectedDurationSeconds ?? ProgramDurationResolver.Resolve(source).DurationSeconds;
             double? outputDuration = ProgramDurationResolver.Resolve(output).DurationSeconds;
@@ -1087,9 +1175,9 @@ namespace MediaFlux.Services
             {
                 SourceProbe = source,
                 OutputProbe = output,
-                ExpectedFrameCount = request.ExpectedVideoFrameCount.Value,
+                ExpectedFrameCount = expectedFrameCount.Value,
                 ActualFrameCount = outputVideo.FrameCount.Value,
-                FrameDelta = outputVideo.FrameCount.Value - request.ExpectedVideoFrameCount.Value,
+                FrameDelta = outputVideo.FrameCount.Value - expectedFrameCount.Value,
                 FrameRate = sourceVideo.FrameRate.Value,
                 DeficitSeconds = deficitSeconds,
                 AllowedSeconds = allowedSeconds,
@@ -1101,9 +1189,28 @@ namespace MediaFlux.Services
         private static (double baseAllowance, double frameAwareEpsilon, double effectiveAllowance)
             FrameDeficitAllowance(FrameCountProvenance provenance, double fps)
         {
-            double baseAllowance = provenance == FrameCountProvenance.Measured ? 0.75 : 1.0;
+            double baseAllowance = provenance is FrameCountProvenance.Measured or FrameCountProvenance.RecoverableDecoded ? 0.75 : 1.0;
             double epsilon = fps > 0 && double.IsFinite(fps) ? 1d / fps : 0;
             return (baseAllowance, epsilon, baseAllowance + epsilon);
+        }
+
+        private static (long? FrameCount, FrameCountProvenance Provenance, string Basis)
+            ResolveExpectedVideoFrames(EncodeOutputValidationRequest request, MediaProbeResult source)
+        {
+            RecoverableSourceBaseline? baseline = request.RecoverableSourceBaseline;
+            double? advertisedDuration = request.ExpectedDurationSeconds ?? ProgramDurationResolver.Resolve(source).DurationSeconds;
+            bool provenCorruptSource = request.SourceFailureClassification is
+            {
+                Type: EncodingSourceFailureType.VideoBitstreamCorruption,
+                IsRecoveryCandidate: true,
+                Evidence.Length: > 0
+            };
+            if (provenCorruptSource && baseline is { DecodedVideoFrameCount: > 0, TailPresentationSeconds: > 0 } &&
+                advertisedDuration is > 0 &&
+                Math.Abs(baseline.TailPresentationSeconds - advertisedDuration.Value) <= 0.75)
+                return (baseline.DecodedVideoFrameCount, FrameCountProvenance.RecoverableDecoded, "recoverable-decoded");
+
+            return (request.ExpectedVideoFrameCount, request.ExpectedVideoFrameCountProvenance, "advertised-source");
         }
     }
 }
