@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-09-18
+
+### Encoding Reliability
+
+- Improved recovery for malformed or corrupt source video, including safer handling of repaired inputs before recovered output is promoted.
+- Added resilient source-timeline handling and deterministic reconstruction for eligible malformed CFR timestamps.
+- Preserved strict validation while making container-aware stream mapping safer for audio, subtitles, attachments, metadata, chapters, and unsupported data streams.
+- Improved concurrent encoding-job logging and strengthened recovery-related validation coverage.
+
+### Quality and Stability
+
+- Stabilized deterministic WinForms test hosts and related UI validation workflows.
+
 ## [1.5.4] - 2026-09-16
 
 ### Duplicate Manager
