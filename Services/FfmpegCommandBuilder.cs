@@ -143,22 +143,24 @@ namespace MediaFlux.Services
             bool copyDataStreams = request.CopyDataStreams &&
                 OutputContainerPolicy.SupportsGenericDataStreams(
                     request.ContainerDecision.Resolved);
+            bool copySubtitles = request.CopySubtitles;
+            bool copyAttachments = request.CopyAttachments && request.ContainerDecision.CopyAttachments;
             bool usePlannedSubtitles = request.ContainerDecision.StreamPlans.Any(plan =>
                 plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
                 plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode);
             if (request.SplitSource is { } splitMapping)
             {
                 builder.Append("-map 0:v:0 ");
-                AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, request.CopySubtitles && !usePlannedSubtitles, copyDataStreams, request.CopyAttachments, 1, includeVideo: false);
+                AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, copySubtitles && !usePlannedSubtitles, copyDataStreams, copyAttachments, 1, includeVideo: false);
                 if (usePlannedSubtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 1);
                 builder.Append("-map_metadata 1 -map_chapters 1 ");
             }
-            else { AppendStreamMapping(builder, request.Input, request.MapMode, request.CopySubtitles && !usePlannedSubtitles, copyDataStreams, request.CopyAttachments); if (usePlannedSubtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 0); builder.Append("-map_metadata 0 -map_chapters 0 "); }
+            else { AppendStreamMapping(builder, request.Input, request.MapMode, copySubtitles && !usePlannedSubtitles, copyDataStreams, copyAttachments); if (usePlannedSubtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 0); builder.Append("-map_metadata 0 -map_chapters 0 "); }
             AppendObsoleteVideoStatisticsCleanup(builder);
             if (request.SampleDuration is { } sampleDuration && sampleDuration > TimeSpan.Zero)
                 builder.Append($"-t {Seconds(sampleDuration.TotalSeconds)} ");
 
-            if (request.CopySubtitles)
+            if (copySubtitles)
             {
                 builder.Append("-c:s copy ");
                 int subtitleOutputIndex = 0;
@@ -171,7 +173,7 @@ namespace MediaFlux.Services
             }
             else
                 builder.Append("-sn ");
-            if (request.CopyAttachments)
+            if (copyAttachments)
                 builder.Append("-c:t copy ");
 
             provider.AppendVideoFilters(builder, context);

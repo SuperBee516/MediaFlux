@@ -176,9 +176,7 @@ namespace MediaFlux.Services
             IReadOnlyList<MediaProbeStreamInfo> selectedSubtitles = copySubtitles
                 ? SelectStreams(source, input.SubtitleStreamIndexes, input.HasExplicitStreamSelection, "subtitle", int.MaxValue)
                 : Array.Empty<MediaProbeStreamInfo>();
-            int attachmentCount = copyAttachments &&
-                requested != OutputContainerSelection.Matroska &&
-                !input.HasExplicitStreamSelection
+            int attachmentCount = copyAttachments && !input.HasExplicitStreamSelection
                 ? Count(source, "attachment")
                 : 0;
 
@@ -248,13 +246,8 @@ namespace MediaFlux.Services
             }
             if (incompatibleSubtitles.Length > 0 && requested != OutputContainerSelection.Matroska)
                 warnings.Add($"subtitle codec(s) requiring conversion or a decision: {string.Join(", ", incompatibleSubtitles)}");
-            if (attachmentCount > 0)
-            {
-                if (requested != OutputContainerSelection.Matroska)
-                    warnings.Add($"{attachmentCount} attachment stream(s) that MP4 will not preserve");
-                foreach (MediaProbeStreamInfo stream in source.Streams.Where(s => IsType(s, "attachment")))
-                    plans.Add(new(stream.Index, "attachment", stream.CodecName, StreamCompatibilityAction.Omit, "MP4 does not preserve attachments."));
-            }
+            if (attachmentCount > 0 && requested != OutputContainerSelection.Matroska)
+                warnings.Add($"{attachmentCount} attachment stream(s) that MP4 will not preserve");
             if (copyDataStreams)
                 foreach (MediaProbeStreamInfo stream in source.Streams.Where(s => IsType(s, "data")))
                     plans.Add(new(stream.Index, "data", stream.CodecName, StreamCompatibilityAction.Omit, "Neither supported output container safely muxes this data stream."));
@@ -265,6 +258,16 @@ namespace MediaFlux.Services
                 OutputContainerSelection.Auto when warnings.Count > 0 => OutputContainer.Matroska,
                 _ => OutputContainer.Mp4
             };
+            if (attachmentCount > 0)
+            {
+                bool preserveAttachments = resolved == OutputContainer.Matroska;
+                foreach (MediaProbeStreamInfo stream in source.Streams.Where(s => IsType(s, "attachment")))
+                    plans.Add(new(stream.Index, "attachment", stream.CodecName,
+                        preserveAttachments ? StreamCompatibilityAction.Copy : StreamCompatibilityAction.Omit,
+                        preserveAttachments
+                            ? "Selected attachment will be copied into Matroska."
+                            : "MP4 does not preserve attachments."));
+            }
             bool matroska = resolved == OutputContainer.Matroska;
             string reason = requested == OutputContainerSelection.Auto
                 ? matroska

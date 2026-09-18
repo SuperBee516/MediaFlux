@@ -161,8 +161,8 @@ public static class EncodingPlanService
             DecisionReasons = reasons,
             ExecutionValues = new EncodingPlanExecutionValues(
                 container, geometry, context.Encoder, context.UseGpu, context.TargetMb, quality,
-                context.AudioChannels, context.MapMode, context.CopySubtitles,
-                context.CopyDataStreams, context.CopyAttachments)
+                context.AudioChannels, context.MapMode, container.CopySubtitles,
+                container.CopyDataStreams, container.CopyAttachments)
         };
     }
 

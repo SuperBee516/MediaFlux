@@ -128,6 +128,22 @@ public sealed class OutputContainerPolicyTests
     }
 
     [Fact]
+    public void Auto_ResolvesMatroskaAndPreservesAttachmentsInTheFinalPlan()
+    {
+        OutputContainerDecision decision = Decide(
+            OutputContainerSelection.Auto,
+            Stream("video", "h264"),
+            Stream("audio", "aac"),
+            Stream("attachment", "ttf"));
+
+        Assert.Equal(OutputContainer.Matroska, decision.Resolved);
+        Assert.True(decision.CopyAttachments);
+        StreamCompatibilityPlan attachment = Assert.Single(
+            decision.StreamPlans, plan => plan.StreamType == "attachment");
+        Assert.Equal(StreamCompatibilityAction.Copy, attachment.Action);
+    }
+
+    [Fact]
     public void MissingOrUnknownPersistedValue_FallsBackToLegacyMp4()
     {
         Assert.Equal(OutputContainerSelection.Mp4, OutputContainerPolicy.ParseSelection(null));

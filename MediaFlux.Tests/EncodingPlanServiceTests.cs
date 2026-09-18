@@ -275,9 +275,9 @@ public sealed class EncodingPlanServiceTests
         Assert.Equal("mov_text", subtitle.TargetCodec);
         Assert.Equal(6, execution.AudioChannels);
         Assert.Equal(context.MapMode, execution.MapMode);
-        Assert.Equal(context.CopySubtitles, execution.CopySubtitles);
-        Assert.Equal(context.CopyDataStreams, execution.CopyDataStreams);
-        Assert.Equal(context.CopyAttachments, execution.CopyAttachments);
+        Assert.Equal(execution.ContainerDecision.CopySubtitles, execution.CopySubtitles);
+        Assert.Equal(execution.ContainerDecision.CopyDataStreams, execution.CopyDataStreams);
+        Assert.Equal(execution.ContainerDecision.CopyAttachments, execution.CopyAttachments);
 
         OutputContainerDecision legacy = OutputContainerPolicy.Decide(
             context.ContainerConfigured, context.Source, context.Input, context.MapMode,
@@ -286,6 +286,24 @@ public sealed class EncodingPlanServiceTests
         Assert.Empty(EncodingPlanService.Compare(
             plan, legacy, execution.Geometry, execution.Encoder, execution.TargetMb,
             FfmpegSourceDecodeMode.Strict));
+    }
+
+    [Fact]
+    public void ExecutionFlagsFollowResolvedContainerDecisionForUnsupportedData()
+    {
+        EncodingDecisionContext context = Context(
+            OutputContainerSelection.Matroska,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264" },
+            new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "aac" },
+            new MediaProbeStreamInfo { Index = 2, CodecType = "data", CodecName = "tmcd" });
+
+        EncodingPlanService.EncodingPlanExecutionValues execution =
+            EncodingPlanService.GetExecutionValues(EncodingPlanService.Create(context));
+
+        Assert.False(execution.CopyDataStreams);
+        Assert.Contains(execution.ContainerDecision.StreamPlans, plan =>
+            plan.StreamType == "data" && plan.Action == StreamCompatibilityAction.Omit);
     }
 
     [Fact]
