@@ -33,7 +33,7 @@ internal sealed class SourceTimelineRecoveryService
             MediaToolProcessResult process = await _runner.RunAsync(new MediaToolProcessRequest
             {
                 FileName = _ffmpegPath,
-                Arguments = new[] { "-hide_banner", "-nostats", "-loglevel", "error", "-y", "-fflags", "+genpts", "-i", sourcePath, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?", "-dn", "-map_metadata", "0", "-map_chapters", "0", "-c", "copy", "-avoid_negative_ts", "make_zero", stagingPath },
+                Arguments = new[] { "-hide_banner", "-nostats", "-loglevel", "error", "-y", "-fflags", "+genpts", "-i", sourcePath, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?", "-dn", "-map_metadata", "0", "-map_chapters", "0", "-c", "copy", "-avoid_negative_ts", "make_zero", "-f", "matroska", stagingPath },
                 Timeout = TimeSpan.FromMinutes(2)
             }, token).ConfigureAwait(false);
             if (process.ExitCode != 0 || process.TimedOut || !File.Exists(stagingPath) || new FileInfo(stagingPath).Length == 0)

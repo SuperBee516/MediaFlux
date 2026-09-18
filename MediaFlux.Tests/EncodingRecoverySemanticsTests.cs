@@ -128,6 +128,29 @@ public sealed class EncodingRecoverySemanticsTests
     }
 
     [Fact]
+    public async Task TimelineRepairUsesExplicitMatroskaMuxerAndApprovedStreamMaps()
+    {
+        using TempFiles files = new();
+        var runner = new SuccessfulRunner();
+        SourceTimelineRecoveryResult result = await new SourceTimelineRecoveryService("ffmpeg", files.FfprobePath, runner)
+            .TryNormalizeAsync(files.SourcePath, files.OutputPath, files.Probe, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.NotNull(runner.FfmpegRequest);
+        IReadOnlyList<string> arguments = runner.FfmpegRequest!.Arguments;
+        Assert.Equal("matroska", arguments[arguments.ToList().IndexOf("-f") + 1]);
+        Assert.Contains("0:v:0", arguments);
+        Assert.Contains("0:a?", arguments);
+        Assert.Contains("0:s?", arguments);
+        Assert.Contains("0:t?", arguments);
+        Assert.Contains("-dn", arguments);
+        Assert.Contains("-map_metadata", arguments);
+        Assert.Contains("-map_chapters", arguments);
+        Assert.DoesNotContain("0:d?", arguments);
+        Assert.DoesNotContain("0", arguments.Where((value, index) => index > 0 && arguments[index - 1] == "-map"));
+    }
+
+    [Fact]
     public async Task ConcurrentRepairsUseIsolatedPartialAndPromotedPaths()
     {
         using TempFiles first = new();
@@ -197,10 +220,13 @@ public sealed class EncodingRecoverySemanticsTests
 
     private sealed class SuccessfulRunner : IMediaToolProcessRunner
     {
+        public MediaToolProcessRequest? FfmpegRequest { get; private set; }
+
         public Task<MediaToolProcessResult> RunAsync(MediaToolProcessRequest request, CancellationToken token = default)
         {
             if (request.FileName.Equals("ffmpeg", StringComparison.OrdinalIgnoreCase))
             {
+                FfmpegRequest = request;
                 File.WriteAllText(request.Arguments[^1], "partial");
                 return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
             }
