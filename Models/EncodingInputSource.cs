@@ -36,6 +36,17 @@ namespace MediaFlux.Models
         public bool ShouldDeleteSource(bool deleteRequested) =>
             deleteRequested && AllowSourceDeletion;
 
+        /// <summary>Creates a physical execution input while retaining the logical user source.</summary>
+        internal EncodingInputSource WithInputPath(string inputPath) => new()
+        {
+            Kind = Kind, InputPath = inputPath, SourcePath = SourcePath, SourceFiles = SourceFiles,
+            OutputBaseName = OutputBaseName, KnownDurationSeconds = KnownDurationSeconds,
+            KnownAudioBitrateKbps = KnownAudioBitrateKbps, KnownAudioStreamCount = KnownAudioStreamCount,
+            KnownMappedAncillaryBitrateKbps = KnownMappedAncillaryBitrateKbps,
+            VideoStreamIndexes = VideoStreamIndexes, AudioStreamIndexes = AudioStreamIndexes,
+            SubtitleStreamIndexes = SubtitleStreamIndexes, AllowSourceDeletion = AllowSourceDeletion
+        };
+
         public static EncodingInputSource FromFile(
             string path,
             double? knownAudioBitrateKbps = null,

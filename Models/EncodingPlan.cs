@@ -10,10 +10,13 @@ public enum EncodingRiskCategory { SourceDecode, ContainerCompatibility, AudioCo
 public enum EncodingPreflightCheckKind { SourceProbe, SourceTiming, SubtitleConversion, CopiedAudioDecode, SampleComparison }
 public enum EncodingPreflightDisposition { Required, NotRequired }
 public enum EncodingPreflightStatus { Passed, Failed, Skipped }
-public enum EncodingRecoveryKind { VideoDecode, AudioStream, HardwareDecode, GpuFramePipeline }
-public enum EncodingRecoveryFailureClass { SourceVideoCorruption, SourceAudioCorruption, NvdecCudaFailure, GpuFramePipelineFailure, FrameCadenceValidationFailure, LocalizedSourceTimelineCorruption, Cancellation, StorageFailure, NvencFailure, SourceTruncation, Unknown }
+public enum EncodingRecoveryKind { VideoDecode, AudioStream, HardwareDecode, GpuFramePipeline, TimelineNormalization }
+public enum EncodingRecoveryFailureClass { SourceVideoCorruption, SourceAudioCorruption, SourceTimelineCorruption, NvdecCudaFailure, GpuFramePipelineFailure, FrameCadenceValidationFailure, LocalizedSourceTimelineCorruption, Cancellation, StorageFailure, NvencFailure, SourceTruncation, Unknown }
 public enum EncodingRecoveryMode { Strict, Tolerant, AudioTranscode, SoftwareDecodeWithNvenc, SoftwareDecodeWithNvencAndTimestampReconstruction, SoftwareDecodeWithNvencAndCfrNormalization, SoftwareFrames }
 public enum EncodingRecoveryResult { NotAttempted, Succeeded, Failed, NotStarted }
+public enum EncodingRecoveryProcessResult { NotStarted, Succeeded, Failed }
+public enum EncodingRecoveryDisposition { NotAttempted, Clean, Salvaged, Degraded, Rejected }
+public enum EncodingSourceFailureType { TimelineCorruption, VideoBitstreamCorruption, AudioBitstreamCorruption, ContainerPacketCorruption, SourceTruncation, StorageOrIoFailure, UnsupportedCodec, OutputContainerFailure, GpuEncoderFailure, Cancellation, UnknownMediaFailure }
 public enum EncodingLifecycleStatus { NotRequired, NotRun, Passed, Failed, Skipped, Canceled }
 public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, PreflightRejected, EncodeFailed, RecoveryFailed, ValidationFailed, FinalizationFailed, Canceled }
 public enum EncodingSourceDisposition { Retained, DeferredToCaller, NotReached }
@@ -21,6 +24,7 @@ public enum EncodingHistoricalConfidence { None, Low, Medium, High }
 
 public sealed record EncodingDecisionReason(EncodingDecisionReasonCode Code, string Description);
 public sealed record EncodingRisk(EncodingRiskSeverity Severity, EncodingRiskCategory Category, string Code, string Description);
+public sealed record EncodingSourceFailureClassification(EncodingSourceFailureType Type, bool IsRecoveryCandidate, string Evidence, string Reason);
 
 /// <summary>UI-independent, frozen inputs supplied to the planner.</summary>
 public sealed record EncodingDecisionContext(
@@ -32,7 +36,8 @@ public sealed record EncodingDecisionContext(
     OutputContainerSelection ContainerConfigured, ContainerCompatibilityPolicy CompatibilityPolicy,
     TimeSpan KnownDuration,
     EncodeOutputValidationProfile ValidationProfile = EncodeOutputValidationProfile.Production,
-    EncodingQualityIntent? QualityIntent = null);
+    EncodingQualityIntent? QualityIntent = null,
+    EncodingSourceFailureClassification? SourceHealth = null);
 
 public sealed record EncodingPlanSource(string Codec, int? Width, int? Height, double? FrameRate, double? DurationSeconds);
 public sealed record EncodingPlanVideo(string Action, string Codec, string Encoder, int? ConfiguredWidth, int? ConfiguredHeight, int? EffectiveWidth, int? EffectiveHeight, string? PixelFormat);
@@ -66,6 +71,7 @@ public sealed class EncodingPlan
     public string UnavailableReason { get; init; } = "";
     public Guid PlanId { get; init; } = Guid.NewGuid();
     public EncodingPlanSource? Source { get; init; }
+    public EncodingSourceFailureClassification? SourceHealth { get; init; }
     public EncodingPlanVideo? Video { get; init; }
     public IReadOnlyList<EncodingPlanStream> Audio { get; init; } = Array.Empty<EncodingPlanStream>();
     public IReadOnlyList<EncodingPlanStream> Subtitles { get; init; } = Array.Empty<EncodingPlanStream>();
@@ -103,7 +109,13 @@ public sealed record EncodingPreflightOutcome(
 public sealed record EncodingRecoveryOutcome(
     EncodingRecoveryKind Kind, EncodingRecoveryFailureClass FailureClass,
     EncodingRecoveryMode InitialMode, EncodingRecoveryMode RecoveryMode,
-    int Attempt, int MaximumAttempts, EncodingRecoveryResult Result, string Detail = "");
+    int Attempt, int MaximumAttempts, EncodingRecoveryResult Result, string Detail = "",
+    EncodingRecoveryProcessResult ProcessResult = EncodingRecoveryProcessResult.NotStarted,
+    EncodingRecoveryDisposition MediaDisposition = EncodingRecoveryDisposition.NotAttempted,
+    double? SourceDurationSeconds = null, double? ProducedDurationSeconds = null,
+    long? ExpectedFrameCount = null, long? ProducedFrameCount = null,
+    long? DroppedFrameOrPacketCount = null, double? DurationDeltaSeconds = null,
+    double? LargestTimelineGapSeconds = null, string DiagnosticReason = "");
 public sealed record EncodingExecutionOutcome(
     Guid PlanId, IReadOnlyList<EncodingPreflightOutcome> Preflight,
     IReadOnlyList<EncodingRecoveryOutcome> Recovery,

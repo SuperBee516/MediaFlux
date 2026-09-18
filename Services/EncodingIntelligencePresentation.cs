@@ -127,7 +127,9 @@ public static class EncodingIntelligencePresentation
 
     private static string RecoverySummary(EncodingPlan plan, EncodingExecutionOutcome? outcome)
     {
-        EncodingRecoveryOutcome? recovered = outcome?.Recovery.FirstOrDefault(item => item.Result == EncodingRecoveryResult.Succeeded);
+        EncodingRecoveryOutcome? recovered = outcome?.Recovery.FirstOrDefault(item =>
+            item.MediaDisposition is EncodingRecoveryDisposition.Clean or EncodingRecoveryDisposition.Salvaged ||
+            (item.ProcessResult == EncodingRecoveryProcessResult.NotStarted && item.Result == EncodingRecoveryResult.Succeeded));
         if (recovered != null)
             return $"Recovered from {Failure(recovered.FailureClass)}";
         EncodingRecoveryCapability? video = plan.RecoveryCapabilities?.Items.FirstOrDefault(item => item.Kind == EncodingRecoveryKind.VideoDecode);

@@ -137,6 +137,7 @@ public static class EncodingPlanService
         {
             IsAvailable = true,
             Source = new EncodingPlanSource(sourceVideo?.CodecName ?? "unknown", sourceVideo?.Width, sourceVideo?.Height, sourceVideo?.FrameRate, context.KnownDuration > TimeSpan.Zero ? context.KnownDuration.TotalSeconds : null),
+            SourceHealth = context.SourceHealth,
             Video = new EncodingPlanVideo("Reencode", context.Encoder.FfmpegCodec, context.Encoder.EncoderId, geometry?.RequestedWidth, geometry?.RequestedHeight, geometry?.Width, geometry?.Height, geometry?.PixelFormat),
             Audio = streams.Where(stream => stream.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase)).ToArray(),
             Subtitles = streams.Where(stream => stream.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase)).ToArray(),
@@ -210,7 +211,7 @@ public static class EncodingPlanService
         string recovery = outcome.Recovery.Count == 0
             ? "RecoveryAttempted=False"
             : string.Join("; ", outcome.Recovery.Select(item =>
-                $"Type={item.Kind}; Failure={item.FailureClass}; InitialMode={item.InitialMode}; RecoveryMode={item.RecoveryMode}; Attempt={item.Attempt}/{item.MaximumAttempts}; Result={item.Result}"));
+                $"Type={item.Kind}; Failure={item.FailureClass}; InitialMode={item.InitialMode}; RecoveryMode={item.RecoveryMode}; Attempt={item.Attempt}/{item.MaximumAttempts}; ProcessResult={item.ProcessResult}; MediaDisposition={item.MediaDisposition}; Result={item.Result}"));
         return $"[EncodingRecovery] PlanId={outcome.PlanId}; {recovery}";
     }
 
