@@ -29,22 +29,23 @@ public sealed class LibraryAnalyzerOverviewUiTests : IDisposable
                 catalog.Initialize();
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 using var form = new LibraryAnalyzerForm(runtime);
-                form.TopLevel = false;
-                form.FormBorderStyle = FormBorderStyle.None;
-                form.Dock = DockStyle.Fill;
-                using var host = new Panel { Size = new Size(1800, 1100) };
-                host.Controls.Add(form);
-                host.CreateControl();
-                form.Show();
+                form.ClientSize = new Size(1800, 1100);
                 TabControl tabs = Field<TabControl>(form, "_tabs");
                 TabPage overview = tabs.TabPages.Cast<TabPage>().Single(x => x.Text == "Overview");
                 Assert.True(overview.AutoScroll);
                 Assert.Contains(overview.Controls.OfType<TableLayoutPanel>(), x => x.RowCount >= 4);
                 Task refresh = (Task)(form.GetType().GetMethod("RefreshOverviewAsync", BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(form, null) ?? throw new MissingMethodException());
                 Pump(refresh);
-                host.Size = new Size(1100, 700); Application.DoEvents(); AssertOverviewGeometry(form, overview);
-                host.Size = new Size(1360, 840); Application.DoEvents(); AssertOverviewGeometry(form, overview);
-                host.Size = new Size(1800, 1100); Application.DoEvents(); AssertOverviewGeometry(form, overview);
+                form.Show();
+                Application.DoEvents();
+                foreach (Size requestedSize in new[] { new Size(1100, 700), new Size(1360, 840), new Size(1800, 1100) })
+                {
+                    form.ClientSize = requestedSize;
+                    Application.DoEvents();
+                    form.PerformLayout();
+                    Assert.Equal(requestedSize, form.ClientSize);
+                    AssertOverviewGeometry(form, overview);
+                }
                 ComboBox selector = Field<ComboBox>(form, "_overviewCompositionSelector");
                 Assert.Equal(new[] { "Resolution", "Video codec", "Container" }, selector.Items.Cast<string>());
                 ComboBox growthSelector = Field<ComboBox>(form, "_overviewGrowthMetricSelector");
@@ -62,10 +63,12 @@ public sealed class LibraryAnalyzerOverviewUiTests : IDisposable
                 AssertInsightsLayout(Field<TableLayoutPanel>(form, "_overviewInsights"));
                 Assert.Equal(10, Field<TableLayoutPanel>(form, "_overviewInsights").Controls.Count);
                 form.GetType().GetMethod("RenderOverviewInsights", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form, new object[] { new LibraryOverviewInsight(null, "", null, null, null, "", null, null, "", "") });
+                Field<TableLayoutPanel>(form, "_overviewInsights").PerformLayout();
                 Assert.Equal(10, Field<TableLayoutPanel>(form, "_overviewInsights").Controls.Count);
                 AssertInsightsLayout(Field<TableLayoutPanel>(form, "_overviewInsights"));
                 var populatedInsight = new LibraryOverviewInsight(1, @"P:\\Media\\Star Wars The Clone Wars - Season 01 - Episode 20 - A very long title.mkv", 433_290_000, 12_345_678, 2, @"P:\\Media\\Speed Racer - 01x20 - The Long Episode Name.mp4", 1_508, 1_240_000, "h264", "1920×1080");
                 form.GetType().GetMethod("RenderOverviewInsights", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form, new object[] { populatedInsight });
+                Field<TableLayoutPanel>(form, "_overviewInsights").PerformLayout();
                 AssertInsightsLayout(Field<TableLayoutPanel>(form, "_overviewInsights"));
                 TableLayoutPanel largestValue = (TableLayoutPanel)Field<TableLayoutPanel>(form, "_overviewInsights").GetControlFromPosition(1, 0)!;
                 Assert.Equal("413.22 MB", largestValue.GetControlFromPosition(0, 0)!.Text);

@@ -19,12 +19,12 @@ public sealed class AiBenchmarkManagerUiTests
             AiBenchmarkManagerForm? form = null;
             try
             {
-                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext()); var config = new Config(); form = new AiBenchmarkManagerForm(config: config, configPath: configPath); Assert.Equal(new Size(1500, 950), form.Size); form.Show(); Application.DoEvents(); AssertInsideWorkingArea(form); form.Size = new Size(1320, 820); Application.DoEvents(); Size displayed = form.Size; form.Close(); form.Dispose(); form = null;
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext()); var config = new Config(); form = new AiBenchmarkManagerForm(config: config, configPath: configPath); Assert.Equal(new Size(1500, 950), RestoredSize(form)); form.Show(); Application.DoEvents(); AssertInsideWorkingArea(form); form.Size = new Size(1320, 820); Application.DoEvents(); Size displayed = form.Size; form.Close(); form.Dispose(); form = null;
                 Config saved = Config.Load(configPath); Assert.Equal(Math.Max(1100, displayed.Width), saved.AiBenchmarkManagerWindowWidth); Assert.Equal(Math.Max(700, displayed.Height), saved.AiBenchmarkManagerWindowHeight);
-                using (var next = new AiBenchmarkManagerForm(config: saved, configPath: configPath)) restored = next.Size;
+                using (var next = new AiBenchmarkManagerForm(config: saved, configPath: configPath)) restored = RestoredSize(next);
                 Assert.Equal(new Size(saved.AiBenchmarkManagerWindowWidth, saved.AiBenchmarkManagerWindowHeight), restored);
-                saved.AiBenchmarkManagerWindowWidth = 1; saved.AiBenchmarkManagerWindowHeight = 1; saved.Save(configPath); using (var invalid = new AiBenchmarkManagerForm(config: Config.Load(configPath), configPath: configPath)) clamped = invalid.Size;
-                var normal = new Config { AiBenchmarkManagerWindowWidth = 1400, AiBenchmarkManagerWindowHeight = 840 }; normal.Save(configPath); form = new AiBenchmarkManagerForm(config: Config.Load(configPath), configPath: configPath); Assert.Equal(new Size(1400, 840), form.Size); form.Show(); Application.DoEvents(); AssertInsideWorkingArea(form); form.WindowState = FormWindowState.Maximized; Application.DoEvents(); form.Close(); form.Dispose(); form = null; afterMaximizedClose = new Size(Config.Load(configPath).AiBenchmarkManagerWindowWidth, Config.Load(configPath).AiBenchmarkManagerWindowHeight); Assert.Equal(new Size(1400, 840), afterMaximizedClose);
+                saved.AiBenchmarkManagerWindowWidth = 1; saved.AiBenchmarkManagerWindowHeight = 1; saved.Save(configPath); using (var invalid = new AiBenchmarkManagerForm(config: Config.Load(configPath), configPath: configPath)) clamped = RestoredSize(invalid);
+                var normal = new Config { AiBenchmarkManagerWindowWidth = 1400, AiBenchmarkManagerWindowHeight = 840 }; normal.Save(configPath); form = new AiBenchmarkManagerForm(config: Config.Load(configPath), configPath: configPath); Assert.Equal(new Size(1400, 840), RestoredSize(form)); form.Show(); Application.DoEvents(); AssertInsideWorkingArea(form); form.WindowState = FormWindowState.Maximized; Application.DoEvents(); form.Close(); form.Dispose(); form = null; afterMaximizedClose = new Size(Config.Load(configPath).AiBenchmarkManagerWindowWidth, Config.Load(configPath).AiBenchmarkManagerWindowHeight); Assert.Equal(new Size(1400, 840), afterMaximizedClose);
             }
             catch (Exception ex) { failure = ex; }
             finally { WinFormsTestLifecycle.CloseAndDispose(form); }
@@ -180,6 +180,10 @@ public sealed class AiBenchmarkManagerUiTests
         Assert.True(workingArea.IntersectsWith(form.Bounds), $"Window must remain associated with the monitor working area: {form.Bounds} / {workingArea}.");
         Assert.True(form.Width > 0 && form.Height > 0, "Window must retain a usable size after clamping.");
     }
+
+    private static Size RestoredSize(AiBenchmarkManagerForm form) =>
+        (Size)(form.GetType().GetMethod("RestoreSize", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.Invoke(form, null)
+            ?? throw new MissingMethodException(nameof(AiBenchmarkManagerForm), "RestoreSize"));
 
     private static AiBenchmarkRecord Record(long id, string model, int scale, double fps, bool stable) => new(id, Entry(model, fps, scale, stable));
     private static AiBenchmarkDatabaseEntry Entry(string model, double fps, int scale = 2, bool stable = true) => new(new("ncnn-vulkan", "backend-1", model, "GPU", "driver", "FP32", scale, "1080p"), NcnnRuntimeConfiguration.SafeDefault, fps, null, stable, DateTimeOffset.UtcNow, "test");

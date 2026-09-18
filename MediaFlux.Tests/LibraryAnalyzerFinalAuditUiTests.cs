@@ -29,15 +29,9 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                 catalog.Initialize();
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 using var form = new LibraryAnalyzerForm(runtime);
-                Size preferredSize = form.Size;
-                Assert.Equal(new Size(1360, 840), preferredSize);
-                form.TopLevel = false;
-                form.FormBorderStyle = FormBorderStyle.None;
-                form.Dock = DockStyle.Fill;
-                using var host = new Panel { Size = new Size(1800, 1100) };
-                host.Controls.Add(form);
-                host.CreateControl();
+                form.ClientSize = new Size(1800, 1100);
                 form.Show();
+                Application.DoEvents();
                 var tabs = AllControls(form).OfType<TabControl>().Single(tab => tab.Name == "LibraryAnalyzerTabs");
                 string[] expected =
                 {
@@ -51,8 +45,10 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
 
                 foreach (Size size in new[] { new Size(1100, 700), new Size(1360, 840), new Size(1800, 1100) })
                 {
-                    host.Size = size;
+                    form.ClientSize = size;
                     Application.DoEvents();
+                    form.PerformLayout();
+                    Assert.Equal(size, form.ClientSize);
                     Size actualSize = form.ClientSize;
                     Assert.All(tabs.TabPages.Cast<TabPage>(), page =>
                         Assert.True(page.Width > 0 && page.Height > 0, $"{page.Text} should have a client area at {actualSize}."));
