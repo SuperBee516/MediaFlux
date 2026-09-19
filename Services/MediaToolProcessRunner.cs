@@ -12,6 +12,7 @@ namespace MediaFlux.Services
         public bool SendQuitOnCancellation { get; init; }
         public Action<string>? StandardOutputLineCallback { get; init; }
         public Action<string>? StandardErrorLineCallback { get; init; }
+        public FfmpegDiagnosticComponent DiagnosticComponent { get; init; } = FfmpegDiagnosticComponent.Ffmpeg;
         public Action<MediaToolProcessLaunchInfo>? ProcessStartedCallback { get; init; }
     }
 
@@ -29,6 +30,7 @@ namespace MediaFlux.Services
         public bool TimedOut { get; init; }
         /// <summary>Wall-clock time spent creating the child process before it began execution.</summary>
         public TimeSpan ProcessLaunchElapsed { get; init; }
+        public FfmpegDiagnosticSummary? DiagnosticSummary { get; init; }
     }
 
     public interface IMediaToolProcessRunner
@@ -69,12 +71,13 @@ namespace MediaFlux.Services
                 // Launch observers are diagnostics only and must not affect the media process.
             }
 
+            var diagnostics = new FfmpegDiagnosticCollector();
             Task<string> stdoutTask = ReadBoundedAsync(
                 process.StandardOutput,
                 request.StandardOutputLineCallback);
             Task<string> stderrTask = ReadBoundedAsync(
                 process.StandardError,
-                request.StandardErrorLineCallback);
+                line => { diagnostics.Observe(line, request.DiagnosticComponent); request.StandardErrorLineCallback?.Invoke(line); });
             using var timeoutCts = new CancellationTokenSource();
             if (request.Timeout > TimeSpan.Zero && request.Timeout != Timeout.InfiniteTimeSpan)
                 timeoutCts.CancelAfter(request.Timeout);
@@ -105,7 +108,8 @@ namespace MediaFlux.Services
                 StandardOutput = stdout,
                 StandardError = stderr,
                 TimedOut = timedOut,
-                ProcessLaunchElapsed = processLaunchElapsed
+                ProcessLaunchElapsed = processLaunchElapsed,
+                DiagnosticSummary = diagnostics.Complete()
             };
         }
 

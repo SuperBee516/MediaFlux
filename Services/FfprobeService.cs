@@ -62,6 +62,7 @@ namespace MediaFlux.Services
                     new MediaToolProcessRequest
                     {
                         FileName = _ffprobePath,
+                        DiagnosticComponent = FfmpegDiagnosticComponent.Ffprobe,
                         Timeout = _timeout,
                         Arguments = new[]
                         {

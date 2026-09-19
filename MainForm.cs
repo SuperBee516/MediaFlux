@@ -2464,6 +2464,7 @@ namespace MediaFlux
             public double StatisticsProcessingSeconds;
             public string CurrentProcessingStage = "Queued";
             public EncodeFailureAnalysis? FailureAnalysis;
+            public string? CuratedFailureDiagnosticReport;
             public EncodingPlan? IntelligencePlan;
             public EncodingExecutionOutcome? IntelligenceOutcome;
             public EncodingQualityResolution? QualityPreview;

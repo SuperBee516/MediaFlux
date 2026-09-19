@@ -377,6 +377,7 @@ namespace MediaFlux
 
             RowMeta meta = EnsureRowMeta(row);
             meta.FailureAnalysis = null;
+            meta.CuratedFailureDiagnosticReport = null;
             meta.CurrentProcessingStage = "Queued";
             if (string.IsNullOrWhiteSpace(meta.StatisticsOperationId))
                 meta.StatisticsOperationId = Guid.NewGuid().ToString("N");
@@ -824,7 +825,9 @@ namespace MediaFlux
                         AppendJobLog(EncodingPlanService.DescribeRecovery(outcome));
                         AppendJobLog(EncodingPlanService.DescribeLifecycle(outcome));
                         Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
-                    }
+                    },
+                    FailureDiagnosticReportCallback = report =>
+                        meta.CuratedFailureDiagnosticReport = report
                 };
 
                 jobLog.AppendLine(
@@ -1093,7 +1096,9 @@ namespace MediaFlux
                             EncoderMode = encoderText,
                             TargetMb = targetMb,
                             DurationSec = durationSec,
-                            Log = jobLog.ToString(),
+                            Log = !isCanceled && !string.IsNullOrWhiteSpace(meta.CuratedFailureDiagnosticReport)
+                                ? meta.CuratedFailureDiagnosticReport
+                                : jobLog.ToString(),
                             Notes = historyNotes,
                             DvdTitleSet = isDvdEncode
                                 ? dvdOptions!.Candidate.TitleSetId

@@ -12,7 +12,7 @@ namespace MediaFlux
 
         private void ViewErrorLogToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            var logPath = ErrorLogService.GetDefaultLogPath(Application.StartupPath);
+            var centralLogPath = ErrorLogService.GetDefaultLogPath(Application.StartupPath);
 
             var frm = new MediaFluxForm
             {
@@ -41,18 +41,34 @@ namespace MediaFlux
                 WrapContents = false
             };
 
+            var lblView = new Label { Text = "View:", AutoSize = true, Margin = new Padding(0, 7, 4, 0) };
+            var cmbView = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 210,
+                Margin = new Padding(0, 2, 8, 0)
+            };
+            cmbView.Items.AddRange(new object[]
+            {
+                "Central Error Log",
+                "Latest Failure Diagnostic",
+                "Latest Raw FFmpeg Evidence"
+            });
+            cmbView.SelectedIndex = 0;
+
             var btnRefresh = new Button { Text = "Refresh", Width = 90 };
             var btnOpenFolder = new Button { Text = "Open Folder", Width = 110 };
             var btnCopyPath = new Button { Text = "Copy Path", Width = 95 };
+            var btnCopyAll = new Button { Text = "Copy All", Width = 95 };
             var btnClear = new Button { Text = "Clear Log", Width = 95 };
             var btnClose = new Button { Text = "Close", Width = 90 };
-            bar.Controls.AddRange(new Control[] { btnRefresh, btnOpenFolder, btnCopyPath, btnClear, btnClose });
+            bar.Controls.AddRange(new Control[] { lblView, cmbView, btnRefresh, btnOpenFolder, btnCopyPath, btnCopyAll, btnClear, btnClose });
 
             var lblPath = new Label
             {
                 Dock = DockStyle.Fill,
                 AutoSize = true,
-                Text = logPath
+                Text = centralLogPath
             };
 
             var txtLog = new TextBox
@@ -70,44 +86,94 @@ namespace MediaFlux
             panel.Controls.Add(txtLog, 0, 2);
             frm.Controls.Add(panel);
 
+            string? displayedPath = null;
+
+            ErrorLogView SelectedView() => (ErrorLogView)Math.Max(0, cmbView.SelectedIndex);
+
+            string? ResolveCurrentPath(ErrorLogView view) => view switch
+            {
+                ErrorLogView.CentralErrorLog => centralLogPath,
+                ErrorLogView.LatestFailureDiagnostic => ErrorLogService.FindLatestFailureDiagnosticReport(),
+                ErrorLogView.LatestRawFfmpegEvidence => ErrorLogService.FindLatestRawFfmpegEvidence(),
+                _ => centralLogPath
+            };
+
             void LoadLog()
             {
-                lblPath.Text = logPath;
+                ErrorLogView view = SelectedView();
+                string? currentPath = ResolveCurrentPath(view);
+                bool isCentral = view == ErrorLogView.CentralErrorLog;
+                bool hasPath = !string.IsNullOrWhiteSpace(currentPath) && File.Exists(currentPath);
+                displayedPath = hasPath ? currentPath : null;
+                btnClear.Enabled = hasPath;
+                btnCopyPath.Enabled = hasPath;
+                lblPath.Text = hasPath ? currentPath! : "Not available";
+
+                if (!hasPath)
+                {
+                    txtLog.Text = view switch
+                    {
+                        ErrorLogView.LatestFailureDiagnostic => "No failure diagnostic reports are available.",
+                        ErrorLogView.LatestRawFfmpegEvidence => "No raw FFmpeg evidence files are available.",
+                        _ => "No error log has been created yet."
+                    };
+                    btnCopyAll.Enabled = txtLog.TextLength > 0;
+                    return;
+                }
+
                 try
                 {
                     txtLog.Text = ErrorLogService.ReadTail(
-                        logPath,
+                        currentPath!,
                         ErrorLogViewerMaxBytes,
                         out bool truncated);
-                    lblPath.Text = truncated
-                        ? $"{logPath}  (showing the most recent 4 MB)"
-                        : logPath;
+                    lblPath.Text = truncated && isCentral
+                        ? $"{currentPath}  (showing the most recent 4 MB)"
+                        : currentPath;
                     txtLog.SelectionStart = txtLog.TextLength;
                     txtLog.ScrollToCaret();
+                    btnCopyAll.Enabled = txtLog.TextLength > 0;
                 }
                 catch (Exception ex)
                 {
-                    txtLog.Text = $"Unable to read error log:{Environment.NewLine}{ex}";
+                    txtLog.Text = $"Unable to read selected log:{Environment.NewLine}{ex}";
+                    btnCopyAll.Enabled = txtLog.TextLength > 0;
                 }
             }
 
             btnRefresh.Click += (_, __) => LoadLog();
             btnOpenFolder.Click += (_, __) =>
             {
-                var dir = Path.GetDirectoryName(logPath);
+                var dir = Path.GetDirectoryName(centralLogPath);
                 if (!string.IsNullOrWhiteSpace(dir))
                 {
                     Directory.CreateDirectory(dir);
                     Process.Start("explorer.exe", dir);
                 }
             };
-            btnCopyPath.Click += (_, __) => Clipboard.SetText(logPath);
+            btnCopyPath.Click += (_, __) =>
+            {
+                if (!string.IsNullOrWhiteSpace(displayedPath) && File.Exists(displayedPath))
+                    Clipboard.SetText(displayedPath);
+            };
+            btnCopyAll.Click += (_, __) =>
+            {
+                if (txtLog.TextLength == 0)
+                    return;
+
+                try { Clipboard.SetText(txtLog.Text); }
+                catch { }
+            };
             btnClear.Click += (_, __) =>
             {
+                ErrorLogView view = SelectedView();
+                bool isCentral = view == ErrorLogView.CentralErrorLog;
                 var ok = MessageBox.Show(
                     frm,
-                    "Clear the error log?",
-                    "Confirm Clear",
+                    isCentral
+                        ? "Clear the error log?"
+                        : "Delete this failure diagnostic and its paired raw FFmpeg evidence?",
+                    isCentral ? "Confirm Clear" : "Confirm Delete",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Warning);
                 if (ok != DialogResult.Yes)
@@ -115,10 +181,24 @@ namespace MediaFlux
 
                 try
                 {
-                    var dir = Path.GetDirectoryName(logPath);
-                    if (!string.IsNullOrWhiteSpace(dir))
-                        Directory.CreateDirectory(dir);
-                    File.WriteAllText(logPath, string.Empty);
+                    if (isCentral)
+                    {
+                        var dir = Path.GetDirectoryName(centralLogPath);
+                        if (!string.IsNullOrWhiteSpace(dir))
+                            Directory.CreateDirectory(dir);
+                        File.WriteAllText(centralLogPath, string.Empty);
+                    }
+                    else
+                    {
+                        string? deleteError = null;
+                        bool deleted = !string.IsNullOrWhiteSpace(displayedPath) &&
+                            ErrorLogService.TryDeleteFailureDiagnosticPair(
+                                displayedPath,
+                                Path.GetDirectoryName(centralLogPath),
+                                out deleteError);
+                        if (!deleted && !string.IsNullOrWhiteSpace(deleteError))
+                            MessageBox.Show(frm, deleteError, "Unable to Delete Diagnostic", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
                     LoadLog();
                 }
                 catch (Exception ex)
@@ -126,6 +206,7 @@ namespace MediaFlux
                     MessageBox.Show(frm, ex.Message, "Unable to Clear Log", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             };
+            cmbView.SelectedIndexChanged += (_, __) => LoadLog();
             btnClose.Click += (_, __) => frm.Close();
 
             LoadLog();

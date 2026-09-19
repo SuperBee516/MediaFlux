@@ -357,7 +357,8 @@ namespace MediaFlux.Services
                 request.EncodingPlanDivergenceCallback,
                 request.EncodingExecutionOutcomeCallback,
                 request.QualityIntent,
-                request.QualityResolutionCallback);
+                request.QualityResolutionCallback,
+                request.FailureDiagnosticReportCallback);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -527,7 +528,8 @@ namespace MediaFlux.Services
             Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
             Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
             EncodingQualityIntent? qualityIntent = null,
-            Action<EncodingQualityResolution>? qualityResolutionCallback = null)
+            Action<EncodingQualityResolution>? qualityResolutionCallback = null,
+            Action<string>? failureDiagnosticReportCallback = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -569,7 +571,8 @@ namespace MediaFlux.Services
                 encodingPlanDivergenceCallback,
                 encodingExecutionOutcomeCallback,
                 qualityIntent,
-                qualityResolutionCallback);
+                qualityResolutionCallback,
+                failureDiagnosticReportCallback);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -612,7 +615,8 @@ namespace MediaFlux.Services
             Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
             Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
             EncodingQualityIntent? qualityIntent = null,
-            Action<EncodingQualityResolution>? qualityResolutionCallback = null)
+            Action<EncodingQualityResolution>? qualityResolutionCallback = null,
+            Action<string>? failureDiagnosticReportCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -1405,6 +1409,42 @@ namespace MediaFlux.Services
 
             if (runResult.ExitCode != 0)
             {
+                FailureDiagnosticReportArtifact? diagnosticArtifacts = null;
+                string diagnosticArtifactNote = "";
+                try
+                {
+                    terminalResult = recoveryOutcomes.Count > 0
+                        ? EncodingTerminalResult.RecoveryFailed
+                        : EncodingTerminalResult.EncodeFailed;
+                    EncodingExecutionOutcome failureOutcome = new(
+                        shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(),
+                        validationOutcome, finalizationOutcome, terminalResult);
+                    string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+                        "Encode", inputSource.SourcePath, output, runResult.ExitCode, "FFmpeg process failure",
+                        runResult.DiagnosticSummary, runResult.StandardError, shadowPlan, failureOutcome,
+                        SourceContainer: sourceProbe.FormatName,
+                        SourceSizeBytes: inputSource.Kind == EncodingInputKind.File && File.Exists(inputSource.SourcePath)
+                            ? new FileInfo(inputSource.SourcePath).Length : null));
+                    diagnosticArtifacts = ErrorLogService.TryWriteFailureDiagnosticArtifacts(
+                        _appPath, report, runResult.StandardError);
+                    diagnosticArtifactNote = diagnosticArtifacts is null
+                        ? "Failure diagnostic artifact generation was unavailable; rolling raw error logging was preserved."
+                        : $"Failure diagnostic report: {diagnosticArtifacts.ReportPath}{Environment.NewLine}Raw captured stderr artifact: {diagnosticArtifacts.RawEvidencePath}";
+                    try
+                    {
+                        failureDiagnosticReportCallback?.Invoke(diagnosticArtifacts is null
+                            ? report
+                            : report + Environment.NewLine + Environment.NewLine + diagnosticArtifactNote);
+                    }
+                    catch
+                    {
+                        // Presentation observers must not replace the terminal encode failure.
+                    }
+                }
+                catch (Exception reportException)
+                {
+                    diagnosticArtifactNote = "Failure diagnostic report generation failed; rolling raw error logging was preserved. " + reportException.Message;
+                }
                 string logPath = ErrorLogService.Append(
                     _appPath,
                     "FFmpeg encode failed",
@@ -1413,6 +1453,7 @@ namespace MediaFlux.Services
                     $"Output     : {output}{Environment.NewLine}" +
                     $"Exit Code  : {runResult.ExitCode}{Environment.NewLine}" +
                     $"Arguments  : {ffArgs}{Environment.NewLine}{Environment.NewLine}" +
+                    diagnosticArtifactNote + Environment.NewLine + Environment.NewLine +
                     recoveryDiagnostics +
                     "FFmpeg Output:" + Environment.NewLine +
                     runResult.StandardError);
@@ -1886,6 +1927,7 @@ namespace MediaFlux.Services
             int attempt = 1)
         {
             var stderrBuilder = new StringBuilder();
+            var diagnostics = new FfmpegDiagnosticCollector();
             bool cfrFallbackEligible = sourceTimingClassification == SourceTimingClassification.Cfr &&
                 totalDuration > TimeSpan.Zero && authoritativeFrameRate is > 0;
             var progressArbitrator = new EncodeProgressArbitrator(
@@ -1916,6 +1958,7 @@ namespace MediaFlux.Services
                 if (e.Data == null)
                     return;
 
+                diagnostics.Observe(e.Data, FfmpegDiagnosticComponent.Ffmpeg);
                 diagnosticCallback?.Invoke(e.Data);
                 HandleProgressLine(e.Data, callback, totalDuration, authoritativeTotalFrames, authoritativeFrameRate, structuredProgressCallback, progressArbitrator, fallbackState, attempt);
                 AppendBounded(stderrBuilder, e.Data, MaxCapturedFfmpegCharacters);
@@ -1971,7 +2014,7 @@ namespace MediaFlux.Services
                 ctr.Dispose();
             }
 
-            return new FfmpegProcessResult(proc.ExitCode, stderrBuilder.ToString());
+            return new FfmpegProcessResult(proc.ExitCode, stderrBuilder.ToString(), diagnostics.Complete());
         }
 
         private static bool ShouldRetryWithSoftwareFrames(
@@ -2016,7 +2059,7 @@ namespace MediaFlux.Services
             }
         }
 
-        private sealed record FfmpegProcessResult(int ExitCode, string StandardError);
+        private sealed record FfmpegProcessResult(int ExitCode, string StandardError, FfmpegDiagnosticSummary DiagnosticSummary);
 
         private async Task EnsureProcessExitedAfterCancellationAsync(Process proc)
         {

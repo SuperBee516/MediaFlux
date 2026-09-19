@@ -57,6 +57,8 @@ namespace MediaFlux.Services
         internal FfmpegSourceDecodeMode SourceDecodeMode { get; init; } = FfmpegSourceDecodeMode.Strict;
         internal bool DisableAutomaticFfmpegRecovery { get; init; }
         internal Action<string>? FfmpegDiagnosticCallback { get; init; }
+        /// <summary>Failure-report presentation hook; observational and invoked only after terminal FFmpeg failure reporting.</summary>
+        internal Action<string>? FailureDiagnosticReportCallback { get; init; }
         internal EncodeOutputValidationProfile ValidationProfile { get; init; } = EncodeOutputValidationProfile.Production;
     }
 }
