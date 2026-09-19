@@ -1,117 +1,183 @@
 # 🎬 MediaFlux
 
-MediaFlux is a Windows desktop application for inspecting, encoding, trimming, organizing, and safely maintaining video and audio libraries with FFmpeg and FFprobe. It gives batch-oriented workflows a clear UI, explainable decisions, and verification before output replaces or removes anything.
+MediaFlux is a Windows desktop application for shrinking, inspecting, restoring, organizing, and maintaining video libraries. Its queue-based workflows combine FFmpeg/FFprobe media processing with explainable estimates, previews, validation, history, and explicit review before destructive actions.
 
-## ✨ Key Features
+Use it to reduce storage without guessing, find exact or visually similar duplicates, restore difficult footage, split videos into verified segments, and understand what happened to every job.
 
-- Batch video encoding with queue import/export, scheduling, pause/resume, retry, and a choice to encode selected rows or the entire eligible queue
-- Smart Encode recommendations, optional Deep Analyze, sample comparison, and verified stream-copy remuxing
-- Video Splitter / Trimmer for marker-based, multi-segment exports
-- SQLite-backed Library Analyzer for inventory, integrity checks, policies, storage planning, and duplicate review
-- Exact and visual duplicate workflows with keeper suggestions, protection, review decisions, and guarded cleanup
-- Audio extraction/conversion, optional loudness normalization, and optional RNNoise denoising
-- Watch folders, Windows Explorer commands, Discord completion notifications, history, diagnostics, backups, and updates
+<p align="center">
+  <img src="docs/images/mediaflux-main.png" alt="MediaFlux main encoding workspace with queue, analysis, estimates, and Encoding Plan" width="1100">
+</p>
 
-## 📸 Screenshots
+*The main workspace brings queue management, analysis, estimates, progress, and encoding decisions together in one view.*
 
-### Main encoding workspace
+## ✨ Highlights
 
-<img width="2630" height="2232" alt="MediaFlux main encoding workspace" src="https://github.com/user-attachments/assets/c5e10b8b-20ac-4890-adb3-af122ede1a5e" />
+- Batch encoding with queue analysis, recommendations, estimated output size and savings, progress, ETA, retry, pause/resume, scheduling, and queue import/export
+- Encoding Plans that explain output characteristics, stream actions, target-size budgets, quality decisions, and validation/finalization outcomes
+- CPU encoding plus NVIDIA NVENC and Intel Quick Sync (QSV), subject to the selected FFmpeg build and available hardware
+- Library Analyzer with inventory, overview, statistics, health, insights, policies, integrity checks, storage opportunities, and maintenance
+- Exact duplicates, visual duplicates, and duplicate families with confidence evidence, keeper decisions, protected files, review states, and guarded cleanup
+- Video restoration with representative previews, Original vs Restored comparison, analysis/recommendations, optional AI configuration comparison, and explicit application to encoding
+- Video Splitter / Trimmer with timeline navigation, IN/OUT points, segment lists, preview, stream-copy mode, and validated exports
+- Job History, live diagnostics, technical details, logs, requeue, backups, updates, watch folders, Explorer integration, and optional Discord notifications
 
-### Queue and encoding controls
+## 🧠 Encoding Intelligence
 
-<img width="1086" height="643" alt="MediaFlux queue and encoding controls" src="https://github.com/user-attachments/assets/9433a897-8415-449c-aa3c-78b2fc1d596b" />
+Add files or folders to the Encode Queue, inspect the estimates, and choose whether to start the selected rows or the eligible queue. Queue analysis can identify likely savings and explain why a file is a strong candidate, moderate candidate, skip, or review item. Recommendations are advisory; they do not silently change settings or remove files.
 
-### MediaFlux interface
+The Encoding Plan summarizes the intended operation before work begins, including:
 
-<img width="1106" height="753" alt="MediaFlux interface" src="https://github.com/user-attachments/assets/e4e74413-16f7-493b-870d-a5a461724749" />
+- planned codec, encoder, container, resolution, and stream mapping
+- video re-encode, audio/subtitle handling, passthrough, conversion, and compatibility decisions
+- automatic or manual target-size budgets and projected output characteristics
+- quality decisions, source assessment, and per-file adaptive estimates
+- historical/advisory predictions when enough local history is available
+- preflight checks, recovery choices for readable source timelines, and final validation state
 
-## 🚀 Getting Started
+**Compare Samples** generates representative beginning, middle, and end samples for synchronized original-versus-encoded review, with projected size, bitrate, speed, and ETA information. Preview and analysis actions are separate from starting the production encode.
 
-Install `MediaFlux-Setup.exe` from the GitHub Releases page. The public installer is self-contained for Windows x64, so .NET is not required for normal use. Configure `ffmpeg.exe` and `ffprobe.exe` in **Settings**, or place them beside the application before analyzing or processing media.
+## 🎯 Quality, Compression & Output
 
-Installed copies can use **Help → Check for Updates** to check the stable release channel, review release notes, download, and restart. Legacy portable ZIP copies must run the installer once before automatic updates are available.
+MediaFlux supports automatic source-adaptive quality estimates and manual control. The effective quality mechanism depends on the selected encoder: supported paths expose the terminology used by that provider, including **CRF**, **CQ**, or **ICQ** where applicable. A target-size budget can take precedence over constant-quality mode and is reflected in the plan and estimates.
 
-## 🎞️ Video Encoding & Queue Management
+Per-file settings can include codec, encoder, speed preset, quality, target size, resolution, bit depth, audio, subtitles, stream mapping, filename behavior, and MP4/MKV/Auto container selection. MediaFlux reports unavailable encoder capabilities instead of silently substituting another encoder.
 
-Load files or folders (optionally including subfolders) into a sortable queue. The visual order at start is the processing order, and files can be appended while a queue is active. MediaFlux supports queue scheduling, cancellation, retrying failed jobs, active-queue additions, and queue-file import/export.
+## 📚 Library Analyzer
 
-When eligible rows are selected, **Start Encoding** asks whether to process those rows or the entire eligible queue. Duplicate-excluded rows are not included. The queue exposes encoder, quality or target-size, preset, resolution, bit-depth, audio, subtitle, stream-mapping, filename, and MP4/MKV/Auto-container choices.
+The Library Analyzer maintains an indexed catalog of selected folders and drives without requiring every file to be loaded into the encoding queue. Its dashboard and drill-down views cover:
 
-Supported paths include NVIDIA NVENC, experimental Intel Quick Sync (QSV), `libx264`, `libx265`, and SVT-AV1, subject to the installed FFmpeg build and hardware. MediaFlux reports unavailable encoder capabilities; it does not silently substitute an unrelated encoder.
+- library size, composition, growth/history, locations, files, and statistics
+- duplicate counts, reclaimable-space opportunities, and library health
+- searchable and sortable inventory with media information and re-analysis
+- library policies with explainable compliance and recommendations
+- integrity checks, storage/maintenance operations, and per-location scheduled maintenance
+- storage optimization that distinguishes exact reclaim, reviewed duplicate cleanup, and estimated re-encode savings
 
-## 🧠 Smart Encode & Analysis
+Scans preserve catalog evidence when a location is disconnected, incomplete, canceled, or inaccessible. Scheduled maintenance is opt-in and can refresh analysis and run targeted integrity work, but it cannot approve cleanup or start encodes by itself.
 
-Smart Encode evaluates the source codec, quality, target size, resolution, and audio settings and labels each item as a strong candidate, moderate candidate, skip, or review. Its explanation is advisory: it does not silently change settings or remove queue rows.
+<p align="center">
+  <img src="docs/images/library-analyzer-overview.png" alt="MediaFlux Library Analyzer overview showing inventory, storage, duplicates, and library health" width="950">
+</p>
 
-- **Deep Analyze Selected** performs beginning/middle/end sample encodes, checks projection against the normal estimate, samples for interlacing, and applies conservative content hints.
-- **Compare Samples** creates 25-second samples at the beginning, middle, and end for synchronized original-versus-encoded review, including projected size, bitrate, speed, and ETA.
-- **Remux Selected to MKV (Stream Copy)** is available for suitable efficient streams in legacy containers. It preserves normal media streams, attachments, metadata, and chapters, validates the staged result with FFprobe, and never falls back to encoding or deletes the source if remuxing fails.
+*The Library Analyzer dashboard summarizes inventory, storage utilization, duplicate statistics, reclaimable space, locations, composition, and health.*
+
+## 🔍 Duplicate Detection & Cleanup
+
+MediaFlux provides both queue-oriented duplicate scans and catalog-backed Library Analyzer workflows.
+
+- **Exact duplicates** use SHA-256 evidence to form groups and support keeper preferences, protected files, review/ignore decisions, reanalysis, comparison, and multi-selection.
+- **Visual duplicates** use similarity evidence, confidence, media characteristics, embedded previews, playback, and side-by-side comparison. A visual match is a review aid, not proof that two files are interchangeable.
+- **Duplicate families** group related visual evidence for family-level review and keeper selection.
+- **Duplicate Manager** provides explicit cleanup previews, manual delete selection, survivor/keeper protection, and revalidation before execution.
+
+<p align="center">
+  <img src="docs/images/visual-duplicate-finder.png" alt="MediaFlux visual duplicate finder with similarity review and keeper information" width="950">
+</p>
+
+*Visual duplicate review keeps similarity evidence, confidence, comparison, and keeper decisions together before cleanup.*
+
+Cleanup eligibility is checked against current file state, protection, stale or missing evidence, hard links, and keeper ambiguity. Depending on configuration, eligible files can be sent to the Recycle Bin, quarantined, or permanently deleted. No duplicate cleanup is implicit.
+
+<p align="center">
+  <img src="docs/images/duplicate-manager.png" alt="MediaFlux Duplicate Manager showing protected keepers and cleanup review" width="950">
+</p>
+
+*Duplicate Manager provides the explicit review and protected-keeper step before eligible files can be cleaned up.*
+
+## 🪄 Video Restoration
+
+Restoration is opt-in. It can combine conservative FFmpeg processing with settings for denoise, deblocking, debanding, sharpening, deinterlacing, color adjustments, and output resize. Built-in restoration profiles include vintage animation, DVD animation, and VHS/TV capture workflows.
+
+The restoration preview surface supports representative source positions, **Original | Restored** still comparison, a synchronized motion preview, and **Analyze / Recommend**. Recommendations remain reviewable until explicitly applied to the encode settings. **Compare AI Configurations** can compare locally available AI models and configurations for the selected source window.
+
+AI restoration requires a compatible locally configured provider and model. The current UI exposes **NCNN Vulkan** and **NVIDIA TensorRT** providers when ready; DirectML and CPU inference are reported as unavailable in this implementation. AI restoration is never enabled automatically.
+
+<p align="center">
+  <img src="docs/images/video-ai-restoration.png" alt="MediaFlux video restoration preview comparing Original and Restored results" width="950">
+</p>
+
+*Restoration preview supports representative samples, Original-versus-Restored comparison, analysis, and explicit configuration selection.*
 
 ## ✂️ Video Splitter / Trimmer
 
-Open **Tools → Video Splitter / Trimmer** to load a video, seek its timeline, set IN/OUT markers, preview the selected range, and build a list of named segments. You can add, edit, clear, or split segments, choose an output folder, and process all segments with progress and cancellation controls.
+Open **Tools → Video Splitter / Trimmer** to load a video, navigate its timeline, set IN/OUT points, preview boundaries, and build named segments. Exports support stream copy where suitable or re-encoding through the selected encoder settings.
 
-Exports support stream copy or re-encoding. MediaFlux checks source streams with FFprobe, writes each segment to staged output, validates it, and promotes it using collision-safe names. It distinguishes playable video from attached artwork when mapping streams; canceled or failed segments do not modify the source.
+Each segment is written to staged output, checked with FFprobe, and promoted with collision-safe naming. Cancellation or failure does not alter the source video.
 
-## 🔍 Library Analyzer
+<p align="center">
+  <img src="docs/images/video-splitter-trimmer.png" alt="MediaFlux Video Splitter and Trimmer with timeline, IN and OUT points, and segments" width="950">
+</p>
 
-The Library Analyzer maintains an independent SQLite catalog for folders and drives without loading every path into the encoding queue. Locations can be enabled, scanned, paused, resumed, or canceled. Unchanged files retain metadata; new or changed files use bounded FFprobe enrichment.
+*The splitter combines timeline navigation, boundary preview, segment creation, and validated stream-copy or re-encode export.*
 
-It is designed to fail safely around incomplete locations: missing-file reconciliation occurs only after a complete authoritative scan, while disconnected drives, access failures, cancellations, and interrupted scans remain unavailable or incomplete rather than being treated as empty.
+## 📋 Job History & Diagnostics
 
-The analyzer includes searchable, sortable, paged file inventory; overview and activity status; library-policy profiles with explainable compliance; storage-reclamation planning; and non-destructive Quick Scrub or explicit Full Scrub integrity checks. Per-location Scheduled Maintenance is opt-in and can scan, refresh derived analysis, and queue targeted Quick Scrubs; it cannot approve cleanup, start encodes, or schedule Full Scrub.
+**Job History** records completed, failed, and canceled video/audio operations. Search and filter by status, type, and date; inspect summaries, technical details, and logs; open source/output paths; copy diagnostic details; delete history entries; or requeue an available source.
 
-## 👯 Duplicate Detection & Management
+The live Diagnostics view reports speed, FPS, bitrate, elapsed time, ETA, encoder/preset, concurrency, CPU and GPU observations when available, and maintenance overlap. Error Log and duplicate-action auditing provide additional investigation history. Values that cannot be measured are shown as unavailable rather than inferred.
 
-MediaFlux provides both queue-oriented Duplicate Finder scans and catalog-backed Library Analyzer workflows.
+## 🤖 AI Benchmark Manager
 
-- **Exact duplicates:** scalable SHA-256 analysis, keeper rules, protected files, review/ignore decisions, side-by-side comparison, reanalysis, and multi-selection actions.
-- **Visual duplicates and families:** indexed similarity analysis, embedded previews, playback and comparison, confidence and quality-aware keeper suggestions, and persistent review decisions. Group grids support multi-select and batch mark-reviewed, ignore, reanalysis, and cleanup-preview actions while preserving the active group for detail review.
-- **Cleanup:** candidates are previewed and revalidated. Available paths use Recycle Bin, quarantine, or confirmation-gated permanent deletion according to the configured workflow. Keepers and protected files remain part of eligibility checks; no implicit delete path is used.
+AI Benchmark Manager stores benchmark results for locally available AI configurations. It supports filtering, detailed inspection, rerunning selected configurations, comparing selected results with charts, importing/exporting records, and removing selected or obsolete records. Benchmark reruns create temporary validated output and are separate from production encoding.
 
-Storage Reclamation distinguishes projected, ready, and actually reclaimed space, and routes re-encode opportunities back through the normal encoding queue.
+## 🎵 Audio, DVD & Other Workflows
 
-## 🎵 Audio Tools
+- **Audio tools:** batch extraction/conversion with format and quality choices, optional loudness normalization, optional RNNoise denoising, progress, and history.
+- **DVD import:** title/folder analysis, title selection, output choices, remux/encode workflows, and validation for supported DVD sources.
+- **Commercial Detector:** analysis of candidate commercial boundaries with boundary previews, review, saved analysis, and selected-segment export.
+- **Automation:** watch folders, optional Windows Explorer commands, scheduled work, completion webhooks, backups, and in-app updates.
 
-Audio mode runs independently from the video queue for batch extraction and conversion. It supports output format and quality selection, subfolder scanning, loudness normalization, optional RNNoise denoising with a selected model file, progress, and history entries.
+## ⚙️ Configuration, Profiles & Data
 
-## ⚙️ Automation & Integrations
+Settings persist application behavior, supported extensions, encoder/output choices, cleanup capabilities, restoration settings, watch folders, notifications, and maintenance preferences. Encode presets save reusable combinations of encoder, quality, audio, container, restoration, and related settings. Applying a preset changes the working configuration; it does not modify media or start an encode.
 
-- **Watch folders:** periodically import stable new files, optionally including subfolders, using the current codec filters.
-- **Windows Explorer:** optional per-user commands add a file or folder to the encoding queue or check a folder for duplicates. Requests are forwarded to the running application; folder confirmation, recursive scan, and queue-clearing prompts are configurable.
-- **Discord:** queue-completion webhooks can include status, totals, failures, retries, machine name, timestamps, and duration. Settings includes a test-message action.
-- **Updates and backups:** Settings provides manual backup/restore and optional user-data backup before updates.
+User data is stored under `%LocalAppData%\\MediaFlux\\UserData`, including configuration, presets, history, logs, caches, and the Library Analyzer catalog. Application updates replace application files without replacing user data. Manual backup/restore and optional pre-update user-data backups are available from Settings.
 
-## 📊 Diagnostics, History & Recovery
+## 🛡️ Safety & Data Protection
 
-Persistent history records completed video and audio work, with inspection and requeue actions. Finalized encoding statistics and bounded diagnostics retain successful, failed, and canceled attempt summaries.
+MediaFlux is deliberately conservative around source media:
 
-The live Diagnostics tab reports FFmpeg speed, FPS, bitrate, elapsed time, ETA, encoder/preset, concurrency, CPU/memory signals, and scheduled-maintenance overlap. Unsupported GPU and storage-wait counters are shown as unavailable rather than inferred, and telemetry never modifies encoder behavior. FFmpeg failures and unexpected errors are written to the central error log.
+- Encodes and splitter exports use staged files and validation before promotion.
+- Validation checks media structure, streams, duration, container compatibility, and representative decode regions; promoted outputs are checked again.
+- Failed, canceled, incomplete, or changed outputs do not replace the source. Requested source deletion occurs only after successful validation and finalization checks.
+- Restoration previews do not affect encoding until **Apply to Encode Settings** is chosen.
+- Duplicate cleanup requires explicit review/confirmation and protects keepers, protected files, stale evidence, and the final survivor.
 
-## 🛡️ Output Validation & File Safety
-
-Normal encodes are written to hidden staged files. Before promotion, MediaFlux verifies media structure, codec, stream mapping, duration, container, and representative decode regions; it verifies the promoted output again afterward. Output names are collision-safe.
-
-Requested source deletion is fail-closed: it occurs only after validation and promotion succeed and the verified output still matches its recorded size and modification identity. Failed or canceled work preserves the source; incomplete outputs can be removed only through the configured option.
+These safeguards reduce accidental loss, but users should still keep independent backups of irreplaceable media.
 
 ## 💻 Requirements
 
-- Windows 10 or Windows 11 (x64)
+### Required for normal media processing
+
+- Windows 10 or Windows 11, x64
 - `ffmpeg.exe` and `ffprobe.exe`
-- An FFmpeg build containing the chosen encoder (for example, `libx265` for CPU HEVC)
-- Compatible GPU hardware and current drivers only for NVENC or QSV
-- An RNNoise model only when audio denoising is enabled
+- An FFmpeg build containing the encoder selected in MediaFlux, such as `libx264`, `libx265`, or SVT-AV1 for CPU encoding
 
-MediaFlux searches for FFmpeg and FFprobe in this order:
+MediaFlux resolves FFmpeg and FFprobe from configured Settings paths, beside the application, or a `programs`/`Programs` directory beside the application. A compatible GPU is not required for CPU operation.
 
-1. Custom paths configured in Settings
-2. The application directory
-3. A `programs` or `Programs` directory beside the application
+### Optional capabilities
 
-## 🛠️ Build From Source
+- NVIDIA GPU and current drivers for NVENC and NVIDIA TensorRT
+- Compatible Intel hardware/drivers and FFmpeg support for QSV
+- A configured local AI provider and compatible model for AI restoration
+- An RNNoise model file when audio denoising is enabled
 
-Building requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
+The GitHub release workflow publishes a self-contained Windows x64 build, so the .NET runtime is not required for normal installed use.
+
+## 🚀 Installation & Quick Start
+
+Download the latest installer from [GitHub Releases](https://github.com/SuperBee516/MediaFlux/releases). Configure FFmpeg/FFprobe in **Settings** if MediaFlux does not find them automatically.
+
+Typical encoding workflow:
+
+1. Add files or a folder to the Encode Queue.
+2. Analyze the queue and review recommendations, estimates, and the Encoding Plan.
+3. Adjust quality, target size, streams, container, preset, or optional restoration settings.
+4. Use **Compare Samples** or restoration preview when visual review is useful.
+5. Start the selected files or eligible queue and monitor progress and ETA.
+6. Review the result in Job History and inspect diagnostics if needed.
+
+Installed copies can use **Help → Check for Updates** to check the stable release channel, review release notes, download, and restart. Building from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0):
 
 ```powershell
 dotnet restore .\MediaFlux.sln
@@ -119,29 +185,16 @@ dotnet build .\MediaFlux.sln
 dotnet run --project .\MediaFlux.csproj
 ```
 
-The Debug executable is produced at `bin\Debug\net8.0-windows\MediaFlux.exe`. Release-maintenance instructions are in [docs/releasing.md](docs/releasing.md).
+## 🔧 Technology & Further Documentation
 
-## 📁 Configuration & Application Data
+MediaFlux is a .NET 8 Windows Forms application using FFmpeg/FFprobe, SQLite, and provider-based encoder integrations. The repository includes focused automated tests for encoding, restoration, duplicate management, Library Analyzer workflows, diagnostics, and persistence.
 
-MediaFlux stores configuration and supporting data in `%LocalAppData%\MediaFlux\UserData`, including settings, supported extensions, media-information and duplicate-signature caches, history, logs, and the Library Analyzer catalog.
+- [User Guide](Documentation/UserGuide.md)
+- [Library Catalog notes](docs/library-catalog.md)
+- [Architecture notes](docs/architecture.md)
+- [Development notes](docs/development.md)
+- [Changelog](CHANGELOG.md)
 
-On first launch after upgrading from a legacy portable build, existing adjacent `config.json` and `data` files are copied to this location. Application updates replace application files without replacing user data.
+## 📄 License
 
-## 🏗️ Project Structure
-
-- `MainForm*.cs` — WinForms workspace, queue, encoding, audio, history, diagnostics, and integrations
-- `VideoSplitterForm.cs` / `Services/VideoSplitterExportService.cs` — splitter UI and verified segment export
-- `LibraryAnalyzerForm*.cs` / `Services/LibraryCatalog/` — catalog, scanning, analysis, maintenance, review, and cleanup workflows
-- `Services/Encoders/` — encoder registry, validation, capability, and backend providers
-- `Services/EncodeOutputValidationService.cs` / `EncodeOutputFinalizationService.cs` — staged-output validation, promotion, and final verification
-- `Services/SmartEncodeDecisionService.cs`, `EncodingDiagnosticsService.cs`, and `EncodingStatisticsService.cs` — recommendations and telemetry
-- `Services/FfmpegCommandBuilder.cs` / `MediaInfoService.cs` — FFmpeg command construction and FFprobe-backed inspection
-- `MediaFlux.Tests/` — focused automated tests for application services and UI behavior
-
-See [Documentation/UserGuide.md](Documentation/UserGuide.md), [docs/library-catalog.md](docs/library-catalog.md), and [docs/architecture.md](docs/architecture.md) for more detail.
-
-## 📜 Project Status & License
-
-MediaFlux is a public open-source project under active development. It is primarily focused on video encoding, supported by audio processing, library maintenance, duplicate management, monitoring, automation, and diagnostics.
-
-MediaFlux is licensed under the MIT License. See [LICENSE](LICENSE) for the full license terms.
+MediaFlux is licensed under the [MIT License](LICENSE).
