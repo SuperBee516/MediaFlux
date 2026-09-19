@@ -39,6 +39,56 @@ public sealed class JobHistoryPresentationTests
     public void MissingOutputIsExplicit() => Assert.Equal("Unavailable", JobHistoryPresentation.FileNameOrUnavailable(""));
 
     [Fact]
+    public void RecoveryOutcomeLabelsAndSummariesAreDistinctFromOrdinaryStates()
+    {
+        JobHistoryRecord recovered = Record(JobStatus.Success);
+        recovered.TerminalResult = EncodingTerminalResult.CompletedAfterRecovery;
+        JobHistoryRecord damaged = Record(JobStatus.Failed);
+        damaged.TerminalResult = EncodingTerminalResult.SourceUnrecoverable;
+
+        Assert.Equal("Completed — Source recovered", JobHistoryPresentation.OutcomeLabel(recovered));
+        Assert.Equal("Failed — Source damaged", JobHistoryPresentation.OutcomeLabel(damaged));
+        Assert.Contains("Source recovered", JobHistoryPresentation.OutcomeSummary(recovered));
+        Assert.Contains("Source media is damaged", JobHistoryPresentation.OutcomeSummary(damaged));
+        Assert.Equal("Completed", JobHistoryPresentation.OutcomeLabel(Record(JobStatus.Success)));
+        Assert.Equal("Failed", JobHistoryPresentation.OutcomeLabel(Record(JobStatus.Failed)));
+    }
+
+    [Fact]
+    public void ActiveRecoveryStatusUsesHumanReadableLabels()
+    {
+        Assert.Equal("Source corruption detected — analyzing…", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.SourceCorruptionDetected)));
+        Assert.Equal("Attempting source recovery…", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.AttemptingSourceRecovery)));
+        Assert.Equal("Validating recovered source…", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.ValidatingRecoveredSource)));
+        Assert.Equal("Retrying encode with recovered source…", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.RetryingWithRecoveredSource)));
+        Assert.DoesNotContain("SourceContainerRemux", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.AttemptingSourceRecovery)));
+    }
+
+    [Fact]
+    public void HistoryPersistsRecoveryTerminalResultAndLegacyRecordStillLoads()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFluxJobHistoryPresentation", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "history.json");
+            var history = new HistoryService(path);
+            JobHistoryRecord damaged = Record(JobStatus.Failed);
+            damaged.TerminalResult = EncodingTerminalResult.SourceUnrecoverable;
+            history.Append(damaged);
+            history.Append(Record(JobStatus.Success));
+
+            JobHistoryRecord[] loaded = new HistoryService(path).LoadAll().ToArray();
+            Assert.Contains(loaded, record => record.TerminalResult == EncodingTerminalResult.SourceUnrecoverable);
+            Assert.Contains(loaded, record => record.TerminalResult == null && JobHistoryPresentation.OutcomeLabel(record) == "Completed");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public void WindowBoundsRestoreClampsInvalidAndOffScreenValues()
     {
         Size minimum = new(980, 680); Rectangle area = new(0, 0, 1920, 1080);

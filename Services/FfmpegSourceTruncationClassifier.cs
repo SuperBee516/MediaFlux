@@ -16,7 +16,13 @@ internal static class FfmpegSourceTruncationClassifier
     {
         if (string.IsNullOrWhiteSpace(standardError))
             return new(false, Array.Empty<string>());
-        string[] matches = Signatures.Where(signature => standardError.Contains(
+        // This is MediaFlux's bounded-capture marker, not evidence that the
+        // source media itself was truncated.
+        string diagnostic = standardError.Replace(
+            "[Additional FFmpeg diagnostic output truncated by MediaFlux.]",
+            "",
+            StringComparison.OrdinalIgnoreCase);
+        string[] matches = Signatures.Where(signature => diagnostic.Contains(
             signature, StringComparison.OrdinalIgnoreCase)).ToArray();
         return new(matches.Length > 0, matches);
     }

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using System.Drawing;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services;
 
@@ -59,6 +60,39 @@ public static class JobHistoryPresentation
     {
         JobStatus.Success => "Successful",
         _ => status.ToString()
+    };
+
+    public static string OutcomeLabel(JobHistoryRecord record) => TerminalLabel(record.Status, record.TerminalResult);
+
+    public static string TerminalLabel(JobStatus status, EncodingTerminalResult? terminalResult) => terminalResult switch
+    {
+        EncodingTerminalResult.CompletedAfterRecovery => "Completed — Source recovered",
+        EncodingTerminalResult.SourceUnrecoverable => "Failed — Source damaged",
+        _ => status == JobStatus.Success ? "Completed" : StatusLabel(status)
+    };
+
+    public static string OutcomeSummary(JobHistoryRecord record) => record.TerminalResult switch
+    {
+        EncodingTerminalResult.CompletedAfterRecovery => "Source recovered. MediaFlux detected a problem with the source media, created and validated a temporary repaired source, and completed the encode successfully. The original source was preserved.",
+        EncodingTerminalResult.SourceUnrecoverable => "Source media is damaged. MediaFlux detected extensive corruption in the source video. Automated recovery was unsuccessful, so encoding was stopped to prevent creation of an incomplete or corrupted output file. The original source was preserved.",
+        _ => !string.IsNullOrWhiteSpace(record.ErrorSummary) ? record.ErrorSummary! : !string.IsNullOrWhiteSpace(record.Notes) ? record.Notes : record.Status == JobStatus.Success ? "Completed successfully" : record.Status.ToString()
+    };
+
+    public static string SummaryFor(EncodingTerminalResult? terminalResult, string fallback) => terminalResult switch
+    {
+        EncodingTerminalResult.CompletedAfterRecovery => "Source recovered. MediaFlux detected a problem with the source media, created and validated a temporary repaired source, and completed the encode successfully. The original source was preserved.",
+        EncodingTerminalResult.SourceUnrecoverable => "Source media is damaged. MediaFlux detected extensive corruption in the source video. Automated recovery was unsuccessful, so encoding was stopped to prevent creation of an incomplete or corrupted output file. The original source was preserved.",
+        _ => fallback
+    };
+
+    public static string ActiveRecoveryStatus(EncodingRecoveryStatusUpdate update) => update.Kind switch
+    {
+        EncodingRecoveryStatusKind.SourceCorruptionDetected => "Source corruption detected — analyzing…",
+        EncodingRecoveryStatusKind.AttemptingSourceRecovery => "Attempting source recovery…",
+        EncodingRecoveryStatusKind.ValidatingRecoveredSource => "Validating recovered source…",
+        EncodingRecoveryStatusKind.RetryingWithRecoveredSource => "Retrying encode with recovered source…",
+        EncodingRecoveryStatusKind.SourceUnrecoverable => "Failed — Source damaged",
+        _ => "Encoding…"
     };
 
     public static string FileNameOrUnavailable(string? path) => string.IsNullOrWhiteSpace(path) ? "Unavailable" : Path.GetFileName(path);

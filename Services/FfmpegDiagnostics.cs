@@ -154,7 +154,8 @@ public static class FfmpegDiagnosticClassifier
     {
         string[] source = families.Where(x => x.Category is FfmpegDiagnosticCategory.SourceDecode or FfmpegDiagnosticCategory.SourceIntegrity).Select(x => x.Family).Distinct().ToArray();
         bool nal = source.Contains("Invalid NAL unit size"), split = source.Contains("Error splitting input into NAL units"), packet = source.Contains("Decoder packet submission failure") || source.Contains("Invalid input data");
-        if (nal && split && packet) return new(FfmpegDiagnosticCategory.SourceIntegrity, "Malformed or corrupt H.264 bitstream data is probable.", FfmpegDiagnosticConfidence.High, source);
+        bool container = source.Contains("Broken or incomplete container header");
+        if (nal && split && (packet || container)) return new(FfmpegDiagnosticCategory.SourceIntegrity, "Malformed or corrupt H.264 bitstream data is probable.", FfmpegDiagnosticConfidence.High, source);
         FfmpegDiagnosticFamilySummary? hardware = families.FirstOrDefault(x => x.Category == FfmpegDiagnosticCategory.HardwareAcceleration);
         if (hardware is not null) return new(FfmpegDiagnosticCategory.HardwareAcceleration, "Hardware-acceleration or encoder-device failure is probable.", FfmpegDiagnosticConfidence.Moderate, new[] { hardware.Family });
         if (source.Length >= 2) return new(FfmpegDiagnosticCategory.SourceDecode, "Source decode or bitstream-integrity failure is probable.", FfmpegDiagnosticConfidence.Moderate, source);

@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
@@ -43,6 +44,7 @@ namespace MediaFlux.Services
         public string? ResolvedOutputContainer { get; set; }
         public string? ContainerDecisionReason { get; set; }
         public EncodingDiagnosticSummary? DiagnosticSummary { get; set; }
+        public EncodingTerminalResult? TerminalResult { get; set; }
     }
 
     public sealed class HistoryService

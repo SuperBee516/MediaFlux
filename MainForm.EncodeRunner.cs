@@ -819,14 +819,21 @@ namespace MediaFlux
                     },
                     EncodingPlanDivergenceCallback = divergence =>
                         AppendJobLog($"[EncodingPlan] Shadow divergence: {divergence}"),
-                    EncodingExecutionOutcomeCallback = outcome =>
-                    {
-                        meta.IntelligenceOutcome = outcome;
-                        AppendJobLog(EncodingPlanService.DescribeRecovery(outcome));
-                        AppendJobLog(EncodingPlanService.DescribeLifecycle(outcome));
-                        Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
-                    },
-                    FailureDiagnosticReportCallback = report =>
+                     EncodingExecutionOutcomeCallback = outcome =>
+                     {
+                         meta.IntelligenceOutcome = outcome;
+                         AppendJobLog(EncodingPlanService.DescribeRecovery(outcome));
+                         AppendJobLog(EncodingPlanService.DescribeLifecycle(outcome));
+                         Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
+                     },
+                     RecoveryStatusCallback = update =>
+                         UiInvoke(() =>
+                         {
+                             string status = JobHistoryPresentation.ActiveRecoveryStatus(update);
+                             if (row.DataGridView == dgvEncodeQueue)
+                                 SetEncodeRowState(row, status, "", "", string.IsNullOrWhiteSpace(update.Detail) ? status : update.Detail);
+                         }),
+                     FailureDiagnosticReportCallback = report =>
                         meta.CuratedFailureDiagnosticReport = report
                 };
 
@@ -882,12 +889,13 @@ namespace MediaFlux
                     if (row.DataGridView != dgvEncodeQueue)
                         return;
 
+                    EncodingTerminalResult? completedTerminal = meta.IntelligenceOutcome?.TerminalResult;
                     SetEncodeRowState(
                         row,
-                        "Done",
+                        JobHistoryPresentation.TerminalLabel(JobStatus.Success, completedTerminal),
                         "100%",
                         "00:00:00",
-                        $"Output validated and finalized. {sourceDeletion.Message}");
+                        JobHistoryPresentation.SummaryFor(completedTerminal, $"Output validated and finalized. {sourceDeletion.Message}"));
                 });
 
                 DateTime jobEndUtc = DateTime.UtcNow;
@@ -946,7 +954,8 @@ namespace MediaFlux
                             RequestedOutputContainer = result.RequestedOutputContainer.ToString(),
                             ResolvedOutputContainer = result.ResolvedOutputContainer.ToString(),
                             ContainerDecisionReason = result.ContainerDecisionReason,
-                            DiagnosticSummary = diagnosticSummary
+                            DiagnosticSummary = diagnosticSummary,
+                            TerminalResult = meta.IntelligenceOutcome?.TerminalResult ?? EncodingTerminalResult.Completed
                         });
                     }
                 }
@@ -1048,9 +1057,10 @@ namespace MediaFlux
                 EncodeFinalizationResult? finalizationResult =
                     finalizationFailure?.Result ??
                     (ex as EncodeFinalizationCanceledException)?.Result;
+                EncodingTerminalResult? terminalResult = meta.IntelligenceOutcome?.TerminalResult;
                 var notes = isCanceled
                     ? "Cancelled by user."
-                    : ex.Message;
+                    : JobHistoryPresentation.SummaryFor(terminalResult, ex.Message);
 
                 bool cleanupEnabled = isCanceled
                     ? true
@@ -1123,7 +1133,8 @@ namespace MediaFlux
                             RequestedOutputContainer = requestedOutputContainer.ToString(),
                             ResolvedOutputContainer = appliedContainerDecision?.Resolved.ToString(),
                             ContainerDecisionReason = appliedContainerDecision?.Reason,
-                            DiagnosticSummary = diagnosticSummary
+                            DiagnosticSummary = diagnosticSummary,
+                            TerminalResult = terminalResult ?? (isCanceled ? EncodingTerminalResult.Canceled : EncodingTerminalResult.EncodeFailed)
                         });
                     }
                 }
@@ -1152,7 +1163,8 @@ namespace MediaFlux
                 bool retryQueued = false;
                 if (!isCanceled)
                 {
-                    retryQueued = TryQueueFailedRowForAutoRetry(row);
+                    retryQueued = terminalResult != EncodingTerminalResult.SourceUnrecoverable &&
+                        TryQueueFailedRowForAutoRetry(row);
                     if (!retryQueued)
                         System.Threading.Interlocked.Increment(ref _encodeFailedCount);
                 }
@@ -1202,9 +1214,9 @@ namespace MediaFlux
                                     : finalizationFailure?.Result.FailureKind ==
                                       EncodeFinalizationFailureKind.Validation
                                         ? "Validation Failed"
-                                        : finalizationFailure != null
-                                            ? "Finalization Failed"
-                                            : "Failed",
+                                         : finalizationFailure != null
+                                             ? "Finalization Failed"
+                                             : JobHistoryPresentation.TerminalLabel(JobStatus.Failed, terminalResult),
                             isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : "Failed",
                             "",
                             (isCanceled
@@ -1223,9 +1235,11 @@ namespace MediaFlux
                         : finalizationFailure?.Result.FailureKind ==
                           EncodeFinalizationFailureKind.Validation
                             ? $"Output validation failed — original retained: {displayName}"
-                            : finalizationFailure != null
-                                ? $"Output finalization failed — original retained: {displayName}"
-                                : $"Failed: {displayName}. Continuing queue.";
+                                     : finalizationFailure != null
+                                 ? $"Output finalization failed — original retained: {displayName}"
+                             : terminalResult == EncodingTerminalResult.SourceUnrecoverable
+                                 ? $"Failed — Source damaged: {displayName}. Continuing queue."
+                             : $"Failed: {displayName}. Continuing queue.";
                     toolStripStatusLabel1.Text = $"Encode error logged: {centralLogPath}";
                 });
                 // leave the row so user can retry

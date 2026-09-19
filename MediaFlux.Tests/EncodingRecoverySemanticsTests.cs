@@ -201,6 +201,46 @@ public sealed class EncodingRecoverySemanticsTests
     }
 
     [Fact]
+    public async Task ContainerRemuxPromotesOnlyAfterDecodeValidationAndPreservesSource()
+    {
+        using TempFiles files = new();
+        string original = File.ReadAllText(files.SourcePath);
+        var runner = new SuccessfulRunner();
+        bool validationStarted = false;
+        SourceContainerRecoveryResult result = await new SourceContainerRecoveryService(
+            "ffmpeg", files.FfprobePath, runner, new FixedDecodeService(true))
+            .TryRemuxAndValidateAsync(files.SourcePath, files.OutputPath, files.Probe, 10, CancellationToken.None, () => validationStarted = true);
+
+        Assert.True(result.Success);
+        Assert.True(result.ValidationPassed);
+        Assert.True(validationStarted);
+        Assert.Equal(original, File.ReadAllText(files.SourcePath));
+        Assert.True(File.Exists(files.OutputPath));
+        Assert.False(File.Exists(files.OutputPath + ".partial"));
+        Assert.Contains("-map", runner.FfmpegRequest!.Arguments);
+        Assert.Contains("0", runner.FfmpegRequest.Arguments);
+        Assert.Contains("-c", runner.FfmpegRequest.Arguments);
+        Assert.Contains("copy", runner.FfmpegRequest.Arguments);
+    }
+
+    [Fact]
+    public async Task ContainerRemuxRejectsSuccessfulProcessWhenDecodeValidationFails()
+    {
+        using TempFiles files = new();
+        string original = File.ReadAllText(files.SourcePath);
+        SourceContainerRecoveryResult result = await new SourceContainerRecoveryService(
+            "ffmpeg", files.FfprobePath, new SuccessfulRunner(), new FixedDecodeService(false))
+            .TryRemuxAndValidateAsync(files.SourcePath, files.OutputPath, files.Probe, 10, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.True(result.ProcessCompleted);
+        Assert.False(result.ValidationPassed);
+        Assert.False(File.Exists(files.OutputPath));
+        Assert.False(File.Exists(files.OutputPath + ".partial"));
+        Assert.Equal(original, File.ReadAllText(files.SourcePath));
+    }
+
+    [Fact]
     public async Task StreamCopyNormalizationThatPreservesNonMonotonicTimingIsNotAccepted()
     {
         using TempFiles files = new();
@@ -380,5 +420,16 @@ public sealed class EncodingRecoverySemanticsTests
                 request.StandardOutputLineCallback?.Invoke(line);
             return Task.FromResult(new MediaToolProcessResult { ExitCode = 0, StandardOutput = progress });
         }
+    }
+
+    private sealed class FixedDecodeService(bool success) : IDecodeIntegritySpotCheckService
+    {
+        public Task<DecodeIntegritySpotCheckResult> CheckAsync(string outputPath, double? durationSeconds, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DecodeIntegritySpotCheckResult
+            {
+                Success = success,
+                ErrorMessage = success ? "" : "synthetic decode failure",
+                PositionsSeconds = [0, 5, 9]
+            });
     }
 }

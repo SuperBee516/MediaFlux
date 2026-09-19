@@ -8,9 +8,36 @@ internal sealed record FfmpegSourceDecodeCorruption(
     bool IsReliable,
     IReadOnlyList<string> MatchedEvidence)
 {
+    public bool HasStructuralEvidence => MatchedEvidence.Any(IsStructuralSignature);
+    public bool HasDecoderRejection => MatchedEvidence.Any(IsDecoderSignature);
+
+    public bool IsStrongSourceIntegrityEvidence =>
+        HasStructuralEvidence &&
+        MatchedEvidence.Count(IsStructuralSignature) >= 2 &&
+        (HasDecoderRejection || MatchedEvidence.Any(IsContainerSignature));
+
     public string DescribeEvidence() => MatchedEvidence.Count == 0
         ? "none"
         : string.Join(" | ", MatchedEvidence);
+
+    private static bool IsStructuralSignature(string value) =>
+        value.Contains("Invalid NAL unit size", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("missing picture in access unit", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("Error splitting the input into NAL units", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("missing mandatory atoms", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("broken header", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("invalid as first byte of an EBML number", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsContainerSignature(string value) =>
+        value.Contains("missing mandatory atoms", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("broken header", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("invalid as first byte of an EBML number", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsDecoderSignature(string value) =>
+        value.Contains("Error submitting packet to decoder", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("Error processing packet in decoder", StringComparison.OrdinalIgnoreCase) ||
+        (value.Contains("Error while decoding stream", StringComparison.OrdinalIgnoreCase) &&
+         value.Contains("Invalid data found when processing input", StringComparison.OrdinalIgnoreCase));
 }
 
 internal static class FfmpegSourceDecodeCorruptionClassifier
@@ -25,12 +52,15 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
     private static readonly string[] DecoderRejectionSignatures =
     [
         "Error submitting packet to decoder: Invalid data found when processing input",
-        "Error processing packet in decoder: Invalid data found when processing input"
+        "Error processing packet in decoder: Invalid data found when processing input",
+        "Error while decoding stream #0:0: Invalid data found when processing input"
     ];
 
     private static readonly string[] ContainerCorruptionSignatures =
     [
-        "invalid as first byte of an EBML number"
+        "invalid as first byte of an EBML number",
+        "missing mandatory atoms",
+        "broken header"
     ];
 
     public static FfmpegSourceDecodeCorruption Classify(string? standardError)
@@ -49,6 +79,30 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
             .ToArray();
         return new(decoderMatches.Length > 0 || containerMatches.Length > 0,
             bitstreamMatches.Concat(decoderMatches).Concat(containerMatches).ToArray());
+    }
+
+    public static bool HasStrongSourceIntegrityEvidence(
+        FfmpegSourceDecodeCorruption rawCorruption,
+        FfmpegDiagnosticSummary? diagnosticSummary)
+    {
+        if (rawCorruption.IsStrongSourceIntegrityEvidence)
+            return true;
+
+        if (diagnosticSummary?.Classification is not
+            {
+                PrimaryCategory: FfmpegDiagnosticCategory.SourceIntegrity,
+                Confidence: FfmpegDiagnosticConfidence.High
+            })
+            return false;
+
+        IReadOnlyList<string> families = diagnosticSummary.Classification.SupportingFamilies;
+        bool hasNalStructure = families.Contains("Invalid NAL unit size", StringComparer.OrdinalIgnoreCase) &&
+            families.Contains("Error splitting input into NAL units", StringComparer.OrdinalIgnoreCase);
+        bool hasDecoderRejection = families.Any(family =>
+            family.Equals("Invalid input data", StringComparison.OrdinalIgnoreCase) ||
+            family.Equals("Decoder packet submission failure", StringComparison.OrdinalIgnoreCase) ||
+            family.Equals("Decoder packet processing failure", StringComparison.OrdinalIgnoreCase));
+        return hasNalStructure && hasDecoderRejection;
     }
 
     /// <summary>

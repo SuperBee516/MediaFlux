@@ -4445,7 +4445,9 @@ namespace MediaFlux
 
                 string status = row.Cells["colStatus"].Value?.ToString() ?? "";
                 return status.Equals("Done", StringComparison.OrdinalIgnoreCase) ||
+                       status.Equals("Completed — Source recovered", StringComparison.OrdinalIgnoreCase) ||
                        status.Equals("Failed", StringComparison.OrdinalIgnoreCase) ||
+                       status.Equals("Failed — Source damaged", StringComparison.OrdinalIgnoreCase) ||
                        status.Equals("Canceled", StringComparison.OrdinalIgnoreCase) ||
                        status.Equals("Excluded - exact duplicate", StringComparison.OrdinalIgnoreCase);
             }
@@ -4607,8 +4609,10 @@ namespace MediaFlux
                     : string.Empty;
 
                 bool terminal = status.Equals("Failed", StringComparison.OrdinalIgnoreCase) ||
+                                status.Equals("Failed — Source damaged", StringComparison.OrdinalIgnoreCase) ||
                                 status.Equals("Canceled", StringComparison.OrdinalIgnoreCase) ||
-                                status.Equals("Done", StringComparison.OrdinalIgnoreCase);
+                                status.Equals("Done", StringComparison.OrdinalIgnoreCase) ||
+                                status.Equals("Completed — Source recovered", StringComparison.OrdinalIgnoreCase);
                 if (!terminal)
                     return;
             }
@@ -5849,7 +5853,9 @@ namespace MediaFlux
 
             if (row.Tag is RowMeta meta &&
                 !status.Equals("Done", StringComparison.OrdinalIgnoreCase) &&
+                !status.Equals("Completed — Source recovered", StringComparison.OrdinalIgnoreCase) &&
                 !status.Equals("Failed", StringComparison.OrdinalIgnoreCase) &&
+                !status.Equals("Failed — Source damaged", StringComparison.OrdinalIgnoreCase) &&
                 !status.Equals("Canceled", StringComparison.OrdinalIgnoreCase) &&
                 !status.Equals("Retry Queued", StringComparison.OrdinalIgnoreCase))
             {
@@ -5887,16 +5893,22 @@ namespace MediaFlux
                     statusFore = Color.FromArgb(146, 64, 14);
                     break;
                 case "encoding":
+                case "source corruption detected — analyzing…":
+                case "attempting source recovery…":
+                case "validating recovered source…":
+                case "retrying encode with recovered source…":
                     back = Color.FromArgb(239, 246, 255);
                     statusBack = Color.FromArgb(191, 219, 254);
                     statusFore = Color.FromArgb(30, 64, 175);
                     break;
                 case "done":
+                case "completed — source recovered":
                     back = Color.FromArgb(240, 253, 244);
                     statusBack = Color.FromArgb(187, 247, 208);
                     statusFore = Color.FromArgb(22, 101, 52);
                     break;
                 case "failed":
+                case "failed — source damaged":
                     back = Color.FromArgb(254, 242, 242);
                     statusBack = Color.FromArgb(254, 202, 202);
                     statusFore = Color.FromArgb(153, 27, 27);

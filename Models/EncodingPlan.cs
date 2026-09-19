@@ -10,15 +10,16 @@ public enum EncodingRiskCategory { SourceDecode, ContainerCompatibility, AudioCo
 public enum EncodingPreflightCheckKind { SourceProbe, SourceTiming, SubtitleConversion, CopiedAudioDecode, SampleComparison }
 public enum EncodingPreflightDisposition { Required, NotRequired }
 public enum EncodingPreflightStatus { Passed, Failed, Skipped }
-public enum EncodingRecoveryKind { VideoDecode, AudioStream, HardwareDecode, GpuFramePipeline, TimelineNormalization }
-public enum EncodingRecoveryFailureClass { SourceVideoCorruption, SourceAudioCorruption, SourceTimelineCorruption, NvdecCudaFailure, GpuFramePipelineFailure, FrameCadenceValidationFailure, LocalizedSourceTimelineCorruption, Cancellation, StorageFailure, NvencFailure, SourceTruncation, Unknown }
-public enum EncodingRecoveryMode { Strict, Tolerant, AudioTranscode, SoftwareDecodeWithNvenc, SoftwareDecodeWithNvencAndTimestampReconstruction, SoftwareDecodeWithNvencAndCfrNormalization, SoftwareFrames }
+public enum EncodingRecoveryKind { VideoDecode, AudioStream, HardwareDecode, GpuFramePipeline, TimelineNormalization, SourceContainerRemux }
+public enum EncodingRecoveryFailureClass { SourceVideoCorruption, SourceAudioCorruption, SourceTimelineCorruption, SourceContainerCorruption, NvdecCudaFailure, GpuFramePipelineFailure, FrameCadenceValidationFailure, LocalizedSourceTimelineCorruption, Cancellation, StorageFailure, NvencFailure, SourceTruncation, Unknown }
+public enum EncodingRecoveryMode { Strict, Tolerant, AudioTranscode, StreamCopyRemux, SoftwareDecodeWithNvenc, SoftwareDecodeWithNvencAndTimestampReconstruction, SoftwareDecodeWithNvencAndCfrNormalization, SoftwareFrames }
 public enum EncodingRecoveryResult { NotAttempted, Succeeded, Failed, NotStarted }
 public enum EncodingRecoveryProcessResult { NotStarted, Succeeded, Failed }
-public enum EncodingRecoveryDisposition { NotAttempted, Clean, Salvaged, Degraded, Rejected }
+public enum EncodingRecoveryDisposition { NotAttempted, Clean, Salvaged, Degraded, Rejected, SourceUnrecoverable }
 public enum EncodingSourceFailureType { TimelineCorruption, VideoBitstreamCorruption, AudioBitstreamCorruption, ContainerPacketCorruption, SourceTruncation, StorageOrIoFailure, UnsupportedCodec, OutputContainerFailure, GpuEncoderFailure, Cancellation, UnknownMediaFailure }
 public enum EncodingLifecycleStatus { NotRequired, NotRun, Passed, Failed, Skipped, Canceled }
-public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, PreflightRejected, EncodeFailed, RecoveryFailed, ValidationFailed, FinalizationFailed, Canceled }
+public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, PreflightRejected, EncodeFailed, RecoveryFailed, SourceUnrecoverable, ValidationFailed, FinalizationFailed, Canceled }
+public enum EncodingRecoveryStatusKind { SourceCorruptionDetected, AttemptingSourceRecovery, ValidatingRecoveredSource, RetryingWithRecoveredSource, SourceUnrecoverable }
 public enum EncodingSourceDisposition { Retained, DeferredToCaller, NotReached }
 public enum EncodingHistoricalConfidence { None, Low, Medium, High }
 
@@ -122,6 +123,7 @@ public sealed record EncodingExecutionOutcome(
     EncodingValidationOutcome? Validation = null,
     EncodingFinalizationOutcome? Finalization = null,
     EncodingTerminalResult TerminalResult = EncodingTerminalResult.NotRun);
+public sealed record EncodingRecoveryStatusUpdate(EncodingRecoveryStatusKind Kind, string Detail = "");
 public sealed record EncodingValidationOutcome(
     EncodingLifecycleStatus Status, EncodingLifecycleStatus OutputProbe,
     EncodingLifecycleStatus Duration, EncodingLifecycleStatus Streams,

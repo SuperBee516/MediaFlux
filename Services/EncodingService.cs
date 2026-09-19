@@ -354,9 +354,10 @@ namespace MediaFlux.Services
                 request.ValidationProfile,
                 request.StructuredProgressCallback,
                 request.EncodingPlanSnapshotCallback,
-                request.EncodingPlanDivergenceCallback,
-                request.EncodingExecutionOutcomeCallback,
-                request.QualityIntent,
+                 request.EncodingPlanDivergenceCallback,
+                 request.EncodingExecutionOutcomeCallback,
+                 request.RecoveryStatusCallback,
+                 request.QualityIntent,
                 request.QualityResolutionCallback,
                 request.FailureDiagnosticReportCallback);
         }
@@ -525,9 +526,10 @@ namespace MediaFlux.Services
             EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
             Action<EncodeProgress>? structuredProgressCallback = null,
             Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
-            Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
-            Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
-            EncodingQualityIntent? qualityIntent = null,
+             Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
+             Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
+             Action<EncodingRecoveryStatusUpdate>? recoveryStatusCallback = null,
+             EncodingQualityIntent? qualityIntent = null,
             Action<EncodingQualityResolution>? qualityResolutionCallback = null,
             Action<string>? failureDiagnosticReportCallback = null)
         {
@@ -568,9 +570,10 @@ namespace MediaFlux.Services
                 validationProfile,
                 structuredProgressCallback,
                 encodingPlanSnapshotCallback,
-                encodingPlanDivergenceCallback,
-                encodingExecutionOutcomeCallback,
-                qualityIntent,
+                 encodingPlanDivergenceCallback,
+                 encodingExecutionOutcomeCallback,
+                 recoveryStatusCallback,
+                 qualityIntent,
                 qualityResolutionCallback,
                 failureDiagnosticReportCallback);
         }
@@ -612,15 +615,17 @@ namespace MediaFlux.Services
             EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
             Action<EncodeProgress>? structuredProgressCallback = null,
             Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
-            Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
-            Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
-            EncodingQualityIntent? qualityIntent = null,
+             Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
+             Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
+             Action<EncodingRecoveryStatusUpdate>? recoveryStatusCallback = null,
+             EncodingQualityIntent? qualityIntent = null,
             Action<EncodingQualityResolution>? qualityResolutionCallback = null,
             Action<string>? failureDiagnosticReportCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
             string? sourceTimelineRepairPath = null;
+            string? sourceContainerRepairPath = null;
             try
             {
             cancellationToken.ThrowIfCancellationRequested();
@@ -837,7 +842,8 @@ namespace MediaFlux.Services
                     validationOutcome, finalizationOutcome, terminalResult));
             }
             void RecordRecovery(EncodingRecoveryKind kind, EncodingRecoveryFailureClass failureClass,
-                EncodingRecoveryMode recoveryMode, int maximumAttempts, EncodingRecoveryResult result, string detail)
+                EncodingRecoveryMode recoveryMode, int maximumAttempts, EncodingRecoveryResult result, string detail,
+                EncodingRecoveryDisposition? forcedDisposition = null)
             {
                 EncodingPlanDivergence? divergence = EncodingPlanService.CompareRecoveryAttempt(shadowPlan, kind, failureClass);
                 if (divergence is not null)
@@ -852,7 +858,7 @@ namespace MediaFlux.Services
                         : result == EncodingRecoveryResult.Succeeded
                             ? EncodingRecoveryProcessResult.Succeeded
                             : EncodingRecoveryProcessResult.Failed,
-                    result == EncodingRecoveryResult.NotStarted
+                    forcedDisposition ?? (result == EncodingRecoveryResult.NotStarted
                         ? EncodingRecoveryDisposition.NotAttempted
                         : result == EncodingRecoveryResult.Failed
                             ? EncodingRecoveryDisposition.Rejected
@@ -860,7 +866,7 @@ namespace MediaFlux.Services
                               detail.Contains("recovered-validation=passed", StringComparison.OrdinalIgnoreCase) ||
                               detail.Contains("retry-validation=passed", StringComparison.OrdinalIgnoreCase)
                                 ? EncodingRecoveryDisposition.Salvaged
-                                : EncodingRecoveryDisposition.Degraded,
+                                : EncodingRecoveryDisposition.Degraded),
                     DiagnosticReason: detail,
                     SourceDurationSeconds: finalization.StagedValidationResult?.FailureEvidence?.SourceDurationSeconds,
                     ProducedDurationSeconds: finalization.StagedValidationResult?.FailureEvidence?.OutputDurationSeconds,
@@ -1191,10 +1197,129 @@ namespace MediaFlux.Services
             }
 
             string recoveryDiagnostics = "";
+            bool sourceContainerRecoveryAttempted = false;
+            bool sourceUnrecoverable = false;
             bool cudaRecoveryAttempted = false;
             bool cudaRecoveryStarted = false;
+            FfmpegSourceDecodeCorruption initialSourceCorruption =
+                FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
+            FfmpegDiagnosticSummary initialDiagnosticSummary = runResult.DiagnosticSummary;
+            string initialStandardError = runResult.StandardError;
+            bool strongInitialSourceCorruption =
+                FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+                    initialSourceCorruption, runResult.DiagnosticSummary);
+            if (!disableAutomaticFfmpegRecovery &&
+                inputSource.Kind == EncodingInputKind.File &&
+                strongInitialSourceCorruption)
+            {
+                recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceCorruptionDetected));
+                sourceContainerRecoveryAttempted = true;
+                sourceContainerRepairPath = Path.Combine(outFolder, $".mediaflux-source-repair-{Guid.NewGuid():N}.mkv");
+                string initialEvidence = initialSourceCorruption.MatchedEvidence.Count > 0
+                    ? initialSourceCorruption.DescribeEvidence()
+                    : string.Join(" | ", runResult.DiagnosticSummary.Classification.SupportingFamilies);
+                _log?.Invoke($"[EncodingRecovery] Type=SourceContainerRemux; Failure=SourceIntegrity; InitialMode=Strict; RecoveryMode=StreamCopyRemux; ProcessResult=NotStarted; MediaDisposition=NotAttempted; source={inputSource.SourcePath}; temporary={sourceContainerRepairPath}; evidence={initialEvidence}.");
+                recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.AttemptingSourceRecovery));
+                callback("[MediaFlux] Source corruption detected; attempting one container remux for verification.");
+                if (TryDeleteFailedStagingOutput(output))
+                {
+                    SourceContainerRecoveryResult repair = await new SourceContainerRecoveryService(
+                        _ffmpegPath, _ffprobePath, log: _log)
+                        .TryRemuxAndValidateAsync(
+                            inputSource.SourcePath,
+                            sourceContainerRepairPath,
+                            sourceProbe,
+                            programDuration.DurationSeconds,
+                            cancellationToken,
+                            () => recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.ValidatingRecoveredSource))).ConfigureAwait(false);
+                    string repairDetail = $"{initialEvidence}; {repair.Reason}; recovery-validation={(repair.ValidationPassed ? "passed" : "failed")}";
+                    RecordRecovery(
+                        EncodingRecoveryKind.SourceContainerRemux,
+                        EncodingRecoveryFailureClass.SourceContainerCorruption,
+                        EncodingRecoveryMode.StreamCopyRemux,
+                        1,
+                        repair.Success ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                        repairDetail,
+                        repair.Success ? null : EncodingRecoveryDisposition.SourceUnrecoverable);
+                    if (repair.Success && repair.RepairedProbe is not null)
+                    {
+                        inputSource = inputSource.WithInputPath(repair.RepairedPath);
+                        input = inputSource.InputPath;
+                        sourceProbe = repair.RepairedProbe;
+                        physicalProbe = repair.RepairedProbe;
+                        sourceVideo = sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+                        programDuration = ProgramDurationResolver.Resolve(sourceProbe);
+                        recoveryDiagnostics += $"Source container remux recovery succeeded; validation passed; repaired source={repair.RepairedPath}.{Environment.NewLine}";
+                        _log?.Invoke("[EncodingRecovery] Source container remux validation passed; retrying the frozen encode plan exactly once.");
+                        recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.RetryingWithRecoveredSource));
+                        callback("[MediaFlux] Source recovery validation passed; retrying the original encode plan once.");
+                        ffArgs = BuildFfmpegArgs(
+                            inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                            encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                            mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                            containerDecision, forceMp4CompatibleAudio, totalDuration,
+                            qualityValue, encoderSelection, sampleStart, sampleDuration,
+                            sourcePixelFormat, recoveryFrameRateRational: preplannedTimelineReconstructionRate?.Text,
+                            timestampReconstructionFilter: preplannedTimelineReconstructionRate is { } plannedRate
+                                ? $"setpts=N*{plannedRate.Denominator}/{plannedRate.Numerator}/TB" : null,
+                            disableHardwareDecode: preplannedTimelineReconstructionRate is not null,
+                            restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                            restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                            plannedVideoGeometry: plannedOutputGeometry,
+                            sourceDecodeMode: preplannedTimelineReconstructionRate is null
+                                ? sourceDecodeMode : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                        {
+                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                            scope.Complete();
+                        }
+                    }
+                    else
+                    {
+                        sourceUnrecoverable = true;
+                        recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                        recoveryDiagnostics += $"Source container remux recovery failed; source remains unrecoverable; original source preserved.{Environment.NewLine}";
+                    }
+                }
+                else
+                {
+                    sourceUnrecoverable = true;
+                    recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                    RecordRecovery(
+                        EncodingRecoveryKind.SourceContainerRemux,
+                        EncodingRecoveryFailureClass.SourceContainerCorruption,
+                        EncodingRecoveryMode.StreamCopyRemux,
+                        1,
+                        EncodingRecoveryResult.NotStarted,
+                        "Failed staged output could not be removed safely.",
+                        EncodingRecoveryDisposition.SourceUnrecoverable);
+                }
+                terminalResult = sourceUnrecoverable ? EncodingTerminalResult.SourceUnrecoverable : terminalResult;
+                PublishExecutionOutcome();
+            }
+            if (!sourceUnrecoverable && sourceContainerRecoveryAttempted && runResult.ExitCode != 0)
+            {
+                FfmpegSourceDecodeCorruption retrySourceCorruption =
+                    FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
+                if (FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+                        retrySourceCorruption, runResult.DiagnosticSummary))
+                {
+                    sourceUnrecoverable = true;
+                    recoveryDiagnostics += "The single frozen-plan retry reproduced strong source-integrity corruption; recursive recovery was not attempted." + Environment.NewLine;
+                    terminalResult = EncodingTerminalResult.SourceUnrecoverable;
+                    PublishExecutionOutcome();
+                }
+            }
+            if (sourceUnrecoverable && runResult.ExitCode == 0)
+            {
+                // The process may have completed while emitting fatal source
+                // evidence; route the bounded recovery failure through the
+                // existing diagnostic/reporting path without validating the
+                // deleted staged output.
+                runResult = runResult with { ExitCode = 1 };
+            }
             FfmpegCudaNvdecFailure cudaFailure = FfmpegCudaNvdecFailureClassifier.Classify(runResult.StandardError);
-            if (!disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
+            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && !disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
                 FfmpegCudaNvdecFailureClassifier.ShouldRetryOnce(
                     requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
                     ffArgs.Contains("-hwaccel cuda ", StringComparison.Ordinal),
@@ -1247,7 +1372,7 @@ namespace MediaFlux.Services
                 }
             }
 
-            if (!disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
+            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && !disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
                 !cudaRecoveryAttempted &&
                 ShouldRetryWithSoftwareFrames(ffArgs, runResult.StandardError))
             {
@@ -1289,7 +1414,7 @@ namespace MediaFlux.Services
             }
 
             bool audioRecoveryAttempted = false;
-            if (!disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
+            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && !disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
                 compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent &&
                 !cancellationToken.IsCancellationRequested)
             {
@@ -1350,7 +1475,7 @@ namespace MediaFlux.Services
             }
 
             bool videoRecoveryAttempted = preplannedTimelineReconstructionRate is not null;
-            if (!disableAutomaticFfmpegRecovery && runResult.ExitCode != 0)
+            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && !disableAutomaticFfmpegRecovery && runResult.ExitCode != 0)
             {
                 FfmpegVideoDecodeRecoveryDecision recovery = FfmpegVideoDecodeRecoveryPolicy.Evaluate(
                     runResult.StandardError,
@@ -1413,7 +1538,15 @@ namespace MediaFlux.Services
                 string diagnosticArtifactNote = "";
                 try
                 {
-                    terminalResult = recoveryOutcomes.Count > 0
+                    FfmpegDiagnosticSummary reportDiagnostics = sourceContainerRecoveryAttempted
+                        ? initialDiagnosticSummary
+                        : runResult.DiagnosticSummary;
+                    string reportStandardError = sourceContainerRecoveryAttempted
+                        ? initialStandardError + Environment.NewLine + runResult.StandardError
+                        : runResult.StandardError;
+                    terminalResult = sourceUnrecoverable
+                        ? EncodingTerminalResult.SourceUnrecoverable
+                        : recoveryOutcomes.Count > 0
                         ? EncodingTerminalResult.RecoveryFailed
                         : EncodingTerminalResult.EncodeFailed;
                     EncodingExecutionOutcome failureOutcome = new(
@@ -1421,12 +1554,12 @@ namespace MediaFlux.Services
                         validationOutcome, finalizationOutcome, terminalResult);
                     string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
                         "Encode", inputSource.SourcePath, output, runResult.ExitCode, "FFmpeg process failure",
-                        runResult.DiagnosticSummary, runResult.StandardError, shadowPlan, failureOutcome,
+                        reportDiagnostics, reportStandardError, shadowPlan, failureOutcome,
                         SourceContainer: sourceProbe.FormatName,
                         SourceSizeBytes: inputSource.Kind == EncodingInputKind.File && File.Exists(inputSource.SourcePath)
                             ? new FileInfo(inputSource.SourcePath).Length : null));
                     diagnosticArtifacts = ErrorLogService.TryWriteFailureDiagnosticArtifacts(
-                        _appPath, report, runResult.StandardError);
+                        _appPath, report, reportStandardError);
                     diagnosticArtifactNote = diagnosticArtifacts is null
                         ? "Failure diagnostic artifact generation was unavailable; rolling raw error logging was preserved."
                         : $"Failure diagnostic report: {diagnosticArtifacts.ReportPath}{Environment.NewLine}Raw captured stderr artifact: {diagnosticArtifacts.RawEvidencePath}";
@@ -1456,9 +1589,20 @@ namespace MediaFlux.Services
                     diagnosticArtifactNote + Environment.NewLine + Environment.NewLine +
                     recoveryDiagnostics +
                     "FFmpeg Output:" + Environment.NewLine +
-                    runResult.StandardError);
+                    (sourceContainerRecoveryAttempted
+                        ? initialStandardError + Environment.NewLine + runResult.StandardError
+                        : runResult.StandardError));
 
                 _log?.Invoke($"[EncodingService] ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
+                if (sourceUnrecoverable)
+                {
+                    TryDeleteFailedStagingOutput(output);
+                    throw new InvalidOperationException(
+                        "Source media is damaged. MediaFlux detected extensive corruption in the source video stream. " +
+                        "The source could not be decoded reliably and automated recovery was unsuccessful. Encoding was stopped " +
+                        "to prevent creation of an incomplete or corrupted output file. The original source was preserved. " +
+                        $"See central log: {logPath}");
+                }
                 string recoverySuffix = !cudaRecoveryAttempted
                     ? ""
                     : cudaRecoveryStarted
@@ -1832,6 +1976,7 @@ namespace MediaFlux.Services
             {
                 if (aiIntermediate is not null) aiIntermediate.Dispose();
                 DeleteTemporaryTimelineRepair(sourceTimelineRepairPath);
+                DeleteTemporaryTimelineRepair(sourceContainerRepairPath);
                 scope.Complete();
             }
             performance.LogSummary(_log);
@@ -1852,6 +1997,7 @@ namespace MediaFlux.Services
             catch
             {
                 DeleteTemporaryTimelineRepair(sourceTimelineRepairPath);
+                DeleteTemporaryTimelineRepair(sourceContainerRepairPath);
                 performance.LogSummary(_log);
                 throw;
             }
