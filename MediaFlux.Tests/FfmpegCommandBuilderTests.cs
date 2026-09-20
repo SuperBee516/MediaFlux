@@ -63,6 +63,19 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void TolerantDecodeReencodeForcesSoftwareDecodeAndKeepsFrozenEncoderSettings()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, preset: "p6", disableHardwareDecode: true,
+            sourceDecodeMode: FfmpegSourceDecodeMode.TolerantDecodeReencode));
+
+        Assert.Contains("-err_detect ignore_err -fflags +discardcorrupt", arguments);
+        Assert.DoesNotContain("-hwaccel cuda", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-preset p6", arguments);
+    }
+
+    [Fact]
     public void StrictDecodeModeRemainsTheDefault()
     {
         string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false));

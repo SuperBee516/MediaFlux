@@ -21,7 +21,25 @@ internal sealed class SourceAudioDecodePreflightService
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(decision);
-        await Task.CompletedTask;
+        foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(plan =>
+                     plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                     plan.Action == StreamCompatibilityAction.Copy))
+        {
+            MediaToolProcessResult result = await _runner.RunAsync(new MediaToolProcessRequest
+            {
+                FileName = _ffmpegPath,
+                Arguments = BuildArguments(input.InputPath, plan.StreamIndex),
+                Timeout = TimeSpan.FromMinutes(30),
+                SendQuitOnCancellation = true
+            }, cancellationToken).ConfigureAwait(false);
+            if (result.ExitCode != 0 || result.TimedOut)
+            {
+                bool reliable = IsReliableAudioDecodeFailure(result.StandardError);
+                return new(false, plan.StreamIndex, reliable,
+                    $"Audio stream #{plan.StreamIndex} did not pass complete decode validation.",
+                    result.StandardError);
+            }
+        }
         return SourceAudioDecodePreflightResult.Passed;
     }
 
@@ -38,12 +56,16 @@ internal sealed class SourceAudioDecodePreflightService
         (standardError.Contains("Error while decoding stream", StringComparison.OrdinalIgnoreCase) ||
          standardError.Contains("Error submitting packet to decoder", StringComparison.OrdinalIgnoreCase) ||
          standardError.Contains("Invalid audio", StringComparison.OrdinalIgnoreCase) ||
-         standardError.Contains("Header missing", StringComparison.OrdinalIgnoreCase)) &&
-        (standardError.Contains("audio", StringComparison.OrdinalIgnoreCase) || standardError.Contains("stream #0:", StringComparison.OrdinalIgnoreCase));
+          standardError.Contains("Header missing", StringComparison.OrdinalIgnoreCase) ||
+          standardError.Contains("channel element", StringComparison.OrdinalIgnoreCase)) &&
+        (standardError.Contains("audio", StringComparison.OrdinalIgnoreCase) ||
+         standardError.Contains("stream #", StringComparison.OrdinalIgnoreCase) ||
+         standardError.Contains("aist#", StringComparison.OrdinalIgnoreCase) ||
+         standardError.Contains("/aac", StringComparison.OrdinalIgnoreCase));
 
     internal static int? FindCorruptAudioStreamIndex(string? standardError) =>
         IsReliableAudioDecodeFailure(standardError)
-            ? System.Text.RegularExpressions.Regex.Matches(standardError!, @"stream\s+#\d+:(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+            ? System.Text.RegularExpressions.Regex.Matches(standardError!, @"(?:stream\s+#|aist#)\d+:(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
                 .Cast<System.Text.RegularExpressions.Match>()
                 .Select(match => int.TryParse(match.Groups[1].Value, out int index) ? index : (int?)null)
                 .FirstOrDefault(index => index.HasValue)

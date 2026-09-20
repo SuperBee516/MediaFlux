@@ -158,6 +158,7 @@ public static class EncodingIntelligencePresentation
         {
         EncodingTerminalResult.Completed => "Completed · validation passed · finalization succeeded",
         EncodingTerminalResult.CompletedAfterRecovery => "Completed after recovery · validation passed · finalization succeeded",
+        EncodingTerminalResult.CompletedAfterDegradedSalvage => "Completed after degraded salvage · validation passed · media loss disclosed",
         EncodingTerminalResult.ValidationFailed => "Validation failed",
         EncodingTerminalResult.FinalizationFailed => "Finalization failed",
         EncodingTerminalResult.PreflightRejected => "Preflight rejected",

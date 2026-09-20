@@ -89,6 +89,9 @@ public static class EncodingPlanService
             plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
             plan.Action == StreamCompatibilityAction.Copy);
         bool intelligentRecovery = context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent;
+        bool tolerantSalvageEligible = intelligentRecovery &&
+            context.Input.Kind == EncodingInputKind.File &&
+            string.Equals(sourceVideo?.CodecName, "h264", StringComparison.OrdinalIgnoreCase);
         EncodingRecoveryCapability[] recoveryCapabilities =
         [
             new(EncodingRecoveryKind.VideoDecode, EncodingRecoveryMode.Strict, intelligentRecovery, intelligentRecovery ? 1 : 0,
@@ -99,6 +102,10 @@ public static class EncodingPlanService
                 [EncodingRecoveryFailureClass.SourceContainerCorruption],
                 [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.StorageFailure, EncodingRecoveryFailureClass.NvencFailure],
                 "Strong source-integrity evidence permits one non-destructive stream-copy remux followed by decode validation."),
+            new(EncodingRecoveryKind.TolerantDecodeReencode, EncodingRecoveryMode.Strict, tolerantSalvageEligible, tolerantSalvageEligible ? 1 : 0,
+                [EncodingRecoveryFailureClass.SourceContainerCorruption],
+                [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.StorageFailure, EncodingRecoveryFailureClass.NvencFailure, EncodingRecoveryFailureClass.SourceTruncation],
+                "After the one stream-copy remux is authoritatively rejected, eligible H.264 file sources may receive one tolerant software-decode re-encode with strict copied-audio and final output validation."),
             new(EncodingRecoveryKind.AudioStream, EncodingRecoveryMode.Strict, intelligentRecovery && copiedAudioRecoveryCandidate, intelligentRecovery && copiedAudioRecoveryCandidate ? 1 : 0,
                 [EncodingRecoveryFailureClass.SourceAudioCorruption],
                 [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.SourceVideoCorruption],
@@ -240,7 +247,7 @@ public static class EncodingPlanService
         EncodingPlan plan, EncodingExecutionOutcome outcome)
     {
         var divergences = new List<EncodingPlanDivergence>();
-        if (outcome.TerminalResult is EncodingTerminalResult.Completed or EncodingTerminalResult.CompletedAfterRecovery)
+        if (outcome.TerminalResult is EncodingTerminalResult.Completed or EncodingTerminalResult.CompletedAfterRecovery or EncodingTerminalResult.CompletedAfterDegradedSalvage)
         {
             if (plan.ValidationIntent?.StagedOutputRequired == true && outcome.Validation?.Status != EncodingLifecycleStatus.Passed)
                 divergences.Add(new("validation-lifecycle", "staged validation required", outcome.Validation?.Status.ToString() ?? "NotRun"));

@@ -7,7 +7,8 @@ namespace MediaFlux.Services
         Strict,
         RecoverAudio,
         RecoverVideo,
-        RecoverVideoWithTimestampReconstruction
+        RecoverVideoWithTimestampReconstruction,
+        TolerantDecodeReencode
     }
 
     /// <summary>Maps replacement video separately from the original ancillary streams.</summary>

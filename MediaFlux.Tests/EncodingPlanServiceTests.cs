@@ -98,11 +98,16 @@ public sealed class EncodingPlanServiceTests
             capability => capability.Kind == EncodingRecoveryKind.VideoDecode);
         EncodingRecoveryCapability audio = Assert.Single(plan.RecoveryCapabilities.Items,
             capability => capability.Kind == EncodingRecoveryKind.AudioStream);
+        EncodingRecoveryCapability salvage = Assert.Single(plan.RecoveryCapabilities.Items,
+            capability => capability.Kind == EncodingRecoveryKind.TolerantDecodeReencode);
         Assert.True(video.Permitted);
         Assert.Equal(1, video.MaximumAttempts);
         Assert.Contains(EncodingRecoveryFailureClass.NvencFailure, video.NonEligibleFailureClasses);
         Assert.True(audio.Permitted);
         Assert.Contains(EncodingRecoveryFailureClass.SourceAudioCorruption, audio.EligibleFailureClasses);
+        Assert.True(salvage.Permitted);
+        Assert.Equal(1, salvage.MaximumAttempts);
+        Assert.Contains(EncodingRecoveryFailureClass.SourceContainerCorruption, salvage.EligibleFailureClasses);
     }
 
     [Fact]

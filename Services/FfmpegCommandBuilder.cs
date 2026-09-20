@@ -118,6 +118,7 @@ namespace MediaFlux.Services
             builder.Append(request.SourceDecodeMode switch
             {
                 FfmpegSourceDecodeMode.RecoverAudio => "-y -err_detect ignore_err ",
+                FfmpegSourceDecodeMode.TolerantDecodeReencode => "-y -err_detect ignore_err -fflags +discardcorrupt ",
                 // FFmpeg's ordinary decoder behavior permits localized packet
                 // concealment without globally selecting ignore_err.
                 FfmpegSourceDecodeMode.RecoverVideo => "-y ",

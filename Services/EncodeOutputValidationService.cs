@@ -16,7 +16,7 @@ namespace MediaFlux.Services
     public interface IFullVideoDecodeCoverageService
     {
         Task<FullVideoDecodeCoverageResult> CheckAsync(string outputPath, double? durationSeconds,
-            long? expectedFrameCount, CancellationToken cancellationToken = default);
+            long? expectedFrameCount, bool includeAudio = false, CancellationToken cancellationToken = default);
     }
 
     public sealed class FfmpegFullVideoDecodeCoverageService : IFullVideoDecodeCoverageService
@@ -29,15 +29,19 @@ namespace MediaFlux.Services
         { _ffmpegPath = ffmpegPath; _runner = runner ?? new MediaToolProcessRunner(); }
 
         public async Task<FullVideoDecodeCoverageResult> CheckAsync(string outputPath,
-            double? durationSeconds, long? expectedFrameCount, CancellationToken cancellationToken = default)
+            double? durationSeconds, long? expectedFrameCount, bool includeAudio = false, CancellationToken cancellationToken = default)
         {
             var progress = new FullDecodeProgress();
+            var arguments = new List<string> { "-hide_banner", "-nostats", "-loglevel", "error", "-xerror", "-err_detect", "explode", "-progress", "pipe:1", "-i", outputPath, "-map", "0:v:0" };
+            if (includeAudio) arguments.AddRange(["-map", "0:a?"]);
+            else arguments.Add("-an");
+            arguments.AddRange(["-sn", "-dn", "-fps_mode", "passthrough", "-f", "null", "-"]);
             MediaToolProcessResult result = await _runner.RunAsync(new MediaToolProcessRequest
             {
                 FileName = _ffmpegPath,
                 Timeout = TimeSpan.FromMinutes(30),
                 SendQuitOnCancellation = true,
-                Arguments = ["-hide_banner", "-nostats", "-loglevel", "error", "-xerror", "-err_detect", "explode", "-progress", "pipe:1", "-i", outputPath, "-map", "0:v:0", "-an", "-sn", "-dn", "-fps_mode", "passthrough", "-f", "null", "-"],
+                Arguments = arguments,
                 StandardOutputLineCallback = progress.Consume
             }, cancellationToken).ConfigureAwait(false);
             if (result.ExitCode != 0 || result.TimedOut || !progress.ReachedEnd || progress.Frames <= 0)
@@ -354,17 +358,19 @@ namespace MediaFlux.Services
                 _log?.Invoke($"[OutputValidation] Regenerated timeline is monotonic; samples={outputTiming.SamplesInspected}; classification={outputTiming.Classification}.");
             }
 
-            if (request.RequireFullVideoDecodeCoverage)
+            if (request.RequireFullVideoDecodeCoverage || request.RequireFullAudioDecodeCoverage)
             {
                 if (_fullVideoDecodeCoverageService is null)
-                    return Failed("The reconstructed-timeline output could not be checked for full video decode coverage.");
+                    return Failed("The recovery output could not be checked for complete decode coverage.");
                 MediaProbeStreamInfo? outputVideoForCoverage = FirstStream(outputProbe, "video");
                 FullVideoDecodeCoverageResult coverage = await _fullVideoDecodeCoverageService.CheckAsync(
                     outputPath, ProgramDurationResolver.Resolve(outputProbe).DurationSeconds,
-                    outputVideoForCoverage?.FrameCount, cancellationToken).ConfigureAwait(false);
+                    outputVideoForCoverage?.FrameCount, request.RequireFullAudioDecodeCoverage, cancellationToken).ConfigureAwait(false);
                 if (!coverage.Success)
-                    return Failed("The reconstructed-timeline output did not prove full video decode coverage: " + coverage.ErrorMessage);
-                _log?.Invoke("[OutputValidation] Reconstructed timeline passed full strict video decode coverage.");
+                    return Failed("The recovery output did not prove complete decode coverage: " + coverage.ErrorMessage);
+                _log?.Invoke(request.RequireFullAudioDecodeCoverage
+                    ? "[OutputValidation] Salvaged output passed full strict video and audio decode coverage."
+                    : "[OutputValidation] Reconstructed timeline passed full strict video decode coverage.");
             }
 
             string validationError = ValidateProbe(request, sourceProbe, outputProbe, _log);

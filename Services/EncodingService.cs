@@ -1200,6 +1200,9 @@ namespace MediaFlux.Services
             bool sourceContainerRecoveryAttempted = false;
             bool sourceContainerRecoveryRetryAttempted = false;
             bool sourceUnrecoverable = false;
+            bool tolerantSalvageAttempted = false;
+            bool tolerantSalvageAudioReconstructed = false;
+            string tolerantSalvageDetail = "";
             bool cudaRecoveryAttempted = false;
             bool cudaRecoveryStarted = false;
             FfmpegSourceDecodeCorruption initialSourceCorruption =
@@ -1241,7 +1244,7 @@ namespace MediaFlux.Services
                         1,
                         repair.Success ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
                         repairDetail,
-                        repair.Success ? null : repair.IndicatesMediaFailure ? EncodingRecoveryDisposition.SourceUnrecoverable : EncodingRecoveryDisposition.Rejected);
+                        repair.Success ? null : EncodingRecoveryDisposition.Rejected);
                     if (repair.Success && repair.RepairedProbe is not null)
                     {
                         inputSource = inputSource.WithInputPath(repair.RepairedPath);
@@ -1280,9 +1283,80 @@ namespace MediaFlux.Services
                     {
                         if (repair.IndicatesMediaFailure)
                         {
-                            sourceUnrecoverable = true;
-                            recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
-                            recoveryDiagnostics += $"Source container remux recovery failed; source remains unrecoverable; original source preserved.{Environment.NewLine}";
+                            bool eligibleForTolerantSalvage =
+                                inputSource.Kind == EncodingInputKind.File &&
+                                sourceVideo?.CodecName.Equals("h264", StringComparison.OrdinalIgnoreCase) == true &&
+                                !cancellationToken.IsCancellationRequested;
+                            if (!eligibleForTolerantSalvage)
+                            {
+                                sourceUnrecoverable = true;
+                                recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                                recoveryDiagnostics += $"Source container remux recovery failed; Tier 2 was not eligible; original source preserved.{Environment.NewLine}";
+                            }
+                            else if (TryDeleteFailedStagingOutput(output))
+                            {
+                                SourceAudioDecodePreflightResult audioPreflight = await new SourceAudioDecodePreflightService(_ffmpegPath)
+                                    .ValidateCopiedStreamsAsync(inputSource, containerDecision, cancellationToken).ConfigureAwait(false);
+                                if (!audioPreflight.Success && !audioPreflight.IsReliableCorruption)
+                                {
+                                    sourceUnrecoverable = true;
+                                    recoveryDiagnostics += $"Tier 2 was blocked because copied audio could not be conclusively validated: {audioPreflight.ErrorMessage} Original source preserved.{Environment.NewLine}";
+                                    recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                                }
+                                else
+                                {
+                                    if (!audioPreflight.Success && audioPreflight.StreamIndex is int corruptAudioStream)
+                                    {
+                                        containerDecision = OutputContainerPolicy.RecoverCopiedAudio(containerDecision, corruptAudioStream);
+                                        containerDecisionCallback?.Invoke(containerDecision);
+                                        tolerantSalvageAudioReconstructed = true;
+                                    }
+
+                                    tolerantSalvageAttempted = true;
+                                    recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.AttemptingDegradedSourceSalvage));
+                                    callback("[MediaFlux] Attempting degraded source salvage with tolerant software decode; damaged media may be discarded.");
+                                    tolerantSalvageDetail = $"Tier 1 rejected copied corruption; strategy=TolerantDecodeReencode; software-decode=yes; audio={(tolerantSalvageAudioReconstructed ? "reconstructed" : "validated-copy")}; damaged packets/frames may have been discarded.";
+                                    _log?.Invoke($"[EncodingRecovery] Type=TolerantDecodeReencode; Failure=SourceContainerCorruption; InitialMode=Strict; RecoveryMode=TolerantDecodeReencode; source={inputSource.SourcePath}; {tolerantSalvageDetail}");
+                                    ffArgs = BuildFfmpegArgs(
+                                        inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                        encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                        mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                        containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                        qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                        sourcePixelFormat, disableHardwareDecode: true, restoration: restoration,
+                                        splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                        restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                        plannedVideoGeometry: plannedOutputGeometry,
+                                        sourceDecodeMode: FfmpegSourceDecodeMode.TolerantDecodeReencode);
+                                    using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
+                                    {
+                                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                                        scope.Complete();
+                                    }
+                                    RecordRecovery(EncodingRecoveryKind.TolerantDecodeReencode,
+                                        EncodingRecoveryFailureClass.SourceContainerCorruption,
+                                        EncodingRecoveryMode.TolerantDecodeReencode, 1,
+                                        runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                                        tolerantSalvageDetail + $" process-exit={runResult.ExitCode}; validation=pending.",
+                                        EncodingRecoveryDisposition.Degraded);
+                                    if (runResult.ExitCode == 0)
+                                    {
+                                        recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.ValidatingSalvagedMedia));
+                                        callback("[MediaFlux] Validating salvaged media before finalization.");
+                                    }
+                                    else
+                                    {
+                                        sourceUnrecoverable = true;
+                                        recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                sourceUnrecoverable = true;
+                                recoveryDiagnostics += "Tier 2 was not started because the failed staged output could not be removed safely. Original source preserved." + Environment.NewLine;
+                                recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                            }
                         }
                         else
                         {
@@ -1483,7 +1557,7 @@ namespace MediaFlux.Services
                 }
             }
 
-            bool videoRecoveryAttempted = preplannedTimelineReconstructionRate is not null;
+            bool videoRecoveryAttempted = preplannedTimelineReconstructionRate is not null || tolerantSalvageAttempted;
             if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && !disableAutomaticFfmpegRecovery && runResult.ExitCode != 0)
             {
                 FfmpegVideoDecodeRecoveryDecision recovery = FfmpegVideoDecodeRecoveryPolicy.Evaluate(
@@ -1675,7 +1749,8 @@ namespace MediaFlux.Services
                         // frame-deficit exceptions; repaired timing is execution-only.
                         SourceTiming = originalSourceTiming,
                         RequireMonotonicOutputTimeline = requireRegeneratedOutputTimeline,
-                        RequireFullVideoDecodeCoverage = requireRegeneratedOutputTimeline,
+                        RequireFullVideoDecodeCoverage = requireRegeneratedOutputTimeline || tolerantSalvageAttempted,
+                        RequireFullAudioDecodeCoverage = tolerantSalvageAttempted,
                         ExpectedVideoWidth = plannedOutputGeometry?.Width,
                         ExpectedVideoHeight = plannedOutputGeometry?.Height,
                         PerformanceTiming = performance
@@ -1820,6 +1895,43 @@ namespace MediaFlux.Services
                                 $"terminal-promotion={(finalization.Success ? "allowed" : "blocked")}.");
                             validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
                             finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                            if (tolerantSalvageAttempted && advertisedFailure is not null)
+                            {
+                                int salvageIndex = recoveryOutcomes.FindLastIndex(item =>
+                                    item.Kind == EncodingRecoveryKind.TolerantDecodeReencode);
+                                if (salvageIndex >= 0)
+                                {
+                                    EncodingRecoveryOutcome salvage = recoveryOutcomes[salvageIndex];
+                                    long discardedFrames = Math.Max(0,
+                                        advertisedFailure.ExpectedFrameCount - baseline.DecodedVideoFrameCount);
+                                    double discardedSeconds = advertisedFailure.FrameRate > 0
+                                        ? discardedFrames / advertisedFailure.FrameRate
+                                        : 0;
+                                    string disclosure =
+                                        $" validation={(finalization.Success ? "passed" : "failed")}; " +
+                                        $"advertised-video-frames={advertisedFailure.ExpectedFrameCount}; " +
+                                        $"recoverable-video-frames={baseline.DecodedVideoFrameCount}; " +
+                                        $"disclosed-source-loss={discardedFrames} frames " +
+                                        $"({discardedSeconds:0.###}s at {advertisedFailure.FrameRate:0.######} fps); " +
+                                        "full-output-video-audio-decode=passed; localized-gap=not-measured.";
+                                    recoveryOutcomes[salvageIndex] = salvage with
+                                    {
+                                        Detail = salvage.Detail + disclosure,
+                                        DiagnosticReason = salvage.DiagnosticReason + disclosure,
+                                        SourceDurationSeconds = advertisedFailure.SourceDurationSeconds,
+                                        ProducedDurationSeconds = advertisedFailure.OutputDurationSeconds,
+                                        ExpectedFrameCount = advertisedFailure.ExpectedFrameCount,
+                                        ProducedFrameCount = baseline.DecodedVideoFrameCount,
+                                        DroppedFrameOrPacketCount = discardedFrames,
+                                        DurationDeltaSeconds = Math.Abs(
+                                            advertisedFailure.SourceDurationSeconds - advertisedFailure.OutputDurationSeconds),
+                                        // The full tolerant decode proves the amount of loss, but does
+                                        // not establish one contiguous timestamp gap. Do not invent one.
+                                        LargestTimelineGapSeconds = null
+                                    };
+                                    _log?.Invoke($"[EncodingRecovery] Tier 2 degraded-salvage disclosure:{disclosure}");
+                                }
+                            }
                             PublishExecutionOutcome();
                         }
                         else
@@ -1966,12 +2078,15 @@ namespace MediaFlux.Services
             {
                 EncodingRecoveryOutcome item = recoveryOutcomes[index];
                 if (item.ProcessResult == EncodingRecoveryProcessResult.Succeeded &&
-                    item.MediaDisposition == EncodingRecoveryDisposition.Degraded)
+                    item.MediaDisposition == EncodingRecoveryDisposition.Degraded &&
+                    item.Kind != EncodingRecoveryKind.TolerantDecodeReencode)
                     recoveryOutcomes[index] = item with { MediaDisposition = EncodingRecoveryDisposition.Salvaged };
             }
-            terminalResult = ResolveTerminalResult(
-                finalization,
-                recoveryOutcomes.Any(outcome => outcome.MediaDisposition is EncodingRecoveryDisposition.Clean or EncodingRecoveryDisposition.Salvaged));
+            terminalResult = tolerantSalvageAttempted
+                ? EncodingTerminalResult.CompletedAfterDegradedSalvage
+                : ResolveTerminalResult(
+                    finalization,
+                    recoveryOutcomes.Any(outcome => outcome.MediaDisposition is EncodingRecoveryDisposition.Clean or EncodingRecoveryDisposition.Salvaged));
             PublishExecutionOutcome();
             EncodingExecutionOutcome completedOutcome = new(
                 shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult);

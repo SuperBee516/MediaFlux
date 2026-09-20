@@ -7,14 +7,16 @@ namespace MediaFlux.Tests;
 public sealed class SourceAudioDecodePreflightServiceTests
 {
     [Fact]
-    public async Task HealthyCopiedAudioDoesNotLaunchAFullDurationPreflight()
+    public async Task HealthyCopiedAudioRequiresCompleteDecodeValidation()
     {
         var runner = new FakeRunner();
         SourceAudioDecodePreflightResult result = await new SourceAudioDecodePreflightService("ffmpeg.exe", runner)
             .ValidateCopiedStreamsAsync(EncodingInputSource.FromFile("source.mkv"), Decision(1));
 
         Assert.True(result.Success);
-        Assert.Empty(runner.Requests);
+        MediaToolProcessRequest request = Assert.Single(runner.Requests);
+        Assert.Contains("-map", request.Arguments);
+        Assert.Contains("0:1", request.Arguments);
     }
 
     [Fact]
@@ -24,6 +26,15 @@ public sealed class SourceAudioDecodePreflightServiceTests
 
         Assert.True(SourceAudioDecodePreflightService.IsReliableAudioDecodeFailure(diagnostics));
         Assert.Equal(3, SourceAudioDecodePreflightService.FindCorruptAudioStreamIndex(diagnostics));
+    }
+
+    [Fact]
+    public void AacDecoderEvidenceFromAistIsRecognized()
+    {
+        const string diagnostics = "[aist#0:0/aac] Error submitting packet to decoder: Invalid data found when processing input";
+
+        Assert.True(SourceAudioDecodePreflightService.IsReliableAudioDecodeFailure(diagnostics));
+        Assert.Equal(0, SourceAudioDecodePreflightService.FindCorruptAudioStreamIndex(diagnostics));
     }
 
     [Fact]

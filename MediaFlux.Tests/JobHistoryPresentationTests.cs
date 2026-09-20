@@ -45,11 +45,15 @@ public sealed class JobHistoryPresentationTests
         recovered.TerminalResult = EncodingTerminalResult.CompletedAfterRecovery;
         JobHistoryRecord damaged = Record(JobStatus.Failed);
         damaged.TerminalResult = EncodingTerminalResult.SourceUnrecoverable;
+        JobHistoryRecord salvaged = Record(JobStatus.Success);
+        salvaged.TerminalResult = EncodingTerminalResult.CompletedAfterDegradedSalvage;
 
         Assert.Equal("Completed — Source recovered", JobHistoryPresentation.OutcomeLabel(recovered));
         Assert.Equal("Failed — Source damaged", JobHistoryPresentation.OutcomeLabel(damaged));
+        Assert.Equal("Completed — Source salvaged with media loss", JobHistoryPresentation.OutcomeLabel(salvaged));
         Assert.Contains("Source recovered", JobHistoryPresentation.OutcomeSummary(recovered));
         Assert.Contains("Source media is damaged", JobHistoryPresentation.OutcomeSummary(damaged));
+        Assert.Contains("media loss", JobHistoryPresentation.OutcomeSummary(salvaged), StringComparison.OrdinalIgnoreCase);
         Assert.Equal("Completed", JobHistoryPresentation.OutcomeLabel(Record(JobStatus.Success)));
         Assert.Equal("Failed", JobHistoryPresentation.OutcomeLabel(Record(JobStatus.Failed)));
     }
@@ -61,6 +65,8 @@ public sealed class JobHistoryPresentationTests
         Assert.Equal("Attempting source recovery…", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.AttemptingSourceRecovery)));
         Assert.Equal("Validating recovered source…", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.ValidatingRecoveredSource)));
         Assert.Equal("Retrying encode with recovered source…", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.RetryingWithRecoveredSource)));
+        Assert.Equal("Attempting degraded source salvage…", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.AttemptingDegradedSourceSalvage)));
+        Assert.Equal("Validating salvaged media…", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.ValidatingSalvagedMedia)));
         Assert.DoesNotContain("SourceContainerRemux", JobHistoryPresentation.ActiveRecoveryStatus(new(EncodingRecoveryStatusKind.AttemptingSourceRecovery)));
     }
 

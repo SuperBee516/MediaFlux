@@ -54,6 +54,8 @@ namespace MediaFlux.Models
         public bool RequireMonotonicOutputTimeline { get; init; }
         /// <summary>Requires strict EOF video decoding before a reconstructed-timeline output can be promoted.</summary>
         public bool RequireFullVideoDecodeCoverage { get; init; }
+        /// <summary>Requires strict EOF audio decoding for a degraded salvage output.</summary>
+        public bool RequireFullAudioDecodeCoverage { get; init; }
         public int? ExpectedVideoWidth { get; init; }
         public int? ExpectedVideoHeight { get; init; }
         public PerformanceTimingService? PerformanceTiming { get; init; }
