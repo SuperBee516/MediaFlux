@@ -30,6 +30,10 @@ namespace MediaFlux
         private Button btnDuplicateKeeperPreferences = null!;
         private Label lblFfmpegStatus = null!;
         private Label lblFfprobeStatus = null!;
+        private GroupBox _ffmpegSetupCard = null!;
+        private Label _ffmpegSetupSummary = null!;
+        private Button _installFfmpeg = null!;
+        private Button _locateFfmpeg = null!;
         private TextBox txtDvdOutputNamingPattern = null!;
         private GroupBox grpSmartRecommendations = null!;
         private GroupBox _storageManagementGroup = null!;
@@ -139,6 +143,7 @@ namespace MediaFlux
 
             LoadSupportedExtensionsIntoUi();
             RefreshFfmpegStatus();
+            _ = RefreshFfmpegSetupStatusAsync();
             BuildTwoPaneSettingsLayout();
 
             if (focusMediaTools)
@@ -195,7 +200,7 @@ namespace MediaFlux
                 AddCategory("General", assigned, FindExisting(existing, "lblPattern", "txtPattern", "lblSuffix", "txtSuffix", "chkEnableSuffix", "chkEnableCodecSuffix", "grpExtensions", "chkRememberCheckboxes", "chkPreventSleepDuringEncoding", "chkMinimizeToSystemTray"));
                 AddCategory("Encoding", assigned, FindExisting(existing, "chkLimitGpuEncodingQueueToOneJob", "lblLargeQueueThreshold", "nudLargeQueueThreshold", "chkAutoAnalyzeLargeQueues", "grpIncompleteOutputCleanup"));
                 AddCategory("Encoding", assigned, FindGroup(existing, "DVD Output Naming"));
-                AddCategory("FFmpeg & Tools", assigned, FindExisting(existing, "lblFfmpegPath", "txtFfmpegPath", "btnBrowseFfmpeg", "lblFfmpegStatus", "lblFfprobePath", "txtFfprobePath", "btnBrowseFfprobe", "lblFfprobeStatus", "chkEnablePersistentMediaInfoCache"));
+                AddCategory("FFmpeg & Tools", assigned, FindExisting(existing, "lblFfmpegPath", "txtFfmpegPath", "btnBrowseFfmpeg", "lblFfmpegStatus", "lblFfprobePath", "txtFfprobePath", "btnBrowseFfprobe", "lblFfprobeStatus", "chkEnablePersistentMediaInfoCache", "FfmpegSetupCard"));
                 AddCategory("Automation", assigned, FindExisting(existing, "grpWatchFolder"));
                 AddCategory("Duplicates", assigned, FindExisting(existing, "grpDuplicateManagement"));
                 AddCategory("Duplicates", assigned, _libraryAnalyzerSettingsPanel);
@@ -467,12 +472,108 @@ namespace MediaFlux
             grpIncompleteOutputCleanup.Top += 50;
             Controls.Add(lblFfmpegStatus);
             Controls.Add(lblFfprobeStatus);
+
+            _ffmpegSetupSummary = new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(520, 0),
+                ForeColor = SystemColors.GrayText,
+                Name = "FfmpegSetupSummary"
+            };
+            _installFfmpeg = new Button { Text = "Install / Reinstall", AutoSize = true, Name = "InstallFfmpeg" };
+            _locateFfmpeg = new Button { Text = "Locate Existing Installation", AutoSize = true, Name = "LocateFfmpeg" };
+            _installFfmpeg.Click += async (_, _) => await InstallFfmpegAsync();
+            _locateFfmpeg.Click += async (_, _) => await LocateFfmpegAsync();
+            var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+            actions.Controls.Add(_installFfmpeg); actions.Controls.Add(_locateFfmpeg);
+            var cardLayout = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+            cardLayout.Controls.Add(new Label { Text = "MediaFlux can install a compatible pinned FFmpeg package without changing Windows PATH.", AutoSize = true, ForeColor = SystemColors.GrayText }, 0, 0);
+            cardLayout.Controls.Add(_ffmpegSetupSummary, 0, 1); cardLayout.Controls.Add(actions, 0, 2);
+            _ffmpegSetupCard = new GroupBox { AutoSize = true, Dock = DockStyle.Fill, Name = "FfmpegSetupCard", Text = "FFmpeg", Padding = new Padding(10) };
+            _ffmpegSetupCard.Controls.Add(cardLayout);
+            _ffmpegSetupCard.Location = new Point(15, 730); _ffmpegSetupCard.Size = new Size(520, 140);
+            Controls.Add(_ffmpegSetupCard);
         }
 
         private void RefreshFfmpegStatus()
         {
             UpdateToolStatusLabel(lblFfmpegStatus, txtFfmpegPath.Text, "ffmpeg.exe", configuredFfmpegPath: true);
             UpdateToolStatusLabel(lblFfprobeStatus, txtFfprobePath.Text, "ffprobe.exe", configuredFfmpegPath: false);
+            if (_ffmpegSetupSummary != null) _ = RefreshFfmpegSetupStatusAsync();
+        }
+
+        private async Task RefreshFfmpegSetupStatusAsync()
+        {
+            if (_ffmpegSetupSummary == null || IsDisposed || Disposing) return;
+            FfmpegToolPaths tools = FfmpegToolResolver.Resolve(AppPaths.InstallDirectory, txtFfmpegPath?.Text, txtFfprobePath?.Text);
+            FfmpegManagedInstallationInspection managed = new FfmpegManagedComponentStateService(AppPaths.InstallDirectory).Inspect();
+            if (!tools.AreAllAvailable)
+            {
+                _ffmpegSetupSummary.Text = !tools.HasFfprobe && tools.HasFfmpeg
+                    ? "Status: FFprobe missing\r\nA paired ffmpeg.exe and ffprobe.exe installation is required."
+                    : managed.State == ManagedComponentInstallationState.Incomplete
+                        ? "Status: Installation incomplete\r\nComplete both ffmpeg.exe and ffprobe.exe are required."
+                        : managed.State == ManagedComponentInstallationState.Invalid
+                            ? "Status: Installation invalid\r\nMediaFlux could not inspect the managed FFmpeg installation."
+                            : "Status: Not installed / unavailable\r\nFFmpeg and FFprobe are required for media operations.";
+                _ffmpegSetupSummary.ForeColor = Color.Firebrick;
+                return;
+            }
+
+            FfmpegManagedRuntimeValidation runtime = await FfmpegManagedRuntimeValidator.ValidateAsync(tools.FfmpegPath, tools.FfprobePath);
+            string version = tools.Source == FfmpegToolSource.Managed ? FfmpegManagedComponents.Release.Version : (runtime.FfmpegVersion.Length == 0 ? "Unavailable" : runtime.FfmpegVersion);
+            _ffmpegSetupSummary.Text = runtime.FfmpegSucceeded && runtime.FfprobeSucceeded
+                ? $"Status: Ready\r\nVersion: {version}\r\nFFmpeg: Available\r\nFFprobe: Available\r\nSource: {tools.Source switch { FfmpegToolSource.Configured => "Configured / Manual", FfmpegToolSource.Managed => "Managed by MediaFlux", FfmpegToolSource.Legacy => "Legacy", FfmpegToolSource.SystemPath => "System / PATH", _ => "Configured / Manual" }}"
+                : "Status: Runtime validation failed\r\nFFmpeg or FFprobe could not be launched. See diagnostics for details.";
+            _ffmpegSetupSummary.ForeColor = runtime.FfmpegSucceeded && runtime.FfprobeSucceeded ? Color.DarkGreen : Color.Firebrick;
+        }
+
+        private async Task InstallFfmpegAsync()
+        {
+            _installFfmpeg.Enabled = _locateFfmpeg.Enabled = false;
+            try
+            {
+                using var dialog = new FfmpegInstallationProgressForm((progress, token) => new FfmpegManagedComponentInstaller(AppPaths.InstallDirectory, log: message => ErrorLogService.Append(AppPaths.UserDataDirectory, "FFmpeg provisioning", details: message)).InstallAsync(progress, token));
+                DialogResult result = dialog.ShowDialog(this);
+                if (dialog.WasCanceled) { _ffmpegSetupSummary.Text = "Status: Installation canceled\r\nTemporary files were cleaned up."; return; }
+                if (result == DialogResult.OK && dialog.Result?.Succeeded == true)
+                {
+                    FfmpegSetupService.InvalidateCaches();
+                    await RefreshFfmpegSetupStatusAsync();
+                    MessageBox.Show(this, "FFmpeg was installed and is ready to use. No restart is required.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else if (dialog.Result is { } failed)
+                    MessageBox.Show(this, FfmpegUserFacingFailure(failed.Detail), "FFmpeg installation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally { if (!IsDisposed && !Disposing) { _installFfmpeg.Enabled = true; _locateFfmpeg.Enabled = true; await RefreshFfmpegSetupStatusAsync(); } }
+        }
+
+        private async Task LocateFfmpegAsync()
+        {
+            _installFfmpeg.Enabled = _locateFfmpeg.Enabled = false;
+            try
+            {
+                using var dialog = new OpenFileDialog { Title = "Locate FFmpeg installation", Filter = "FFmpeg executable (ffmpeg.exe)|ffmpeg.exe|Executable files (*.exe)|*.exe", CheckFileExists = true, Multiselect = false };
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                FfmpegLocateResult located = await FfmpegSetupService.LocateAndValidateAsync(dialog.FileName);
+                if (!located.Succeeded)
+                {
+                    MessageBox.Show(this, located.Detail, "FFmpeg installation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                txtFfmpegPath.Text = located.FfmpegPath!; txtFfprobePath.Text = located.FfprobePath!;
+                await RefreshFfmpegSetupStatusAsync();
+            }
+            finally { if (!IsDisposed && !Disposing) { _installFfmpeg.Enabled = true; _locateFfmpeg.Enabled = true; } }
+        }
+
+        private static string FfmpegUserFacingFailure(string detail)
+        {
+            if (detail.Contains("SHA-256", StringComparison.OrdinalIgnoreCase)) return "Package verification failed. The compatible FFmpeg package was not installed.";
+            if (detail.Contains("traversal", StringComparison.OrdinalIgnoreCase)) return "The package could not be safely extracted.";
+            if (detail.Contains("incomplete", StringComparison.OrdinalIgnoreCase)) return "The downloaded FFmpeg package is incomplete and was not installed.";
+            if (detail.Contains("download", StringComparison.OrdinalIgnoreCase) || detail.Contains("HTTP", StringComparison.OrdinalIgnoreCase)) return "The compatible FFmpeg package could not be downloaded.";
+            return "FFmpeg could not be installed. Review MediaFlux diagnostics for details.";
         }
 
         private void UpdateToolStatusLabel(

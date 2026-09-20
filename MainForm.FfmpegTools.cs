@@ -12,8 +12,6 @@ namespace MediaFlux
 {
     public partial class MainForm : MediaFluxForm
     {
-        private const string FfmpegDownloadUrl = "https://ffmpeg.org/download.html";
-
         private ToolStrip? _ffmpegWarningStrip;
         private ToolStripLabel? _ffmpegWarningLabel;
         private FfmpegEncoderCapabilities? _ffmpegEncoderCapabilities;
@@ -34,12 +32,14 @@ namespace MediaFlux
             };
             openSettingsButton.Click += (_, __) => ShowSettingsDialog(focusMediaTools: true);
 
-            var downloadButton = new ToolStripLabel("Download FFmpeg")
+            var installButton = new ToolStripLabel("Install FFmpeg")
             {
                 IsLink = true,
-                ToolTipText = "Open the official FFmpeg download page."
+                ToolTipText = "Install the compatible MediaFlux FFmpeg package."
             };
-            downloadButton.Click += (_, __) => OpenFfmpegDownloadPage();
+            installButton.Click += (_, __) => InstallManagedFfmpeg();
+            var locateButton = new ToolStripLabel("Locate Existing Installation") { IsLink = true, ToolTipText = "Choose an existing FFmpeg installation." };
+            locateButton.Click += async (_, __) => await LocateExistingFfmpegAsync();
 
             _ffmpegWarningStrip = new ToolStrip
             {
@@ -54,7 +54,8 @@ namespace MediaFlux
             };
             _ffmpegWarningStrip.Items.Add(_ffmpegWarningLabel);
             _ffmpegWarningStrip.Items.Add(openSettingsButton);
-            _ffmpegWarningStrip.Items.Add(downloadButton);
+            _ffmpegWarningStrip.Items.Add(installButton);
+            _ffmpegWarningStrip.Items.Add(locateButton);
 
             Controls.Add(_ffmpegWarningStrip);
             _ffmpegWarningStrip.BringToFront();
@@ -107,7 +108,7 @@ namespace MediaFlux
                 ? $"{missing[0]} was not found."
                 : $"{string.Join(" and ", missing)} were not found.";
             _ffmpegWarningLabel.Text =
-                $"{subject} Add the file{(missing.Length == 1 ? string.Empty : "s")} to the MediaFlux Programs folder or choose paths in Settings.";
+                $"{subject} FFmpeg is required for media operations. Install a compatible package or locate an existing installation.";
             _ffmpegWarningLabel.ToolTipText =
                 $"Expected FFmpeg: {tools.FfmpegPath}{Environment.NewLine}Expected FFprobe: {tools.FfprobePath}";
         }
@@ -222,8 +223,8 @@ namespace MediaFlux
             var result = MessageBox.Show(
                 this,
                 subject + "\r\n\r\n" +
-                "Place the required executable files in the MediaFlux Programs folder, " +
-                "or select their locations under Tools > Settings.\r\n\r\n" +
+                "Use the Install FFmpeg or Locate Existing Installation action in the warning banner, " +
+                "or open Tools > Settings for advanced/manual configuration.\r\n\r\n" +
                 "Open Settings now?",
                 "FFmpeg tools required",
                 MessageBoxButtons.YesNo,
@@ -247,26 +248,49 @@ namespace MediaFlux
                 .ToArray();
         }
 
-        private void OpenFfmpegDownloadPage()
+        private void InstallManagedFfmpeg()
         {
-            try
+            using var dialog = new FfmpegInstallationProgressForm((progress, token) => new FfmpegManagedComponentInstaller(AppPaths.InstallDirectory, log: message => ErrorLogService.Append(AppPaths.UserDataDirectory, "FFmpeg provisioning", details: message)).InstallAsync(progress, token));
+            DialogResult result = dialog.ShowDialog(this);
+            if (dialog.WasCanceled) return;
+            if (result == DialogResult.OK && dialog.Result?.Succeeded == true)
             {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = FfmpegDownloadUrl,
-                    UseShellExecute = true
-                });
+                FfmpegSetupService.InvalidateCaches();
+                RecreateMediaServices();
+                RefreshFfmpegToolAvailability();
+                MessageBox.Show(this, "FFmpeg was installed and is ready to use. No restart is required.", "FFmpeg installation", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
-            catch (Exception ex)
+            else if (dialog.Result is { } failed)
             {
-                MessageBox.Show(
-                    this,
-                    "MediaFlux could not open the FFmpeg download page.\r\n\r\n" +
-                    FfmpegDownloadUrl + "\r\n\r\n" + ex.Message,
-                    "Unable to open download page",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
+                MessageBox.Show(this, FfmpegUserFacingFailure(failed.Detail), "FFmpeg installation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+        }
+
+        private async Task LocateExistingFfmpegAsync()
+        {
+            using var dialog = new OpenFileDialog { Title = "Locate FFmpeg installation", Filter = "FFmpeg executable (ffmpeg.exe)|ffmpeg.exe|Executable files (*.exe)|*.exe", CheckFileExists = true, Multiselect = false };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            FfmpegLocateResult located = await FfmpegSetupService.LocateAndValidateAsync(dialog.FileName);
+            if (!located.Succeeded)
+            {
+                MessageBox.Show(this, located.Detail, "FFmpeg installation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            _config.FfmpegPath = located.FfmpegPath!;
+            _config.FfprobePath = located.FfprobePath!;
+            _config.Save(AppPaths.ConfigFile);
+            FfmpegSetupService.InvalidateCaches();
+            RecreateMediaServices();
+            RefreshFfmpegToolAvailability();
+        }
+
+        private static string FfmpegUserFacingFailure(string detail)
+        {
+            if (detail.Contains("SHA-256", StringComparison.OrdinalIgnoreCase)) return "Package verification failed. The compatible FFmpeg package was not installed.";
+            if (detail.Contains("traversal", StringComparison.OrdinalIgnoreCase)) return "The package could not be safely extracted.";
+            if (detail.Contains("incomplete", StringComparison.OrdinalIgnoreCase)) return "The downloaded FFmpeg package is incomplete and was not installed.";
+            if (detail.Contains("download", StringComparison.OrdinalIgnoreCase) || detail.Contains("HTTP", StringComparison.OrdinalIgnoreCase)) return "The compatible FFmpeg package could not be downloaded.";
+            return "FFmpeg could not be installed. Review MediaFlux diagnostics for details.";
         }
     }
 }
