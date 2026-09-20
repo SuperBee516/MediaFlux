@@ -71,7 +71,7 @@ public sealed partial class FfmpegDiagnosticNormalizer
             var x when x.Contains("corrupt", StringComparison.OrdinalIgnoreCase) && x.Contains("packet", StringComparison.OrdinalIgnoreCase) => ("Corrupt packet", FfmpegDiagnosticCategory.SourceIntegrity, FfmpegDiagnosticSeverity.Warning),
             var x when x.Contains("Non-monotonous DTS", StringComparison.OrdinalIgnoreCase) => ("Non-monotonic DTS", FfmpegDiagnosticCategory.TimestampTimeline, FfmpegDiagnosticSeverity.Warning),
             var x when x.Contains("timestamp", StringComparison.OrdinalIgnoreCase) || x.Contains(" DTS", StringComparison.OrdinalIgnoreCase) || x.Contains(" PTS", StringComparison.OrdinalIgnoreCase) => ("Timestamp/timeline failure", FfmpegDiagnosticCategory.TimestampTimeline, FfmpegDiagnosticSeverity.Warning),
-            var x when x.Contains("subtitle", StringComparison.OrdinalIgnoreCase) => ("Subtitle processing failure", FfmpegDiagnosticCategory.Subtitle, FfmpegDiagnosticSeverity.Error),
+            var x when IsSubtitleFailure(x) => ("Subtitle processing failure", FfmpegDiagnosticCategory.Subtitle, FfmpegDiagnosticSeverity.Error),
             var x when IsAffirmativeHardwareFailure(x) => ("Hardware acceleration failure", FfmpegDiagnosticCategory.HardwareAcceleration, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("Permission denied", StringComparison.OrdinalIgnoreCase) || x.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) => ("Permission/access failure", FfmpegDiagnosticCategory.PermissionAccess, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("No space left", StringComparison.OrdinalIgnoreCase) || x.Contains("Error writing", StringComparison.OrdinalIgnoreCase) => ("Output write failure", FfmpegDiagnosticCategory.DiskIo, FfmpegDiagnosticSeverity.Error),
@@ -98,6 +98,23 @@ public sealed partial class FfmpegDiagnosticNormalizer
          raw.StartsWith("built with ", StringComparison.OrdinalIgnoreCase) ||
          raw.StartsWith("configuration:", StringComparison.OrdinalIgnoreCase) ||
          raw.StartsWith("libav", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsSubtitleFailure(string value)
+    {
+        if (!value.Contains("subtitle", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return value.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("fail", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("unable", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("cannot", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("could not", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("unsupported", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("not supported", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("invalid", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("malformed", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("corrupt", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool IsAffirmativeHardwareFailure(string value) =>
         value.Contains("CUDA_ERROR", StringComparison.OrdinalIgnoreCase) ||

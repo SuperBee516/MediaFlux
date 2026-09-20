@@ -104,4 +104,24 @@ public sealed class FfmpegDiagnosticsTests
 
         Assert.Equal(FfmpegDiagnosticCategory.HardwareAcceleration, collector.Complete().Classification.PrimaryCategory);
     }
+
+    [Fact]
+    public void NormalOutputStatisticsDoNotBecomeSubtitleFailure()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("[out#0/mp4 @ 12345678] video:70782KiB audio:5511KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 1.2%", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.DoesNotContain(summary.Families, family => family.Family == "Subtitle processing failure");
+    }
+
+    [Fact]
+    public void AffirmativeSubtitleErrorRemainsSubtitleFailure()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Error while converting subtitle stream: subtitle codec is not supported", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.Contains(summary.Families, family => family.Family == "Subtitle processing failure");
+    }
 }

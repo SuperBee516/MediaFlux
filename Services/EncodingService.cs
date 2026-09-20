@@ -1198,6 +1198,7 @@ namespace MediaFlux.Services
 
             string recoveryDiagnostics = "";
             bool sourceContainerRecoveryAttempted = false;
+            bool sourceContainerRecoveryRetryAttempted = false;
             bool sourceUnrecoverable = false;
             bool cudaRecoveryAttempted = false;
             bool cudaRecoveryStarted = false;
@@ -1240,7 +1241,7 @@ namespace MediaFlux.Services
                         1,
                         repair.Success ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
                         repairDetail,
-                        repair.Success ? null : EncodingRecoveryDisposition.SourceUnrecoverable);
+                        repair.Success ? null : repair.IndicatesMediaFailure ? EncodingRecoveryDisposition.SourceUnrecoverable : EncodingRecoveryDisposition.Rejected);
                     if (repair.Success && repair.RepairedProbe is not null)
                     {
                         inputSource = inputSource.WithInputPath(repair.RepairedPath);
@@ -1252,6 +1253,7 @@ namespace MediaFlux.Services
                         recoveryDiagnostics += $"Source container remux recovery succeeded; validation passed; repaired source={repair.RepairedPath}.{Environment.NewLine}";
                         _log?.Invoke("[EncodingRecovery] Source container remux validation passed; retrying the frozen encode plan exactly once.");
                         recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.RetryingWithRecoveredSource));
+                        sourceContainerRecoveryRetryAttempted = true;
                         callback("[MediaFlux] Source recovery validation passed; retrying the original encode plan once.");
                         ffArgs = BuildFfmpegArgs(
                             inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
@@ -1276,9 +1278,16 @@ namespace MediaFlux.Services
                     }
                     else
                     {
-                        sourceUnrecoverable = true;
-                        recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
-                        recoveryDiagnostics += $"Source container remux recovery failed; source remains unrecoverable; original source preserved.{Environment.NewLine}";
+                        if (repair.IndicatesMediaFailure)
+                        {
+                            sourceUnrecoverable = true;
+                            recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                            recoveryDiagnostics += $"Source container remux recovery failed; source remains unrecoverable; original source preserved.{Environment.NewLine}";
+                        }
+                        else
+                        {
+                            recoveryDiagnostics += $"Source container remux recovery infrastructure failed; source recoverability was not established; original source preserved.{Environment.NewLine}";
+                        }
                     }
                 }
                 else
@@ -1297,7 +1306,7 @@ namespace MediaFlux.Services
                 terminalResult = sourceUnrecoverable ? EncodingTerminalResult.SourceUnrecoverable : terminalResult;
                 PublishExecutionOutcome();
             }
-            if (!sourceUnrecoverable && sourceContainerRecoveryAttempted && runResult.ExitCode != 0)
+            if (!sourceUnrecoverable && sourceContainerRecoveryRetryAttempted && runResult.ExitCode != 0)
             {
                 FfmpegSourceDecodeCorruption retrySourceCorruption =
                     FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
