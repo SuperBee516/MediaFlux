@@ -58,7 +58,7 @@ public sealed class AiRestorationIntermediateVideoService
         try
         {
             using PerformanceTimingService.PerformanceScope? scope = _timing?.Measure(PerformanceTimingStage.AiPreparation);
-            session = await _backend.CreateSessionAsync(request.Settings, token).ConfigureAwait(false); scope?.Complete();
+            session = await AiRestorationExecutionGuard.CreateSessionAsync(_backend, request.Settings, token, _log).ConfigureAwait(false); scope?.Complete();
         }
         catch (AiRestorationValidationException exception)
         {

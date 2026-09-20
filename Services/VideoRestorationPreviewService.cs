@@ -190,7 +190,7 @@ public sealed class VideoRestorationPreviewService
             {
                 await EnsureStillAsync(pre, BuildStillArguments(request.SourcePath, position, plan.PreAiFilterChain, "{output}"), token).ConfigureAwait(false);
                 IAiRestorationBackend backend = await _aiBackendManager.SelectAsync(request.Settings, token).ConfigureAwait(false);
-                AiRestorationSession session = await backend.CreateSessionAsync(request.Settings, token).ConfigureAwait(false);
+                AiRestorationSession session = await AiRestorationExecutionGuard.CreateSessionAsync(backend, request.Settings, token, _log).ConfigureAwait(false);
                 await backend.ProcessFrameAsync(session, request.Settings, pre, ai, token).ConfigureAwait(false);
                 if (string.IsNullOrWhiteSpace(plan.PostAiFilterChain)) File.Copy(ai, staging, true);
                 else await RunFfmpegAsync(BuildImageArguments(ai, plan.PostAiFilterChain, staging), "finishing AI preview frame", token).ConfigureAwait(false);

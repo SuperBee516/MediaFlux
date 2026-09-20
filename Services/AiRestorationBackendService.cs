@@ -57,6 +57,7 @@ public sealed class AiRestorationBackendService : IAiRestorationBackend
     private readonly string _applicationDirectory;
     private readonly Action<string>? _log;
     private readonly AiModelManager _models;
+    private readonly AiBackendPathResolver _paths;
 
     public AiRestorationBackendService(string applicationDirectory, IMediaToolProcessRunner? runner = null, Action<string>? log = null)
     {
@@ -64,6 +65,7 @@ public sealed class AiRestorationBackendService : IAiRestorationBackend
         _runner = runner ?? new MediaToolProcessRunner();
         _log = log;
         _models = new AiModelManager(log: log);
+        _paths = new AiBackendPathResolver(_applicationDirectory);
     }
 
     public string Id => "ncnn-vulkan";
@@ -81,8 +83,9 @@ public sealed class AiRestorationBackendService : IAiRestorationBackend
     public async Task<AiRestorationCapabilities> GetCapabilitiesAsync(VideoRestorationSettings settings, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        string executable = ResolveExecutable(settings.AiBackendPath);
-        string models = ResolveModelsDirectory(executable, settings.AiModelsDirectory);
+        AiBackendResolution resolution = _paths.Resolve(settings.AiBackendPath, settings.AiModelsDirectory);
+        string executable = resolution.ExecutablePath;
+        string models = resolution.ModelsDirectory;
         if (!File.Exists(executable))
             return AiRestorationCapabilities.Unavailable(executable, "AI backend unavailable: install or configure a local NCNN/Vulkan restoration executable.");
 
@@ -398,21 +401,6 @@ public sealed class AiRestorationBackendService : IAiRestorationBackend
         string sanitized = string.IsNullOrWhiteSpace(value) ? "<none>" : value.Replace("\r", " ").Replace("\n", " ").Trim();
         return sanitized[..Math.Min(sanitized.Length, 4096)];
     }
-
-    private string ResolveExecutable(string configured)
-    {
-        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(Environment.ExpandEnvironmentVariables(configured.Trim())))
-            return Path.GetFullPath(Environment.ExpandEnvironmentVariables(configured.Trim()));
-        string[] candidates = { "realesrgan-ncnn-vulkan.exe", "realesrgan-ncnn-vulkan", "realesr-animevideov3-ncnn-vulkan.exe" };
-        foreach (string directory in new[] { _applicationDirectory, Path.Combine(_applicationDirectory, "programs"), Path.Combine(_applicationDirectory, "Programs") })
-            foreach (string candidate in candidates)
-                if (File.Exists(Path.Combine(directory, candidate))) return Path.Combine(directory, candidate);
-        return Path.Combine(_applicationDirectory, candidates[0]);
-    }
-
-    private static string ResolveModelsDirectory(string executable, string configured) =>
-        !string.IsNullOrWhiteSpace(configured) ? Path.GetFullPath(Environment.ExpandEnvironmentVariables(configured.Trim())) :
-        Path.Combine(Path.GetDirectoryName(executable) ?? AppDomain.CurrentDomain.BaseDirectory, "models");
 
     /// <summary>Accept older persisted AnimeVideo IDs while resolving exactly one scale suffix.</summary>
     internal static string NormalizeLogicalModelId(string? configuredId)

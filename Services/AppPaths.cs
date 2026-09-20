@@ -35,6 +35,8 @@ namespace MediaFlux.Services
         public static string FramePreviewsDirectory => Storage.FramePreviews;
         public static string DuplicatePreviewsDirectory => Storage.DuplicatePreviews;
         public static string TensorRtEnginesDirectory => Storage.TensorRtEngines;
+        public static string ManagedProgramsDirectory => Path.Combine(InstallDirectory, "Programs");
+        public static string ManagedRealEsrganDirectory => Path.Combine(ManagedProgramsDirectory, "RealESRGAN");
         public static string AiBenchmarkRerunsDirectory => Storage.AiBenchmarkReruns;
         public static string LogsDirectory => Storage.Logs;
         public static string SupportedVideoExtensionsFile => Path.Combine(DataDirectory, "supported_video_extensions.json");

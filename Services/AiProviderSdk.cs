@@ -101,7 +101,7 @@ public sealed class NcnnAiProvider : IAiProvider
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cancel?.Token ?? CancellationToken.None);
         try
         {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew(); AiRestorationSession session = await _backend.CreateSessionAsync(_settings, linked.Token).ConfigureAwait(false); await _backend.ProcessFrameAsync(session, _settings, input, output, linked.Token).ConfigureAwait(false); stopwatch.Stop();
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew(); AiRestorationSession session = await AiRestorationExecutionGuard.CreateSessionAsync(_backend, _settings, linked.Token, message => _diagnostics.Add(new("Execution Guard", message, DateTimeOffset.UtcNow))); await _backend.ProcessFrameAsync(session, _settings, input, output, linked.Token).ConfigureAwait(false); stopwatch.Stop();
             byte[] bytes = await File.ReadAllBytesAsync(output, linked.Token).ConfigureAwait(false); var image = new AiProviderImage(request.Input.Width * (int)_settings.AiScale, request.Input.Height * (int)_settings.AiScale, request.Input.PixelFormat, request.Input.ColorSpace, request.Input.Stride * (int)_settings.AiScale, bytes, new Dictionary<string, string> { ["mediaflux.png.path"] = output }, AiProviderMemoryOwnership.ProviderOwned);
             return new(image, stopwatch.Elapsed);
         }
