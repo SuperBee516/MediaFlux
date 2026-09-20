@@ -62,6 +62,7 @@ public sealed partial class FfmpegDiagnosticNormalizer
 
         (string family, FfmpegDiagnosticCategory category, FfmpegDiagnosticSeverity severity) = comparable switch
         {
+            var x when IsAffirmativeMuxingFailure(x) => ("Muxing failure", FfmpegDiagnosticCategory.Muxing, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("Error splitting the input into NAL units", StringComparison.OrdinalIgnoreCase) => ("Error splitting input into NAL units", FfmpegDiagnosticCategory.SourceDecode, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("missing mandatory atoms", StringComparison.OrdinalIgnoreCase) || x.Contains("broken header", StringComparison.OrdinalIgnoreCase) => ("Broken or incomplete container header", FfmpegDiagnosticCategory.SourceIntegrity, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("Could not open encoder before EOF", StringComparison.OrdinalIgnoreCase) => ("Downstream encoder abort", FfmpegDiagnosticCategory.EncoderInitialization, FfmpegDiagnosticSeverity.Warning),
@@ -76,7 +77,6 @@ public sealed partial class FfmpegDiagnosticNormalizer
             var x when x.Contains("Permission denied", StringComparison.OrdinalIgnoreCase) || x.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) => ("Permission/access failure", FfmpegDiagnosticCategory.PermissionAccess, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("No space left", StringComparison.OrdinalIgnoreCase) || x.Contains("Error writing", StringComparison.OrdinalIgnoreCase) => ("Output write failure", FfmpegDiagnosticCategory.DiskIo, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("Error initializing output stream", StringComparison.OrdinalIgnoreCase) || x.Contains("Error while opening encoder", StringComparison.OrdinalIgnoreCase) => ("Encoder initialization failure", FfmpegDiagnosticCategory.EncoderInitialization, FfmpegDiagnosticSeverity.Error),
-            var x when x.Contains("mux", StringComparison.OrdinalIgnoreCase) || x.Contains("write header", StringComparison.OrdinalIgnoreCase) => ("Muxing failure", FfmpegDiagnosticCategory.Muxing, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("audio", StringComparison.OrdinalIgnoreCase) && x.Contains("decod", StringComparison.OrdinalIgnoreCase) => ("Audio decode failure", FfmpegDiagnosticCategory.AudioDecode, FfmpegDiagnosticSeverity.Error),
             _ => ("Unknown", FfmpegDiagnosticCategory.Unknown, FfmpegDiagnosticSeverity.Warning)
         };
@@ -115,6 +115,16 @@ public sealed partial class FfmpegDiagnosticNormalizer
                value.Contains("malformed", StringComparison.OrdinalIgnoreCase) ||
                value.Contains("corrupt", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsAffirmativeMuxingFailure(string value) =>
+        value.Contains("Error initializing the muxer", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("Could not write header", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("Error writing header", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("Error writing trailer", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("Could not write trailer", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("Error muxing", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("av_interleaved_write_frame", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("muxing failed", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsAffirmativeHardwareFailure(string value) =>
         value.Contains("CUDA_ERROR", StringComparison.OrdinalIgnoreCase) ||

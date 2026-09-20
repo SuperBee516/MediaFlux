@@ -106,12 +106,13 @@ public sealed class FfmpegDiagnosticsTests
     }
 
     [Fact]
-    public void NormalOutputStatisticsDoNotBecomeSubtitleFailure()
+    public void NormalOutputStatisticsDoNotBecomeMuxingOrSubtitleFailure()
     {
         var collector = new FfmpegDiagnosticCollector();
-        collector.Observe("[out#0/mp4 @ 12345678] video:70782KiB audio:5511KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 1.2%", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("[out#0/mp4 @ 000001cf69c69480] video:70782KiB audio:5511KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.199976%", FfmpegDiagnosticComponent.Ffmpeg);
 
         FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.DoesNotContain(summary.Families, family => family.Family == "Muxing failure");
         Assert.DoesNotContain(summary.Families, family => family.Family == "Subtitle processing failure");
     }
 
@@ -123,5 +124,18 @@ public sealed class FfmpegDiagnosticsTests
 
         FfmpegDiagnosticSummary summary = collector.Complete();
         Assert.Contains(summary.Families, family => family.Family == "Subtitle processing failure");
+    }
+
+    [Theory]
+    [InlineData("Error initializing the muxer")]
+    [InlineData("Could not write header (incorrect codec parameters ?): Invalid data found when processing input")]
+    [InlineData("Error writing trailer")]
+    [InlineData("Error muxing a packet")]
+    public void AffirmativeMuxingErrorsRemainMuxingFailures(string message)
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe(message, FfmpegDiagnosticComponent.Ffmpeg);
+
+        Assert.Contains(collector.Complete().Families, family => family.Family == "Muxing failure");
     }
 }
