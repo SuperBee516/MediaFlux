@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.6] - 2026-09-19
+
+### AI Restoration
+
+- Added guided detection and installation of the pinned official Real-ESRGAN NCNN/Vulkan Windows package with SHA-256 verification.
+- Added managed installation, automatic rediscovery, existing-installation location, readiness reporting, contextual setup, and execution safeguards.
+
+### Encoding Reliability
+
+- Improved damaged-source recovery, recovered-output promotion, source timeline handling, stream mapping, and recovery status reporting.
+
+### Diagnostics and Logging
+
+- Improved FFmpeg failure diagnostics and log viewing, including clearer log access, clear-log handling, and Copy All support.
+
+### Documentation
+
+- Modernized the README and refreshed product screenshots.
+
 ## [1.5.5] - 2026-09-18
 
 ### Encoding Reliability
