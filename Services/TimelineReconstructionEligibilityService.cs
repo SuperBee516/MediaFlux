@@ -90,7 +90,7 @@ internal sealed class TimelineReconstructionEligibilityService
             return Rejected("At least one video packet has no finite positive duration.");
         if (evidence.Packets.Any(packet => packet.DecodeTimeSeconds is null || !double.IsFinite(packet.DecodeTimeSeconds.Value)))
             return Rejected("Packet DTS ordering cannot be verified.");
-        if (evidence.Packets.Zip(evidence.Packets.Skip(1), (left, right) => right.DecodeTimeSeconds!.Value >= left.DecodeTimeSeconds!.Value).Any(ordered => !ordered))
+        if (evidence.Packets.Zip(evidence.Packets.Skip(1), (left, right) => right.DecodeTimeSeconds!.Value > left.DecodeTimeSeconds!.Value).Any(ordered => !ordered))
             return Rejected("Packet DTS ordering is non-monotonic.");
 
         double cadence = (double)rate.Denominator / rate.Numerator;
