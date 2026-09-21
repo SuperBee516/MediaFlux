@@ -11,6 +11,7 @@ public sealed class AiRuntimeTelemetryService
     private readonly object _gate = new();
     private readonly AiBenchmarkDatabase _benchmarks;
     private AiRuntimeTelemetrySnapshot _snapshot = AiRuntimeTelemetrySnapshot.Idle;
+    private AiLastSessionSummary? _lastSession;
 
     public static AiRuntimeTelemetryService Shared { get; } = new();
 
@@ -22,6 +23,11 @@ public sealed class AiRuntimeTelemetryService
     public AiRuntimeTelemetrySnapshot GetSnapshot()
     {
         lock (_gate) return _snapshot;
+    }
+
+    public AiLastSessionSummary? GetLastSession()
+    {
+        lock (_gate) return _lastSession;
     }
 
     public void Begin(AiRestorationSession session, VideoRestorationSettings settings, int totalFrames, int width, int height, HardwareSnapshot? hardware)
@@ -129,8 +135,8 @@ public sealed class AiRuntimeTelemetryService
         CpuUtilizationPercent = sample.CpuPercent
     });
 
-    public void Complete() => Update(_ => AiRuntimeTelemetrySnapshot.Idle);
-    public void Fail(string status = "Failed") => Update(snapshot => snapshot with { IsActive = false, Status = status });
+    public void Complete() => Finish("Completed");
+    public void Fail(string status = "Failed") => Finish(status);
     public void SwitchBackend(AiRestorationSession session, string status) => Update(snapshot => snapshot with
     {
         Backend = session.Capabilities.BackendId,
@@ -160,6 +166,21 @@ public sealed class AiRuntimeTelemetryService
         try { SnapshotChanged?.Invoke(snapshot); } catch { /* Observers must not affect restoration. */ }
     }
 
+    private void Finish(string status)
+    {
+        AiRuntimeTelemetrySnapshot completed = UpdateAndReturn(snapshot => snapshot with { IsActive = false, Status = status });
+        lock (_gate) _lastSession = AiLastSessionSummary.From(completed);
+        Update(_ => AiRuntimeTelemetrySnapshot.Idle);
+    }
+
+    private AiRuntimeTelemetrySnapshot UpdateAndReturn(Func<AiRuntimeTelemetrySnapshot, AiRuntimeTelemetrySnapshot> mutation)
+    {
+        AiRuntimeTelemetrySnapshot snapshot;
+        lock (_gate) { _snapshot = mutation(_snapshot) with { UpdatedAt = DateTimeOffset.UtcNow }; snapshot = _snapshot; }
+        try { SnapshotChanged?.Invoke(snapshot); } catch { }
+        return snapshot;
+    }
+
     private static string Provider(string backend) => backend.Equals("ncnn-vulkan", StringComparison.OrdinalIgnoreCase) ? "NCNN" : backend;
     private static string Available(string? value) => string.IsNullOrWhiteSpace(value) || value.Equals("Unavailable", StringComparison.OrdinalIgnoreCase) ? "Unavailable" : value;
     private static string Profile(NcnnRuntimeConfiguration configuration) => $"Threads {configuration.ThreadsDisplay}; Tile {configuration.TileDisplay}; FP32";
@@ -181,4 +202,15 @@ public sealed record AiRuntimeTelemetrySnapshot(
         "Unavailable", false, "Unavailable", "Unavailable", null, null, null, "Unavailable", "Unavailable",
         "Unavailable", "Unavailable", "Unavailable", null, "Unavailable", "Unavailable", "Unavailable", "Unavailable", null,
         false, null, "Unavailable", "Unavailable", "Unavailable", false, "Unavailable", "Unavailable", "Unavailable", 0, 0, null, null, null, null, null, null, null, DateTimeOffset.MinValue);
+}
+
+public sealed record AiLastSessionSummary(
+    string Backend, string Provider, string Model, string Status, double? AverageFramesPerSecond,
+    int FramesProcessed, int TotalFrames, long? PeakVramBytes, string RuntimeProfile,
+    DateTimeOffset CompletedAt)
+{
+    internal static AiLastSessionSummary From(AiRuntimeTelemetrySnapshot snapshot) => new(
+        snapshot.Backend, snapshot.Provider, snapshot.Model, snapshot.Status,
+        snapshot.AverageFramesPerSecond, snapshot.FramesProcessed, snapshot.TotalFrames,
+        snapshot.PeakVramBytes, snapshot.RuntimeProfile, DateTimeOffset.UtcNow);
 }

@@ -49,6 +49,11 @@ public sealed class AiRuntimeTelemetryServiceTests
         telemetry.Complete();
         Assert.False(telemetry.GetSnapshot().IsActive);
         Assert.Equal("Idle", telemetry.GetSnapshot().Status);
+        AiLastSessionSummary last = Assert.IsType<AiLastSessionSummary>(telemetry.GetLastSession());
+        Assert.Equal("ncnn-vulkan", last.Backend);
+        Assert.Equal(90, last.FramesProcessed);
+        Assert.Equal(25, last.AverageFramesPerSecond);
+        Assert.Equal("Completed", last.Status);
         try { File.Delete(database); } catch { }
     }
 

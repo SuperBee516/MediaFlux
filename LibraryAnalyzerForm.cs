@@ -1079,12 +1079,27 @@ namespace MediaFlux
         private static string FormatDuration(double seconds) =>
             TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 86_400 ? @"d\.hh\:mm\:ss" : @"hh\:mm\:ss");
 
-        private void ShowError(string message, Exception exception) => MessageBox.Show(
-            this,
-            message + "\r\n\r\n" + exception.Message,
-            "Library Analyzer",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Error);
+        private void ShowError(string message, Exception exception)
+        {
+            if (!CanUseFormUi || !IsHandleCreated)
+            {
+                ErrorLogService.Append(AppPaths.UserDataDirectory, message, exception: exception);
+                return;
+            }
+
+            try
+            {
+                MessageBox.Show(this, message + "\r\n\r\n" + exception.Message, "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (ObjectDisposedException)
+            {
+                ErrorLogService.Append(AppPaths.UserDataDirectory, message, exception: exception);
+            }
+            catch (InvalidOperationException)
+            {
+                ErrorLogService.Append(AppPaths.UserDataDirectory, message, exception: exception);
+            }
+        }
 
         private sealed record LocationChoice(long Id, string Name)
         {

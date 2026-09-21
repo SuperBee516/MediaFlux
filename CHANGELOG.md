@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.8] - 2026-09-21
+
+### AI Runtime Dashboard
+
+- Modernized the AI Runtime Dashboard with a professional card-based layout, clearer Ready/Idle/Active/Attention/Error states, and improved resizing and DPI behavior.
+- Added persistent capability and configuration visibility while idle, clearer hardware/runtime/backend information, live AI session performance telemetry, and a bounded last-session summary.
+- Improved benchmark, health, and diagnostics presentation with direct Benchmark Manager and diagnostics actions.
+- Corrected idle AI health semantics so an inactive session is not reported as unhealthy solely because validation is disabled.
+- Fixed an intermittent Library Analyzer UI lifecycle failure where asynchronous refresh errors could attempt to display a dialog after form teardown.
+
 ## [1.5.7] - 2026-09-21
 
 ### Highlights

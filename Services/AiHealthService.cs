@@ -29,7 +29,7 @@ public sealed class AiHealthService
         bool validationFailed = runtime.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase) || tensorRt?.ValidationStatus.Contains("failed", StringComparison.OrdinalIgnoreCase) == true;
         string validation = validationFailed ? "Failed" : runtime.ValidationEnabled ? "Enabled" : "Disabled";
         if (validationFailed) Add(AiHealthStatus.Error, "Validation failure detected; inspect the AI diagnostics package before retrying.");
-        else if (!runtime.ValidationEnabled) Add(AiHealthStatus.Warning, "Enable validation before running AI restoration.");
+        else if (runtime.IsActive && !runtime.ValidationEnabled) Add(AiHealthStatus.Warning, "Enable validation before running AI restoration.");
 
         bool activeBackend = !runtime.Backend.Equals("Unavailable", StringComparison.OrdinalIgnoreCase);
         string backendAvailability = activeBackend ? runtime.BackendReady ? "Ready" : "Unavailable" : "No active session";
@@ -38,7 +38,7 @@ public sealed class AiHealthService
         TimeSpan? benchmarkAge = runtime.BenchmarkDate is DateTimeOffset date ? now - date : null;
         string benchmarkStatus = runtime.BenchmarkAvailable ? "Available" : "Unavailable";
         if (activeBackend && !runtime.BenchmarkAvailable) Add(AiHealthStatus.Warning, "Benchmark recommended for the active backend and runtime profile.");
-        else if (benchmarkAge > BenchmarkStaleAfter) Add(AiHealthStatus.Warning, "Benchmark stale; re-run the benchmark for current hardware and drivers.");
+        else if (activeBackend && benchmarkAge > BenchmarkStaleAfter) Add(AiHealthStatus.Warning, "Benchmark stale; re-run the benchmark for current hardware and drivers.");
 
         string driverCompatibility = "Unavailable";
         if (!runtime.BenchmarkDriverVersion.Equals("Unavailable", StringComparison.OrdinalIgnoreCase) && !runtime.DriverVersion.Equals("Unavailable", StringComparison.OrdinalIgnoreCase))

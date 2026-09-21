@@ -153,6 +153,10 @@ namespace MediaFlux.Models
         public int AiBenchmarkManagerWindowWidth { get; set; } = 0;
         public int AiBenchmarkManagerWindowHeight { get; set; } = 0;
 
+        // AI Runtime Dashboard's last usable normal-window size.
+        public int AiRuntimeDashboardWindowWidth { get; set; } = 0;
+        public int AiRuntimeDashboardWindowHeight { get; set; } = 0;
+
         // Job History window presentation state. These values are UI-only; the
         // history record schema and retention behavior remain unchanged.
         public int JobHistoryWindowWidth { get; set; } = 0;
