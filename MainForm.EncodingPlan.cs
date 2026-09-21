@@ -10,9 +10,9 @@ public partial class MainForm
     private TableLayoutPanel? _encodingPlanTable;
     private Label? _queueAnalysisStatusLabel;
     private TableLayoutPanel? _queueAnalysisTable;
-    private DataGridViewRow? _renderedQueueAnalysisRow;
+    private string? _renderedQueueAnalysisItemKey;
     private string? _renderedQueueAnalysisTooltip;
-    private DataGridViewRow? _renderedIntelligenceRow;
+    private string? _renderedIntelligenceItemKey;
     private EncodingIntelligencePresentation.PresentationKey? _renderedIntelligenceKey;
     private Guid? _renderedPlanId;
     private readonly Dictionary<string, Label> _dynamicIntelligenceValues = new(StringComparer.Ordinal);
@@ -141,8 +141,14 @@ public partial class MainForm
 
         if (row == null || meta == null)
         {
-            _queueAnalysisStatusLabel.Text = emptyStatus ?? "Select a queue item to view its queue analysis.";
-            _renderedQueueAnalysisRow = null;
+            string emptyText = emptyStatus ?? "Select a queue item to view its queue analysis.";
+            if (_renderedQueueAnalysisItemKey == null &&
+                string.Equals(_queueAnalysisStatusLabel.Text, emptyText, StringComparison.Ordinal) &&
+                _queueAnalysisTable.Controls.Count == 0)
+                return;
+
+            _queueAnalysisStatusLabel.Text = emptyText;
+            _renderedQueueAnalysisItemKey = null;
             _renderedQueueAnalysisTooltip = null;
             ClearEncodingPlanRows(_queueAnalysisTable);
             return;
@@ -150,13 +156,16 @@ public partial class MainForm
 
         QueueAnalysisPresentation presentation = GetQueueAnalysisPresentation(row, meta);
         string tooltip = presentation.BuildTooltip();
-        if (ReferenceEquals(_renderedQueueAnalysisRow, row) &&
+        string itemKey = GetEncodingPlanItemKey(row, meta);
+        if (string.Equals(_renderedQueueAnalysisItemKey, itemKey, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(_renderedQueueAnalysisTooltip, tooltip, StringComparison.Ordinal))
             return;
 
-        _renderedQueueAnalysisRow = row;
+        _renderedQueueAnalysisItemKey = itemKey;
         _renderedQueueAnalysisTooltip = tooltip;
-        _queueAnalysisStatusLabel.Text = presentation.IsAvailable ? string.Empty : presentation.Status;
+        string status = presentation.IsAvailable ? string.Empty : presentation.Status;
+        if (!string.Equals(_queueAnalysisStatusLabel.Text, status, StringComparison.Ordinal))
+            _queueAnalysisStatusLabel.Text = status;
         ClearEncodingPlanRows(_queueAnalysisTable);
         if (!presentation.IsAvailable)
             return;
@@ -303,12 +312,12 @@ public partial class MainForm
 
     private void RenderEncodingPlanStatus(string text)
     {
-        if (_renderedIntelligenceRow == null && _renderedPlanId == null &&
+        if (_renderedIntelligenceItemKey == null && _renderedPlanId == null &&
             string.Equals(_encodingPlanStatusLabel?.Text, text, StringComparison.Ordinal))
             return;
         if (_encodingPlanStatusLabel != null)
             _encodingPlanStatusLabel.Text = text;
-        _renderedIntelligenceRow = null;
+        _renderedIntelligenceItemKey = null;
         _renderedIntelligenceKey = null;
         _renderedPlanId = null;
         _dynamicIntelligenceValues.Clear();
@@ -335,18 +344,21 @@ public partial class MainForm
 
         EncodingIntelligencePresentation.PresentationKey key =
             EncodingIntelligencePresentation.GetKey(plan, outcome);
-        if (ReferenceEquals(_renderedIntelligenceRow, row) && _renderedPlanId == plan.PlanId &&
+        string itemKey = row == null ? string.Empty : GetEncodingPlanItemKey(row, EnsureRowMeta(row));
+        if (string.Equals(_renderedIntelligenceItemKey, itemKey, StringComparison.OrdinalIgnoreCase) &&
+            _renderedPlanId == plan.PlanId &&
             _renderedIntelligenceKey == key)
             return;
 
-        if (ReferenceEquals(_renderedIntelligenceRow, row) && _renderedPlanId == plan.PlanId)
+        if (string.Equals(_renderedIntelligenceItemKey, itemKey, StringComparison.OrdinalIgnoreCase) &&
+            _renderedPlanId == plan.PlanId)
         {
             UpdateDynamicEncodingIntelligence(plan, outcome);
             _renderedIntelligenceKey = key;
             return;
         }
 
-        _renderedIntelligenceRow = row;
+        _renderedIntelligenceItemKey = itemKey;
         _renderedIntelligenceKey = key;
         _renderedPlanId = plan.PlanId;
         _dynamicIntelligenceValues.Clear();
@@ -482,5 +494,13 @@ public partial class MainForm
         {
             table.ResumeLayout(true);
         }
+    }
+
+    private string GetEncodingPlanItemKey(DataGridViewRow row, RowMeta meta)
+    {
+        string path = GetFullPathFromRow(row) ?? meta.Path;
+        return string.IsNullOrWhiteSpace(path)
+            ? $"row:{row.Index}"
+            : path.Trim();
     }
 }

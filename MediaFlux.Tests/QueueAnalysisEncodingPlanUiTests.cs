@@ -41,11 +41,43 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 Assert.Contains("Strong candidate", ControlText(analysis));
                 Assert.Equal("Encoding Intelligence will appear when the existing encode preflight publishes its plan.", planStatus.Text);
 
+                Control analysisControl = analysis.Controls[0];
+                Invoke(formType, main, "ScheduleEncodingPlanRefresh");
+                Assert.Same(analysisControl, analysis.Controls[0]);
+
+                SetMeta(formType, main, notAnalyzed, Recommendation(), 1_000, "analyzed.mkv");
+                object reboundMeta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new MissingMethodException("EnsureRowMeta")).Invoke(main, [notAnalyzed])!;
+                Invoke(formType, main, "RenderQueueAnalysis", notAnalyzed, reboundMeta, null);
+                Assert.Same(analysisControl, analysis.Controls[0]);
+
+                SetMeta(formType, main, analyzed, Recommendation(EstimatedSavingsPercent: 20), 1_000);
+                Invoke(formType, main, "ScheduleEncodingPlanRefresh");
+                Assert.NotSame(analysisControl, analysis.Controls[0]);
+                Assert.Contains("20%", ControlText(analysis));
+
                 SetPlan(formType, main, analyzed);
                 Invoke(formType, main, "ScheduleEncodingPlanRefresh");
                 TableLayoutPanel plan = Field<TableLayoutPanel>(formType, main, "_encodingPlanTable");
                 Assert.NotEmpty(plan.Controls.Cast<Control>());
+                Control planControl = plan.Controls[0];
+                Invoke(formType, main, "ScheduleEncodingPlanRefresh");
+                Assert.Same(planControl, plan.Controls[0]);
 
+                object meta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new MissingMethodException("EnsureRowMeta")).Invoke(main, [analyzed])!;
+                meta.GetType().GetField("IntelligenceOutcome", BindingFlags.Instance | BindingFlags.Public)!.SetValue(
+                    meta,
+                    new EncodingExecutionOutcome(Guid.Empty, [], [], TerminalResult: EncodingTerminalResult.Completed));
+                Invoke(formType, main, "RefreshCurrentEncodingIntelligence", analyzed, meta);
+                Assert.Same(planControl, plan.Controls[0]);
+                Assert.Contains("Completed", ControlText(plan));
+
+                SetPlan(formType, main, analyzed);
+                Invoke(formType, main, "ScheduleEncodingPlanRefresh");
+                Assert.NotSame(planControl, plan.Controls[0]);
+
+                SetMeta(formType, main, notAnalyzed, null, 0);
                 analyzed.Selected = false;
                 notAnalyzed.Selected = true;
                 Invoke(formType, main, "ScheduleEncodingPlanRefresh");
@@ -61,13 +93,13 @@ public sealed class QueueAnalysisEncodingPlanUiTests
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
-    private static void SetMeta(Type formType, MainForm main, DataGridViewRow row, SmartEncodeRecommendation? recommendation, double sourceMb)
+    private static void SetMeta(Type formType, MainForm main, DataGridViewRow row, SmartEncodeRecommendation? recommendation, double sourceMb, string? path = null)
     {
         MethodInfo ensure = formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new MissingMethodException("EnsureRowMeta");
         object meta = ensure.Invoke(main, [row])!;
         Type metaType = meta.GetType();
-        metaType.GetField("Path", BindingFlags.Instance | BindingFlags.Public)!.SetValue(meta, row.Index == 0 ? "analyzed.mkv" : "not-analyzed.mkv");
+        metaType.GetField("Path", BindingFlags.Instance | BindingFlags.Public)!.SetValue(meta, path ?? (row.Index == 0 ? "analyzed.mkv" : "not-analyzed.mkv"));
         metaType.GetField("SrcMb", BindingFlags.Instance | BindingFlags.Public)!.SetValue(meta, sourceMb);
         metaType.GetField("EncodeRecommendation", BindingFlags.Instance | BindingFlags.Public)!.SetValue(meta, recommendation);
     }
@@ -86,11 +118,11 @@ public sealed class QueueAnalysisEncodingPlanUiTests
         });
     }
 
-    private static SmartEncodeRecommendation Recommendation() => new()
+    private static SmartEncodeRecommendation Recommendation(double EstimatedSavingsPercent = 35) => new()
     {
         Kind = SmartEncodeRecommendationKind.StrongCandidate,
         Confidence = SmartEncodeConfidence.High,
-        EstimatedSavingsPercent = 35,
+        EstimatedSavingsPercent = EstimatedSavingsPercent,
         EstimatedSavingsMb = 350,
         PrimaryReason = "Expected savings.",
         Reasons = ["Expected savings."]
@@ -100,9 +132,9 @@ public sealed class QueueAnalysisEncodingPlanUiTests
         (T)(formType.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)
             ?? throw new MissingFieldException(name));
 
-    private static void Invoke(Type formType, MainForm main, string name) =>
+    private static void Invoke(Type formType, MainForm main, string name, params object?[] args) =>
         (formType.GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new MissingMethodException(name)).Invoke(main, null);
+            ?? throw new MissingMethodException(name)).Invoke(main, args);
 
     private static string ControlText(Control control) => string.Join("\n", control.Controls.Cast<Control>()
         .Select(child => child.Text + "\n" + ControlText(child)));

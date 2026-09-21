@@ -348,7 +348,7 @@ namespace MediaFlux
             dgvEncodeQueue.SelectionChanged += (s, e) =>
             {
                 UpdateSelectedSpaceTotals();
-                UpdateEncodePreview();
+                UpdateEncodePreview(invalidateEncodingPlan: false);
                 UpdateContextualDetails();
             };
 
@@ -1958,9 +1958,10 @@ namespace MediaFlux
             }
         }
 
-        private void UpdateEncodePreview()
+        private void UpdateEncodePreview(bool invalidateEncodingPlan = true)
         {
-            InvalidateEncodingPlansForConfigurationChange();
+            if (invalidateEncodingPlan)
+                InvalidateEncodingPlansForConfigurationChange();
             UpdateActiveConfigurationSummary();
             ScheduleEncodingPlanRefresh();
             if (_previewValueLabels.Count == 0 || dgvEncodeQueue == null)
