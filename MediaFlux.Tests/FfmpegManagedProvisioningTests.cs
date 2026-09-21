@@ -67,6 +67,21 @@ public sealed class FfmpegManagedProvisioningTests : IDisposable
         Assert.Equal(Path.GetFullPath(ffprobe), tools.FfprobePath);
     }
 
+    [Fact]
+    public void ExplicitFfmpegDoesNotPairWithAnotherInstallation()
+    {
+        string manual = Path.Combine(_root, "manual"), other = Path.Combine(_root, "other");
+        Directory.CreateDirectory(manual); Directory.CreateDirectory(other);
+        string ffmpeg = Path.Combine(manual, "ffmpeg.exe");
+        File.WriteAllText(ffmpeg, "manual");
+        File.WriteAllText(Path.Combine(other, "ffprobe.exe"), "other");
+
+        FfmpegToolPaths tools = FfmpegToolResolver.Resolve(_root, ffmpeg);
+
+        Assert.False(tools.AreAllAvailable);
+        Assert.Equal(FfmpegToolSource.Unavailable, tools.Source);
+    }
+
     private string CreateArchive(bool includeBoth, bool unsafeEntry)
     {
         string archive = Path.Combine(_root, Guid.NewGuid() + ".zip");

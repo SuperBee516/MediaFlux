@@ -8,7 +8,7 @@ public sealed class VideoRestorationPreviewTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "MediaFluxPreviewTests", Guid.NewGuid().ToString("N"));
     public VideoRestorationPreviewTests() => Directory.CreateDirectory(_root);
-    public void Dispose() { try { Directory.Delete(_root, true); } catch { } VideoRestorationPipeline.ClearAvailableFilters(); FfmpegRestorationCapabilityService.ClearCacheForTesting(); }
+    public void Dispose() { try { Directory.Delete(_root, true); } catch { } VideoRestorationPipeline.ClearAvailableFilters(); FfmpegRestorationCapabilityService.ClearCache(); }
 
     [Fact]
     public void PreviewUsesCentralPipelineFilterChain()
@@ -61,6 +61,23 @@ public sealed class VideoRestorationPreviewTests : IDisposable
         using VideoRestorationStillPreview second = await service.GenerateStillAsync(request);
         Assert.Equal(2, runner.FrameCalls); // Original/restored once each; both are cached afterwards.
         Assert.Equal(1, runner.InventoryCalls); // The same executable identity reuses capability validation.
+    }
+
+    [Fact]
+    public async Task FfmpegSetupInvalidationClearsRestorationCapabilityCache()
+    {
+        string ffmpeg = Path.Combine(_root, "ffmpeg.exe"); File.WriteAllText(ffmpeg, "tool");
+        var runner = new PreviewRunner();
+        var capabilities = new FfmpegRestorationCapabilityService(runner);
+
+        await capabilities.GetAsync(ffmpeg);
+        await capabilities.GetAsync(ffmpeg);
+        Assert.Equal(1, runner.InventoryCalls);
+
+        FfmpegSetupService.InvalidateCaches();
+
+        await capabilities.GetAsync(ffmpeg);
+        Assert.Equal(2, runner.InventoryCalls);
     }
 
     [Fact]

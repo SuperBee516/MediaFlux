@@ -20,5 +20,9 @@ public static class FfmpegSetupService
         return new(true, Path.GetFullPath(ffmpegPath), Path.GetFullPath(ffprobe), runtime, "FFmpeg and FFprobe are ready.");
     }
 
-    public static void InvalidateCaches() => FfmpegEncoderCapabilityService.ClearCache();
+    public static void InvalidateCaches()
+    {
+        FfmpegEncoderCapabilityService.ClearCache();
+        FfmpegRestorationCapabilityService.ClearCache();
+    }
 }

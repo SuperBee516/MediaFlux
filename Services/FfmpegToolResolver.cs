@@ -35,44 +35,39 @@ namespace MediaFlux.Services
                 ? AppDomain.CurrentDomain.BaseDirectory
                 : baseDirectory;
 
-            string? configuredFfmpeg = ExistingConfigured(configuredFfmpegPath);
-            string? configuredFfprobe = ExistingConfigured(configuredFfprobePath);
-            if (configuredFfmpeg is not null && configuredFfprobe is not null)
-                return new(configuredFfmpeg, configuredFfprobe, FfmpegToolSource.Configured, CommonDirectory(configuredFfmpeg, configuredFfprobe));
+            bool hasConfiguredPath = !string.IsNullOrWhiteSpace(configuredFfmpegPath) || !string.IsNullOrWhiteSpace(configuredFfprobePath);
+            string? configuredFfmpeg = ExistingConfigured(configuredFfmpegPath, "ffmpeg.exe");
+            string? configuredFfprobe = ExistingConfigured(configuredFfprobePath, "ffprobe.exe");
+            if (hasConfiguredPath)
+            {
+                string? configuredDirectory = configuredFfmpeg is not null
+                    ? Path.GetDirectoryName(configuredFfmpeg)
+                    : configuredFfprobe is not null
+                        ? Path.GetDirectoryName(configuredFfprobe)
+                        : null;
+                if (configuredDirectory is not null)
+                {
+                    string ffmpeg = Path.Combine(configuredDirectory, "ffmpeg.exe");
+                    string ffprobe = Path.Combine(configuredDirectory, "ffprobe.exe");
+                    if (File.Exists(ffmpeg) && File.Exists(ffprobe))
+                        return new(Path.GetFullPath(ffmpeg), Path.GetFullPath(ffprobe), FfmpegToolSource.Configured, configuredDirectory);
+                }
+
+                // An explicit configuration must never be completed by a different
+                // installation or by PATH. Fail closed until a complete sibling pair
+                // is configured or located.
+                return new("", "", FfmpegToolSource.Unavailable);
+            }
 
             string managedDirectory = Path.Combine(root, "Programs", "FFmpeg", FfmpegManagedComponents.Release.Version, "bin");
             string managedFfmpeg = Path.Combine(managedDirectory, "ffmpeg.exe"), managedFfprobe = Path.Combine(managedDirectory, "ffprobe.exe");
             if (configuredFfmpeg is null && configuredFfprobe is null && File.Exists(managedFfmpeg) && File.Exists(managedFfprobe))
                 return new(managedFfmpeg, managedFfprobe, FfmpegToolSource.Managed, managedDirectory);
 
-            string ffmpeg = configuredFfmpeg ?? ResolveTool(root, "ffmpeg.exe", null);
-            string ffprobe = configuredFfprobe ?? ResolveTool(root, "ffprobe.exe", null);
-            FfmpegToolSource source = configuredFfmpeg is not null || configuredFfprobe is not null ? FfmpegToolSource.Mixed :
-                IsLegacy(root, ffmpeg, ffprobe) ? FfmpegToolSource.Legacy :
-                (IsPathTool(ffmpeg) || IsPathTool(ffprobe)) ? FfmpegToolSource.SystemPath : FfmpegToolSource.Unavailable;
-            return new(ffmpeg, ffprobe, source, CommonDirectory(ffmpeg, ffprobe));
-        }
-
-        private static string ResolveTool(string root, string fileName, string? configuredPath)
-        {
-            if (!string.IsNullOrWhiteSpace(configuredPath))
+            foreach (string directory in new[] { root, Path.Combine(root, "programs"), Path.Combine(root, "Programs") })
             {
-                string expanded = Environment.ExpandEnvironmentVariables(configuredPath.Trim());
-                if (File.Exists(expanded))
-                    return expanded;
-            }
-
-            var candidates = new[]
-            {
-                Path.Combine(root, fileName),
-                Path.Combine(root, "programs", fileName),
-                Path.Combine(root, "Programs", fileName)
-            };
-
-            foreach (var candidate in candidates)
-            {
-                if (File.Exists(candidate))
-                    return candidate;
+                FfmpegToolPaths? pair = ExistingPair(directory, FfmpegToolSource.Legacy);
+                if (pair is not null) return pair;
             }
 
             string? path = Environment.GetEnvironmentVariable("PATH");
@@ -80,40 +75,31 @@ namespace MediaFlux.Services
             {
                 foreach (string directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                 {
-                    string candidate = Path.Combine(directory, fileName);
-                    if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+                    FfmpegToolPaths? pair = ExistingPair(directory, FfmpegToolSource.SystemPath);
+                    if (pair is not null) return pair;
                 }
             }
 
-            return candidates[0];
+            return new(Path.Combine(root, "ffmpeg.exe"), Path.Combine(root, "ffprobe.exe"), FfmpegToolSource.Unavailable);
         }
 
-        private static string? ExistingConfigured(string? path)
+        private static FfmpegToolPaths? ExistingPair(string directory, FfmpegToolSource source)
+        {
+            if (string.IsNullOrWhiteSpace(directory)) return null;
+            string ffmpeg = Path.Combine(directory, "ffmpeg.exe"), ffprobe = Path.Combine(directory, "ffprobe.exe");
+            return File.Exists(ffmpeg) && File.Exists(ffprobe)
+                ? new(Path.GetFullPath(ffmpeg), Path.GetFullPath(ffprobe), source, Path.GetFullPath(directory))
+                : null;
+        }
+
+        private static string? ExistingConfigured(string? path, string expectedName)
         {
             if (string.IsNullOrWhiteSpace(path)) return null;
             string expanded = Environment.ExpandEnvironmentVariables(path.Trim());
-            return File.Exists(expanded) ? Path.GetFullPath(expanded) : null;
+            return File.Exists(expanded) && string.Equals(Path.GetFileName(expanded), expectedName, StringComparison.OrdinalIgnoreCase)
+                ? Path.GetFullPath(expanded)
+                : null;
         }
 
-        private static bool IsLegacy(string root, string ffmpeg, string ffprobe) =>
-            IsUnder(root, ffmpeg) || IsUnder(root, ffprobe);
-
-        private static bool IsPathTool(string path) =>
-            !Path.IsPathRooted(path) || (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
-                .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Any(directory => string.Equals(Path.GetFullPath(Path.Combine(directory, Path.GetFileName(path))), Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase));
-
-        private static bool IsUnder(string root, string path)
-        {
-            if (!Path.IsPathRooted(path)) return false;
-            string fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return Path.GetFullPath(path).StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string? CommonDirectory(string first, string second)
-        {
-            string? a = Path.GetDirectoryName(first), b = Path.GetDirectoryName(second);
-            return a is not null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase) ? a : null;
-        }
     }
 }
