@@ -7,6 +7,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.7] - 2026-09-21
+
+### Highlights
+
+- Added guided FFmpeg setup, managed provisioning, existing-installation location, and reinstall support.
+- Strengthened FFmpeg/FFprobe installation validation and capability refresh behavior.
+- Improved damaged-source recovery, degraded salvage, source protection, and Job History outcomes.
+- Improved FFmpeg diagnostics and timeline reconstruction correctness.
+
+### FFmpeg Setup
+
+- Added pinned package verification with SHA-256 validation, cancellable installation progress, and Settings status reporting.
+- FFmpeg and FFprobe must come from the same installation; setup does not download at startup or modify PATH.
+
+### Recovery and Reliability
+
+- Improved source corruption detection, recovery/remux validation, degraded salvage, and terminal status persistence.
+- Disk-full evidence, hardware acceleration, downstream encoder failures, and DTS validation are classified more accurately.
+
+### Validation
+
+- Release test suite: 1387/1387 passed.
+- Release build: 0 warnings, 0 errors.
+
 ## [1.5.6] - 2026-09-19
 
 ### AI Restoration
