@@ -61,7 +61,41 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 TableLayoutPanel plan = Field<TableLayoutPanel>(formType, main, "_encodingPlanTable");
                 Assert.NotEmpty(plan.Controls.Cast<Control>());
                 Control planControl = plan.Controls[0];
+                object planMeta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new MissingMethodException("EnsureRowMeta")).Invoke(main, [analyzed])!;
+                EncodingPlan frozenPlan = (EncodingPlan)(planMeta.GetType()
+                    .GetField("IntelligencePlan", BindingFlags.Instance | BindingFlags.Public)
+                    ?.GetValue(planMeta) ?? throw new MissingFieldException("IntelligencePlan"));
+                DateTime frozenDecisionUtc = Assert.IsType<DateTime>(frozenPlan.SizePredictionCalibration?.DecisionUtc);
                 Invoke(formType, main, "ScheduleEncodingPlanRefresh");
+                Assert.Same(planControl, plan.Controls[0]);
+
+                object analyzedMeta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new MissingMethodException("EnsureRowMeta")).Invoke(main, [analyzed])!;
+                FieldInfo calibrationField = analyzedMeta.GetType().GetField("SizePredictionCalibration", BindingFlags.Instance | BindingFlags.Public)
+                    ?? throw new MissingFieldException("SizePredictionCalibration");
+                var calibration = EncodingSizePredictionCalibration.Unavailable(100, "No eligible historical cohort.",
+                    "PredictionCalibrationPolicyV1", DateTime.UtcNow);
+                calibrationField.SetValue(analyzedMeta, calibration);
+                Invoke(formType, main, "ScheduleEncodingPlanRefresh");
+                Control calibrationControl = analysis.Controls.Cast<Control>().First(control => ControlText(control).Contains("SIZE CALIBRATION", StringComparison.Ordinal));
+                Assert.Contains("PredictionCalibrationPolicyV1", ControlText(calibrationControl));
+
+                Invoke(formType, main, "UpdateSizeTotals", true);
+                Assert.Same(planControl, plan.Controls[0]);
+                Assert.Same(calibrationControl, analysis.Controls.Cast<Control>().First(control => ControlText(control).Contains("SIZE CALIBRATION", StringComparison.Ordinal)));
+                Assert.Equal(frozenDecisionUtc, frozenPlan.SizePredictionCalibration?.DecisionUtc);
+
+                calibrationField.SetValue(analyzedMeta, calibration with
+                {
+                    EffectivenessState = EncodingCalibrationEffectivenessState.Harmful,
+                    LearningStrength = .75
+                });
+                Invoke(formType, main, "ScheduleEncodingPlanRefresh");
+                Control updatedCalibrationControl = analysis.Controls.Cast<Control>().First(control => ControlText(control).Contains("SIZE CALIBRATION", StringComparison.Ordinal));
+                Assert.NotSame(calibrationControl, updatedCalibrationControl);
+                Assert.Contains("Harmful", ControlText(updatedCalibrationControl));
+                Assert.Contains("learning strength 0.75", ControlText(updatedCalibrationControl));
                 Assert.Same(planControl, plan.Controls[0]);
 
                 // Recommendation/estimate publication changes Queue Analysis only;
@@ -119,7 +153,9 @@ public sealed class QueueAnalysisEncodingPlanUiTests
             Source = new("h264", 1920, 1080, 24, 600),
             Video = new("Reencode", "hevc_nvenc", "nvenc", 1920, 1080, 1920, 1080, "yuv420p"),
             Hardware = new(true, "nvenc", true),
-            Estimates = new(null, null, null)
+            Estimates = new(null, null, null),
+            SizePredictionCalibration = EncodingSizePredictionCalibration.Unavailable(
+                100, "Frozen test decision.", "PredictionCalibrationPolicyV1", DateTime.UnixEpoch)
         });
     }
 
@@ -137,9 +173,13 @@ public sealed class QueueAnalysisEncodingPlanUiTests
         (T)(formType.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)
             ?? throw new MissingFieldException(name));
 
-    private static void Invoke(Type formType, MainForm main, string name, params object?[] args) =>
-        (formType.GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new MissingMethodException(name)).Invoke(main, args);
+    private static void Invoke(Type formType, MainForm main, string name, params object?[] args)
+    {
+        MethodInfo method = formType.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+            .SingleOrDefault(candidate => candidate.Name == name && candidate.GetParameters().Length == args.Length)
+            ?? throw new MissingMethodException(name);
+        method.Invoke(main, args);
+    }
 
     private static string ControlText(Control control) => string.Join("\n", control.Controls.Cast<Control>()
         .Select(child => child.Text + "\n" + ControlText(child)));

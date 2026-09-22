@@ -12,6 +12,7 @@ public partial class MainForm
     private TableLayoutPanel? _queueAnalysisTable;
     private string? _renderedQueueAnalysisItemKey;
     private string? _renderedQueueAnalysisTooltip;
+    private string? _renderedQueueAnalysisCalibration;
     private string? _renderedIntelligenceItemKey;
     private EncodingIntelligencePresentation.PresentationKey? _renderedIntelligenceKey;
     private Guid? _renderedPlanId;
@@ -150,19 +151,23 @@ public partial class MainForm
             _queueAnalysisStatusLabel.Text = emptyText;
             _renderedQueueAnalysisItemKey = null;
             _renderedQueueAnalysisTooltip = null;
+            _renderedQueueAnalysisCalibration = null;
             ClearEncodingPlanRows(_queueAnalysisTable);
             return;
         }
 
         QueueAnalysisPresentation presentation = GetQueueAnalysisPresentation(row, meta);
         string tooltip = presentation.BuildTooltip();
+        string? calibration = GetQueueAnalysisCalibration(meta.SizePredictionCalibration);
         string itemKey = GetEncodingPlanItemKey(row, meta);
         if (string.Equals(_renderedQueueAnalysisItemKey, itemKey, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(_renderedQueueAnalysisTooltip, tooltip, StringComparison.Ordinal))
+            string.Equals(_renderedQueueAnalysisTooltip, tooltip, StringComparison.Ordinal) &&
+            string.Equals(_renderedQueueAnalysisCalibration, calibration, StringComparison.Ordinal))
             return;
 
         _renderedQueueAnalysisItemKey = itemKey;
         _renderedQueueAnalysisTooltip = tooltip;
+        _renderedQueueAnalysisCalibration = calibration;
         string status = presentation.IsAvailable ? string.Empty : presentation.Status;
         if (!string.Equals(_queueAnalysisStatusLabel.Text, status, StringComparison.Ordinal))
             _queueAnalysisStatusLabel.Text = status;
@@ -176,15 +181,8 @@ public partial class MainForm
             AddQueueAnalysisItem("Confidence", presentation.Confidence);
         if (presentation.EstimatedResult != null)
             AddQueueAnalysisItem("Estimated result", presentation.EstimatedResult);
-        if (meta.SizePredictionCalibration is { } calibration)
-        {
-            string value = calibration.Applied
-                ? $"{calibration.CalibratedPredictionMb:0.##} MB (base {calibration.BasePredictionMb:0.##} MB)"
-                : calibration.Decision == EncodingCalibrationDecision.ShadowEvaluationOnly
-                    ? $"Shadow candidate {calibration.HypotheticalCalibratedPredictionMb:0.##} MB; displaying base {calibration.BasePredictionMb:0.##} MB"
-                    : $"{calibration.Decision}; displaying base {calibration.BasePredictionMb:0.##} MB";
-            AddQueueAnalysisItem("Size calibration", value);
-        }
+        if (calibration != null)
+            AddQueueAnalysisItem("Size calibration", calibration);
         if (presentation.Quality != null)
         {
             foreach (EncodingPlanItem item in EncodingQualityPresentation.CreateItems(presentation.Quality))
@@ -208,6 +206,25 @@ public partial class MainForm
         if (meta.IntelligencePlan?.Recommendation is EncodingRecommendation planRecommendation)
             return QueueAnalysisPresentation.Create(planRecommendation);
         return QueueAnalysisPresentation.Create(meta.EncodeRecommendation, sourceMb, estimatedOutputMb, meta.IntelligencePlan?.Quality ?? meta.QualityPreview);
+    }
+
+    private static string? GetQueueAnalysisCalibration(EncodingSizePredictionCalibration? calibration)
+    {
+        if (calibration == null)
+            return null;
+
+        string prediction = calibration.Applied
+            ? $"{calibration.CalibratedPredictionMb:0.##} MB (base {calibration.BasePredictionMb:0.##} MB)"
+            : calibration.Decision == EncodingCalibrationDecision.ShadowEvaluationOnly
+                ? $"Shadow candidate {calibration.HypotheticalCalibratedPredictionMb:0.##} MB; displaying base {calibration.BasePredictionMb:0.##} MB"
+                : $"{calibration.Decision}; displaying base {calibration.BasePredictionMb:0.##} MB";
+        string policyId = AdaptivePredictionPolicies.NormalizePolicyId(calibration.PolicyId);
+        if (policyId == AdaptivePredictionPolicies.LegacyPolicyId)
+            policyId = "Legacy / Unversioned";
+        string learning = calibration.LearningStrength > 0
+            ? $"; learning strength {calibration.LearningStrength:0.##}"
+            : string.Empty;
+        return $"{prediction}; {policyId}; {calibration.EffectivenessState}{learning}";
     }
 
     private void InvalidateEncodingPlansForConfigurationChange()
