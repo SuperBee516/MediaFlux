@@ -15,8 +15,154 @@ public sealed class MediaFluxStoragePathServiceTests : IDisposable
     {
         var paths = Paths();
         Assert.Equal(Path.Combine(_root, "UserData"), paths.Root);
+        Assert.Equal(Path.Combine(_root, "Backups"), paths.Backups);
+        Assert.False(MediaFluxStoragePathService.IsWithin(paths.Backups, paths.Root));
         Assert.Equal(Path.Combine(_root, "UserData", "data", "ai-intermediates"), paths.AiIntermediates);
         Assert.Equal(Path.Combine(_root, "UserData", "config.json"), paths.Config);
+    }
+
+    [Fact]
+    public void InitializeDirectoriesDoesNotCreateBackupsInsideUserData()
+    {
+        var paths = Paths();
+
+        paths.InitializeDirectories();
+
+        Assert.True(Directory.Exists(paths.Root));
+        Assert.False(Directory.Exists(Path.Combine(paths.Root, "Backups")));
+        Assert.False(Directory.Exists(paths.Backups));
+    }
+
+    [Fact]
+    public void LegacyInternalBackupsMigrateWithoutOverwriteOrDeletionAndAreIdempotent()
+    {
+        var paths = Paths();
+        string legacy = Path.Combine(paths.Root, "Backups");
+        string destination = paths.Backups;
+        Directory.CreateDirectory(legacy);
+        Directory.CreateDirectory(destination);
+        File.WriteAllText(Path.Combine(legacy, "old.zip"), "old");
+        File.WriteAllText(Path.Combine(legacy, "same.zip"), "legacy");
+        File.WriteAllText(Path.Combine(destination, "same.zip"), "new");
+
+        AppPaths.MigrateBackupArchives(legacy, destination);
+        AppPaths.MigrateBackupArchives(legacy, destination);
+
+        Assert.Equal("old", File.ReadAllText(Path.Combine(destination, "old.zip")));
+        Assert.Equal("new", File.ReadAllText(Path.Combine(destination, "same.zip")));
+        Assert.Equal("legacy", File.ReadAllText(Path.Combine(legacy, "same.zip")));
+    }
+
+    [Fact]
+    public void StartupBackupInitializationMigratesLegacyLocationsCopyOnlyAndIdempotently()
+    {
+        string userData = Path.Combine(_root, "UserData");
+        string legacyInstallBackups = Path.Combine(_root, "PreviousInstall", "Backups");
+        string legacyEncodeBackups = Path.Combine(_root, "Encode", "Backups");
+        string destination = Path.Combine(_root, "MediaFlux", "Backups");
+        Directory.CreateDirectory(Path.Combine(userData, "Backups"));
+        Directory.CreateDirectory(legacyInstallBackups);
+        Directory.CreateDirectory(Path.Combine(legacyInstallBackups, "nested"));
+        Directory.CreateDirectory(legacyEncodeBackups);
+        Directory.CreateDirectory(destination);
+        File.WriteAllText(Path.Combine(userData, "Backups", "internal.zip"), "internal");
+        File.WriteAllText(Path.Combine(userData, "Backups", "collision.zip"), "internal legacy");
+        File.WriteAllText(Path.Combine(legacyInstallBackups, "nested", "install.txt"), "install");
+        File.WriteAllText(Path.Combine(legacyEncodeBackups, "historical.zip"), "historical");
+        File.WriteAllText(Path.Combine(legacyEncodeBackups, "collision.zip"), "Encode legacy");
+        File.WriteAllText(Path.Combine(destination, "collision.zip"), "current");
+
+        AppPaths.InitializeBackupLocations(
+            userData, legacyInstallBackups, legacyEncodeBackups, destination,
+            migrateHistoricalEncodeBackups: true);
+        AppPaths.InitializeBackupLocations(
+            userData, legacyInstallBackups, legacyEncodeBackups, destination,
+            migrateHistoricalEncodeBackups: true);
+
+        Assert.Equal("internal", File.ReadAllText(Path.Combine(destination, "internal.zip")));
+        Assert.Equal("historical", File.ReadAllText(Path.Combine(destination, "historical.zip")));
+        Assert.Equal("current", File.ReadAllText(Path.Combine(destination, "collision.zip")));
+        Assert.Equal("install", File.ReadAllText(Path.Combine(destination, "nested", "install.txt")));
+        Assert.Equal("internal legacy", File.ReadAllText(Path.Combine(userData, "Backups", "collision.zip")));
+        Assert.Equal("historical", File.ReadAllText(Path.Combine(legacyEncodeBackups, "historical.zip")));
+        Assert.Equal("install", File.ReadAllText(Path.Combine(legacyInstallBackups, "nested", "install.txt")));
+    }
+
+    [Fact]
+    public void StartupBackupInitializationCreatesNewDefaultWithoutLocalAppDataAndHonorsMigrationMarker()
+    {
+        string userData = Path.Combine(_root, "UserData");
+        string destination = Path.Combine(_root, "Backups");
+        string legacyEncodeBackups = Path.Combine(_root, "Encode", "Backups");
+        Directory.CreateDirectory(legacyEncodeBackups);
+        File.WriteAllText(Path.Combine(legacyEncodeBackups, "historical.zip"), "historical");
+
+        AppPaths.InitializeBackupLocations(
+            userData, destination, legacyEncodeBackups, destination,
+            migrateHistoricalEncodeBackups: false);
+
+        Assert.True(Directory.Exists(destination));
+        Assert.False(Directory.Exists(Path.Combine(userData, "Backups")));
+        Assert.False(File.Exists(Path.Combine(destination, "historical.zip")));
+
+        AppPaths.InitializeBackupLocations(
+            userData, destination, legacyEncodeBackups, destination,
+            migrateHistoricalEncodeBackups: true);
+
+        Assert.Equal("historical", File.ReadAllText(Path.Combine(destination, "historical.zip")));
+    }
+
+    [Fact]
+    public void BackupMigrationSkipsSameAndNestedPathsButNotBoundarySimilarSiblings()
+    {
+        string source = Path.Combine(_root, "Foo", "Bar");
+        string nestedDestination = Path.Combine(source, "Child");
+        string nestedSource = Path.Combine(_root, "Tree", "Child");
+        string ancestorDestination = Path.Combine(_root, "Tree");
+        string sibling = Path.Combine(_root, "Foo", "Bar2");
+        Directory.CreateDirectory(source);
+        Directory.CreateDirectory(nestedSource);
+        Directory.CreateDirectory(sibling);
+        File.WriteAllText(Path.Combine(source, "same.zip"), "source");
+        File.WriteAllText(Path.Combine(nestedSource, "nested.zip"), "nested");
+        File.WriteAllText(Path.Combine(sibling, "sibling.zip"), "sibling");
+
+        Assert.True(MediaFluxStoragePathService.PathsOverlap(source, source));
+        Assert.True(MediaFluxStoragePathService.PathsOverlap(source, nestedDestination));
+        Assert.True(MediaFluxStoragePathService.PathsOverlap(nestedSource, ancestorDestination));
+        Assert.False(MediaFluxStoragePathService.PathsOverlap(source, sibling));
+
+        AppPaths.MigrateBackupArchives(source, source);
+        AppPaths.MigrateBackupArchives(source, nestedDestination);
+        AppPaths.MigrateBackupArchives(nestedSource, ancestorDestination);
+        AppPaths.CopyDirectoryIfMissing(source, nestedDestination);
+        AppPaths.CopyDirectoryIfMissing(nestedSource, ancestorDestination);
+        AppPaths.MigrateBackupArchives(source, sibling);
+
+        Assert.False(Directory.Exists(nestedDestination));
+        Assert.False(File.Exists(Path.Combine(ancestorDestination, "nested.zip")));
+        Assert.Equal("source", File.ReadAllText(Path.Combine(source, "same.zip")));
+        Assert.Equal("nested", File.ReadAllText(Path.Combine(nestedSource, "nested.zip")));
+        Assert.Equal("source", File.ReadAllText(Path.Combine(sibling, "same.zip")));
+    }
+
+    [Fact]
+    public void StartupMigrationDoesNotCreateDestinationInsideExistingLegacySource()
+    {
+        string legacySource = Path.Combine(_root, "Old", "Backups");
+        string destination = Path.Combine(legacySource, "NewBackups");
+        Directory.CreateDirectory(legacySource);
+        File.WriteAllText(Path.Combine(legacySource, "keep.zip"), "keep");
+
+        AppPaths.InitializeBackupLocations(
+            Path.Combine(_root, "UserData"),
+            legacySource,
+            Path.Combine(_root, "Encode", "Backups"),
+            destination,
+            migrateHistoricalEncodeBackups: true);
+
+        Assert.False(Directory.Exists(destination));
+        Assert.Equal("keep", File.ReadAllText(Path.Combine(legacySource, "keep.zip")));
     }
 
     [Fact]

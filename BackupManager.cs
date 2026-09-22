@@ -23,23 +23,39 @@ namespace MediaFlux
 
         public static string ResolveBackupFolder(string? configuredPath)
         {
-            if (string.IsNullOrWhiteSpace(configuredPath))
-                return GetDefaultBackupFolder();
-
-            string resolved = Path.GetFullPath(
-                Environment.ExpandEnvironmentVariables(configuredPath.Trim()));
             string legacyDefault = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Encode",
                 "Backups");
+            return ResolveBackupFolder(
+                configuredPath,
+                Services.AppPaths.UserDataDirectory,
+                GetDefaultBackupFolder(),
+                legacyDefault);
+        }
 
-            return string.Equals(
-                resolved.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                Path.GetFullPath(legacyDefault).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                StringComparison.OrdinalIgnoreCase)
-                ? GetDefaultBackupFolder()
+        internal static string ResolveBackupFolder(
+            string? configuredPath,
+            string userDataDirectory,
+            string defaultBackupDirectory,
+            string legacyEncodeBackupDirectory)
+        {
+            string normalizedDefault = NormalizeBackupPath(defaultBackupDirectory);
+            if (string.IsNullOrWhiteSpace(configuredPath))
+                return normalizedDefault;
+
+            string resolved = NormalizeBackupPath(Environment.ExpandEnvironmentVariables(configuredPath.Trim()));
+            string formerInternalDefault = NormalizeBackupPath(Path.Combine(userDataDirectory, "Backups"));
+            string formerEncodeDefault = NormalizeBackupPath(legacyEncodeBackupDirectory);
+
+            return string.Equals(resolved, formerInternalDefault, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(resolved, formerEncodeDefault, StringComparison.OrdinalIgnoreCase)
+                ? normalizedDefault
                 : resolved;
         }
+
+        private static string NormalizeBackupPath(string path) =>
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
         public static string CreateBackup(string userDataDirectory, string? backupFolder, int backupsToKeep, Action<string>? reportProgress = null)
         {

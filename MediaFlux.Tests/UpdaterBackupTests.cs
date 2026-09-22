@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using Microsoft.Data.Sqlite;
+using MediaFlux.Models;
 using MediaFlux.Services;
 using Xunit;
 
@@ -83,6 +84,103 @@ public sealed class UpdaterBackupTests : IDisposable
         Assert.True(File.Exists(archive));
         Assert.Contains("Excluding regenerable runtime data...", progress);
         Assert.Contains("Backup complete.", progress);
+    }
+
+    [Fact]
+    public void DefaultStorageBackupIsOutsideUserDataAndCanCreateBackup()
+    {
+        string userData = Path.Combine(_root, "UserData");
+        var paths = new MediaFluxStoragePathService(userData, Path.Combine(_root, "storage-location.json"));
+
+        string archive = BackupManager.CreateBackup(userData, paths.Backups, 3);
+
+        Assert.False(MediaFluxStoragePathService.IsWithin(paths.Backups, userData));
+        Assert.True(File.Exists(archive));
+    }
+
+    [Fact]
+    public void BackupInsideUserDataIsRejected()
+    {
+        string userData = Path.Combine(_root, "UserData");
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            BackupManager.CreateBackup(userData, Path.Combine(userData, "Backups"), 3));
+
+        Assert.Contains("outside the MediaFlux user-data folder", exception.Message);
+    }
+
+    [Fact]
+    public void FormerPersistedDefaultResolvesToSiblingAndSettingsCanSaveCanonicalPath()
+    {
+        string userData = Path.Combine(_root, "UserData");
+        string defaultBackups = Path.Combine(_root, "Backups");
+        string legacyEncode = Path.Combine(_root, "Encode", "Backups");
+        string formerDefault = Path.Combine(userData, "Backups");
+        Directory.CreateDirectory(userData);
+
+        string resolvedFormerDefault = BackupManager.ResolveBackupFolder(
+            formerDefault, userData, defaultBackups, legacyEncode);
+        string resolvedEncodeDefault = BackupManager.ResolveBackupFolder(
+            legacyEncode, userData, defaultBackups, legacyEncode);
+        string resolvedBlank = BackupManager.ResolveBackupFolder(
+            " ", userData, defaultBackups, legacyEncode);
+        string customExternal = Path.Combine(_root, "CustomerArchive", "Backups");
+        string resolvedCustom = BackupManager.ResolveBackupFolder(
+            customExternal, userData, defaultBackups, legacyEncode);
+        string customInternal = Path.Combine(userData, "Custom", "Backups");
+
+        Assert.Equal(Path.GetFullPath(defaultBackups), resolvedFormerDefault);
+        Assert.Equal(Path.GetFullPath(defaultBackups), resolvedEncodeDefault);
+        Assert.Equal(Path.GetFullPath(defaultBackups), resolvedBlank);
+        Assert.Equal(Path.GetFullPath(customExternal), resolvedCustom);
+        Assert.Equal(Path.GetFullPath(customInternal), BackupManager.ResolveBackupFolder(
+            customInternal, userData, defaultBackups, legacyEncode));
+
+        // SettingsForm displays ResolveBackupFolder(cfg.BackupFolderPath) and persists the
+        // displayed textbox value on a legitimate Save, without a startup config write.
+        var config = new Config { BackupFolderPath = formerDefault };
+        config.BackupFolderPath = BackupManager.ResolveBackupFolder(
+            config.BackupFolderPath, userData, defaultBackups, legacyEncode);
+        Assert.Equal(Path.GetFullPath(defaultBackups), config.BackupFolderPath);
+
+        string archive = BackupManager.CreateBackup(userData, resolvedFormerDefault, 3);
+        Assert.StartsWith(Path.GetFullPath(defaultBackups) + Path.DirectorySeparatorChar, archive, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(archive));
+    }
+
+    [Fact]
+    public void CustomBackupWithinUserDataRemainsRejectedAfterResolution()
+    {
+        string userData = Path.Combine(_root, "UserData");
+        string customInternal = Path.Combine(userData, "Custom", "Backups");
+        string resolved = BackupManager.ResolveBackupFolder(
+            customInternal,
+            userData,
+            Path.Combine(_root, "Backups"),
+            Path.Combine(_root, "Encode", "Backups"));
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            BackupManager.CreateBackup(userData, resolved, 3));
+
+        Assert.Contains("outside the MediaFlux user-data folder", exception.Message);
+    }
+
+    [Fact]
+    public void LegacyEncodeBackupsMigrateWithoutOverwriteOrDeletion()
+    {
+        string legacy = Path.Combine(_root, "Encode", "Backups");
+        string destination = Path.Combine(_root, "Backups");
+        Directory.CreateDirectory(legacy);
+        Directory.CreateDirectory(destination);
+        File.WriteAllText(Path.Combine(legacy, "historical.zip"), "historical");
+        File.WriteAllText(Path.Combine(destination, "existing.zip"), "current");
+        File.WriteAllText(Path.Combine(legacy, "existing.zip"), "legacy");
+
+        AppPaths.MigrateBackupArchives(legacy, destination);
+
+        Assert.Equal("historical", File.ReadAllText(Path.Combine(destination, "historical.zip")));
+        Assert.Equal("current", File.ReadAllText(Path.Combine(destination, "existing.zip")));
+        Assert.True(File.Exists(Path.Combine(legacy, "historical.zip")));
     }
 
     [Fact]

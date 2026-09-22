@@ -24,7 +24,8 @@ public sealed class MediaFluxStoragePathService
     public string Data => Path.Combine(Root, "data");
     public string Temp => Path.Combine(Root, "temp");
     public string Config => Path.Combine(Root, "config.json");
-    public string Backups => Path.Combine(Root, "Backups");
+    /// <summary>External MediaFlux backup storage. It is deliberately a sibling of the user-data root.</summary>
+    public string Backups => ResolveBackupDirectory(Root);
     public string AiIntermediates => Path.Combine(Data, "ai-intermediates");
     public string RestorationPreviews => Path.Combine(Data, "restoration-previews");
     public string FramePreviews => Path.Combine(Data, "frame-previews");
@@ -34,7 +35,16 @@ public sealed class MediaFluxStoragePathService
     public string Logs => Path.Combine(Data, "logs");
 
     public void InitializeDirectories()
-    { Directory.CreateDirectory(Root); Directory.CreateDirectory(Data); Directory.CreateDirectory(Temp); Directory.CreateDirectory(Backups); }
+    { Directory.CreateDirectory(Root); Directory.CreateDirectory(Data); Directory.CreateDirectory(Temp); }
+
+    internal static string ResolveBackupDirectory(string root)
+    {
+        string normalized = Normalize(root);
+        string? parent = Directory.GetParent(normalized)?.FullName;
+        if (string.IsNullOrWhiteSpace(parent) || Same(parent, normalized))
+            throw new InvalidOperationException("The MediaFlux user-data root must have a parent directory for external backups.");
+        return Path.Combine(parent, "Backups");
+    }
 
     public bool TryValidateNewRoot(string candidate, out string normalized, out string error)
     {
@@ -94,5 +104,7 @@ public sealed class MediaFluxStoragePathService
     private static string Normalize(string path) => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     internal static bool Same(string left, string right) => string.Equals(Normalize(left), Normalize(right), StringComparison.OrdinalIgnoreCase);
     internal static bool IsWithin(string child, string parent) { string p = Normalize(parent) + Path.DirectorySeparatorChar; return Normalize(child).StartsWith(p, StringComparison.OrdinalIgnoreCase); }
+    internal static bool PathsOverlap(string left, string right) =>
+        Same(left, right) || IsWithin(left, right) || IsWithin(right, left);
     private sealed record StorageLocation(string Root);
 }

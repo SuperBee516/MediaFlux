@@ -76,22 +76,23 @@ namespace MediaFlux.Services
         public static void Initialize()
         {
             Storage.InitializeDirectories();
-            // Pre-storage-root installs kept backups next to UserData. Preserve them when
-            // adopting the root-based convention, including installations that already have
-            // the legacy migration marker.
-            CopyDirectoryIfMissing(Path.Combine(RootDirectory, "Backups"), BackupDirectory);
+            string marker = Path.Combine(UserDataDirectory, MigrationMarkerName);
+            InitializeBackupLocations(
+                UserDataDirectory,
+                Path.Combine(RootDirectory, "Backups"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Encode", "Backups"),
+                BackupDirectory,
+                migrateHistoricalEncodeBackups: !File.Exists(marker));
             DvdTempCleanupService.CleanupStaleOperations(
                 TempDirectory,
                 TimeSpan.FromDays(7));
             // Named generated artifacts only. It runs off the UI thread and never deletes user state.
             _ = new UserDataStorageManagementService(UserDataDirectory).CleanupAsync(UserDataCleanupScope.ExpiredGeneratedData);
 
-            string marker = Path.Combine(UserDataDirectory, MigrationMarkerName);
             if (File.Exists(marker))
                 return;
 
             MigrateLegacyInstallData();
-            MigrateLegacyBackups();
 
             File.WriteAllText(
                 marker,
@@ -108,26 +109,47 @@ namespace MediaFlux.Services
             CopyDirectoryIfMissing(legacyData, DataDirectory);
         }
 
-        private static void MigrateLegacyBackups()
+        internal static void InitializeBackupLocations(
+            string userDataDirectory,
+            string legacyMediaFluxBackupDirectory,
+            string legacyEncodeBackupDirectory,
+            string destinationDirectory,
+            bool migrateHistoricalEncodeBackups)
         {
-            string legacyBackupDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Encode",
-                "Backups");
-
-            if (!Directory.Exists(legacyBackupDirectory))
+            string internalBackupDirectory = Path.Combine(userDataDirectory, "Backups");
+            bool destinationWouldBeCreatedInsideSource = !Directory.Exists(destinationDirectory) &&
+                (IsExistingSourceAncestor(legacyMediaFluxBackupDirectory, destinationDirectory) ||
+                 IsExistingSourceAncestor(internalBackupDirectory, destinationDirectory) ||
+                 (migrateHistoricalEncodeBackups && IsExistingSourceAncestor(legacyEncodeBackupDirectory, destinationDirectory)));
+            if (destinationWouldBeCreatedInsideSource)
                 return;
 
-            foreach (string archive in Directory.EnumerateFiles(legacyBackupDirectory, "*.zip", SearchOption.TopDirectoryOnly))
-            {
-                string destination = Path.Combine(BackupDirectory, Path.GetFileName(archive));
-                CopyFileIfMissing(archive, destination);
-            }
+            Directory.CreateDirectory(destinationDirectory);
+            // The former install-root directory could contain arbitrary files and nested data;
+            // retain its historical recursive, copy-only migration behavior.
+            CopyDirectoryIfMissing(legacyMediaFluxBackupDirectory, destinationDirectory);
+            MigrateBackupArchives(internalBackupDirectory, destinationDirectory);
+            if (migrateHistoricalEncodeBackups)
+                MigrateBackupArchives(legacyEncodeBackupDirectory, destinationDirectory);
         }
 
-        private static void CopyDirectoryIfMissing(string sourceDirectory, string destinationDirectory)
+        private static bool IsExistingSourceAncestor(string sourceDirectory, string destinationDirectory) =>
+            Directory.Exists(sourceDirectory) &&
+            MediaFluxStoragePathService.IsWithin(destinationDirectory, sourceDirectory);
+
+        internal static void MigrateBackupArchives(string sourceDirectory, string destinationDirectory)
         {
-            if (!Directory.Exists(sourceDirectory))
+            if (!Directory.Exists(sourceDirectory) || MediaFluxStoragePathService.PathsOverlap(sourceDirectory, destinationDirectory))
+                return;
+
+            Directory.CreateDirectory(destinationDirectory);
+            foreach (string archive in Directory.EnumerateFiles(sourceDirectory, "*.zip", SearchOption.TopDirectoryOnly))
+                CopyFileIfMissing(archive, Path.Combine(destinationDirectory, Path.GetFileName(archive)));
+        }
+
+        internal static void CopyDirectoryIfMissing(string sourceDirectory, string destinationDirectory)
+        {
+            if (!Directory.Exists(sourceDirectory) || MediaFluxStoragePathService.PathsOverlap(sourceDirectory, destinationDirectory))
                 return;
 
             Directory.CreateDirectory(destinationDirectory);
