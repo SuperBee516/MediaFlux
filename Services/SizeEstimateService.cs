@@ -220,7 +220,8 @@ namespace MediaFlux.Services
             int sourceDataStreamCount = 0,
             int sourceAttachmentStreamCount = 0,
             long sourceAttachmentSizeBytes = 0,
-            StorageSavingsOptions? storageSavings = null)
+            StorageSavingsOptions? storageSavings = null,
+            bool sourceAdaptiveCeilingEligible = false)
         {
             if (srcMb <= 0 || durationSec <= 0 || width <= 0 || height <= 0 || fps <= 0)
                 return SizeEstimateBreakdown.Unavailable;
@@ -335,6 +336,7 @@ namespace MediaFlux.Services
             double targetVideoKbps;
             string mode;
             bool usesSourceVideoBitrateFloor = false;
+            bool usesSourceVideoBitrateCeiling = false;
             if (storageSavingsApplies && !savings.UsesQualityTarget)
             {
                 targetVideoKbps =
@@ -361,20 +363,37 @@ namespace MediaFlux.Services
                     ? $"storage quality target {effectiveQuality} (CQ/CRF/ICQ)"
                     : $"conservative profile {compressionProfile}, quality {effectiveQuality}";
 
-                // A same-generation re-encode of an already efficient codec has
-                // no source-quality evidence that supports promising a lower
-                // bitrate. Retain the observed source-video bitrate as the Auto
-                // quality floor; manual targets and explicit storage policies
-                // intentionally bypass this recommendation-only safeguard.
-                if (UsesSameEfficientCodecQualityFloor(
+                bool sameEfficientCodecUnchangedResolution =
+                    UsesSameEfficientCodecQualityFloor(
                         sourceCodec,
                         targetCodec,
                         width,
                         height,
                         outputWidth,
-                        outputHeight) &&
+                        outputHeight);
+
+                // Source Adaptive is bounded for a straightforward same-codec,
+                // unchanged-resolution lossy re-encode. Increasing bitrate cannot
+                // restore information discarded by the source. A lower model
+                // result remains valid and is intentionally preserved.
+                if (sourceAdaptiveCeilingEligible &&
+                    !savings.Enabled &&
+                    usedMeasuredVideoBitrate &&
+                    sameEfficientCodecUnchangedResolution)
+                {
+                    if (targetVideoKbps > sourceVideoKbps)
+                    {
+                        targetVideoKbps = sourceVideoKbps;
+                        usesSourceVideoBitrateCeiling = true;
+                        mode += "; same-codec source ceiling applied; increasing bitrate would not recover source quality";
+                    }
+                }
+                else if (sameEfficientCodecUnchangedResolution &&
                     targetVideoKbps < sourceVideoKbps)
                 {
+                    // Legacy/manual callers retain the established floor. The
+                    // Source Adaptive path above deliberately uses a bounded
+                    // policy so legitimate lower estimates remain lower.
                     targetVideoKbps = sourceVideoKbps;
                     usesSourceVideoBitrateFloor = true;
                     mode += "; retained source-video bitrate for equivalent-codec quality protection";
@@ -420,6 +439,7 @@ namespace MediaFlux.Services
                 TargetTotalBitrateKbps = targetTotalKbps,
                 UsedMeasuredVideoBitrate = usedMeasuredVideoBitrate,
                 UsesSourceVideoBitrateFloor = usesSourceVideoBitrateFloor,
+                UsesSourceVideoBitrateCeiling = usesSourceVideoBitrateCeiling,
                 UsesStorageQualityTarget =
                     storageSavingsApplies && savings.UsesQualityTarget,
                 Diagnostic = diagnostic
@@ -553,6 +573,7 @@ namespace MediaFlux.Services
         public double TargetTotalBitrateKbps { get; init; }
         public bool UsedMeasuredVideoBitrate { get; init; }
         public bool UsesSourceVideoBitrateFloor { get; init; }
+        public bool UsesSourceVideoBitrateCeiling { get; init; }
         public bool UsesStorageQualityTarget { get; init; }
         public string Diagnostic { get; init; } = "Required metadata is unavailable.";
     }

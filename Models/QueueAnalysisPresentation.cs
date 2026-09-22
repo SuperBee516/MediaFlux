@@ -78,6 +78,24 @@ public sealed class QueueAnalysisPresentation
                 .ToArray());
     }
 
+    public static QueueAnalysisPresentation Create(EncodingRecommendation? recommendation)
+    {
+        if (recommendation == null)
+            return Create((SmartEncodeRecommendation?)null);
+        string? savings = recommendation.ExpectedSavingsPercent is double percent && recommendation.ExpectedSavingsMb is double mb
+            ? (percent < 0 ? $"{Math.Abs(percent):0.#}% increase" : $"{Math.Max(0, percent):0.#}% ({Math.Max(0, mb):0.#} MB)")
+            : null;
+        return new QueueAnalysisPresentation(
+            string.Empty,
+            recommendation.DisplayName,
+            recommendation.Confidence.ToString(),
+            recommendation.EstimatedOutputSizeMb is > 0 ? FormatSize(recommendation.EstimatedOutputSizeMb.Value) : null,
+            savings == null ? null : "Expected savings",
+            savings,
+            null,
+            new[] { recommendation.PrimaryReason }.Concat(recommendation.SupportingReasons).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
     public string BuildTooltip()
     {
         if (!IsAvailable)

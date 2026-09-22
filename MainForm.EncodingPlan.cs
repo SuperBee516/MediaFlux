@@ -196,11 +196,9 @@ public partial class MainForm
         if (sourceMb <= 0)
             _queueSourceSizeMap.TryGetValue(path, out sourceMb);
         _estimatedSizeMap.TryGetValue(path, out double estimatedOutputMb);
-        return QueueAnalysisPresentation.Create(
-            meta.EncodeRecommendation,
-            sourceMb,
-            estimatedOutputMb,
-            meta.IntelligencePlan?.Quality ?? meta.QualityPreview);
+        if (meta.IntelligencePlan?.Recommendation is EncodingRecommendation planRecommendation)
+            return QueueAnalysisPresentation.Create(planRecommendation);
+        return QueueAnalysisPresentation.Create(meta.EncodeRecommendation, sourceMb, estimatedOutputMb, meta.IntelligencePlan?.Quality ?? meta.QualityPreview);
     }
 
     private void InvalidateEncodingPlansForConfigurationChange()
@@ -380,6 +378,19 @@ public partial class MainForm
 
         EncodingIntelligencePresentation.Model presentation = EncodingIntelligencePresentation.Create(plan, outcome);
         AddEncodingPlanSection("Encoding intelligence", presentation.Summary);
+        if (plan.Recommendation is { } recommendation)
+        {
+            AddEncodingPlanSection("Recommendation", new[]
+            {
+                new EncodingPlanItem("Decision", recommendation.DisplayName),
+                new EncodingPlanItem("Reason", recommendation.PrimaryReason),
+                new EncodingPlanItem("Confidence", recommendation.Confidence.ToString()),
+                new EncodingPlanItem("Quality risk", recommendation.QualityRisk.ToString()),
+                recommendation.ExpectedSavingsPercent is double percent
+                    ? new EncodingPlanItem("Expected savings", $"{percent:0.#}%")
+                    : null
+            }.Where(item => item != null).Cast<EncodingPlanItem>().ToArray());
+        }
         if (presentation.Reasons.Count > 0)
             AddEncodingPlanSection("Why this plan?", presentation.Reasons);
         if (presentation.Technical.Count > 0)

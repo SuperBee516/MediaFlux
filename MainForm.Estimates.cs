@@ -289,6 +289,13 @@ namespace MediaFlux
                 encoderSettings.Resolved.Selection;
             int quality = encoderSettings.QualityValue;
             int? targetHeight = GetEstimateTargetHeight();
+            VideoRestorationPipelinePlan restorationPlan = VideoRestorationPipeline.BuildPlan(
+                _config.VideoRestoration, GetSelectedScaleMode());
+            bool sourceAdaptiveCeilingEligible = automaticQualityIntent != null &&
+                !restorationPlan.UsesAi &&
+                string.IsNullOrWhiteSpace(restorationPlan.ConventionalFilterChain) &&
+                string.IsNullOrWhiteSpace(restorationPlan.PreAiFilterChain) &&
+                string.IsNullOrWhiteSpace(restorationPlan.PostAiFilterChain);
 
             double manualTargetMb = 0;
             if (!autoRequested && double.TryParse(txtTargetSize.Text, out var m) && m > 0)
@@ -411,7 +418,8 @@ namespace MediaFlux
                     GetSelectedAudioChannels(),
                     isCustom,
                     rowStorageSavings,
-                    isCustom ? null : automaticQualityIntent);
+                    isCustom ? null : automaticQualityIntent,
+                    sourceAdaptiveCeilingEligible);
                 queued++;
             }
 
@@ -483,7 +491,8 @@ namespace MediaFlux
             int? targetAudioChannels,
             bool isCustom,
             StorageSavingsOptions storageSavings,
-            EncodingQualityIntent? qualityIntent)
+            EncodingQualityIntent? qualityIntent,
+            bool sourceAdaptiveCeilingEligible)
         {
             _estimateService.QueueSmartEstimate(
                 path,
@@ -498,7 +507,8 @@ namespace MediaFlux
                 _config.SmartRecommendationsEnabled,
                 _config.MinimumExpectedSavingsPercent,
                 storageSavings,
-                qualityIntent);
+                qualityIntent,
+                sourceAdaptiveCeilingEligible);
         }
 
         private int? GetEstimateTargetHeight()

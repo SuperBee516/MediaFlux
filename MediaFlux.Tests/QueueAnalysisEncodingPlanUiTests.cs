@@ -64,6 +64,11 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 Invoke(formType, main, "ScheduleEncodingPlanRefresh");
                 Assert.Same(planControl, plan.Controls[0]);
 
+                // Recommendation/estimate publication changes Queue Analysis only;
+                // it must not invalidate or rebuild the cached Encoding Plan.
+                Invoke(formType, main, "ApplySmartRecommendation", analyzed, Recommendation(EstimatedSavingsPercent: 21), true);
+                Assert.Same(planControl, plan.Controls[0]);
+
                 object meta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
                     ?? throw new MissingMethodException("EnsureRowMeta")).Invoke(main, [analyzed])!;
                 meta.GetType().GetField("IntelligenceOutcome", BindingFlags.Instance | BindingFlags.Public)!.SetValue(

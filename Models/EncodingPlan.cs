@@ -40,7 +40,11 @@ public sealed record EncodingDecisionContext(
     EncodingQualityIntent? QualityIntent = null,
     EncodingSourceFailureClassification? SourceHealth = null);
 
-public sealed record EncodingPlanSource(string Codec, int? Width, int? Height, double? FrameRate, double? DurationSeconds);
+public sealed record EncodingPlanSource(string Codec, int? Width, int? Height, double? FrameRate, double? DurationSeconds)
+{
+    public long? SizeBytes { get; init; }
+    public double? BitrateKbps { get; init; }
+}
 public sealed record EncodingPlanVideo(string Action, string Codec, string Encoder, int? ConfiguredWidth, int? ConfiguredHeight, int? EffectiveWidth, int? EffectiveHeight, string? PixelFormat);
 public sealed record EncodingPlanStream(
     int StreamIndex, string StreamType, string Codec, StreamCompatibilityAction Action,
@@ -86,6 +90,7 @@ public sealed class EncodingPlan
     public EncodingPlanValidation? Validation { get; init; }
     public EncodingQualityResolution? Quality { get; init; }
     public EncodingPlanEstimates Estimates { get; init; } = new(null, null, null);
+    public EncodingRecommendation? Recommendation { get; internal set; }
     public IReadOnlyList<EncodingRisk> Risks { get; init; } = Array.Empty<EncodingRisk>();
     public IReadOnlyList<EncodingDecisionReason> DecisionReasons { get; init; } = Array.Empty<EncodingDecisionReason>();
     // Execution-only values retain the exact outputs of existing policy services.

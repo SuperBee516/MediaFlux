@@ -103,7 +103,8 @@ namespace MediaFlux.Services
                 bool recommendationsEnabled,
                 double minimumSavingsPercent,
                 StorageSavingsOptions storageSavings,
-                EncodingQualityIntent? qualityIntent)
+                EncodingQualityIntent? qualityIntent,
+                bool sourceAdaptiveCeilingEligible)
             {
                 Generation = generation;
                 Path = path;
@@ -119,6 +120,7 @@ namespace MediaFlux.Services
                 MinimumSavingsPercent = minimumSavingsPercent;
                 StorageSavings = storageSavings.CloneNormalized();
                 QualityIntent = qualityIntent;
+                SourceAdaptiveCeilingEligible = sourceAdaptiveCeilingEligible;
             }
 
             public int Generation { get; }
@@ -135,6 +137,7 @@ namespace MediaFlux.Services
             public double MinimumSavingsPercent { get; }
             public StorageSavingsOptions StorageSavings { get; }
             public EncodingQualityIntent? QualityIntent { get; }
+            public bool SourceAdaptiveCeilingEligible { get; }
         }
 
         // Include completed-but-not-yet-applied results so the UI does not report
@@ -156,7 +159,8 @@ namespace MediaFlux.Services
             bool recommendationsEnabled,
             double minimumSavingsPercent,
             StorageSavingsOptions storageSavings,
-            EncodingQualityIntent? qualityIntent = null)
+            EncodingQualityIntent? qualityIntent = null,
+            bool sourceAdaptiveCeilingEligible = false)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return;
@@ -175,7 +179,8 @@ namespace MediaFlux.Services
                 recommendationsEnabled,
                 minimumSavingsPercent,
                 storageSavings,
-                qualityIntent));
+                qualityIntent,
+                sourceAdaptiveCeilingEligible));
         }
 
         public bool TryDequeueSmart(out SmartEstimateResult result)
@@ -332,7 +337,8 @@ namespace MediaFlux.Services
                         info.DataStreamCount,
                         info.AttachmentStreamCount,
                         info.AttachmentSizeBytes,
-                        item.StorageSavings)
+                        item.StorageSavings,
+                        sourceAdaptiveCeilingEligible: item.SourceAdaptiveCeilingEligible)
                     : null;
                 double estMb = estimateBreakdown?.EstimatedOutputMb ??
                     (item.ManualTargetMb > 0 ? item.ManualTargetMb : 0);

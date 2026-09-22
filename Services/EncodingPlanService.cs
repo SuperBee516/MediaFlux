@@ -144,10 +144,15 @@ public static class EncodingPlanService
             historicalPrediction = new(0, 0, EncodingHistoricalConfidence.None, null, null, null, null, null, null, null, null, null, null, "HistoryUnavailable");
         }
 
-        return new EncodingPlan
+        var source = new EncodingPlanSource(sourceVideo?.CodecName ?? "unknown", sourceVideo?.Width, sourceVideo?.Height, sourceVideo?.FrameRate, context.KnownDuration > TimeSpan.Zero ? context.KnownDuration.TotalSeconds : null)
+        {
+            SizeBytes = context.Source.SizeBytes,
+            BitrateKbps = sourceVideo?.BitRate is > 0 ? sourceVideo.BitRate.Value / 1000d : context.Source.BitRate is > 0 ? context.Source.BitRate.Value / 1000d : null
+        };
+        EncodingPlan plan = new EncodingPlan
         {
             IsAvailable = true,
-            Source = new EncodingPlanSource(sourceVideo?.CodecName ?? "unknown", sourceVideo?.Width, sourceVideo?.Height, sourceVideo?.FrameRate, context.KnownDuration > TimeSpan.Zero ? context.KnownDuration.TotalSeconds : null),
+            Source = source,
             SourceHealth = context.SourceHealth,
             Video = new EncodingPlanVideo("Reencode", context.Encoder.FfmpegCodec, context.Encoder.EncoderId, geometry?.RequestedWidth, geometry?.RequestedHeight, geometry?.Width, geometry?.Height, geometry?.PixelFormat),
             Audio = streams.Where(stream => stream.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase)).ToArray(),
@@ -176,6 +181,8 @@ public static class EncodingPlanService
                 context.AudioChannels, context.MapMode, container.CopySubtitles,
                 container.CopyDataStreams, container.CopyAttachments)
         };
+        plan.Recommendation = EncodingRecommendationService.Evaluate(plan);
+        return plan;
     }
 
     internal static EncodingPlanExecutionValues GetExecutionValues(EncodingPlan plan) =>
@@ -292,7 +299,10 @@ public static class EncodingPlanService
             .FirstOrDefault(item => item.Kind == EncodingRecoveryKind.VideoDecode);
         EncodingRecoveryCapability? audioRecovery = plan.RecoveryCapabilities?.Items
             .FirstOrDefault(item => item.Kind == EncodingRecoveryKind.AudioStream);
-        return $"[EncodingPlan] PlanId={plan.PlanId}; Source={source}; Video={video}; Container={container}; " +
+        string recommendation = plan.Recommendation is { } advisory
+            ? $"Recommendation={advisory.DisplayName}; Reason={advisory.PrimaryReason}; Confidence={advisory.Confidence}"
+            : "Recommendation=Unavailable";
+        return $"[EncodingPlan] PlanId={plan.PlanId}; Source={source}; Video={video}; Container={container}; {recommendation}; " +
             $"Recovery={plan.Recovery?.InitialDecodeMode}; VideoRecoveryPermitted={videoRecovery?.Permitted}; " +
             $"AudioRecoveryPermitted={audioRecovery?.Permitted}; Risks={plan.Risks.Count} informational.";
     }

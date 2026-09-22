@@ -277,6 +277,96 @@ public sealed class SizeEstimateServiceTests
     }
 
     [Fact]
+    public void SourceAdaptiveSameCodecCeilingCapsInflatedTargetAtReliableSourceVideoBitrate()
+    {
+        const double durationSeconds = 1_800;
+        const int videoKbps = 600;
+        const int audioKbps = 160;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+
+        SizeEstimateBreakdown estimate = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+            sourceMb, durationSeconds, 1920, 1080, 30, videoKbps, "hevc",
+            "Medium Quality (Default)", "hevc_nvenc", 25, null,
+            audioKbps, 1, null, videoKbps + audioKbps,
+            sourceAdaptiveCeilingEligible: true);
+
+        Assert.True(estimate.UsesSourceVideoBitrateCeiling);
+        Assert.Equal(videoKbps, estimate.TargetVideoBitrateKbps, precision: 0);
+        Assert.Contains("same-codec source ceiling applied", estimate.Diagnostic);
+    }
+
+    [Fact]
+    public void SourceAdaptiveSameCodecPreservesLegitimateLowerTarget()
+    {
+        const double durationSeconds = 1_800;
+        const int videoKbps = 8_000;
+        const int audioKbps = 192;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+
+        SizeEstimateBreakdown estimate = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+            sourceMb, durationSeconds, 1920, 1080, 30, videoKbps, "hevc",
+            "Medium Quality (Default)", "hevc_nvenc", 24, null,
+            audioKbps, 1, null, videoKbps + audioKbps,
+            sourceAdaptiveCeilingEligible: true);
+
+        Assert.False(estimate.UsesSourceVideoBitrateCeiling);
+        Assert.False(estimate.UsesSourceVideoBitrateFloor);
+        Assert.True(estimate.TargetVideoBitrateKbps < videoKbps);
+    }
+
+    [Fact]
+    public void SourceAdaptiveCeilingDoesNotRemoveStreamOverhead()
+    {
+        const double durationSeconds = 1_800;
+        const int videoKbps = 600;
+        const int audioKbps = 800;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+
+        SizeEstimateBreakdown estimate = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+            sourceMb, durationSeconds, 1280, 720, 30, videoKbps, "hevc",
+            "Medium Quality (Default)", "hevc_nvenc", 25, null,
+            audioKbps, 2, null, videoKbps + audioKbps,
+            sourceAdaptiveCeilingEligible: true);
+
+        Assert.True(estimate.UsesSourceVideoBitrateCeiling);
+        Assert.True(estimate.EstimatedOutputMb > sourceMb);
+        Assert.True(estimate.TargetTotalBitrateKbps > videoKbps + audioKbps);
+    }
+
+    [Fact]
+    public void SourceAdaptiveCeilingRequiresSameCodecUnchangedResolutionAndMeasuredBitrate()
+    {
+        SizeEstimateBreakdown converted = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+            700, 1800, 1920, 1080, 30, 1200, "h264", "Medium Quality (Default)",
+            "hevc_nvenc", 25, null, 160, 1, null,
+            sourceAdaptiveCeilingEligible: true);
+        SizeEstimateBreakdown scaled = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+            700, 1800, 1920, 1080, 30, 1200, "hevc", "Medium Quality (Default)",
+            "hevc_nvenc", 25, 720, 160, 1, null,
+            sourceAdaptiveCeilingEligible: true);
+        SizeEstimateBreakdown unknown = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+            700, 1800, 1920, 1080, 30, 0, "hevc", "Medium Quality (Default)",
+            "hevc_nvenc", 25, null, 160, 1, null,
+            sourceAdaptiveCeilingEligible: true);
+
+        Assert.False(converted.UsesSourceVideoBitrateCeiling);
+        Assert.False(scaled.UsesSourceVideoBitrateCeiling);
+        Assert.False(unknown.UsesSourceVideoBitrateCeiling);
+    }
+
+    [Fact]
+    public void ExplicitStoragePolicyBypassesSourceAdaptiveCeiling()
+    {
+        SizeEstimateBreakdown estimate = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+            700, 1800, 1920, 1080, 30, 1200, "hevc", "Medium Quality (Default)",
+            "hevc_nvenc", 25, null, 160, 1, null,
+            storageSavings: new StorageSavingsOptions { Enabled = true },
+            sourceAdaptiveCeilingEligible: true);
+
+        Assert.False(estimate.UsesSourceVideoBitrateCeiling);
+    }
+
+    [Fact]
     public void MissingVideoStreamBitrateDoesNotDoubleCountMeasuredAudio()
     {
         const double durationSeconds = 3_600;
