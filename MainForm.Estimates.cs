@@ -149,6 +149,7 @@ namespace MediaFlux
                                     item.PlannedAudioBitrateKbps;
                                 rm.EstimatedPlannedMappedAncillaryBitrateKbps =
                                     item.PlannedMappedAncillaryBitrateKbps;
+                                rm.QualityPreview = item.QualityResolution;
                             }
                             else
                             {
@@ -164,7 +165,8 @@ namespace MediaFlux
                                     EstimatedPlannedAudioBitrateKbps =
                                         item.PlannedAudioBitrateKbps,
                                     EstimatedPlannedMappedAncillaryBitrateKbps =
-                                        item.PlannedMappedAncillaryBitrateKbps
+                                        item.PlannedMappedAncillaryBitrateKbps,
+                                    QualityPreview = item.QualityResolution
                                 };
                             }
 
@@ -270,7 +272,16 @@ namespace MediaFlux
             }
 
             bool autoRequested = chkAutoTargetSize.Checked;
-            string profile = comboCompressionProfile.SelectedItem?.ToString() ?? "Medium";
+            EncodingQualityIntent? automaticQualityIntent =
+                IsAutomaticQualitySelected()
+                    ? EncodingQualityIntent.Automatic(GetSelectedQualityTarget())
+                    : null;
+            // The old profile remains meaningful for Manual mode and explicit
+            // per-row overrides. Automatic estimation must use the same resolved
+            // encoder quality as execution, not this hidden legacy selection.
+            string profile = automaticQualityIntent == null
+                ? comboCompressionProfile.SelectedItem?.ToString() ?? "Medium"
+                : "Medium Quality (Default)";
             ValidatedEncoderSettings encoderSettings =
                 GetValidatedEncoderSettingsFromUi(
                     includeConcurrentSessions: false);
@@ -399,7 +410,8 @@ namespace MediaFlux
                     targetHeight,
                     GetSelectedAudioChannels(),
                     isCustom,
-                    rowStorageSavings);
+                    rowStorageSavings,
+                    isCustom ? null : automaticQualityIntent);
                 queued++;
             }
 
@@ -470,7 +482,8 @@ namespace MediaFlux
             int? targetHeight,
             int? targetAudioChannels,
             bool isCustom,
-            StorageSavingsOptions storageSavings)
+            StorageSavingsOptions storageSavings,
+            EncodingQualityIntent? qualityIntent)
         {
             _estimateService.QueueSmartEstimate(
                 path,
@@ -484,7 +497,8 @@ namespace MediaFlux
                 isCustom,
                 _config.SmartRecommendationsEnabled,
                 _config.MinimumExpectedSavingsPercent,
-                storageSavings);
+                storageSavings,
+                qualityIntent);
         }
 
         private int? GetEstimateTargetHeight()

@@ -1,4 +1,6 @@
+using MediaFlux.Models;
 using MediaFlux.Services;
+using MediaFlux.Services.Encoders;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -445,6 +447,44 @@ public sealed class SizeEstimateServiceTests
         Assert.Contains(
             "quality target 30 (CQ/CRF/ICQ)",
             estimate.Diagnostic);
+    }
+
+    [Fact]
+    public void ResolvedAutomaticQualityDrivesMonotonicOutputEstimates()
+    {
+        var source = new MediaProbeResult
+        {
+            Success = true,
+            Streams =
+            [
+                new MediaProbeStreamInfo
+                {
+                    CodecType = "video", CodecName = "h264", Width = 1920,
+                    Height = 1080, FrameRate = 30, BitRate = 6_000_000
+                }
+            ]
+        };
+        var encoder = new VideoEncoderSelection(
+            VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc");
+        var policy = new EncodingQualityPolicyService();
+
+        double[] estimates = Enum.GetValues<QualityTarget>()
+            .Select(target =>
+            {
+                EncodingQualityResolution quality = policy.Resolve(new(
+                    EncodingQualityIntent.Automatic(target), source, encoder,
+                    null, EncodingService.ScaleMode.None, null));
+                return SizeEstimateService.EstimateAutoTargetMbSmart(
+                    srcMb: 2_700, durationSec: 3_600, width: 1920, height: 1080,
+                    fps: 30, sourceVideoBitrateKbps: 6_000, sourceCodec: "h264",
+                    compressionProfile: "Medium Quality (Default)",
+                    targetCodec: encoder.FfmpegCodec,
+                    quality: quality.EffectiveQuality!.Value, targetHeight: null);
+            })
+            .ToArray();
+
+        Assert.Equal(estimates.OrderBy(value => value), estimates);
+        Assert.True(estimates[0] < estimates[^1]);
     }
 
     private static double Estimate(

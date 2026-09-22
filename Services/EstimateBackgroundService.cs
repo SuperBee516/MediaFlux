@@ -49,6 +49,7 @@ namespace MediaFlux.Services
             public string EstimateDiagnostic { get; }
             public double PlannedAudioBitrateKbps { get; }
             public double PlannedMappedAncillaryBitrateKbps { get; }
+            public EncodingQualityResolution? QualityResolution { get; }
 
             public SmartEstimateResult(
                 int generation,
@@ -64,7 +65,8 @@ namespace MediaFlux.Services
                 SmartEncodeRecommendation? recommendation,
                 string estimateDiagnostic,
                 double plannedAudioBitrateKbps,
-                double plannedMappedAncillaryBitrateKbps)
+                double plannedMappedAncillaryBitrateKbps,
+                EncodingQualityResolution? qualityResolution = null)
             {
                 Generation = generation;
                 Path = path;
@@ -81,6 +83,7 @@ namespace MediaFlux.Services
                 PlannedAudioBitrateKbps = plannedAudioBitrateKbps;
                 PlannedMappedAncillaryBitrateKbps =
                     plannedMappedAncillaryBitrateKbps;
+                QualityResolution = qualityResolution;
             }
         }
 
@@ -99,7 +102,8 @@ namespace MediaFlux.Services
                 bool isCustom,
                 bool recommendationsEnabled,
                 double minimumSavingsPercent,
-                StorageSavingsOptions storageSavings)
+                StorageSavingsOptions storageSavings,
+                EncodingQualityIntent? qualityIntent)
             {
                 Generation = generation;
                 Path = path;
@@ -114,6 +118,7 @@ namespace MediaFlux.Services
                 RecommendationsEnabled = recommendationsEnabled;
                 MinimumSavingsPercent = minimumSavingsPercent;
                 StorageSavings = storageSavings.CloneNormalized();
+                QualityIntent = qualityIntent;
             }
 
             public int Generation { get; }
@@ -129,6 +134,7 @@ namespace MediaFlux.Services
             public bool RecommendationsEnabled { get; }
             public double MinimumSavingsPercent { get; }
             public StorageSavingsOptions StorageSavings { get; }
+            public EncodingQualityIntent? QualityIntent { get; }
         }
 
         // Include completed-but-not-yet-applied results so the UI does not report
@@ -149,7 +155,8 @@ namespace MediaFlux.Services
             bool isCustom,
             bool recommendationsEnabled,
             double minimumSavingsPercent,
-            StorageSavingsOptions storageSavings)
+            StorageSavingsOptions storageSavings,
+            EncodingQualityIntent? qualityIntent = null)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return;
@@ -167,7 +174,8 @@ namespace MediaFlux.Services
                 isCustom,
                 recommendationsEnabled,
                 minimumSavingsPercent,
-                storageSavings));
+                storageSavings,
+                qualityIntent));
         }
 
         public bool TryDequeueSmart(out SmartEstimateResult result)
@@ -296,6 +304,11 @@ namespace MediaFlux.Services
                 bool useProfileEstimate = SizeEstimateService.ShouldUseProfileEstimate(
                     item.Auto,
                     item.ManualTargetMb);
+                EncodingQualityResolution? qualityResolution = ResolveAutomaticQuality(
+                    item,
+                    info,
+                    useProfileEstimate);
+                int estimateQuality = qualityResolution?.EffectiveQuality ?? item.Quality;
                 SizeEstimateBreakdown? estimateBreakdown = useProfileEstimate
                     ? SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
                         srcMb,
@@ -307,7 +320,7 @@ namespace MediaFlux.Services
                         codec,
                         item.Profile,
                         item.Encoder.FfmpegCodec,
-                        item.Quality,
+                        estimateQuality,
                         item.TargetHeight,
                         info.AudioBitrateKbps ?? 0,
                         info.AudioStreamCount,
@@ -388,7 +401,8 @@ namespace MediaFlux.Services
                         item.Generation, item.Path, srcMb, estMb, durSec, res, codec, fps,
                         item.IsCustom, unavailableReason, recommendation, estimateDiagnostic,
                         estimateBreakdown?.PlannedAudioBitrateKbps ?? 0,
-                        estimateBreakdown?.PlannedMappedAncillaryBitrateKbps ?? 0));
+                        estimateBreakdown?.PlannedMappedAncillaryBitrateKbps ?? 0,
+                        qualityResolution));
             }
             catch (Exception ex)
             {
@@ -400,6 +414,55 @@ namespace MediaFlux.Services
                         item.IsCustom, "Metadata unavailable", null,
                         $"Estimate failed: {ex.Message}", 0, 0));
             }
+        }
+
+        private static EncodingQualityResolution? ResolveAutomaticQuality(
+            EstimateWorkItem item,
+            MediaInfoService.MediaInfo info,
+            bool useProfileEstimate)
+        {
+            if (item.QualityIntent == null || !useProfileEstimate ||
+                info.Width is not > 0 || info.Height is not > 0 || info.Fps is not > 0)
+            {
+                return null;
+            }
+
+            int requestedHeight = item.TargetHeight.GetValueOrDefault(info.Height.Value);
+            int requestedWidth = Math.Max(1, (int)Math.Round(
+                info.Width.Value * (requestedHeight / (double)info.Height.Value)));
+            VideoOutputGeometryPlan geometry = VideoOutputGeometryPlanner.Resolve(
+                info.Width.Value,
+                info.Height.Value,
+                new VideoOutputResolutionPlan(requestedWidth, requestedHeight, string.Empty,
+                    "Queue estimate output resolution"),
+                item.Encoder,
+                tenBit: false);
+            var source = new MediaProbeResult
+            {
+                Success = true,
+                Streams =
+                [
+                    new MediaProbeStreamInfo
+                    {
+                        CodecType = "video",
+                        CodecName = info.VideoCodec ?? string.Empty,
+                        Width = info.Width,
+                        Height = info.Height,
+                        FrameRate = info.Fps,
+                        BitRate = info.BitrateKbps is > 0
+                            ? info.BitrateKbps.Value * 1000L
+                            : null
+                    }
+                ]
+            };
+            return new EncodingQualityPolicyService().Resolve(
+                new EncodingQualityPolicyRequest(
+                    item.QualityIntent,
+                    source,
+                    item.Encoder,
+                    geometry,
+                    EncodingService.ScaleMode.None,
+                    item.Auto ? null : item.ManualTargetMb));
         }
 
         private static double GetMbOnDisk(string path)
