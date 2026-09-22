@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.9] - 2026-09-22
+
+### Source Adaptive Quality
+
+- Simplified Automatic · Source Adaptive quality configuration to one authoritative five-level preference: Smaller File, Efficient, Balanced, High Quality, or Maximum Quality.
+- Removed contradictory automatic quality selections while retaining manual quality and explicit target-size behavior in their appropriate modes.
+- Fixed Automatic · Source Adaptive output estimates so they follow the resolved adaptive CRF/CQ/ICQ decision for each source.
+- Refreshed estimates now propagate through per-file savings, Encode/Skip recommendations, and queue totals.
+
 ## [1.5.8] - 2026-09-21
 
 ### AI Runtime Dashboard
