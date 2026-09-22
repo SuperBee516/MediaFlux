@@ -176,6 +176,11 @@ public partial class MainForm
             AddQueueAnalysisItem("Confidence", presentation.Confidence);
         if (presentation.EstimatedResult != null)
             AddQueueAnalysisItem("Estimated result", presentation.EstimatedResult);
+        if (presentation.Quality != null)
+        {
+            foreach (EncodingPlanItem item in EncodingQualityPresentation.CreateItems(presentation.Quality))
+                AddQueueAnalysisItem(item.Label, item.Value);
+        }
         if (presentation.SavingsLabel != null && presentation.SavingsValue != null)
             AddQueueAnalysisItem(presentation.SavingsLabel, presentation.SavingsValue);
         if (presentation.Reasons.Count > 0)

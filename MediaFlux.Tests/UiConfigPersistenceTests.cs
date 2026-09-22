@@ -121,15 +121,22 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 Label manualLabel = Field<Label>(form, "lblManualQuality");
                 Panel labels = Field<Panel>(form, "pnlQualityTargetLabels");
                 Panel qualityIntent = Field<Panel>(form, "pnlQualityIntent");
+                Label fileSizeEstimateLabel = Field<Label>(form, "lblCompressionProfile");
+                ComboBox fileSizeEstimate = Field<ComboBox>(form, "comboCompressionProfile");
+                Label selectedPreference = Field<Label>(form, "lblQualityTargetValue");
 
                 target.Value = 3;
                 manual.Value = 27;
+                fileSizeEstimate.SelectedItem = "Medium Quality (Default)";
                 mode.SelectedIndex = 0;
                 Application.DoEvents();
                 Assert.True(target.Visible);
                 Assert.True(labels.Visible);
+                Assert.Equal("High Quality  (4 of 5)", selectedPreference.Text);
                 Assert.False(manual.Visible);
                 Assert.False(manualLabel.Visible);
+                Assert.False(fileSizeEstimateLabel.Visible);
+                Assert.False(fileSizeEstimate.Visible);
                 int automaticHeight = qualityIntent.PreferredSize.Height;
 
                 mode.SelectedIndex = 1;
@@ -138,6 +145,8 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 Assert.False(labels.Visible);
                 Assert.True(manual.Visible);
                 Assert.True(manualLabel.Visible);
+                Assert.True(fileSizeEstimateLabel.Visible);
+                Assert.True(fileSizeEstimate.Visible);
                 Assert.Equal(27, manual.Value);
                 Assert.True(qualityIntent.PreferredSize.Height < automaticHeight);
 

@@ -554,6 +554,8 @@ namespace MediaFlux
             double? targetMb = null;
             bool hasCustomTarget = meta.CustomTargetMb.HasValue;
             bool hasCustomProfile = !string.IsNullOrWhiteSpace(meta.CustomCompressionProfile);
+            bool automaticQuality = policyIntent == null &&
+                UiGet(IsAutomaticQualitySelected, false);
             StorageSavingsOptions storageSavings =
                 _config.StorageSavings.CloneNormalized();
 
@@ -612,7 +614,7 @@ namespace MediaFlux
             {
                 targetMb = meta!.CustomTargetMb;
             }
-            else if (profileText.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
+            else if (!automaticQuality && profileText.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
             {
                 // Try to keep roughly the same bitrate (with a small safety bump)
                 if (isDvdEncode)
@@ -630,6 +632,14 @@ namespace MediaFlux
                         targetMb = ((srcKbps.Value * 1.15) * durationSec) / 8192.0;
                     }
                 }
+            }
+            else if (automaticQuality)
+            {
+                // Automatic Source Adaptive resolves the frozen CRF/CQ/ICQ
+                // decision from QualityTarget. The legacy file-size profile is
+                // intentionally not allowed to turn that intent into a fixed
+                // target-size command.
+                targetMb = null;
             }
             else
             {

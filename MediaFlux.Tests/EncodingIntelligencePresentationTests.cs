@@ -118,7 +118,7 @@ public sealed class EncodingIntelligencePresentationTests
         EncodingIntelligencePresentation.Model model = EncodingIntelligencePresentation.Create(plan);
 
         Assert.Equal("CQ 19", Item(model, "Effective quality"));
-        Assert.Equal("Automatic / Source Adaptive", Item(model, "Quality mode"));
+        Assert.Equal("Automatic / Source Adaptive", Item(model, "Mode"));
         Assert.Contains(model.Reasons, item => item.Label == "Why this quality?" && item.Value.Contains("High source density"));
     }
     private static EncodingPlan Plan(

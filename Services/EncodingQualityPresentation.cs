@@ -12,11 +12,13 @@ public static class EncodingQualityPresentation
 
         if (resolution.IsSupersededByTargetSize)
         {
-            string configuredTarget = resolution.Intent.Target?.ToString() ?? "Configured quality";
+            string configuredTarget = resolution.Intent.Target is { } configuredQualityTarget
+                ? QualityTargetDisplayName(configuredQualityTarget)
+                : "Configured quality";
             return
             [
-                new("Quality target", configuredTarget),
-                new("Quality mode", "Target Size / Bitrate"),
+                new("Quality preference", configuredTarget),
+                new("Mode", "Target Size / Bitrate"),
                 new("Effective quality", "Not used"),
                 new("Quality explanation", "Target-size mode supersedes constant-quality mode.")
             ];
@@ -24,7 +26,7 @@ public static class EncodingQualityPresentation
 
         bool automatic = resolution.Intent.Kind == EncodingQualityIntentKind.QualityTarget;
         string target = automatic
-            ? resolution.Intent.Target!.Value.ToString()
+            ? QualityTargetDisplayName(resolution.Intent.Target!.Value)
             : "Legacy numeric";
         string mechanism = Mechanism(resolution.Mechanism);
         string effective = resolution.EffectiveQuality is { } value
@@ -32,8 +34,8 @@ public static class EncodingQualityPresentation
             : "Not used";
         var items = new List<EncodingPlanItem>
         {
-            new("Quality target", target),
-            new("Quality mode", automatic ? "Automatic / Source Adaptive" : "Manual / Legacy Numeric"),
+            new("Quality preference", target),
+            new("Mode", automatic ? "Automatic / Source Adaptive" : "Manual / Legacy Numeric"),
             new("Effective quality", effective),
             new("Mechanism", mechanism)
         };
@@ -51,7 +53,9 @@ public static class EncodingQualityPresentation
             return string.Empty;
         if (resolution.IsSupersededByTargetSize)
             return "Target Size / Bitrate (quality superseded)";
-        string target = resolution.Intent.Target?.ToString() ?? "Legacy numeric";
+        string target = resolution.Intent.Target is { } qualityTarget
+            ? QualityTargetDisplayName(qualityTarget)
+            : "Legacy numeric";
         string value = resolution.EffectiveQuality is { } quality
             ? $"{Mechanism(resolution.Mechanism)} {quality}"
             : "Not used";
@@ -64,6 +68,16 @@ public static class EncodingQualityPresentation
         EncoderQualityMechanism.Crf => "CRF",
         EncoderQualityMechanism.Icq => "ICQ",
         _ => "Quality"
+    };
+
+    public static string QualityTargetDisplayName(QualityTarget target) => target switch
+    {
+        QualityTarget.SmallerFile => "Smaller File",
+        QualityTarget.Efficient => "Efficient",
+        QualityTarget.Balanced => "Balanced",
+        QualityTarget.HighQuality => "High Quality",
+        QualityTarget.MaximumQuality => "Maximum Quality",
+        _ => target.ToString()
     };
 
     private static string Assessment(EncodingQualityAssessment assessment) => assessment switch

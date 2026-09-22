@@ -2070,7 +2070,9 @@ namespace MediaFlux
                 ? $"{outputDimensions.width} × {outputDimensions.height}"
                 : "--");
             SetPreviewValue("Codec", codec);
-            SetPreviewValue("Quality", comboCompressionProfile?.Text ?? "--");
+            SetPreviewValue("Quality", IsAutomaticQualitySelected()
+                ? QualityTargetDisplayName(GetSelectedQualityTarget())
+                : comboCompressionProfile?.Text ?? "--");
             SetPreviewValue("Data rate", dataRate > 0 ? $"{dataRate:0}kbps" : "--");
             SetPreviewValue("Total bitrate", bitrateKbps > 0 ? $"{bitrateKbps:0}kbps" : "--");
             SetPreviewValue("Frame rate", fps > 0 ? $"{fps:0.##} frames/second" : "--");
@@ -2919,7 +2921,7 @@ namespace MediaFlux
             lblAutoQuality = new Label
             {
                 AutoSize = true,
-                Text = "Quality Target",
+                Text = "Quality preference",
                 TextAlign = ContentAlignment.MiddleLeft,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(18, 5, 14, 3)
@@ -2955,7 +2957,7 @@ namespace MediaFlux
                 Value = 2,
                 Height = 38,
                 Dock = DockStyle.Fill,
-                AccessibleName = "Quality target",
+                AccessibleName = "Quality preference",
                 TabIndex = comboQualityMode.TabIndex + 1
             };
             trkQualityTarget.ValueChanged += (_, __) =>
@@ -2980,7 +2982,7 @@ namespace MediaFlux
                 Height = 24,
                 Dock = DockStyle.Fill,
                 Margin = new Padding(0, 0, 0, 3),
-                AccessibleName = "Quality target labels"
+                AccessibleName = "Quality preference labels"
             };
             foreach (QualityTarget target in QualityTargetOrder)
                 pnlQualityTargetLabels.Controls.Add(new Label
@@ -3024,7 +3026,10 @@ namespace MediaFlux
             nudAutoQuality.Enabled = false;
             if (chkAutoTargetSize != null)
                 chkAutoTargetSize.CheckedChanged += (_, __) =>
+                {
                     UpdateQualityIntentUi();
+                    UpdateEncodePreview();
+                };
 
             // This control adds a row participant after the initial table sizing.
             // Allow the explicit pass below even if an earlier SizeChanged applied
@@ -3602,14 +3607,17 @@ namespace MediaFlux
         {
             QualityTarget target = GetSelectedQualityTarget();
             bool automatic = IsAutomaticQualitySelected();
+            bool manualTargetSize = chkAutoTargetSize?.Checked == false;
             if (lblQualityTargetValue != null)
                 lblQualityTargetValue.Text = $"{QualityTargetDisplayName(target)}  ({QualityTargetToTrackValue(target) + 1} of 5)";
             if (lblQualityTargetDescription != null)
-                lblQualityTargetDescription.Text = automatic
+                lblQualityTargetDescription.Text = automatic && !manualTargetSize
                     ? QualityTargetDescription(target)
-                    : "Manual numeric quality is used. Lower values generally preserve more detail.";
+                    : automatic
+                        ? "Manual target size is authoritative; the quality preference is retained but does not control this encode."
+                        : "Manual encoder quality is used. Lower values generally preserve more detail.";
             if (trkQualityTarget != null)
-                trkQualityTarget.Enabled = automatic;
+                trkQualityTarget.Enabled = automatic && !manualTargetSize;
             if (pnlQualityTargetLabels != null)
                 pnlQualityTargetLabels.Visible = automatic;
             if (lblQualityTargetValue != null)
@@ -3625,10 +3633,17 @@ namespace MediaFlux
             }
             if (lblManualQuality != null)
                 lblManualQuality.Visible = !automatic;
+            // The legacy compression profile projects a fixed output size. It is
+            // not an automatic quality intent, so do not show it beside the
+            // canonical Source Adaptive preference.
+            lblCompressionProfile.Visible = !automatic;
+            comboCompressionProfile.Visible = !automatic;
+            if (!automatic)
+                lblCompressionProfile.Text = "File-size estimate";
             pnlQualityIntent?.PerformLayout();
             pnlQualityIntent?.Parent?.PerformLayout();
             if (lblAutoQuality != null)
-                lblAutoQuality.Text = automatic ? "Quality Target" : "Quality";
+                lblAutoQuality.Text = automatic ? "Quality preference" : "Encoder quality";
         }
 
         private EncodingQualityIntent? GetQualityIntentFromUi() =>

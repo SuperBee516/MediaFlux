@@ -93,9 +93,22 @@ public sealed class QueueAnalysisPresentationTests
         QueueAnalysisPresentation presentation = QueueAnalysisPresentation.Create(null, quality: quality);
 
         Assert.True(presentation.IsAvailable);
-        Assert.Contains("Quality target: Balanced", presentation.BuildTooltip());
-        Assert.Contains("Quality mode: Automatic / Source Adaptive", presentation.BuildTooltip());
+        Assert.Contains("Quality preference: Balanced", presentation.BuildTooltip());
+        Assert.Contains("Mode: Automatic / Source Adaptive", presentation.BuildTooltip());
         Assert.Contains("Effective quality: CQ 19", presentation.BuildTooltip());
+    }
+
+    [Fact]
+    public void HighQualityPreferenceIsTheOnlyFiveLevelValuePresentedForAutomaticMode()
+    {
+        QueueAnalysisPresentation presentation = QueueAnalysisPresentation.Create(null,
+            quality: Quality(QualityTarget.HighQuality, EncoderQualityMechanism.Cq, 20));
+
+        string tooltip = presentation.BuildTooltip();
+
+        Assert.Contains("Quality preference: High Quality", tooltip);
+        Assert.DoesNotContain("Quality preference: Balanced", tooltip);
+        Assert.Contains("Effective quality: CQ 20", tooltip);
     }
 
     [Fact]
@@ -111,7 +124,7 @@ public sealed class QueueAnalysisPresentationTests
 
         Assert.Contains("Target Size / Bitrate", targetSize.BuildTooltip());
         Assert.Contains("Effective quality: Not used", targetSize.BuildTooltip());
-        Assert.Contains("Quality mode: Manual / Legacy Numeric", legacy.BuildTooltip());
+        Assert.Contains("Mode: Manual / Legacy Numeric", legacy.BuildTooltip());
         Assert.DoesNotContain("Automatic / Source Adaptive", legacy.BuildTooltip());
     }
 
