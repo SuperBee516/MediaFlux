@@ -70,8 +70,26 @@ public sealed class MediaFluxStoragePathService
 
     private string? ReadConfiguredRoot()
     {
-        try { return File.Exists(_locationFile) ? Normalize(JsonSerializer.Deserialize<StorageLocation>(File.ReadAllText(_locationFile))?.Root ?? "") : null; }
-        catch { return null; } // A corrupt pointer must retain the compatible default location.
+        try
+        {
+            using FileStream stream = new(_locationFile, FileMode.Open, FileAccess.Read, FileShare.Read);
+            StorageLocation? location = JsonSerializer.Deserialize<StorageLocation>(stream);
+            if (string.IsNullOrWhiteSpace(location?.Root))
+                throw new InvalidDataException("The storage-location.json pointer does not contain a storage root.");
+
+            return Normalize(location.Root);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null; // No pointer is the backward-compatible default-root state.
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            throw new InvalidDataException(
+                $"MediaFlux could not safely read its storage-location.json pointer at '{_locationFile}'. " +
+                "The configured user-data root was not replaced with the default root.",
+                ex);
+        }
     }
     private static string Normalize(string path) => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     internal static bool Same(string left, string right) => string.Equals(Normalize(left), Normalize(right), StringComparison.OrdinalIgnoreCase);

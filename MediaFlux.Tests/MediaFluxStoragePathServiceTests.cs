@@ -1,4 +1,5 @@
 using MediaFlux.Services;
+using MediaFlux.Models;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -28,6 +29,94 @@ public sealed class MediaFluxStoragePathServiceTests : IDisposable
         Assert.False(paths.TryValidateNewRoot(occupied, out _, out _));
         string file = Path.Combine(_root, "not-a-folder"); File.WriteAllText(file, "x");
         Assert.False(paths.TryValidateNewRoot(file, out _, out _));
+    }
+
+    [Fact]
+    public void CustomRootRemainsAuthoritativeAcrossRestartAndUpdateBoundary()
+    {
+        string defaultRoot = Path.Combine(_root, "Default", "UserData");
+        string customRoot = Path.Combine(_root, "Custom", "UserData");
+        string pointer = Path.Combine(_root, "MediaFlux", "storage-location.json");
+        Directory.CreateDirectory(defaultRoot);
+        Directory.CreateDirectory(customRoot);
+
+        new Config { OutputSuffix = "_DEFAULT", PreventSleepDuringEncoding = false, BackupsToKeep = 1 }
+            .Save(Path.Combine(defaultRoot, "config.json"));
+        new Config { OutputSuffix = "_CUSTOM", PreventSleepDuringEncoding = true, BackupsToKeep = 7 }
+            .Save(Path.Combine(customRoot, "config.json"));
+
+        var beforeUpdate = new MediaFluxStoragePathService(defaultRoot, pointer);
+        beforeUpdate.WriteConfiguredRoot(customRoot);
+        AssertCustomConfig(beforeUpdate);
+
+        // A new service instance models the first startup after Velopack replaces the app tree.
+        var afterUpdate = new MediaFluxStoragePathService(defaultRoot, pointer);
+        AssertCustomConfig(afterUpdate);
+    }
+
+    [Fact]
+    public void MissingPointerRetainsBackwardCompatibleDefaultRoot()
+    {
+        string defaultRoot = Path.Combine(_root, "Default", "UserData");
+        var paths = new MediaFluxStoragePathService(defaultRoot, Path.Combine(_root, "missing.json"));
+
+        Assert.Equal(Path.GetFullPath(defaultRoot), paths.Root);
+    }
+
+    [Theory]
+    [InlineData("not-json")]
+    [InlineData("{}")]
+    [InlineData("{\"Root\":\"\"}")]
+    public void MalformedPointerFailsClosedInsteadOfFallingBack(string contents)
+    {
+        string defaultRoot = Path.Combine(_root, "Default", "UserData");
+        string pointer = Path.Combine(_root, "storage-location.json");
+        File.WriteAllText(pointer, contents);
+        var paths = new MediaFluxStoragePathService(defaultRoot, pointer);
+
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(() => _ = paths.Root);
+
+        Assert.Contains("was not replaced with the default root", exception.Message);
+    }
+
+    [Fact]
+    public void ConfiguredRootRemainsAuthoritativeWhenDefaultAndCustomBothExist()
+    {
+        string defaultRoot = Path.Combine(_root, "Default", "UserData");
+        string customRoot = Path.Combine(_root, "Custom", "UserData");
+        string pointer = Path.Combine(_root, "storage-location.json");
+        new Config { OutputSuffix = "_DEFAULT" }.Save(Path.Combine(defaultRoot, "config.json"));
+        new Config { OutputSuffix = "_CUSTOM" }.Save(Path.Combine(customRoot, "config.json"));
+        var paths = new MediaFluxStoragePathService(defaultRoot, pointer);
+        paths.WriteConfiguredRoot(customRoot);
+
+        Assert.Equal("_CUSTOM", Config.Load(paths.Config).OutputSuffix);
+    }
+
+    [Fact]
+    public void ConfiguredUnavailableRootDoesNotFallbackToDefault()
+    {
+        string defaultRoot = Path.Combine(_root, "Default", "UserData");
+        string unavailableRoot = Path.Combine(_root, "unavailable-root");
+        string pointer = Path.Combine(_root, "storage-location.json");
+        Directory.CreateDirectory(defaultRoot);
+        File.WriteAllText(unavailableRoot, "not a directory");
+        var paths = new MediaFluxStoragePathService(defaultRoot, pointer);
+        paths.WriteConfiguredRoot(unavailableRoot);
+
+        Assert.Equal(Path.GetFullPath(unavailableRoot), paths.Root);
+        Assert.Throws<IOException>(() => paths.InitializeDirectories());
+        Assert.NotEqual(Path.GetFullPath(defaultRoot), paths.Root);
+    }
+
+    private static void AssertCustomConfig(MediaFluxStoragePathService paths)
+    {
+        Assert.EndsWith(Path.Combine("Custom", "UserData"), paths.Root, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(paths.Root + Path.DirectorySeparatorChar + "config.json", paths.Config, StringComparer.OrdinalIgnoreCase);
+        Config config = Config.Load(paths.Config);
+        Assert.Equal("_CUSTOM", config.OutputSuffix);
+        Assert.True(config.PreventSleepDuringEncoding);
+        Assert.Equal(7, config.BackupsToKeep);
     }
 
     [Fact]

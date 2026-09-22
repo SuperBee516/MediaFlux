@@ -110,6 +110,7 @@ jobs:
 
           $forbidden = Get-ChildItem .\artifacts\publish -Recurse -File | Where-Object {
             $_.Name -eq 'config.json' -or
+            $_.Name -eq 'storage-location.json' -or
             $_.Extension -eq '.pdb' -or
             $_.FullName -match '[\\/]data[\\/]'
           }
