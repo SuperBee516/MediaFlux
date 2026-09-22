@@ -66,6 +66,16 @@ namespace MediaFlux.Services
         public int? CalibrationSampleCount { get; set; }
         public string CalibrationCohortKey { get; set; } = "";
         public string CalibrationReason { get; set; } = "";
+        public long? HypotheticalCalibratedOutputSizeBytes { get; set; }
+        public DateTime? CalibrationEvidenceCutoffUtc { get; set; }
+        public DateTime? CalibrationDecisionUtc { get; set; }
+        public string CalibrationDecision { get; set; } = "";
+        public string CalibrationEffectivenessState { get; set; } = "";
+        public int? CalibrationEvaluationCount { get; set; }
+        public double? CalibrationMedianImprovementPercent { get; set; }
+        public double? CalibrationImprovedRatePercent { get; set; }
+        public double? CalibrationWorsenedRatePercent { get; set; }
+        public DateTime? CalibrationEffectivenessSinceUtc { get; set; }
         public double? PredictedCompressionRatio { get; set; }
         public double? PredictedProcessingSeconds { get; set; }
         public string PredictionConfidence { get; set; } = "";
@@ -237,6 +247,8 @@ namespace MediaFlux.Services
             record.CalibrationConfidence = record.CalibrationConfidence?.Trim() ?? "";
             record.CalibrationCohortKey = record.CalibrationCohortKey?.Trim() ?? "";
             record.CalibrationReason = record.CalibrationReason?.Trim() ?? "";
+            record.CalibrationDecision = record.CalibrationDecision?.Trim() ?? "";
+            record.CalibrationEffectivenessState = record.CalibrationEffectivenessState?.Trim() ?? "";
             record.TerminalResult = record.TerminalResult?.Trim() ?? "";
             if (record.DiagnosticSummary is { } diagnostic)
             {
@@ -269,12 +281,22 @@ namespace MediaFlux.Services
                 record.PredictedOutputSizeBytes = null;
             if (record.BasePredictedOutputSizeBytes is < 0)
                 record.BasePredictedOutputSizeBytes = null;
+            if (record.HypotheticalCalibratedOutputSizeBytes is < 0)
+                record.HypotheticalCalibratedOutputSizeBytes = null;
             if (record.CalibrationCorrectionPercent is { } correction && !double.IsFinite(correction))
                 record.CalibrationCorrectionPercent = null;
             if (record.CalibrationMedianSignedErrorPercent is { } bias && !double.IsFinite(bias))
                 record.CalibrationMedianSignedErrorPercent = null;
             if (record.CalibrationSampleCount is < 0)
                 record.CalibrationSampleCount = null;
+            if (record.CalibrationEvaluationCount is < 0)
+                record.CalibrationEvaluationCount = null;
+            if (record.CalibrationMedianImprovementPercent is { } improvement && !double.IsFinite(improvement))
+                record.CalibrationMedianImprovementPercent = null;
+            if (record.CalibrationImprovedRatePercent is { } improvedRate && !double.IsFinite(improvedRate))
+                record.CalibrationImprovedRatePercent = null;
+            if (record.CalibrationWorsenedRatePercent is { } worsenedRate && !double.IsFinite(worsenedRate))
+                record.CalibrationWorsenedRatePercent = null;
             if (record.PredictedCompressionRatio is not >= 0 ||
                 !double.IsFinite(record.PredictedCompressionRatio.Value))
                 record.PredictedCompressionRatio = null;

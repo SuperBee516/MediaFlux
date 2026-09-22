@@ -353,7 +353,7 @@ namespace MediaFlux.Services
                     (item.ManualTargetMb > 0 ? item.ManualTargetMb : 0);
                 double baseEstMb = estMb;
                 EncodingSizePredictionCalibration? sizeCalibration = null;
-                if (useProfileEstimate && !item.IsCustom && baseEstMb > 0)
+                if (baseEstMb > 0)
                 {
                     try
                     {
@@ -371,7 +371,17 @@ namespace MediaFlux.Services
                             PredictionCodecFamily(codec) == PredictionCodecFamily(item.Encoder.FfmpegCodec));
                         sizeCalibration = _statistics == null
                             ? EncodingSizePredictionCalibration.Unavailable(baseEstMb, "Historical statistics are unavailable.")
-                            : _accuracy.CalibrateSizePrediction(baseEstMb, calibrationContext, _statistics.GetAll(), item.HistoricalCalibrationEnabled);
+                            : _accuracy.CalibrateSizePrediction(
+                                baseEstMb,
+                                calibrationContext,
+                                _statistics.GetAll(),
+                                item.HistoricalCalibrationEnabled,
+                                eligible: useProfileEstimate && !item.IsCustom,
+                                ineligibleReason: item.IsCustom
+                                    ? "Custom queue settings are not eligible for historical size calibration."
+                                    : !useProfileEstimate
+                                        ? "Manual target-size mode is authoritative and is not eligible for historical calibration."
+                                        : "This estimate is not eligible for historical calibration.");
                     }
                     catch (Exception ex)
                     {
@@ -384,10 +394,14 @@ namespace MediaFlux.Services
                         ? $"Manual target selected: {item.ManualTargetMb:0.##} MB."
                         : "Required metadata is unavailable.");
                 if (sizeCalibration != null)
-                    estimateDiagnostic = $"{estimateDiagnostic} Size calibration: {sizeCalibration.Reason}" +
-                        (sizeCalibration.Applied
-                            ? $" {sizeCalibration.Confidence} confidence, N={sizeCalibration.SampleCount}, correction {sizeCalibration.EffectiveCorrectionPercent:+0.##;-0.##;0}% (median signed error {sizeCalibration.MedianSignedErrorPercent:+0.##;-0.##;0}%)."
-                            : string.Empty);
+                    estimateDiagnostic = $"{estimateDiagnostic} Size calibration decision: {sizeCalibration.Decision}; {sizeCalibration.Reason} " +
+                        $"Historical {sizeCalibration.Confidence} confidence, N={sizeCalibration.SampleCount}, median signed error {sizeCalibration.MedianSignedErrorPercent:+0.##;-0.##;0}%; " +
+                        $"effectiveness {sizeCalibration.EffectivenessState}, evaluation N={sizeCalibration.EvaluationSampleCount}, median improvement {sizeCalibration.MedianCalibrationImprovementPercent:+0.##;-0.##;0}%." +
+                        (sizeCalibration.Decision == EncodingCalibrationDecision.ShadowEvaluationOnly
+                            ? $" Shadow candidate {sizeCalibration.HypotheticalCalibratedPredictionMb:0.##} MB; displayed estimate remains base {baseEstMb:0.##} MB."
+                            : sizeCalibration.Applied
+                                ? $" Applied correction {sizeCalibration.EffectiveCorrectionPercent:+0.##;-0.##;0}%."
+                                : string.Empty);
                 System.Diagnostics.Debug.WriteLine(
                     $"[SizeEstimate] {item.Path}: {estimateDiagnostic}");
                 string? unavailableReason = null;

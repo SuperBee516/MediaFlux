@@ -38,8 +38,8 @@ public static class EncodingIntelligencePresentation
             technical.Add(new("History match", $"Tier {prediction.MatchTier} · {prediction.SampleCount} comparable completed jobs"));
         if (plan.SizePredictionCalibration is { } calibrationEvidence)
             technical.Add(new("Size calibration", calibrationEvidence.Applied
-                ? $"{calibrationEvidence.Confidence} · N={calibrationEvidence.SampleCount} · correction {calibrationEvidence.EffectiveCorrectionPercent:+0.##;-0.##;0}% · median signed error {calibrationEvidence.MedianSignedErrorPercent:+0.##;-0.##;0}%"
-                : calibrationEvidence.Reason));
+                ? $"{calibrationEvidence.Decision} · {calibrationEvidence.Confidence} historical confidence · N={calibrationEvidence.SampleCount} · correction {calibrationEvidence.EffectiveCorrectionPercent:+0.##;-0.##;0}% · median signed error {calibrationEvidence.MedianSignedErrorPercent:+0.##;-0.##;0}% · effectiveness {calibrationEvidence.EffectivenessState}, eval N={calibrationEvidence.EvaluationSampleCount}, median improvement {calibrationEvidence.MedianCalibrationImprovementPercent:+0.##;-0.##;0}%"
+                : $"{calibrationEvidence.Decision} · {calibrationEvidence.Reason} · {calibrationEvidence.Confidence} historical confidence, N={calibrationEvidence.SampleCount} · effectiveness {calibrationEvidence.EffectivenessState}, eval N={calibrationEvidence.EvaluationSampleCount}, median improvement {calibrationEvidence.MedianCalibrationImprovementPercent:+0.##;-0.##;0}%"));
         if (outcome != null)
         {
             technical.Add(new("Terminal result", outcome.TerminalResult.ToString()));

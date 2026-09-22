@@ -27,7 +27,10 @@ namespace MediaFlux
         {
             try
             {
-                using var form = new EncodingResultsForm(_encodingStatisticsService, _historyService);
+                using var form = new EncodingResultsForm(
+                    _encodingStatisticsService,
+                    _historyService,
+                    _config.UseHistoricalSizePredictionCalibration);
                 form.ShowDialog(this);
             }
             catch (Exception ex)

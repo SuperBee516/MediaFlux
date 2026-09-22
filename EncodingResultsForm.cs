@@ -1,4 +1,5 @@
 using System.Drawing;
+using MediaFlux.Models;
 using MediaFlux.Services;
 
 namespace MediaFlux;
@@ -11,6 +12,8 @@ public sealed class EncodingResultsForm : MediaFluxForm
     private readonly EncodingPredictionAccuracyService _accuracy = new();
     private readonly DataGridView _results = Grid("encodingResultsGrid");
     private readonly DataGridView _cohorts = Grid("encodingResultsCohorts");
+    private readonly DataGridView _calibrationCohorts = Grid("encodingCalibrationEffectivenessGrid");
+    private readonly bool _calibrationEnabled;
     private readonly TextBox _details = new() { Dock = DockStyle.Fill, ReadOnly = true, Multiline = true, ScrollBars = ScrollBars.Vertical, BackColor = Color.White };
     private readonly ComboBox _codec = Filter("All codecs");
     private readonly ComboBox _encoder = Filter("All encoders");
@@ -18,9 +21,9 @@ public sealed class EncodingResultsForm : MediaFluxForm
     private readonly Label _summary = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8), BackColor = Color.White };
     private List<EncodingPredictionAccuracyRow> _rows = new();
 
-    public EncodingResultsForm(EncodingStatisticsService statistics, HistoryService history)
+    public EncodingResultsForm(EncodingStatisticsService statistics, HistoryService history, bool calibrationEnabled = true)
     {
-        _statistics = statistics; _history = history;
+        _statistics = statistics; _history = history; _calibrationEnabled = calibrationEnabled;
         Text = "Encoding Results"; StartPosition = FormStartPosition.CenterParent; MinimumSize = new Size(1050, 700); Size = new Size(1300, 820); BackColor = Color.FromArgb(243, 246, 249);
         BuildUi(); LoadRows();
     }
@@ -35,11 +38,17 @@ public sealed class EncodingResultsForm : MediaFluxForm
         var refresh = new Button { Text = "Refresh", Width = 84, Margin = new Padding(14, 3, 0, 3) }; refresh.Click += (_, _) => LoadRows(); filters.Controls.Add(refresh); root.Controls.Add(filters, 0, 1);
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 350 };
         ConfigureResults(); ConfigureCohorts();
-        var resultsPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 }; resultsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 48)); resultsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); resultsPanel.Controls.Add(_summary, 0, 0); resultsPanel.Controls.Add(_results, 0, 1); split.Panel1.Controls.Add(resultsPanel);
-        var cohortPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 }; cohortPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24)); cohortPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); cohortPanel.Controls.Add(new Label { Text = "Clean completed cohorts (failed, canceled, sample, and recovered attempts are excluded by default)", Dock = DockStyle.Fill }, 0, 0); cohortPanel.Controls.Add(_cohorts, 0, 1); split.Panel2.Controls.Add(cohortPanel); root.Controls.Add(split, 0, 2); root.Controls.Add(_details, 0, 3); Controls.Add(root);
+        var resultsPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 }; resultsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 58)); resultsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); resultsPanel.Controls.Add(_summary, 0, 0); resultsPanel.Controls.Add(_results, 0, 1); split.Panel1.Controls.Add(resultsPanel);
+        var cohortTabs = new TabControl { Dock = DockStyle.Fill };
+        var predictionTab = new TabPage("Prediction cohorts");
+        var cohortPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 }; cohortPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24)); cohortPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); cohortPanel.Controls.Add(new Label { Text = "Clean completed cohorts (failed, canceled, sample, and recovered attempts are excluded by default)", Dock = DockStyle.Fill }, 0, 0); cohortPanel.Controls.Add(_cohorts, 0, 1); predictionTab.Controls.Add(cohortPanel);
+        var calibrationTab = new TabPage("Calibration effectiveness");
+        ConfigureCalibrationCohorts(); calibrationTab.Controls.Add(_calibrationCohorts);
+        cohortTabs.TabPages.Add(predictionTab); cohortTabs.TabPages.Add(calibrationTab); split.Panel2.Controls.Add(cohortTabs); root.Controls.Add(split, 0, 2); root.Controls.Add(_details, 0, 3); Controls.Add(root);
         foreach (ComboBox filter in new[] { _codec, _encoder, _recovery }) filter.SelectedIndexChanged += (_, _) => Bind();
         _results.SelectionChanged += (_, _) => ShowDetails();
         _cohorts.SelectionChanged += (_, _) => ShowCohortDetails();
+        _calibrationCohorts.SelectionChanged += (_, _) => ShowCalibrationCohortDetails();
     }
 
     private void ConfigureResults()
@@ -49,6 +58,20 @@ public sealed class EncodingResultsForm : MediaFluxForm
     private void ConfigureCohorts()
     {
         Add(_cohorts, "cohort", "Cohort", 270); Add(_cohorts, "samples", "N size/ETA", 82); Add(_cohorts, "bias", "Median bias", 95); Add(_cohorts, "absolute", "Median abs. error", 120); Add(_cohorts, "iqr", "Bias IQR", 85); Add(_cohorts, "confidence", "Confidence", 90); Add(_cohorts, "state", "Bias state", 105); Add(_cohorts, "savings", "Expected → realized savings", 180);
+    }
+    private void ConfigureCalibrationCohorts()
+    {
+        Add(_calibrationCohorts, "cohortKey", "Calibration cohort", 240);
+        Add(_calibrationCohorts, "historicalConfidence", "Historical confidence", 105);
+        Add(_calibrationCohorts, "historicalN", "Historical N", 76);
+        Add(_calibrationCohorts, "evaluationN", "Evaluation N", 78);
+        Add(_calibrationCohorts, "baseApe", "Base median APE", 98);
+        Add(_calibrationCohorts, "calibratedApe", "Calibrated median APE", 118);
+        Add(_calibrationCohorts, "improvement", "Median improvement", 110);
+        Add(_calibrationCohorts, "improved", "Improved %", 82);
+        Add(_calibrationCohorts, "worsened", "Worsened %", 82);
+        Add(_calibrationCohorts, "effectiveness", "Effectiveness", 102);
+        Add(_calibrationCohorts, "eligible", "Current eligibility", 112);
     }
     private void LoadRows()
     {
@@ -67,9 +90,22 @@ public sealed class EncodingResultsForm : MediaFluxForm
             (includeRecovered || !row.Record.RecoveredSuccessful)).ToArray();
         EncodingPredictionAccuracyMetrics metrics = _accuracy.Summarize(filtered, includeRecovered);
         EncodingCalibrationEvaluation calibration = EncodingPredictionAccuracyService.EvaluateCalibrations(filtered.Select(row => row.Record));
-        _summary.Text = $"Clean completed: {metrics.CompletedCount}   •   Size N: {metrics.SizePredictionCount} (median bias {Percent(metrics.MedianSizeSignedPercentageError)}, median abs. error {Percent(metrics.MedianSizeAbsolutePercentageError)}, IQR {Percent(metrics.SizeSignedPercentageIqr)})   •   ETA N: {metrics.EtaPredictionCount} (median abs. error {Percent(metrics.MedianEtaAbsolutePercentageError)})   •   Calibrated N: {calibration.CalibratedCount} (base bias {Percent(calibration.MedianBaseSignedErrorPercent)} → calibrated {Percent(calibration.MedianCalibratedSignedErrorPercent)}, median abs-error change {Percent(calibration.MedianAbsoluteErrorImprovement)}; {calibration.Improved} improved / {calibration.Neutral} neutral / {calibration.Worsened} worsened)   •   {metrics.Confidence} / {BiasLabel(metrics.BiasState)}";
+        EncodingCalibrationEffectiveness[] calibrationCohorts = EncodingPredictionAccuracyService
+            .BuildCalibrationEffectiveness(filtered.Select(row => row.Record)).ToArray();
+        double? medianCalibrationImprovement = Median(calibrationCohorts.Where(item => item.EvaluationCount >= EncodingPredictionAccuracyService.MinimumCalibrationEffectivenessSamples)
+            .Select(item => item.MedianImprovementPercent));
+        _summary.Text = $"Clean completed: {metrics.CompletedCount} • Size N: {metrics.SizePredictionCount} (median APE {Percent(metrics.MedianSizeAbsolutePercentageError)}) • ETA N: {metrics.EtaPredictionCount} (median APE {Percent(metrics.MedianEtaAbsolutePercentageError)})\r\nCalibration candidates evaluated: {calibration.CalibratedCount} • Cohorts: {calibrationCohorts.Count(item => item.State == EncodingCalibrationEffectivenessState.Effective)} effective / {calibrationCohorts.Count(item => item.State == EncodingCalibrationEffectivenessState.Mixed)} mixed / {calibrationCohorts.Count(item => item.State == EncodingCalibrationEffectivenessState.Harmful)} harmful • Median improvement (N≥{EncodingPredictionAccuracyService.MinimumCalibrationEffectivenessSamples}): {Percent(medianCalibrationImprovement)}";
         _results.Rows.Clear(); foreach (var row in filtered) { int i = _results.Rows.Add(row.Record.EndUtc.ToLocalTime(), row.Record.Outcome, Path.GetFileName(row.Record.SourcePath), Value(row.Record.PredictionTargetCodec, row.Record.Codec), Value(row.Record.EncoderId, row.Record.Encoder), Bytes(row.Record.PredictedOutputSizeBytes), Bytes(row.Record.OutputSizeBytes), Percent(row.SizeAbsolutePercentageError), Percent(row.EtaAbsolutePercentageError), row.Record.RecoveredSuccessful ? "Recovered" : "Normal"); _results.Rows[i].Tag = row; }
         _cohorts.Rows.Clear(); foreach (var cohort in _accuracy.BuildCohorts(filtered, includeRecovered)) { int index = _cohorts.Rows.Add(CohortLabel(cohort), $"{cohort.SizePredictionCount}/{cohort.EtaPredictionCount}", Percent(cohort.MedianSizeSignedPercentageError), Percent(cohort.MedianSizeAbsolutePercentageError), Percent(cohort.SizeSignedPercentageIqr), cohort.Confidence, BiasLabel(cohort.BiasState), $"{Bytes(cohort.PredictedSavingsBytes)} → {Bytes(cohort.ActualSavingsBytes)}"); _cohorts.Rows[index].Tag = cohort; }
+        _calibrationCohorts.Rows.Clear(); foreach (EncodingCalibrationEffectiveness cohort in calibrationCohorts)
+        {
+            bool eligible = _calibrationEnabled && cohort.CurrentlyEligible && cohort.HistoricalConfidence is EncodingPredictionConfidence.High or EncodingPredictionConfidence.Moderate;
+            int index = _calibrationCohorts.Rows.Add(cohort.CohortKey, cohort.HistoricalConfidence, cohort.HistoricalSampleCount,
+                cohort.EvaluationCount, Percent(cohort.MedianBaseAbsoluteErrorPercent), Percent(cohort.MedianCalibratedAbsoluteErrorPercent),
+                Percent(cohort.MedianImprovementPercent), Percent(cohort.ImprovedRatePercent), Percent(cohort.WorsenedRatePercent),
+                cohort.State, eligible ? "Eligible" : !_calibrationEnabled ? "Disabled by user" : cohort.State == EncodingCalibrationEffectivenessState.Harmful ? "Suppressed" : "Not eligible");
+            _calibrationCohorts.Rows[index].Tag = cohort;
+        }
         ShowDetails();
     }
     private void ShowDetails()
@@ -79,7 +115,8 @@ public sealed class EncodingResultsForm : MediaFluxForm
         JobHistoryRecord? history = _history.LoadAll().FirstOrDefault(item => item.Id.Equals(r.Id, StringComparison.OrdinalIgnoreCase));
         string historyDetail = history == null ? "No linked Job History entry is available (older observations did not retain the shared operation ID)." : $"Job History: {JobHistoryPresentation.OutcomeSummary(history)}\r\nFinalization: {history.FinalizationOutcome ?? "Unavailable"}";
         EncodingCalibrationEvaluationRow? calibration = EncodingPredictionAccuracyService.EvaluateCalibrations(new[] { r }).Rows.FirstOrDefault();
-        string calibrationDetail = calibration == null ? "Size calibration: not applied / unavailable" : $"Size calibration: base {Bytes(r.BasePredictedOutputSizeBytes)}; calibrated {Bytes(r.PredictedOutputSizeBytes)}; base signed error {Percent(calibration.BaseSignedErrorPercent)}; calibrated signed error {Percent(calibration.CalibratedSignedErrorPercent)}; absolute error improvement {Percent(calibration.AbsoluteErrorImprovement)}; {calibration.Outcome}; {Value(r.CalibrationConfidence)} confidence, N={r.CalibrationSampleCount?.ToString() ?? "Unavailable"}; {Value(r.CalibrationReason)}";
+        string calibrationDetail = $"Calibration decision: {Value(r.CalibrationDecision, r.CalibrationApplied == true ? "Applied" : "Not available")}; effectiveness={Value(r.CalibrationEffectivenessState)}; evidence cutoff={r.CalibrationEvidenceCutoffUtc?.ToLocalTime().ToString("g") ?? "Unavailable"}; evaluation N={r.CalibrationEvaluationCount?.ToString() ?? "0"}. Base {Bytes(r.BasePredictedOutputSizeBytes)}; displayed {Bytes(r.PredictedOutputSizeBytes)}; hypothetical {Bytes(r.HypotheticalCalibratedOutputSizeBytes)}; reason={Value(r.CalibrationReason)}" +
+            (calibration == null ? "" : $"\r\nPost-cutoff result: Base APE {Percent(calibration.BaseAbsoluteErrorPercent)}; candidate APE {Percent(calibration.CalibratedAbsoluteErrorPercent)}; improvement {Percent(calibration.AbsoluteErrorImprovement)}; {calibration.Outcome}.");
         _details.Text = $"Operation: {r.Id}\r\nFrozen plan: {Value(r.PredictionPlanId)}\r\nTerminal: {Value(r.TerminalResult, r.Outcome.ToString())}\r\nSource: {r.SourcePath}\r\nOutput: {r.OutputPath}\r\n\r\nSize: predicted {Bytes(r.PredictedOutputSizeBytes)}; actual {Bytes(r.OutputSizeBytes)}; signed error {Bytes(row.SizeSignedErrorBytes)}; APE {Percent(row.SizeAbsolutePercentageError)}\r\n{calibrationDetail}\r\nETA: predicted {Duration(r.PredictedProcessingSeconds)}; actual {Duration(r.ProcessingSeconds)}; signed error {Duration(row.EtaSignedErrorSeconds)}; APE {Percent(row.EtaAbsolutePercentageError)}\r\n\r\nPlan context: source={Value(r.PredictionSourceCodec)}; target={Value(r.PredictionTargetCodec)}; same codec={r.PredictionSameCodec?.ToString() ?? "Unavailable"}; quality={Value(r.PredictionQuality)}; assessment={Value(r.PredictionAssessment)}; recommendation={Value(r.PredictionRecommendation)}; confidence={Value(r.PredictionConfidence)}\r\n\r\n{historyDetail}";
     }
     private void ShowCohortDetails()
@@ -87,12 +124,25 @@ public sealed class EncodingResultsForm : MediaFluxForm
         if (_cohorts.SelectedRows.Count == 0 || _cohorts.SelectedRows[0].Tag is not EncodingPredictionAccuracyCohort cohort) return;
         _details.Text = $"{CohortLabel(cohort)}\r\n\r\nSize predictions: N={cohort.SizePredictionCount}; median bias={Percent(cohort.MedianSizeSignedPercentageError)}; median absolute error={Percent(cohort.MedianSizeAbsolutePercentageError)}; signed-error IQR={Percent(cohort.SizeSignedPercentageIqr)}\r\nETA predictions: N={cohort.EtaPredictionCount}; median bias={Percent(cohort.MedianEtaSignedPercentageError)}; median absolute error={Percent(cohort.MedianEtaAbsolutePercentageError)}; signed-error IQR={Percent(cohort.EtaSignedPercentageIqr)}\r\n\r\nConfidence: {cohort.Confidence}. Bias state: {BiasLabel(cohort.BiasState)}.\r\nExpected savings: {Bytes(cohort.PredictedSavingsBytes)}; realized savings: {Bytes(cohort.ActualSavingsBytes)}.\r\n\r\nPercentages are actual minus predicted, divided by predicted. IQR uses linear-interpolated Q3 minus Q1. Recovered attempts are only included when the recovery filter is enabled.";
     }
+    private void ShowCalibrationCohortDetails()
+    {
+        if (_calibrationCohorts.SelectedRows.Count == 0 || _calibrationCohorts.SelectedRows[0].Tag is not EncodingCalibrationEffectiveness cohort) return;
+        bool eligible = _calibrationEnabled && cohort.CurrentlyEligible && cohort.HistoricalConfidence is EncodingPredictionConfidence.High or EncodingPredictionConfidence.Moderate;
+        _details.Text = $"Calibration cohort: {cohort.CohortKey}\r\n\r\nHistorical calibration evidence: {cohort.HistoricalConfidence}, N={cohort.HistoricalSampleCount}.\r\nPost-calibration evaluation N={cohort.EvaluationCount}; median Base APE={Percent(cohort.MedianBaseAbsoluteErrorPercent)}; median Calibrated APE={Percent(cohort.MedianCalibratedAbsoluteErrorPercent)}; median improvement={Percent(cohort.MedianImprovementPercent)} (Base APE − Calibrated APE).\r\nImproved={cohort.Improved} ({Percent(cohort.ImprovedRatePercent)}); neutral={cohort.Neutral}; worsened={cohort.Worsened} ({Percent(cohort.WorsenedRatePercent)}).\r\nEffectiveness: {cohort.State}; current calibration: { (eligible ? "eligible" : !_calibrationEnabled ? "disabled by user" : cohort.State == EncodingCalibrationEffectivenessState.Harmful ? "suppressed as harmful (shadow evaluation only)" : "not eligible") }.\r\n\r\nEvaluation requires a finalized clean result whose completion time is later than that prediction's persisted training-evidence cutoff. Legacy Phase 1 records without a cutoff do not count as post-calibration evidence.\r\nExample (illustrative): Base APE 10% − Calibrated APE 7% = +3 percentage points of improvement.";
+    }
     private static DataGridView Grid(string name) => new() { Name = name, Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false, AutoGenerateColumns = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = false, RowHeadersVisible = false };
     private static ComboBox Filter(params string[] values) { var box = new ComboBox { Width = 150, DropDownStyle = ComboBoxStyle.DropDownList }; box.Items.AddRange(values); box.SelectedIndex = 0; return box; }
     private static void Add(DataGridView grid, string name, string text, int width) => grid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = text, Width = width, SortMode = DataGridViewColumnSortMode.Automatic });
     private static void SetItems(ComboBox box, string first, IEnumerable<string> values) { string selected = box.Text; box.Items.Clear(); box.Items.Add(first); foreach (string value in values.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(value => value)) box.Items.Add(value); box.SelectedItem = box.Items.Contains(selected) ? selected : first; }
     private static string Value(string? primary, string? fallback = null) => string.IsNullOrWhiteSpace(primary) ? (string.IsNullOrWhiteSpace(fallback) ? "Unavailable" : fallback.Trim()) : primary.Trim();
     private static string Percent(double? value) => value.HasValue && double.IsFinite(value.Value) ? $"{value.Value:0.#}%" : "—";
+    private static double? Median(IEnumerable<double?> values)
+    {
+        double[] ordered = values.Where(value => value.HasValue && double.IsFinite(value.Value)).Select(value => value!.Value).OrderBy(value => value).ToArray();
+        if (ordered.Length == 0) return null;
+        int middle = ordered.Length / 2;
+        return ordered.Length % 2 == 1 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
+    }
     private static string Bytes(long? value) => value.HasValue ? EncodingStatisticsCalculator.FormatBytes(value.Value) : "—";
     private static string Duration(double? value) => value is > 0 && double.IsFinite(value.Value) ? TimeSpan.FromSeconds(value.Value).ToString() : "—";
     private static string CohortLabel(EncodingPredictionAccuracyCohort cohort) => $"{cohort.SourceCodec} → {cohort.TargetCodec} · {cohort.ResolutionTier} · {cohort.Encoder} · Q{cohort.Quality} · {cohort.Recommendation}";

@@ -176,8 +176,15 @@ public partial class MainForm
             AddQueueAnalysisItem("Confidence", presentation.Confidence);
         if (presentation.EstimatedResult != null)
             AddQueueAnalysisItem("Estimated result", presentation.EstimatedResult);
-        if (meta.SizePredictionCalibration is { Applied: true } calibration)
-            AddQueueAnalysisItem("Calibrated size estimate", $"{calibration.CalibratedPredictionMb:0.##} MB (base {calibration.BasePredictionMb:0.##} MB)");
+        if (meta.SizePredictionCalibration is { } calibration)
+        {
+            string value = calibration.Applied
+                ? $"{calibration.CalibratedPredictionMb:0.##} MB (base {calibration.BasePredictionMb:0.##} MB)"
+                : calibration.Decision == EncodingCalibrationDecision.ShadowEvaluationOnly
+                    ? $"Shadow candidate {calibration.HypotheticalCalibratedPredictionMb:0.##} MB; displaying base {calibration.BasePredictionMb:0.##} MB"
+                    : $"{calibration.Decision}; displaying base {calibration.BasePredictionMb:0.##} MB";
+            AddQueueAnalysisItem("Size calibration", value);
+        }
         if (presentation.Quality != null)
         {
             foreach (EncodingPlanItem item in EncodingQualityPresentation.CreateItems(presentation.Quality))

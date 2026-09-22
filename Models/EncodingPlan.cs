@@ -65,13 +65,26 @@ public sealed record EncodingFinalizationIntent(bool UsesStagedOutput, bool Prom
 public sealed record EncodingPlanValidation(string Profile, bool OutputValidation, bool SampleComparison);
 public sealed record EncodingHistoricalPrediction(int SampleCount, int MatchTier, EncodingHistoricalConfidence Confidence, double? PredictedSpeedX, double? SpeedLow, double? SpeedHigh, TimeSpan? PredictedDuration, TimeSpan? DurationLow, TimeSpan? DurationHigh, double? PredictedOutputSizeMb, double? OutputSizeLowMb, double? OutputSizeHighMb, double? PredictedCompressionRatio, string Reason)
 { public bool IsAvailable => Confidence != EncodingHistoricalConfidence.None; }
+public enum EncodingCalibrationDecision { Applied, NotEligible, DisabledByUser, InsufficientHistoricalConfidence, SuppressedHarmful, ShadowEvaluationOnly }
+public enum EncodingCalibrationEffectivenessState { NotEvaluated, Early, Effective, Mixed, Harmful }
 public sealed record EncodingSizePredictionCalibration(
     double? BasePredictionMb, double? CalibratedPredictionMb, double? EffectiveCorrectionPercent,
     double? MedianSignedErrorPercent, EncodingPredictionConfidence Confidence, int SampleCount,
-    bool Applied, string CohortKey, string Reason)
+    bool Applied, string CohortKey, string Reason,
+    double? HypotheticalCalibratedPredictionMb = null,
+    EncodingCalibrationDecision Decision = EncodingCalibrationDecision.NotEligible,
+    EncodingCalibrationEffectivenessState EffectivenessState = EncodingCalibrationEffectivenessState.NotEvaluated,
+    int EvaluationSampleCount = 0,
+    double? MedianCalibrationImprovementPercent = null,
+    double? ImprovedRatePercent = null,
+    double? WorsenedRatePercent = null,
+    DateTime? EvidenceCutoffUtc = null,
+    DateTime? DecisionUtc = null,
+    DateTime? EffectivenessSinceUtc = null)
 {
     public static EncodingSizePredictionCalibration Unavailable(double? baseMb, string reason) =>
-        new(baseMb, baseMb, 0, null, EncodingPredictionConfidence.Insufficient, 0, false, "", reason);
+        new(baseMb, baseMb, 0, null, EncodingPredictionConfidence.Insufficient, 0, false, "", reason,
+            baseMb, EncodingCalibrationDecision.NotEligible);
 }
 public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio, EncodingHistoricalPrediction? HistoricalPrediction = null);
 

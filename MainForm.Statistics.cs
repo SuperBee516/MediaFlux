@@ -536,6 +536,16 @@ namespace MediaFlux
                         CalibrationSampleCount = predictionPlan?.SizePredictionCalibration?.SampleCount,
                         CalibrationCohortKey = predictionPlan?.SizePredictionCalibration?.CohortKey ?? "",
                         CalibrationReason = predictionPlan?.SizePredictionCalibration?.Reason ?? "",
+                        HypotheticalCalibratedOutputSizeBytes = PredictionHypotheticalBytes(predictionPlan),
+                        CalibrationEvidenceCutoffUtc = predictionPlan?.SizePredictionCalibration?.EvidenceCutoffUtc,
+                        CalibrationDecisionUtc = predictionPlan?.SizePredictionCalibration?.DecisionUtc,
+                        CalibrationDecision = predictionPlan?.SizePredictionCalibration?.Decision.ToString() ?? "",
+                        CalibrationEffectivenessState = predictionPlan?.SizePredictionCalibration?.EffectivenessState.ToString() ?? "",
+                        CalibrationEvaluationCount = predictionPlan?.SizePredictionCalibration?.EvaluationSampleCount,
+                        CalibrationMedianImprovementPercent = predictionPlan?.SizePredictionCalibration?.MedianCalibrationImprovementPercent,
+                        CalibrationImprovedRatePercent = predictionPlan?.SizePredictionCalibration?.ImprovedRatePercent,
+                        CalibrationWorsenedRatePercent = predictionPlan?.SizePredictionCalibration?.WorsenedRatePercent,
+                        CalibrationEffectivenessSinceUtc = predictionPlan?.SizePredictionCalibration?.EffectivenessSinceUtc,
                         PredictedCompressionRatio = predictionPlan?.Estimates.HistoricalPrediction?.PredictedCompressionRatio ??
                             predictionPlan?.Estimates.EstimatedCompressionRatio,
                         PredictedProcessingSeconds = predictionPlan?.Estimates.HistoricalPrediction?.PredictedDuration?.TotalSeconds,
@@ -570,6 +580,15 @@ namespace MediaFlux
             double? megabytes = plan?.SizePredictionCalibration?.BasePredictionMb ??
                 plan?.Estimates.HistoricalPrediction?.PredictedOutputSizeMb ??
                 plan?.Estimates.EstimatedOutputSizeMb;
+            return megabytes is >= 0 && double.IsFinite(megabytes.Value)
+                ? (long)Math.Round(megabytes.Value * 1024d * 1024d)
+                : null;
+        }
+
+        private static long? PredictionHypotheticalBytes(EncodingPlan? plan)
+        {
+            double? megabytes = plan?.SizePredictionCalibration?.HypotheticalCalibratedPredictionMb ??
+                plan?.SizePredictionCalibration?.CalibratedPredictionMb;
             return megabytes is >= 0 && double.IsFinite(megabytes.Value)
                 ? (long)Math.Round(megabytes.Value * 1024d * 1024d)
                 : null;
