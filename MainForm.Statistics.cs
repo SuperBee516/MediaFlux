@@ -486,7 +486,9 @@ namespace MediaFlux
             bool? concurrentEncoderSessions = null,
             bool isSampleJob = false,
             EncodingDiagnosticSummary? diagnosticSummary = null,
-            bool recoveredSuccessful = false)
+            bool recoveredSuccessful = false,
+            EncodingPlan? predictionPlan = null,
+            EncodingExecutionOutcome? executionOutcome = null)
         {
             try
             {
@@ -518,7 +520,22 @@ namespace MediaFlux
                             ? HardwarePerformanceService.DetectGpuIdentity()
                             : "cpu",
                         RecoveredSuccessful = recoveredSuccessful,
-                        Notes = notes
+                        Notes = notes,
+                        PredictionPlanId = predictionPlan?.PlanId.ToString("N") ?? "",
+                        PredictionSourceCodec = predictionPlan?.Source?.Codec ?? "",
+                        PredictionTargetCodec = predictionPlan?.Video?.Codec ?? "",
+                        PredictionSameCodec = predictionPlan?.Source != null && predictionPlan.Video != null
+                            ? CodecFamily(predictionPlan.Source.Codec) == CodecFamily(predictionPlan.Video.Codec)
+                            : null,
+                        PredictedOutputSizeBytes = PredictionBytes(predictionPlan),
+                        PredictedCompressionRatio = predictionPlan?.Estimates.HistoricalPrediction?.PredictedCompressionRatio ??
+                            predictionPlan?.Estimates.EstimatedCompressionRatio,
+                        PredictedProcessingSeconds = predictionPlan?.Estimates.HistoricalPrediction?.PredictedDuration?.TotalSeconds,
+                        PredictionConfidence = predictionPlan?.Estimates.HistoricalPrediction?.Confidence.ToString() ?? "",
+                        PredictionRecommendation = predictionPlan?.Recommendation?.Recommendation.ToString() ?? "",
+                        PredictionQuality = predictionPlan?.Quality?.EffectiveQuality?.ToString() ?? "",
+                        PredictionAssessment = predictionPlan?.Quality?.Assessment.ToString() ?? "",
+                        TerminalResult = executionOutcome?.TerminalResult.ToString() ?? ""
                     });
 
                 if (added)
@@ -528,6 +545,23 @@ namespace MediaFlux
             {
                 Debug.WriteLine($"Statistics append failed: {ex}");
             }
+        }
+
+        private static long? PredictionBytes(EncodingPlan? plan)
+        {
+            double? megabytes = plan?.Estimates.HistoricalPrediction?.PredictedOutputSizeMb ??
+                plan?.Estimates.EstimatedOutputSizeMb;
+            return megabytes is >= 0 && double.IsFinite(megabytes.Value)
+                ? (long)Math.Round(megabytes.Value * 1024d * 1024d)
+                : null;
+        }
+
+        private static string CodecFamily(string? value)
+        {
+            string normalized = (value ?? "").Trim().ToLowerInvariant();
+            return normalized.Contains("265") || normalized.Contains("hevc") ? "hevc" :
+                normalized.Contains("264") || normalized.Contains("avc") ? "h264" :
+                normalized.Contains("av1") ? "av1" : normalized;
         }
 
         private void RecordSkippedEncodingRows(

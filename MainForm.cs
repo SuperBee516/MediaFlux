@@ -275,6 +275,9 @@ namespace MediaFlux
             var viewHistoryToolStripMenuItem = new ToolStripMenuItem("View History");
             viewHistoryToolStripMenuItem.Click += ViewHistoryToolStripMenuItem_Click;
             toolsToolStripMenuItem.DropDownItems.Insert(0, viewHistoryToolStripMenuItem);
+            var encodingResultsToolStripMenuItem = new ToolStripMenuItem("Encoding Results");
+            encodingResultsToolStripMenuItem.Click += EncodingResultsToolStripMenuItem_Click;
+            toolsToolStripMenuItem.DropDownItems.Insert(1, encodingResultsToolStripMenuItem);
             var analyzeDuplicatesToolStripMenuItem = new ToolStripMenuItem("Run Duplicate Check Again");
             analyzeDuplicatesToolStripMenuItem.Click += AnalyzeDuplicatesNow_Click;
             var duplicateManagerToolStripMenuItem = new ToolStripMenuItem("Duplicate Manager");

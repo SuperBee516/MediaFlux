@@ -26,7 +26,7 @@ namespace MediaFlux.Services
 
     public sealed record EncodingStatisticsRecord
     {
-        public int SchemaVersion { get; set; } = 3;
+        public int SchemaVersion { get; set; } = 4;
         public string Id { get; set; } = Guid.NewGuid().ToString("N");
         public DateTime StartUtc { get; set; }
         public DateTime EndUtc { get; set; }
@@ -51,6 +51,20 @@ namespace MediaFlux.Services
         public string Notes { get; set; } = "";
         public string HardwareKey { get; set; } = "";
         public bool RecoveredSuccessful { get; set; }
+        // Frozen before execution. These nullable fields are observational only and
+        // intentionally share the bounded finalized-statistics journal.
+        public string PredictionPlanId { get; set; } = "";
+        public string PredictionSourceCodec { get; set; } = "";
+        public string PredictionTargetCodec { get; set; } = "";
+        public bool? PredictionSameCodec { get; set; }
+        public long? PredictedOutputSizeBytes { get; set; }
+        public double? PredictedCompressionRatio { get; set; }
+        public double? PredictedProcessingSeconds { get; set; }
+        public string PredictionConfidence { get; set; } = "";
+        public string PredictionRecommendation { get; set; } = "";
+        public string PredictionQuality { get; set; } = "";
+        public string PredictionAssessment { get; set; } = "";
+        public string TerminalResult { get; set; } = "";
     }
 
     public readonly record struct EncodingStatisticsUtcRange(
@@ -205,6 +219,14 @@ namespace MediaFlux.Services
             if (record.OutputBitDepth is not (8 or 10 or 12 or 16)) record.OutputBitDepth = null;
             record.Notes ??= "";
             record.HardwareKey = record.HardwareKey?.Trim() ?? "";
+            record.PredictionPlanId = record.PredictionPlanId?.Trim() ?? "";
+            record.PredictionSourceCodec = record.PredictionSourceCodec?.Trim() ?? "";
+            record.PredictionTargetCodec = record.PredictionTargetCodec?.Trim() ?? "";
+            record.PredictionConfidence = record.PredictionConfidence?.Trim() ?? "";
+            record.PredictionRecommendation = record.PredictionRecommendation?.Trim() ?? "";
+            record.PredictionQuality = record.PredictionQuality?.Trim() ?? "";
+            record.PredictionAssessment = record.PredictionAssessment?.Trim() ?? "";
+            record.TerminalResult = record.TerminalResult?.Trim() ?? "";
             if (record.DiagnosticSummary is { } diagnostic)
             {
                 record.DiagnosticSummary = diagnostic with
@@ -232,6 +254,14 @@ namespace MediaFlux.Services
                 record.SourceSizeBytes = null;
             if (record.OutputSizeBytes is < 0)
                 record.OutputSizeBytes = null;
+            if (record.PredictedOutputSizeBytes is < 0)
+                record.PredictedOutputSizeBytes = null;
+            if (record.PredictedCompressionRatio is not >= 0 ||
+                !double.IsFinite(record.PredictedCompressionRatio.Value))
+                record.PredictedCompressionRatio = null;
+            if (record.PredictedProcessingSeconds is not > 0 ||
+                !double.IsFinite(record.PredictedProcessingSeconds.Value))
+                record.PredictedProcessingSeconds = null;
 
             // Incomplete failed/cancelled output files are not durable encoded output.
             if (record.Outcome != EncodingStatisticsOutcome.Success)

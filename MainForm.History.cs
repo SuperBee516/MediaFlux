@@ -23,6 +23,20 @@ namespace MediaFlux
             }
         }
 
+        private void EncodingResultsToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            try
+            {
+                using var form = new EncodingResultsForm(_encodingStatisticsService, _historyService);
+                form.ShowDialog(this);
+            }
+            catch (Exception ex)
+            {
+                ErrorLogService.Append(AppPaths.UserDataDirectory, "Open Encoding Results failed", exception: ex);
+                MessageBox.Show(this, "Encoding Results could not be opened. See the MediaFlux error log for details.", "Encoding Results", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
         private void LoadHistoryGrid()
         {
             var list = _historyService.LoadAll(); dgvHistory.Rows.Clear();

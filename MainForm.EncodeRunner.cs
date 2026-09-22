@@ -925,6 +925,7 @@ namespace MediaFlux
                     {
                         _historyService.Append(new JobHistoryRecord
                         {
+                            Id = meta.StatisticsOperationId,
                             Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
                             Status = JobStatus.Success,
                             StartUtc = jobStartUtc,
@@ -998,7 +999,9 @@ namespace MediaFlux
                         statisticsSourceHeight is int sourceHeight && outputHeight != sourceHeight,
                     concurrentEncoderSessions: encoderSnapshot.Validated.ConcurrentEncoderSessions,
                     diagnosticSummary: diagnosticSummary,
-                    recoveredSuccessful: jobLog.ToString().Contains("Result=Succeeded", StringComparison.Ordinal));
+                    recoveredSuccessful: jobLog.ToString().Contains("Result=Succeeded", StringComparison.Ordinal),
+                    predictionPlan: meta.IntelligencePlan,
+                    executionOutcome: meta.IntelligenceOutcome);
 
                 try
                 {
@@ -1105,6 +1108,7 @@ namespace MediaFlux
                     {
                         _historyService.Append(new JobHistoryRecord
                         {
+                            Id = meta.StatisticsOperationId,
                             Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
                             Status = isCanceled
                                 ? JobStatus.Canceled
@@ -1208,7 +1212,9 @@ namespace MediaFlux
                         mediaDurationSeconds: durationSec > 0 ? durationSec : null,
                         processingSeconds: meta.StatisticsProcessingSeconds,
                         notes: historyNotes,
-                        diagnosticSummary: diagnosticSummary);
+                        diagnosticSummary: diagnosticSummary,
+                        predictionPlan: meta.IntelligencePlan,
+                        executionOutcome: meta.IntelligenceOutcome);
                 }
 
                 Ui(() =>

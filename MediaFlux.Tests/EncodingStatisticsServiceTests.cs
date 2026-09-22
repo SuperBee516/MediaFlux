@@ -44,6 +44,35 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
     }
 
     [Fact]
+    public void PredictionObservationPersistsAndLegacyRecordLeavesItUnavailable()
+    {
+        var service = new EncodingStatisticsService(_statisticsPath);
+        EncodingStatisticsRecord record = CreateRecord("prediction", EncodingStatisticsOutcome.Success, DateTime.UtcNow,
+            4_000, 2_500, 120, 60) with
+        {
+            PredictionPlanId = "frozen-plan", PredictionSourceCodec = "h264", PredictionTargetCodec = "hevc",
+            PredictedOutputSizeBytes = 2_400, PredictedProcessingSeconds = 55, PredictionConfidence = "Medium",
+            PredictionRecommendation = "Encode", TerminalResult = "Completed"
+        };
+        Assert.True(service.AppendFinalized(record));
+        EncodingStatisticsRecord stored = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+        Assert.Equal("frozen-plan", stored.PredictionPlanId);
+        Assert.Equal(2_400, stored.PredictedOutputSizeBytes);
+        Assert.Equal(55, stored.PredictedProcessingSeconds);
+    }
+
+    [Fact]
+    public void DamagedLineDoesNotHidePredictionObservations()
+    {
+        File.WriteAllText(_statisticsPath, "not-json" + Environment.NewLine);
+        var service = new EncodingStatisticsService(_statisticsPath);
+        Assert.True(service.AppendFinalized(CreateRecord("valid", EncodingStatisticsOutcome.Success, DateTime.UtcNow,
+            100, 50, 20, 10) with { PredictedOutputSizeBytes = 55 }));
+        EncodingStatisticsRecord actual = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+        Assert.Equal(55, actual.PredictedOutputSizeBytes);
+    }
+
+    [Fact]
     public void StableRecordIdPreventsDuplicateCountingBeforeAndAfterRestart()
     {
         var first = new EncodingStatisticsService(_statisticsPath);
