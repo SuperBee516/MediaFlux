@@ -80,11 +80,22 @@ public sealed record EncodingSizePredictionCalibration(
     double? WorsenedRatePercent = null,
     DateTime? EvidenceCutoffUtc = null,
     DateTime? DecisionUtc = null,
-    DateTime? EffectivenessSinceUtc = null)
+    DateTime? EffectivenessSinceUtc = null,
+    string PolicyId = "",
+    double LearningStrength = 0,
+    double? AppliedCorrectionPercent = null)
 {
+    public double? RawHistoricalCorrectionPercent => MedianSignedErrorPercent;
+
     public static EncodingSizePredictionCalibration Unavailable(double? baseMb, string reason) =>
         new(baseMb, baseMb, 0, null, EncodingPredictionConfidence.Insufficient, 0, false, "", reason,
             baseMb, EncodingCalibrationDecision.NotEligible);
+
+    public static EncodingSizePredictionCalibration Unavailable(double? baseMb, string reason,
+        string policyId, DateTime decisionUtc) =>
+        new(baseMb, baseMb, 0, null, EncodingPredictionConfidence.Insufficient, 0, false, "", reason,
+            baseMb, EncodingCalibrationDecision.NotEligible, PolicyId: policyId, DecisionUtc: decisionUtc,
+            AppliedCorrectionPercent: 0);
 }
 public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio, EncodingHistoricalPrediction? HistoricalPrediction = null);
 

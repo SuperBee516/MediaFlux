@@ -62,6 +62,39 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
     }
 
     [Fact]
+    public void AdaptivePolicyProvenancePersistsAcrossStatisticsReload()
+    {
+        var service = new EncodingStatisticsService(_statisticsPath);
+        EncodingStatisticsRecord record = CreateRecord("adaptive-policy", EncodingStatisticsOutcome.Success,
+            DateTime.UtcNow, 4_000, 2_500, 120, 60) with
+        {
+            CalibrationPolicyId = "PredictionCalibrationPolicyV1",
+            CalibrationDecision = "Applied",
+            CalibrationLearningStrength = .75,
+            CalibrationRawHistoricalCorrectionPercent = 10,
+            CalibrationCorrectionPercent = 7.5,
+            CalibrationAppliedCorrectionPercent = 7.5,
+            CalibrationCohortKey = "h264|hevc|1080p|1080p|nvenc|gpu-a|22|good|conversion",
+            CalibrationEffectivenessState = "Effective",
+            CalibrationDecisionUtc = DateTime.UtcNow,
+            CalibrationEvidenceCutoffUtc = DateTime.UtcNow.AddHours(-1)
+        };
+
+        Assert.True(service.AppendFinalized(record));
+        EncodingStatisticsRecord loaded = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+
+        Assert.Equal(record.CalibrationPolicyId, loaded.CalibrationPolicyId);
+        Assert.Equal(record.CalibrationDecision, loaded.CalibrationDecision);
+        Assert.Equal(record.CalibrationLearningStrength, loaded.CalibrationLearningStrength);
+        Assert.Equal(record.CalibrationRawHistoricalCorrectionPercent, loaded.CalibrationRawHistoricalCorrectionPercent);
+        Assert.Equal(record.CalibrationAppliedCorrectionPercent, loaded.CalibrationAppliedCorrectionPercent);
+        Assert.Equal(record.CalibrationCohortKey, loaded.CalibrationCohortKey);
+        Assert.Equal(record.CalibrationEffectivenessState, loaded.CalibrationEffectivenessState);
+        Assert.Equal(record.CalibrationDecisionUtc, loaded.CalibrationDecisionUtc);
+        Assert.Equal(record.CalibrationEvidenceCutoffUtc, loaded.CalibrationEvidenceCutoffUtc);
+    }
+
+    [Fact]
     public void DamagedLineDoesNotHidePredictionObservations()
     {
         File.WriteAllText(_statisticsPath, "not-json" + Environment.NewLine);
@@ -101,6 +134,7 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
         EncodingStatisticsRecord record = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
         Assert.Equal(1, record.SchemaVersion);
         Assert.Equal("", record.EncoderId);
+        Assert.Equal("", record.CalibrationPolicyId);
         Assert.Null(record.OutputBitDepth);
         Assert.Null(record.ConcurrentEncoderSessions);
     }

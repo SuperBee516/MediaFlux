@@ -370,7 +370,8 @@ namespace MediaFlux.Services
                             qualityResolution?.Assessment.ToString() ?? "Unknown",
                             PredictionCodecFamily(codec) == PredictionCodecFamily(item.Encoder.FfmpegCodec));
                         sizeCalibration = _statistics == null
-                            ? EncodingSizePredictionCalibration.Unavailable(baseEstMb, "Historical statistics are unavailable.")
+                            ? EncodingSizePredictionCalibration.Unavailable(baseEstMb,
+                                "Historical statistics are unavailable.", AdaptivePredictionPolicies.Current.PolicyId, DateTime.UtcNow)
                             : _accuracy.CalibrateSizePrediction(
                                 baseEstMb,
                                 calibrationContext,
@@ -385,7 +386,8 @@ namespace MediaFlux.Services
                     }
                     catch (Exception ex)
                     {
-                        sizeCalibration = EncodingSizePredictionCalibration.Unavailable(baseEstMb, $"Calibration unavailable: {ex.Message}");
+                        sizeCalibration = EncodingSizePredictionCalibration.Unavailable(baseEstMb,
+                            $"Calibration unavailable: {ex.Message}", AdaptivePredictionPolicies.Current.PolicyId, DateTime.UtcNow);
                     }
                 }
                 double displayEstMb = sizeCalibration?.CalibratedPredictionMb ?? baseEstMb;

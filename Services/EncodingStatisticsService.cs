@@ -76,6 +76,10 @@ namespace MediaFlux.Services
         public double? CalibrationImprovedRatePercent { get; set; }
         public double? CalibrationWorsenedRatePercent { get; set; }
         public DateTime? CalibrationEffectivenessSinceUtc { get; set; }
+        public string CalibrationPolicyId { get; set; } = "";
+        public double? CalibrationLearningStrength { get; set; }
+        public double? CalibrationRawHistoricalCorrectionPercent { get; set; }
+        public double? CalibrationAppliedCorrectionPercent { get; set; }
         public double? PredictedCompressionRatio { get; set; }
         public double? PredictedProcessingSeconds { get; set; }
         public string PredictionConfidence { get; set; } = "";
@@ -249,6 +253,7 @@ namespace MediaFlux.Services
             record.CalibrationReason = record.CalibrationReason?.Trim() ?? "";
             record.CalibrationDecision = record.CalibrationDecision?.Trim() ?? "";
             record.CalibrationEffectivenessState = record.CalibrationEffectivenessState?.Trim() ?? "";
+            record.CalibrationPolicyId = record.CalibrationPolicyId?.Trim() ?? "";
             record.TerminalResult = record.TerminalResult?.Trim() ?? "";
             if (record.DiagnosticSummary is { } diagnostic)
             {
@@ -297,6 +302,12 @@ namespace MediaFlux.Services
                 record.CalibrationImprovedRatePercent = null;
             if (record.CalibrationWorsenedRatePercent is { } worsenedRate && !double.IsFinite(worsenedRate))
                 record.CalibrationWorsenedRatePercent = null;
+            if (record.CalibrationLearningStrength is { } learningStrength && !double.IsFinite(learningStrength))
+                record.CalibrationLearningStrength = null;
+            if (record.CalibrationRawHistoricalCorrectionPercent is { } rawCorrection && !double.IsFinite(rawCorrection))
+                record.CalibrationRawHistoricalCorrectionPercent = null;
+            if (record.CalibrationAppliedCorrectionPercent is { } appliedCorrection && !double.IsFinite(appliedCorrection))
+                record.CalibrationAppliedCorrectionPercent = null;
             if (record.PredictedCompressionRatio is not >= 0 ||
                 !double.IsFinite(record.PredictedCompressionRatio.Value))
                 record.PredictedCompressionRatio = null;

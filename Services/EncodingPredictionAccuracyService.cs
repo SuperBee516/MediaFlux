@@ -59,7 +59,7 @@ public sealed record EncodingCalibrationEvaluationRow(EncodingStatisticsRecord R
 public sealed record EncodingCalibrationEvaluation(int CalibratedCount, double? MedianBaseSignedErrorPercent,
     double? MedianCalibratedSignedErrorPercent, double? MedianAbsoluteErrorImprovement,
     int Improved, int Neutral, int Worsened, IReadOnlyList<EncodingCalibrationEvaluationRow> Rows);
-public sealed record EncodingCalibrationEffectiveness(string CohortKey, int EvaluationCount,
+public sealed record EncodingCalibrationEffectiveness(string CohortKey, string PolicyId, int EvaluationCount,
     double? MedianBaseAbsoluteErrorPercent, double? MedianCalibratedAbsoluteErrorPercent,
     double? MedianImprovementPercent, int Improved, int Neutral, int Worsened,
     double? ImprovedRatePercent, double? WorsenedRatePercent,
@@ -67,31 +67,13 @@ public sealed record EncodingCalibrationEffectiveness(string CohortKey, int Eval
     EncodingCalibrationEffectivenessState State, bool CurrentlyEligible,
     DateTime? EffectivenessSinceUtc,
     IReadOnlyList<EncodingCalibrationEvaluationRow> Rows);
+public sealed record EncodingCalibrationPolicyComparison(string CohortKey, string PolicyId, int EvaluationCount,
+    double? MedianBaseAbsoluteErrorPercent, double? MedianCalibratedAbsoluteErrorPercent,
+    double? MedianImprovementPercent, int Improved, int Neutral, int Worsened,
+    IReadOnlyList<EncodingCalibrationEvaluationRow> Rows);
 
 public sealed class EncodingPredictionAccuracyService
 {
-    // Intentionally conservative and centralized for future Adaptive Learning tuning.
-    public const int MinimumMeaningfulSamples = 5;
-    public const int ModerateConfidenceSamples = 10;
-    public const int HighConfidenceSamples = 20;
-    public const double ModerateMaximumSignedIqrPercent = 25;
-    public const double HighMaximumSignedIqrPercent = 10;
-    public const double ModerateMaximumAbsoluteErrorPercent = 30;
-    public const double HighMaximumAbsoluteErrorPercent = 15;
-    public const double BiasNearTargetDeadbandPercent = 3;
-    public const double HighConfidenceLearningStrength = .75;
-    public const double ModerateConfidenceLearningStrength = .40;
-    public const double MaximumEffectiveCorrectionPercent = 20;
-    public const double CalibrationEvaluationDeadbandPercentagePoints = .5;
-    public const int MinimumCalibrationEffectivenessSamples = 5;
-    public const int CalibrationEffectivenessWindowSize = 20;
-    public const double MaximumEffectiveWorsenedRatePercent = 40;
-    public const double HarmfulMinimumWorsenedRatePercent = 60;
-    public const int CalibrationRecoverySamples = 10;
-    public const double CalibrationRecoveryMinimumImprovementPercent = 1.5;
-    public const double CalibrationRecoveryMaximumWorsenedRatePercent = 20;
-    public const double MixedCalibrationLearningStrength = .5;
-
     public IReadOnlyList<EncodingPredictionAccuracyRow> CreateRows(IEnumerable<EncodingStatisticsRecord> records) =>
         records.OrderByDescending(record => record.EndUtc).Select(CreateRow).ToArray();
 
@@ -133,27 +115,31 @@ public sealed class EncodingPredictionAccuracyService
         return new(signed.Length, Percentile(signed, .5), Percentile(absolute, .5), q1, q3, q3 - q1);
     }
 
-    public static EncodingPredictionConfidence ClassifyConfidence(EncodingPredictionRobustStatistics statistics)
+    public static EncodingPredictionConfidence ClassifyConfidence(EncodingPredictionRobustStatistics statistics,
+        AdaptivePredictionPolicy? policy = null)
     {
-        if (statistics.SampleCount < MinimumMeaningfulSamples) return EncodingPredictionConfidence.Insufficient;
-        if (statistics.SampleCount >= HighConfidenceSamples &&
-            statistics.SignedPercentIqr is <= HighMaximumSignedIqrPercent &&
-            statistics.MedianAbsolutePercentageError is <= HighMaximumAbsoluteErrorPercent)
+        policy ??= AdaptivePredictionPolicies.Current;
+        if (statistics.SampleCount < policy.MinimumMeaningfulSamples) return EncodingPredictionConfidence.Insufficient;
+        if (statistics.SampleCount >= policy.HighConfidenceSamples &&
+            statistics.SignedPercentIqr is { } highIqr && highIqr <= policy.HighMaximumSignedIqrPercent &&
+            statistics.MedianAbsolutePercentageError is { } highError && highError <= policy.HighMaximumAbsoluteErrorPercent)
             return EncodingPredictionConfidence.High;
-        if (statistics.SampleCount >= ModerateConfidenceSamples &&
-            statistics.SignedPercentIqr is <= ModerateMaximumSignedIqrPercent &&
-            statistics.MedianAbsolutePercentageError is <= ModerateMaximumAbsoluteErrorPercent)
+        if (statistics.SampleCount >= policy.ModerateConfidenceSamples &&
+            statistics.SignedPercentIqr is { } moderateIqr && moderateIqr <= policy.ModerateMaximumSignedIqrPercent &&
+            statistics.MedianAbsolutePercentageError is { } moderateError && moderateError <= policy.ModerateMaximumAbsoluteErrorPercent)
             return EncodingPredictionConfidence.Moderate;
         return EncodingPredictionConfidence.Low;
     }
 
-    public static EncodingPredictionBiasState ClassifyBias(EncodingPredictionRobustStatistics statistics)
+    public static EncodingPredictionBiasState ClassifyBias(EncodingPredictionRobustStatistics statistics,
+        AdaptivePredictionPolicy? policy = null)
     {
-        if (statistics.SampleCount < MinimumMeaningfulSamples || !statistics.MedianSignedPercent.HasValue)
+        policy ??= AdaptivePredictionPolicies.Current;
+        if (statistics.SampleCount < policy.MinimumMeaningfulSamples || !statistics.MedianSignedPercent.HasValue)
             return EncodingPredictionBiasState.InsufficientData;
-        if (statistics.MedianSignedPercent.Value > BiasNearTargetDeadbandPercent)
+        if (statistics.MedianSignedPercent.Value > policy.BiasNearTargetDeadbandPercent)
             return EncodingPredictionBiasState.Underestimating;
-        if (statistics.MedianSignedPercent.Value < -BiasNearTargetDeadbandPercent)
+        if (statistics.MedianSignedPercent.Value < -policy.BiasNearTargetDeadbandPercent)
             return EncodingPredictionBiasState.Overestimating;
         return EncodingPredictionBiasState.NearTarget;
     }
@@ -161,14 +147,15 @@ public sealed class EncodingPredictionAccuracyService
     public EncodingSizePredictionCalibration CalibrateSizePrediction(double basePredictionMb,
         EncodingSizeCalibrationContext context, IEnumerable<EncodingStatisticsRecord> history, bool enabled,
         bool eligible = true, string ineligibleReason = "This estimate is not eligible for historical calibration.",
-        DateTime? decisionUtc = null)
+        DateTime? decisionUtc = null, AdaptivePredictionPolicy? policy = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(history);
-        if (!double.IsFinite(basePredictionMb) || basePredictionMb <= 0)
-            return EncodingSizePredictionCalibration.Unavailable(null, "Base estimate is unavailable or invalid.");
-
+        policy ??= AdaptivePredictionPolicies.Current;
         DateTime now = decisionUtc.HasValue ? NormalizeUtc(decisionUtc.Value) : DateTime.UtcNow;
+        if (!double.IsFinite(basePredictionMb) || basePredictionMb <= 0)
+            return EncodingSizePredictionCalibration.Unavailable(null, "Base estimate is unavailable or invalid.", policy.PolicyId, now);
+
         EncodingStatisticsRecord[] historySnapshot = history.ToArray();
         string cohortKey = CalibrationCohortKey(context);
         EncodingStatisticsRecord[] matching = historySnapshot.Where(record =>
@@ -188,34 +175,35 @@ public sealed class EncodingPredictionAccuracyService
             PredictedOutputSizeBytes = record.BasePredictedOutputSizeBytes ?? record.PredictedOutputSizeBytes
         })).ToArray();
         EncodingPredictionRobustStatistics evidence = Describe(baselineRows.Select(row => row.SizePercentError));
-        EncodingPredictionConfidence confidence = ClassifyConfidence(evidence);
+        EncodingPredictionConfidence confidence = ClassifyConfidence(evidence, policy);
         DateTime? evidenceCutoffUtc = matching.Length == 0 ? now : matching.Max(record => NormalizeUtc(record.EndUtc));
-        EncodingCalibrationEffectiveness effectiveness = EvaluateCalibrationEffectiveness(historySnapshot, cohortKey, now);
+        EncodingCalibrationEffectiveness effectiveness = EvaluateCalibrationEffectiveness(
+            historySnapshot, cohortKey, policy.PolicyId, now);
         double? rawBias = evidence.MedianSignedPercent;
+        double strength = LearningStrength(confidence, policy);
+        double applicableStrength = effectiveness.State == EncodingCalibrationEffectivenessState.Mixed
+            ? strength * policy.MixedCalibrationLearningStrength
+            : strength;
         if (!eligible)
             return CalibrationResult(basePredictionMb, basePredictionMb, 0, rawBias, confidence,
                 evidence.SampleCount, EncodingCalibrationDecision.NotEligible, cohortKey, ineligibleReason,
-                evidenceCutoffUtc, now, effectiveness, basePredictionMb);
+                evidenceCutoffUtc, now, effectiveness, policy, 0, basePredictionMb);
         if (!enabled)
             return CalibrationResult(basePredictionMb, basePredictionMb, 0, rawBias, confidence,
                 evidence.SampleCount, EncodingCalibrationDecision.DisabledByUser, cohortKey,
-                "Historical size calibration is disabled by the user.", evidenceCutoffUtc, now, effectiveness, basePredictionMb);
+                "Historical size calibration is disabled by the user.", evidenceCutoffUtc, now,
+                effectiveness, policy, applicableStrength, basePredictionMb);
         if (!rawBias.HasValue)
             return CalibrationResult(basePredictionMb, basePredictionMb, 0, null, confidence, 0,
                 EncodingCalibrationDecision.InsufficientHistoricalConfidence, cohortKey,
-                "No comparable clean historical cohort.", evidenceCutoffUtc, now, effectiveness);
+                "No comparable clean historical cohort.", evidenceCutoffUtc, now, effectiveness, policy, 0);
 
-        double strength = confidence switch
-        {
-            EncodingPredictionConfidence.High => HighConfidenceLearningStrength,
-            EncodingPredictionConfidence.Moderate => ModerateConfidenceLearningStrength,
-            _ => 0
-        };
         double effectivePercent = Math.Clamp(rawBias.Value * strength,
-            -MaximumEffectiveCorrectionPercent, MaximumEffectiveCorrectionPercent);
+            -policy.MaximumEffectiveCorrectionPercent, policy.MaximumEffectiveCorrectionPercent);
         double hypothetical = basePredictionMb * (1 + effectivePercent / 100d);
         if (!double.IsFinite(hypothetical) || hypothetical <= 0)
-            return EncodingSizePredictionCalibration.Unavailable(basePredictionMb, "Calibration result was invalid; base estimate retained.");
+            return EncodingSizePredictionCalibration.Unavailable(basePredictionMb,
+                "Calibration result was invalid; base estimate retained.", policy.PolicyId, now);
 
         if (strength <= 0)
             return CalibrationResult(basePredictionMb, basePredictionMb, 0, rawBias, confidence,
@@ -223,24 +211,25 @@ public sealed class EncodingPredictionAccuracyService
                 confidence == EncodingPredictionConfidence.Low
                     ? "Historical cohort confidence is low; calibration is not eligible."
                     : "Historical cohort has insufficient observations for calibration.",
-                evidenceCutoffUtc, now, effectiveness, basePredictionMb);
+                evidenceCutoffUtc, now, effectiveness, policy, 0, basePredictionMb);
         if (effectiveness.State == EncodingCalibrationEffectivenessState.Harmful)
             return CalibrationResult(basePredictionMb, basePredictionMb, effectivePercent, rawBias, confidence,
                 evidence.SampleCount, EncodingCalibrationDecision.ShadowEvaluationOnly, cohortKey,
                 "Calibration suppressed because post-calibration evidence is harmful; hypothetical candidate retained for shadow evaluation.",
-                evidenceCutoffUtc, now, effectiveness, hypothetical);
+                evidenceCutoffUtc, now, effectiveness, policy, strength, hypothetical);
 
         if (effectiveness.State == EncodingCalibrationEffectivenessState.Mixed)
-            effectivePercent *= MixedCalibrationLearningStrength;
+            effectivePercent *= policy.MixedCalibrationLearningStrength;
         double calibrated = basePredictionMb * (1 + effectivePercent / 100d);
         if (!double.IsFinite(calibrated) || calibrated <= 0)
-            return EncodingSizePredictionCalibration.Unavailable(basePredictionMb, "Calibration result was invalid; base estimate retained.");
+            return EncodingSizePredictionCalibration.Unavailable(basePredictionMb,
+                "Calibration result was invalid; base estimate retained.", policy.PolicyId, now);
         string reason = effectiveness.State == EncodingCalibrationEffectivenessState.Mixed
             ? "Mixed post-calibration outcomes; confidence-weighted correction was further reduced."
             : "Comparable historical evidence applied with a confidence-weighted correction.";
         return CalibrationResult(basePredictionMb, calibrated, effectivePercent, rawBias, confidence,
             evidence.SampleCount, EncodingCalibrationDecision.Applied, cohortKey, reason,
-            evidenceCutoffUtc, now, effectiveness, calibrated);
+            evidenceCutoffUtc, now, effectiveness, policy, applicableStrength, calibrated);
     }
 
     public static string CalibrationCohortKey(EncodingSizeCalibrationContext context) => string.Join("|",
@@ -264,27 +253,46 @@ public sealed class EncodingPredictionAccuracyService
     {
         EncodingStatisticsRecord[] snapshot = records.ToArray();
         return snapshot.Where(record => !string.IsNullOrWhiteSpace(record.CalibrationCohortKey))
-            .Select(record => record.CalibrationCohortKey)
-            .Distinct(StringComparer.Ordinal)
-            .Select(key => EvaluateCalibrationEffectiveness(snapshot, key,
-                decisionUtc.HasValue ? NormalizeUtc(decisionUtc.Value) : DateTime.UtcNow))
+            .Select(record => (CohortKey: record.CalibrationCohortKey,
+                PolicyId: AdaptivePredictionPolicies.NormalizePolicyId(record.CalibrationPolicyId)))
+            .Distinct()
+            .Select(group => EvaluateCalibrationEffectiveness(snapshot, group.CohortKey, group.PolicyId, decisionUtc))
             .OrderBy(item => item.CohortKey, StringComparer.Ordinal)
+            .ThenBy(item => item.PolicyId, StringComparer.Ordinal)
             .ToArray();
     }
 
     public static EncodingCalibrationEffectiveness EvaluateCalibrationEffectiveness(
-        IEnumerable<EncodingStatisticsRecord> records, string cohortKey, DateTime? decisionUtc = null)
+        IEnumerable<EncodingStatisticsRecord> records, string cohortKey, string policyId,
+        DateTime? decisionUtc = null)
     {
         DateTime now = decisionUtc.HasValue ? NormalizeUtc(decisionUtc.Value) : DateTime.UtcNow;
+        string normalizedPolicyId = AdaptivePredictionPolicies.NormalizePolicyId(policyId);
         EncodingStatisticsRecord[] cohort = records.Where(record =>
-            string.Equals(record.CalibrationCohortKey, cohortKey, StringComparison.Ordinal)).ToArray();
+            string.Equals(record.CalibrationCohortKey, cohortKey, StringComparison.Ordinal) &&
+            string.Equals(AdaptivePredictionPolicies.NormalizePolicyId(record.CalibrationPolicyId),
+                normalizedPolicyId, StringComparison.Ordinal)).ToArray();
         EncodingStatisticsRecord? latest = cohort.Where(record => record.CalibrationDecisionUtc.HasValue)
             .OrderByDescending(record => NormalizeUtc(record.CalibrationDecisionUtc!.Value)).FirstOrDefault();
         EncodingCalibrationEffectivenessState priorState = Enum.TryParse(latest?.CalibrationEffectivenessState, out EncodingCalibrationEffectivenessState parsed)
             ? parsed : EncodingCalibrationEffectivenessState.NotEvaluated;
         DateTime? epoch = latest?.CalibrationEffectivenessSinceUtc;
 
-        EncodingCalibrationEvaluationRow[] allRows = CreateCalibrationEvaluationRows(cohort).ToArray();
+        AdaptivePredictionPolicy? policy = AdaptivePredictionPolicies.Find(normalizedPolicyId);
+        // Legacy Phase 2 outcomes retain their known evaluation deadband while staying in
+        // their own unversioned group. Unknown IDs are never reclassified under a fallback.
+        EncodingCalibrationEvaluationRow[] allRows = CreateCalibrationEvaluationRows(cohort, policy).ToArray();
+        if (policy == null)
+        {
+            EncodingCalibrationEvaluationRow[] unversionedRows = allRows.TakeLast(
+                AdaptivePredictionPolicies.Current.CalibrationEffectivenessWindowSize).ToArray();
+            EncodingStatisticsRecord? unversionedEvidence = latest ?? cohort
+                .OrderByDescending(record => record.CalibrationDecisionUtc ?? record.EndUtc).FirstOrDefault();
+            return SummarizeEffectiveness(cohortKey, normalizedPolicyId, unversionedRows,
+                EncodingCalibrationEffectivenessState.NotEvaluated, false, epoch, unversionedEvidence,
+                AdaptivePredictionPolicies.Current.MinimumCalibrationEffectivenessSamples);
+        }
+
         bool recovering = priorState == EncodingCalibrationEffectivenessState.Harmful;
         EncodingCalibrationEvaluationRow[] inEpoch = allRows
             .Where(row => !epoch.HasValue || row.Record.CalibrationDecisionUtc >= epoch)
@@ -294,47 +302,60 @@ public sealed class EncodingPredictionAccuracyService
             .Where(row => recovering
                 ? row.Record.CalibrationDecision == EncodingCalibrationDecision.ShadowEvaluationOnly.ToString()
                 : row.Record.CalibrationDecision == EncodingCalibrationDecision.Applied.ToString())
-            .TakeLast(CalibrationEffectivenessWindowSize)
+            .TakeLast(policy.CalibrationEffectivenessWindowSize)
             .ToArray();
         EncodingCalibrationEvaluationRow[] relevant = (recovering ? inEpoch : stateRows)
-            .TakeLast(CalibrationEffectivenessWindowSize).ToArray();
+            .TakeLast(policy.CalibrationEffectivenessWindowSize).ToArray();
 
         double[] improvements = stateRows.Select(row => row.AbsoluteErrorImprovement).ToArray();
         double? stateMedianImprovement = Median(improvements.Select(value => (double?)value));
-        double? reportedMedianImprovement = Median(relevant.Select(row => (double?)row.AbsoluteErrorImprovement));
-        int improved = relevant.Count(row => row.Outcome == EncodingCalibrationOutcome.Improved);
-        int neutral = relevant.Count(row => row.Outcome == EncodingCalibrationOutcome.Neutral);
-        int worsened = relevant.Count(row => row.Outcome == EncodingCalibrationOutcome.Worsened);
-        double? improvedRate = relevant.Length < MinimumCalibrationEffectivenessSamples ? null : improved * 100d / relevant.Length;
-        double? worsenedRate = relevant.Length < MinimumCalibrationEffectivenessSamples ? null : worsened * 100d / relevant.Length;
         double? stateWorsenedRate = stateRows.Length == 0 ? null :
             stateRows.Count(row => row.Outcome == EncodingCalibrationOutcome.Worsened) * 100d / stateRows.Length;
         EncodingCalibrationEffectivenessState state;
         DateTime? since = epoch;
         if (recovering)
         {
-            bool recovered = stateRows.Length >= CalibrationRecoverySamples &&
-                stateMedianImprovement > CalibrationRecoveryMinimumImprovementPercent &&
-                stateWorsenedRate <= CalibrationRecoveryMaximumWorsenedRatePercent;
+            bool recovered = stateRows.Length >= policy.CalibrationRecoverySamples &&
+                stateMedianImprovement > policy.CalibrationRecoveryMinimumImprovementPercent &&
+                stateWorsenedRate <= policy.CalibrationRecoveryMaximumWorsenedRatePercent;
             state = recovered ? EncodingCalibrationEffectivenessState.Effective : EncodingCalibrationEffectivenessState.Harmful;
             if (recovered) since = now;
         }
         else
         {
-            state = ClassifyEffectiveness(stateRows.Length, stateMedianImprovement, stateWorsenedRate);
+            state = ClassifyEffectiveness(stateRows.Length, stateMedianImprovement, stateWorsenedRate, policy);
             if (state == EncodingCalibrationEffectivenessState.Harmful && priorState != EncodingCalibrationEffectivenessState.Harmful)
                 since = now;
         }
 
         EncodingStatisticsRecord? evidence = latest ?? cohort.OrderByDescending(record => record.CalibrationDecisionUtc ?? record.EndUtc).FirstOrDefault();
-        return new(cohortKey, relevant.Length,
-            Median(relevant.Select(row => (double?)row.BaseAbsoluteErrorPercent)),
-            Median(relevant.Select(row => (double?)row.CalibratedAbsoluteErrorPercent)), reportedMedianImprovement,
-            improved, neutral, worsened, improvedRate, worsenedRate,
-            Enum.TryParse(evidence?.CalibrationConfidence, out EncodingPredictionConfidence confidence)
-                ? confidence : EncodingPredictionConfidence.Insufficient,
-            evidence?.CalibrationSampleCount ?? 0, state,
-            state != EncodingCalibrationEffectivenessState.Harmful, since, relevant);
+        return SummarizeEffectiveness(cohortKey, normalizedPolicyId, relevant, state,
+            state != EncodingCalibrationEffectivenessState.Harmful, since, evidence,
+            policy.MinimumCalibrationEffectivenessSamples);
+    }
+
+    public static IReadOnlyList<EncodingCalibrationPolicyComparison> BuildCalibrationPolicyComparisons(
+        IEnumerable<EncodingStatisticsRecord> records)
+    {
+        EncodingStatisticsRecord[] snapshot = records.Where(record =>
+            !string.IsNullOrWhiteSpace(record.CalibrationCohortKey)).ToArray();
+        return snapshot.GroupBy(record => (
+                CohortKey: record.CalibrationCohortKey,
+                PolicyId: AdaptivePredictionPolicies.NormalizePolicyId(record.CalibrationPolicyId)))
+            .Select(group =>
+            {
+                EncodingCalibrationEvaluationRow[] rows = CreateCalibrationEvaluationRows(group).ToArray();
+                return new EncodingCalibrationPolicyComparison(group.Key.CohortKey, group.Key.PolicyId,
+                    rows.Length, Median(rows.Select(row => (double?)row.BaseAbsoluteErrorPercent)),
+                    Median(rows.Select(row => (double?)row.CalibratedAbsoluteErrorPercent)),
+                    Median(rows.Select(row => (double?)row.AbsoluteErrorImprovement)),
+                    rows.Count(row => row.Outcome == EncodingCalibrationOutcome.Improved),
+                    rows.Count(row => row.Outcome == EncodingCalibrationOutcome.Neutral),
+                    rows.Count(row => row.Outcome == EncodingCalibrationOutcome.Worsened), rows);
+            })
+            .OrderBy(item => item.CohortKey, StringComparer.Ordinal)
+            .ThenBy(item => item.PolicyId, StringComparer.Ordinal)
+            .ToArray();
     }
 
     private static EncodingPredictionAccuracyCohort CreateCohort(string source, string target, string tier,
@@ -391,54 +412,94 @@ public sealed class EncodingPredictionAccuracyService
         return sorted.Length == 0 ? null : Percentile(sorted, .5);
     }
     private static double? Median(IEnumerable<double> values) => Median(values.Select(value => (double?)value));
+    private static double LearningStrength(EncodingPredictionConfidence confidence, AdaptivePredictionPolicy policy) => confidence switch
+    {
+        EncodingPredictionConfidence.High => policy.HighConfidenceLearningStrength,
+        EncodingPredictionConfidence.Moderate => policy.ModerateConfidenceLearningStrength,
+        _ => 0
+    };
+
     private static EncodingCalibrationEffectivenessState ClassifyEffectiveness(
-        int count, double? medianImprovement, double? worsenedRate)
+        int count, double? medianImprovement, double? worsenedRate, AdaptivePredictionPolicy policy)
     {
         if (count == 0) return EncodingCalibrationEffectivenessState.NotEvaluated;
-        if (count < MinimumCalibrationEffectivenessSamples) return EncodingCalibrationEffectivenessState.Early;
-        if (medianImprovement < -CalibrationEvaluationDeadbandPercentagePoints ||
-            worsenedRate >= HarmfulMinimumWorsenedRatePercent)
+        if (count < policy.MinimumCalibrationEffectivenessSamples) return EncodingCalibrationEffectivenessState.Early;
+        if (medianImprovement < -policy.CalibrationEvaluationDeadbandPercentagePoints ||
+            worsenedRate >= policy.HarmfulMinimumWorsenedRatePercent)
             return EncodingCalibrationEffectivenessState.Harmful;
-        if (medianImprovement > CalibrationEvaluationDeadbandPercentagePoints &&
-            worsenedRate <= MaximumEffectiveWorsenedRatePercent)
+        if (medianImprovement > policy.CalibrationEvaluationDeadbandPercentagePoints &&
+            worsenedRate <= policy.MaximumEffectiveWorsenedRatePercent)
             return EncodingCalibrationEffectivenessState.Effective;
         return EncodingCalibrationEffectivenessState.Mixed;
     }
+
+    private static EncodingCalibrationEffectiveness SummarizeEffectiveness(string cohortKey, string policyId,
+        EncodingCalibrationEvaluationRow[] rows, EncodingCalibrationEffectivenessState state, bool currentlyEligible,
+        DateTime? effectivenessSinceUtc, EncodingStatisticsRecord? evidence, int minimumSamples)
+    {
+        int improved = rows.Count(row => row.Outcome == EncodingCalibrationOutcome.Improved);
+        int neutral = rows.Count(row => row.Outcome == EncodingCalibrationOutcome.Neutral);
+        int worsened = rows.Count(row => row.Outcome == EncodingCalibrationOutcome.Worsened);
+        double? improvedRate = rows.Length < minimumSamples ? null : improved * 100d / rows.Length;
+        double? worsenedRate = rows.Length < minimumSamples ? null : worsened * 100d / rows.Length;
+        return new(cohortKey, policyId, rows.Length,
+            Median(rows.Select(row => (double?)row.BaseAbsoluteErrorPercent)),
+            Median(rows.Select(row => (double?)row.CalibratedAbsoluteErrorPercent)),
+            Median(rows.Select(row => (double?)row.AbsoluteErrorImprovement)),
+            improved, neutral, worsened, improvedRate, worsenedRate,
+            Enum.TryParse(evidence?.CalibrationConfidence, out EncodingPredictionConfidence confidence)
+                ? confidence : EncodingPredictionConfidence.Insufficient,
+            evidence?.CalibrationSampleCount ?? 0, state, currentlyEligible, effectivenessSinceUtc, rows);
+    }
+
     private static EncodingSizePredictionCalibration CalibrationResult(double baseMb, double displayedMb,
         double? correction, double? bias, EncodingPredictionConfidence confidence, int sampleCount,
         EncodingCalibrationDecision decision, string cohortKey, string reason, DateTime? cutoff, DateTime now,
-        EncodingCalibrationEffectiveness effectiveness, double? hypotheticalMb = null)
+        EncodingCalibrationEffectiveness effectiveness, AdaptivePredictionPolicy policy, double learningStrength,
+        double? hypotheticalMb = null)
     {
         bool applied = decision == EncodingCalibrationDecision.Applied;
         return new(baseMb, displayedMb, correction, bias, confidence, sampleCount, applied, cohortKey, reason,
             hypotheticalMb ?? displayedMb, decision, effectiveness.State, effectiveness.EvaluationCount,
             effectiveness.MedianImprovementPercent, effectiveness.ImprovedRatePercent,
-            effectiveness.WorsenedRatePercent, cutoff, now, effectiveness.EffectivenessSinceUtc);
+            effectiveness.WorsenedRatePercent, cutoff, now, effectiveness.EffectivenessSinceUtc,
+            policy.PolicyId, learningStrength, applied ? correction : 0);
     }
+
     private static IEnumerable<EncodingCalibrationEvaluationRow> CreateCalibrationEvaluationRows(
-        IEnumerable<EncodingStatisticsRecord> records) => records
-        .Where(record => record.Outcome == EncodingStatisticsOutcome.Success && !record.IsSampleJob &&
-            !record.RecoveredSuccessful &&
-            record.CalibrationDecision is nameof(EncodingCalibrationDecision.Applied) or nameof(EncodingCalibrationDecision.ShadowEvaluationOnly) &&
-            record.CalibrationEvidenceCutoffUtc.HasValue &&
-            NormalizeUtc(record.EndUtc) > NormalizeUtc(record.CalibrationEvidenceCutoffUtc.Value) &&
-            record.OutputSizeBytes is > 0 && record.BasePredictedOutputSizeBytes is > 0 &&
-            (record.HypotheticalCalibratedOutputSizeBytes ?? record.PredictedOutputSizeBytes) is > 0)
-        .Select(record =>
+        IEnumerable<EncodingStatisticsRecord> records, AdaptivePredictionPolicy? policyOverride = null)
+    {
+        foreach (EncodingStatisticsRecord record in records)
         {
+            if (record.Outcome != EncodingStatisticsOutcome.Success || record.IsSampleJob || record.RecoveredSuccessful ||
+                record.CalibrationDecision is not (nameof(EncodingCalibrationDecision.Applied) or nameof(EncodingCalibrationDecision.ShadowEvaluationOnly)) ||
+                !record.CalibrationEvidenceCutoffUtc.HasValue ||
+                NormalizeUtc(record.EndUtc) <= NormalizeUtc(record.CalibrationEvidenceCutoffUtc.Value) ||
+                record.OutputSizeBytes is not > 0 || record.BasePredictedOutputSizeBytes is not > 0 ||
+                (record.HypotheticalCalibratedOutputSizeBytes ?? record.PredictedOutputSizeBytes) is not > 0)
+                continue;
+
+            AdaptivePredictionPolicy? policy = policyOverride ??
+                AdaptivePredictionPolicies.Find(record.CalibrationPolicyId) ??
+                (AdaptivePredictionPolicies.NormalizePolicyId(record.CalibrationPolicyId) == AdaptivePredictionPolicies.LegacyPolicyId
+                    ? AdaptivePredictionPolicies.PredictionCalibrationPolicyV1
+                    : null);
+            if (policy == null)
+                continue;
             double actual = record.OutputSizeBytes!.Value;
             double basePredicted = record.BasePredictedOutputSizeBytes!.Value;
             double calibratedPredicted = (record.HypotheticalCalibratedOutputSizeBytes ?? record.PredictedOutputSizeBytes)!.Value;
             double baseError = (actual - basePredicted) * 100d / basePredicted;
             double calibratedError = (actual - calibratedPredicted) * 100d / calibratedPredicted;
             double improvement = Math.Abs(baseError) - Math.Abs(calibratedError);
-            EncodingCalibrationOutcome outcome = improvement > CalibrationEvaluationDeadbandPercentagePoints
+            EncodingCalibrationOutcome outcome = improvement > policy.CalibrationEvaluationDeadbandPercentagePoints
                 ? EncodingCalibrationOutcome.Improved
-                : improvement < -CalibrationEvaluationDeadbandPercentagePoints
+                : improvement < -policy.CalibrationEvaluationDeadbandPercentagePoints
                     ? EncodingCalibrationOutcome.Worsened : EncodingCalibrationOutcome.Neutral;
-            return new EncodingCalibrationEvaluationRow(record, baseError, Math.Abs(baseError), calibratedError,
+            yield return new EncodingCalibrationEvaluationRow(record, baseError, Math.Abs(baseError), calibratedError,
                 Math.Abs(calibratedError), improvement, outcome);
-        });
+        }
+    }
     private static DateTime NormalizeUtc(DateTime value) => value.Kind switch
     {
         DateTimeKind.Utc => value,

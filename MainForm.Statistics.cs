@@ -546,6 +546,10 @@ namespace MediaFlux
                         CalibrationImprovedRatePercent = predictionPlan?.SizePredictionCalibration?.ImprovedRatePercent,
                         CalibrationWorsenedRatePercent = predictionPlan?.SizePredictionCalibration?.WorsenedRatePercent,
                         CalibrationEffectivenessSinceUtc = predictionPlan?.SizePredictionCalibration?.EffectivenessSinceUtc,
+                        CalibrationPolicyId = predictionPlan?.SizePredictionCalibration?.PolicyId ?? "",
+                        CalibrationLearningStrength = predictionPlan?.SizePredictionCalibration?.LearningStrength,
+                        CalibrationRawHistoricalCorrectionPercent = predictionPlan?.SizePredictionCalibration?.RawHistoricalCorrectionPercent,
+                        CalibrationAppliedCorrectionPercent = predictionPlan?.SizePredictionCalibration?.AppliedCorrectionPercent,
                         PredictedCompressionRatio = predictionPlan?.Estimates.HistoricalPrediction?.PredictedCompressionRatio ??
                             predictionPlan?.Estimates.EstimatedCompressionRatio,
                         PredictedProcessingSeconds = predictionPlan?.Estimates.HistoricalPrediction?.PredictedDuration?.TotalSeconds,
