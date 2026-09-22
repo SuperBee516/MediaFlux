@@ -38,7 +38,8 @@ public sealed record EncodingDecisionContext(
     TimeSpan KnownDuration,
     EncodeOutputValidationProfile ValidationProfile = EncodeOutputValidationProfile.Production,
     EncodingQualityIntent? QualityIntent = null,
-    EncodingSourceFailureClassification? SourceHealth = null);
+    EncodingSourceFailureClassification? SourceHealth = null,
+    EncodingSizePredictionCalibration? SizePredictionCalibration = null);
 
 public sealed record EncodingPlanSource(string Codec, int? Width, int? Height, double? FrameRate, double? DurationSeconds)
 {
@@ -64,6 +65,14 @@ public sealed record EncodingFinalizationIntent(bool UsesStagedOutput, bool Prom
 public sealed record EncodingPlanValidation(string Profile, bool OutputValidation, bool SampleComparison);
 public sealed record EncodingHistoricalPrediction(int SampleCount, int MatchTier, EncodingHistoricalConfidence Confidence, double? PredictedSpeedX, double? SpeedLow, double? SpeedHigh, TimeSpan? PredictedDuration, TimeSpan? DurationLow, TimeSpan? DurationHigh, double? PredictedOutputSizeMb, double? OutputSizeLowMb, double? OutputSizeHighMb, double? PredictedCompressionRatio, string Reason)
 { public bool IsAvailable => Confidence != EncodingHistoricalConfidence.None; }
+public sealed record EncodingSizePredictionCalibration(
+    double? BasePredictionMb, double? CalibratedPredictionMb, double? EffectiveCorrectionPercent,
+    double? MedianSignedErrorPercent, EncodingPredictionConfidence Confidence, int SampleCount,
+    bool Applied, string CohortKey, string Reason)
+{
+    public static EncodingSizePredictionCalibration Unavailable(double? baseMb, string reason) =>
+        new(baseMb, baseMb, 0, null, EncodingPredictionConfidence.Insufficient, 0, false, "", reason);
+}
 public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio, EncodingHistoricalPrediction? HistoricalPrediction = null);
 
 public sealed record EncodingPlanItem(string Label, string Value, string? Reason = null);
@@ -90,6 +99,7 @@ public sealed class EncodingPlan
     public EncodingPlanValidation? Validation { get; init; }
     public EncodingQualityResolution? Quality { get; init; }
     public EncodingPlanEstimates Estimates { get; init; } = new(null, null, null);
+    public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
     public EncodingRecommendation? Recommendation { get; internal set; }
     public IReadOnlyList<EncodingRisk> Risks { get; init; } = Array.Empty<EncodingRisk>();
     public IReadOnlyList<EncodingDecisionReason> DecisionReasons { get; init; } = Array.Empty<EncodingDecisionReason>();

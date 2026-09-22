@@ -2474,6 +2474,7 @@ namespace MediaFlux
             public EncodingPlan? IntelligencePlan;
             public EncodingExecutionOutcome? IntelligenceOutcome;
             public EncodingQualityResolution? QualityPreview;
+            public EncodingSizePredictionCalibration? SizePredictionCalibration;
 
             public bool HasCustomSettings =>
                 CustomTargetMb.HasValue ||
@@ -5071,7 +5072,7 @@ namespace MediaFlux
                 AppPaths.DataDirectory);
 
             _sizeEstimateService = new SizeEstimateService(_mediaInfoService);
-            _estimateService = new EstimateBackgroundService(_mediaInfoService);
+            _estimateService = new EstimateBackgroundService(_mediaInfoService, _encodingStatisticsService);
             _duplicateDetectionService = new DuplicateDetectionService(
                 _mediaInfoService,
                 AppPaths.InstallDirectory,

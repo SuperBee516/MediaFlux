@@ -14,6 +14,7 @@ namespace MediaFlux.Services
         public required VideoEncoderSelection Encoder { get; init; }
         public bool UseGpu { get; init; }
         public double? TargetMb { get; init; }
+        public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
         public EncodingService.ScaleMode ScaleMode { get; init; } =
             EncodingService.ScaleMode.None;
         public VideoRestorationSettings Restoration { get; init; } = new();

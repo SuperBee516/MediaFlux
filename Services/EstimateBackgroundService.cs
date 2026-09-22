@@ -15,6 +15,8 @@ namespace MediaFlux.Services
     {
         private readonly MediaInfoService _mediaInfoService;
         private readonly SmartEncodeDecisionService _decisionService = new();
+        private readonly EncodingStatisticsService? _statistics;
+        private readonly EncodingPredictionAccuracyService _accuracy = new();
         private readonly object _resetLock = new();
         private readonly int _workerCount = Math.Max(1, Math.Min(4, Environment.ProcessorCount - 1));
 
@@ -27,9 +29,10 @@ namespace MediaFlux.Services
 
         private int _pendingEstimates;
 
-        public EstimateBackgroundService(MediaInfoService mediaInfoService)
+        public EstimateBackgroundService(MediaInfoService mediaInfoService, EncodingStatisticsService? statistics = null)
         {
             _mediaInfoService = mediaInfoService ?? throw new ArgumentNullException(nameof(mediaInfoService));
+            _statistics = statistics;
             StartWorkers();
         }
 
@@ -50,6 +53,7 @@ namespace MediaFlux.Services
             public double PlannedAudioBitrateKbps { get; }
             public double PlannedMappedAncillaryBitrateKbps { get; }
             public EncodingQualityResolution? QualityResolution { get; }
+            public EncodingSizePredictionCalibration? SizeCalibration { get; }
 
             public SmartEstimateResult(
                 int generation,
@@ -66,7 +70,8 @@ namespace MediaFlux.Services
                 string estimateDiagnostic,
                 double plannedAudioBitrateKbps,
                 double plannedMappedAncillaryBitrateKbps,
-                EncodingQualityResolution? qualityResolution = null)
+                EncodingQualityResolution? qualityResolution = null,
+                EncodingSizePredictionCalibration? sizeCalibration = null)
             {
                 Generation = generation;
                 Path = path;
@@ -84,6 +89,7 @@ namespace MediaFlux.Services
                 PlannedMappedAncillaryBitrateKbps =
                     plannedMappedAncillaryBitrateKbps;
                 QualityResolution = qualityResolution;
+                SizeCalibration = sizeCalibration;
             }
         }
 
@@ -138,6 +144,7 @@ namespace MediaFlux.Services
             public StorageSavingsOptions StorageSavings { get; }
             public EncodingQualityIntent? QualityIntent { get; }
             public bool SourceAdaptiveCeilingEligible { get; }
+            public bool HistoricalCalibrationEnabled { get; init; }
         }
 
         // Include completed-but-not-yet-applied results so the UI does not report
@@ -160,7 +167,8 @@ namespace MediaFlux.Services
             double minimumSavingsPercent,
             StorageSavingsOptions storageSavings,
             EncodingQualityIntent? qualityIntent = null,
-            bool sourceAdaptiveCeilingEligible = false)
+            bool sourceAdaptiveCeilingEligible = false,
+            bool historicalCalibrationEnabled = true)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return;
@@ -180,7 +188,8 @@ namespace MediaFlux.Services
                 minimumSavingsPercent,
                 storageSavings,
                 qualityIntent,
-                sourceAdaptiveCeilingEligible));
+                sourceAdaptiveCeilingEligible)
+            { HistoricalCalibrationEnabled = historicalCalibrationEnabled });
         }
 
         public bool TryDequeueSmart(out SmartEstimateResult result)
@@ -342,10 +351,43 @@ namespace MediaFlux.Services
                     : null;
                 double estMb = estimateBreakdown?.EstimatedOutputMb ??
                     (item.ManualTargetMb > 0 ? item.ManualTargetMb : 0);
+                double baseEstMb = estMb;
+                EncodingSizePredictionCalibration? sizeCalibration = null;
+                if (useProfileEstimate && !item.IsCustom && baseEstMb > 0)
+                {
+                    try
+                    {
+                        int sourceHeight = info.Height ?? 0;
+                        int outputHeight = item.TargetHeight is > 0 ? Math.Min(sourceHeight, item.TargetHeight.Value) : sourceHeight;
+                        EncodingSizeCalibrationContext calibrationContext = new(
+                            codec ?? "", item.Encoder.FfmpegCodec,
+                            EncodingRuntimeEstimatorService.ResolutionTier(sourceHeight),
+                            EncodingRuntimeEstimatorService.ResolutionTier(outputHeight),
+                            item.Encoder.EncoderId,
+                            item.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase)
+                                ? HardwarePerformanceService.DetectGpuIdentity() : "cpu",
+                            qualityResolution?.EffectiveQuality?.ToString() ?? item.QualityIntent?.Target?.ToString() ?? item.Quality.ToString(),
+                            qualityResolution?.Assessment.ToString() ?? "Unknown",
+                            PredictionCodecFamily(codec) == PredictionCodecFamily(item.Encoder.FfmpegCodec));
+                        sizeCalibration = _statistics == null
+                            ? EncodingSizePredictionCalibration.Unavailable(baseEstMb, "Historical statistics are unavailable.")
+                            : _accuracy.CalibrateSizePrediction(baseEstMb, calibrationContext, _statistics.GetAll(), item.HistoricalCalibrationEnabled);
+                    }
+                    catch (Exception ex)
+                    {
+                        sizeCalibration = EncodingSizePredictionCalibration.Unavailable(baseEstMb, $"Calibration unavailable: {ex.Message}");
+                    }
+                }
+                double displayEstMb = sizeCalibration?.CalibratedPredictionMb ?? baseEstMb;
                 string estimateDiagnostic = estimateBreakdown?.Diagnostic ??
                     (item.ManualTargetMb > 0
                         ? $"Manual target selected: {item.ManualTargetMb:0.##} MB."
                         : "Required metadata is unavailable.");
+                if (sizeCalibration != null)
+                    estimateDiagnostic = $"{estimateDiagnostic} Size calibration: {sizeCalibration.Reason}" +
+                        (sizeCalibration.Applied
+                            ? $" {sizeCalibration.Confidence} confidence, N={sizeCalibration.SampleCount}, correction {sizeCalibration.EffectiveCorrectionPercent:+0.##;-0.##;0}% (median signed error {sizeCalibration.MedianSignedErrorPercent:+0.##;-0.##;0}%)."
+                            : string.Empty);
                 System.Diagnostics.Debug.WriteLine(
                     $"[SizeEstimate] {item.Path}: {estimateDiagnostic}");
                 string? unavailableReason = null;
@@ -397,18 +439,18 @@ namespace MediaFlux.Services
                         {
                             TargetCodec = item.Encoder.FfmpegCodec,
                             TargetHeight = item.TargetHeight,
-                            EstimatedOutputMb = estMb,
+                            EstimatedOutputMb = baseEstMb,
                             MinimumSavingsPercent = item.MinimumSavingsPercent
                         });
                 }
 
                 _smartResults.Enqueue(
                     new SmartEstimateResult(
-                        item.Generation, item.Path, srcMb, estMb, durSec, res, codec, fps,
+                        item.Generation, item.Path, srcMb, displayEstMb, durSec, res, codec, fps,
                         item.IsCustom, unavailableReason, recommendation, estimateDiagnostic,
                         estimateBreakdown?.PlannedAudioBitrateKbps ?? 0,
                         estimateBreakdown?.PlannedMappedAncillaryBitrateKbps ?? 0,
-                        qualityResolution));
+                        qualityResolution, sizeCalibration));
             }
             catch (Exception ex)
             {
@@ -418,8 +460,15 @@ namespace MediaFlux.Services
                     new SmartEstimateResult(
                         item.Generation, item.Path, 0, 0, 0, null, null, 0,
                         item.IsCustom, "Metadata unavailable", null,
-                        $"Estimate failed: {ex.Message}", 0, 0));
+                        $"Estimate failed: {ex.Message}", 0, 0,
+                        sizeCalibration: null));
             }
+        }
+
+        private static string PredictionCodecFamily(string? codec)
+        {
+            string value = (codec ?? "").ToLowerInvariant();
+            return value.Contains("265") || value.Contains("hevc") ? "hevc" : value.Contains("264") || value.Contains("avc") ? "h264" : value.Contains("av1") ? "av1" : value;
         }
 
         private static EncodingQualityResolution? ResolveAutomaticQuality(

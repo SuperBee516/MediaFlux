@@ -38,6 +38,7 @@ namespace MediaFlux
         private GroupBox grpSmartRecommendations = null!;
         private GroupBox _storageManagementGroup = null!;
         private CheckBox chkSmartRecommendations = null!;
+        private CheckBox chkHistoricalSizeCalibration = null!;
         private NumericUpDown nudMinimumExpectedSavings = null!;
         private CheckBox chkWarnBeforeEncodingRecommendations = null!;
         private StorageSavingsOptions _storageSavingsOptions = new();
@@ -301,7 +302,7 @@ namespace MediaFlux
             {
                 Text = "Smart Encode Recommendations",
                 Location = new Point(820, 730),
-                Size = new Size(390, 105),
+                Size = new Size(390, 132),
                 TabStop = false
             };
 
@@ -378,6 +379,14 @@ namespace MediaFlux
                 Checked = config.WarnBeforeEncodingSkippedOrReviewItems
             };
 
+            chkHistoricalSizeCalibration = new CheckBox
+            {
+                Text = "Use historical results to improve size predictions",
+                AutoSize = true,
+                Location = new Point(15, 105),
+                Checked = config.UseHistoricalSizePredictionCalibration
+            };
+
             chkSmartRecommendations.CheckedChanged += (_, __) =>
             {
                 nudMinimumExpectedSavings.Enabled = chkSmartRecommendations.Checked;
@@ -393,6 +402,7 @@ namespace MediaFlux
             grpSmartRecommendations.Controls.Add(nudMinimumExpectedSavings);
             grpSmartRecommendations.Controls.Add(percentLabel);
             grpSmartRecommendations.Controls.Add(chkWarnBeforeEncodingRecommendations);
+            grpSmartRecommendations.Controls.Add(chkHistoricalSizeCalibration);
             Controls.Add(grpSmartRecommendations);
 
             nudMinimumExpectedSavings.Enabled = chkSmartRecommendations.Checked;
@@ -1047,6 +1057,7 @@ namespace MediaFlux
             Config.LargeQueueThreshold = (int)nudLargeQueueThreshold.Value;
             Config.AutoAnalyzeLargeQueues = chkAutoAnalyzeLargeQueues.Checked;
             Config.SmartRecommendationsEnabled = chkSmartRecommendations.Checked;
+            Config.UseHistoricalSizePredictionCalibration = chkHistoricalSizeCalibration.Checked;
             Config.MinimumExpectedSavingsPercent =
                 (double)nudMinimumExpectedSavings.Value;
             Config.WarnBeforeEncodingSkippedOrReviewItems =

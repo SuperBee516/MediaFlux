@@ -176,6 +176,8 @@ public partial class MainForm
             AddQueueAnalysisItem("Confidence", presentation.Confidence);
         if (presentation.EstimatedResult != null)
             AddQueueAnalysisItem("Estimated result", presentation.EstimatedResult);
+        if (meta.SizePredictionCalibration is { Applied: true } calibration)
+            AddQueueAnalysisItem("Calibrated size estimate", $"{calibration.CalibratedPredictionMb:0.##} MB (base {calibration.BasePredictionMb:0.##} MB)");
         if (presentation.Quality != null)
         {
             foreach (EncodingPlanItem item in EncodingQualityPresentation.CreateItems(presentation.Quality))

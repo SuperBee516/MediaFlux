@@ -781,6 +781,7 @@ namespace MediaFlux
                     Encoder = selectedEncoder.Selection,
                     UseGpu = useGpu,
                     TargetMb = targetMb,
+                    SizePredictionCalibration = meta.SizePredictionCalibration,
                     ScaleMode = scaleMode,
                     Restoration = _config.VideoRestoration!.Clone(),
                     EncoderPreset = encoderPreset,

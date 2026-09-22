@@ -359,7 +359,8 @@ namespace MediaFlux.Services
                  request.RecoveryStatusCallback,
                  request.QualityIntent,
                 request.QualityResolutionCallback,
-                request.FailureDiagnosticReportCallback);
+                request.FailureDiagnosticReportCallback,
+                request.SizePredictionCalibration);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -531,7 +532,8 @@ namespace MediaFlux.Services
              Action<EncodingRecoveryStatusUpdate>? recoveryStatusCallback = null,
              EncodingQualityIntent? qualityIntent = null,
             Action<EncodingQualityResolution>? qualityResolutionCallback = null,
-            Action<string>? failureDiagnosticReportCallback = null)
+            Action<string>? failureDiagnosticReportCallback = null,
+            EncodingSizePredictionCalibration? sizePredictionCalibration = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -575,7 +577,8 @@ namespace MediaFlux.Services
                  recoveryStatusCallback,
                  qualityIntent,
                 qualityResolutionCallback,
-                failureDiagnosticReportCallback);
+                failureDiagnosticReportCallback,
+                sizePredictionCalibration);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -620,7 +623,8 @@ namespace MediaFlux.Services
              Action<EncodingRecoveryStatusUpdate>? recoveryStatusCallback = null,
              EncodingQualityIntent? qualityIntent = null,
             Action<EncodingQualityResolution>? qualityResolutionCallback = null,
-            Action<string>? failureDiagnosticReportCallback = null)
+            Action<string>? failureDiagnosticReportCallback = null,
+            EncodingSizePredictionCalibration? sizePredictionCalibration = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -800,7 +804,8 @@ namespace MediaFlux.Services
                         true,
                         "Preflight timestamp defect was repaired and revalidated.",
                         timelineRecovery.Reason)
-                    : null);
+                    : null,
+                sizePredictionCalibration);
             EncodingPlan shadowPlan = EncodingPlanService.Create(planContext);
             var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
             var preflightOutcomes = new List<EncodingPreflightOutcome>

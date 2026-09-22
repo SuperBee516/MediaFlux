@@ -29,11 +29,17 @@ public static class EncodingIntelligencePresentation
         summary.InsertRange(0, EncodingQualityPresentation.CreateItems(plan.Quality));
         if (plan.Estimates.EstimatedOutputSizeMb is > 0)
             summary.Insert(1, new("Target", FormatSize(plan.Estimates.EstimatedOutputSizeMb.Value)));
+        if (plan.SizePredictionCalibration is { Applied: true } appliedCalibration)
+            summary.Insert(1, new("Calibrated size estimate", $"{(appliedCalibration.CalibratedPredictionMb is { } calibrated ? FormatSize(calibrated) : "Unavailable")} (base {(appliedCalibration.BasePredictionMb is { } baseEstimate ? FormatSize(baseEstimate) : "Unavailable")})"));
 
         EncodingHistoricalPrediction? prediction = plan.Estimates.HistoricalPrediction;
         var technical = new List<EncodingPlanItem>();
         if (prediction?.IsAvailable == true)
             technical.Add(new("History match", $"Tier {prediction.MatchTier} · {prediction.SampleCount} comparable completed jobs"));
+        if (plan.SizePredictionCalibration is { } calibrationEvidence)
+            technical.Add(new("Size calibration", calibrationEvidence.Applied
+                ? $"{calibrationEvidence.Confidence} · N={calibrationEvidence.SampleCount} · correction {calibrationEvidence.EffectiveCorrectionPercent:+0.##;-0.##;0}% · median signed error {calibrationEvidence.MedianSignedErrorPercent:+0.##;-0.##;0}%"
+                : calibrationEvidence.Reason));
         if (outcome != null)
         {
             technical.Add(new("Terminal result", outcome.TerminalResult.ToString()));

@@ -528,6 +528,14 @@ namespace MediaFlux
                             ? CodecFamily(predictionPlan.Source.Codec) == CodecFamily(predictionPlan.Video.Codec)
                             : null,
                         PredictedOutputSizeBytes = PredictionBytes(predictionPlan),
+                        BasePredictedOutputSizeBytes = PredictionBaseBytes(predictionPlan),
+                        CalibrationApplied = predictionPlan?.SizePredictionCalibration?.Applied,
+                        CalibrationCorrectionPercent = predictionPlan?.SizePredictionCalibration?.EffectiveCorrectionPercent,
+                        CalibrationMedianSignedErrorPercent = predictionPlan?.SizePredictionCalibration?.MedianSignedErrorPercent,
+                        CalibrationConfidence = predictionPlan?.SizePredictionCalibration?.Confidence.ToString() ?? "",
+                        CalibrationSampleCount = predictionPlan?.SizePredictionCalibration?.SampleCount,
+                        CalibrationCohortKey = predictionPlan?.SizePredictionCalibration?.CohortKey ?? "",
+                        CalibrationReason = predictionPlan?.SizePredictionCalibration?.Reason ?? "",
                         PredictedCompressionRatio = predictionPlan?.Estimates.HistoricalPrediction?.PredictedCompressionRatio ??
                             predictionPlan?.Estimates.EstimatedCompressionRatio,
                         PredictedProcessingSeconds = predictionPlan?.Estimates.HistoricalPrediction?.PredictedDuration?.TotalSeconds,
@@ -549,7 +557,18 @@ namespace MediaFlux
 
         private static long? PredictionBytes(EncodingPlan? plan)
         {
-            double? megabytes = plan?.Estimates.HistoricalPrediction?.PredictedOutputSizeMb ??
+            double? megabytes = plan?.SizePredictionCalibration?.CalibratedPredictionMb ??
+                plan?.Estimates.HistoricalPrediction?.PredictedOutputSizeMb ??
+                plan?.Estimates.EstimatedOutputSizeMb;
+            return megabytes is >= 0 && double.IsFinite(megabytes.Value)
+                ? (long)Math.Round(megabytes.Value * 1024d * 1024d)
+                : null;
+        }
+
+        private static long? PredictionBaseBytes(EncodingPlan? plan)
+        {
+            double? megabytes = plan?.SizePredictionCalibration?.BasePredictionMb ??
+                plan?.Estimates.HistoricalPrediction?.PredictedOutputSizeMb ??
                 plan?.Estimates.EstimatedOutputSizeMb;
             return megabytes is >= 0 && double.IsFinite(megabytes.Value)
                 ? (long)Math.Round(megabytes.Value * 1024d * 1024d)

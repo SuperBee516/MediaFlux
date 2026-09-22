@@ -174,6 +174,7 @@ public static class EncodingPlanService
             Validation = new EncodingPlanValidation(context.ValidationProfile.ToString(), true, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison),
             Quality = quality,
             Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio, historicalPrediction),
+            SizePredictionCalibration = context.SizePredictionCalibration,
             Risks = risks,
             DecisionReasons = reasons,
             ExecutionValues = new EncodingPlanExecutionValues(

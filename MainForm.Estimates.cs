@@ -145,6 +145,7 @@ namespace MediaFlux
                                     rm.Fps = (int)Math.Round(item.Fps);
 
                                 rm.EstimateDiagnostic = item.EstimateDiagnostic;
+                                rm.SizePredictionCalibration = item.SizeCalibration;
                                 rm.EstimatedPlannedAudioBitrateKbps =
                                     item.PlannedAudioBitrateKbps;
                                 rm.EstimatedPlannedMappedAncillaryBitrateKbps =
@@ -162,6 +163,7 @@ namespace MediaFlux
                                     VideoCodec = codec,
                                     Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0,
                                     EstimateDiagnostic = item.EstimateDiagnostic,
+                                    SizePredictionCalibration = item.SizeCalibration,
                                     EstimatedPlannedAudioBitrateKbps =
                                         item.PlannedAudioBitrateKbps,
                                     EstimatedPlannedMappedAncillaryBitrateKbps =
@@ -508,7 +510,8 @@ namespace MediaFlux
                 _config.MinimumExpectedSavingsPercent,
                 storageSavings,
                 qualityIntent,
-                sourceAdaptiveCeilingEligible);
+                sourceAdaptiveCeilingEligible,
+                _config.UseHistoricalSizePredictionCalibration);
         }
 
         private int? GetEstimateTargetHeight()

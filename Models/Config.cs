@@ -68,6 +68,7 @@ namespace MediaFlux.Models
         public int LargeQueueThreshold { get; set; } = 300;
         public bool AutoAnalyzeLargeQueues { get; set; } = false;
         public bool SmartRecommendationsEnabled { get; set; } = true;
+        public bool UseHistoricalSizePredictionCalibration { get; set; } = true;
         public double MinimumExpectedSavingsPercent { get; set; } = 15;
         public bool WarnBeforeEncodingSkippedOrReviewItems { get; set; } = true;
         public StorageSavingsOptions StorageSavings { get; set; } = new();
