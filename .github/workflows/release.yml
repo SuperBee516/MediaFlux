@@ -65,6 +65,31 @@ jobs:
           "packageVersion=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      - name: Verify GitHub release slot is available
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $uri = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
+          try {
+            $release = Invoke-RestMethod -Uri $uri -Headers @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = 'application/vnd.github+json'
+              'X-GitHub-Api-Version' = '2022-11-28'
+            } -ErrorAction Stop
+            throw "GitHub Release '$tag' already exists. Delete only the existing Release object before rerunning this workflow; do not recreate or move the tag."
+          }
+          catch {
+            $response = $_.Exception.Response
+            if ($null -ne $response -and [int]$response.StatusCode -eq 404) {
+              Write-Host "No existing GitHub Release found for '$tag'."
+            }
+            else {
+              throw
+            }
+          }
+
       - name: Restore and build
         shell: pwsh
         run: |
