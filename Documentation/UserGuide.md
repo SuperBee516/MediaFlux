@@ -5,8 +5,8 @@ MediaFlux helps you inspect a media library, choose safe duplicate cleanup actio
 ## Getting Started
 
 1. Choose an input folder or add individual files to the Encode Queue.
-2. Review the source, estimated output size, and selected encoder settings.
-3. Start the full queue or selected files when you are ready.
+2. Use queue summaries, search, and operational views to find work; review each job in the Queue Inspector.
+3. Set priority if needed, then use **Start Queue** or **Start Selected** when you are ready.
 
 Use **Tools > Library Analyzer** when you want to catalog folders, inspect duplicates, health, storage opportunities, or scheduled maintenance. The Analyzer keeps catalog evidence separate from file actions.
 
@@ -14,11 +14,15 @@ See also: [Encode Queue / Encoding](#encode-queue-encoding) · [Library Analyzer
 
 ## Encode Queue / Encoding
 
-The Encode Queue is the normal place to add files and control processing. You can start the full queue or only the selected rows; those commands use their stated scope even if a saved queue preference differs.
+The Encode Queue is the normal place to add files and control processing. Its Total, Ready, Running, and Attention summaries provide a queue-wide status view. Search finds filenames and paths; the operational View filters to All, Ready, Running, Attention, Encode, Skip, or Review and shows `Showing X of Y`. Filtering is for presentation and does not change execution eligibility or order.
+
+The **Queue Inspector** keeps selected-job details in one place across **Summary**, **Plan & Analysis**, **Media**, and **Diagnostics & Logs**. Customize columns by changing visibility, widths, and order; those choices persist. The **Order** column shows logical execution position, not the row's current visual position.
+
+Grid sorting and filtering do not alter execution order. **Start Queue** and **Start Selected** follow the logical order. To change it, use the **Queue Priority** submenu: **Encode Next**, **Move to Top**, **Move Up**, **Move Down**, or **Move to Bottom**. Ctrl/Shift multi-selection moves selected pending jobs as a block while preserving their relative order. During an active run, running and dispatched jobs cannot be moved; pending, undispatched jobs can be reprioritized safely. Active queue rows are also protected from accidental removal.
 
 Use the row context menu for file-specific actions, custom encode settings, content hints, copy paths, and queue operations. Output is validated before MediaFlux treats an encode as successful. A cancelled or failed encode does not replace the source.
 
-Example: add a folder, select several rows that need a different quality setting, apply the custom setting, then use **Start Selected Files**.
+Example: add a folder, select several rows that need a different quality setting, apply the custom setting, then use **Start Selected**.
 
 See also: [Presets and Encoder Settings](#presets-and-encoder-settings) · [Statistics](#statistics)
 

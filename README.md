@@ -5,14 +5,14 @@ MediaFlux is a Windows desktop application for shrinking, inspecting, restoring,
 Use it to reduce storage without guessing, find exact or visually similar duplicates, restore difficult footage, split videos into verified segments, and understand what happened to every job.
 
 <p align="center">
-  <img src="docs/images/mediaflux-main.png" alt="MediaFlux main encoding workspace with queue, analysis, estimates, and Encoding Plan" width="1100">
+  <img src="docs/images/mediaflux-main.png" alt="MediaFlux queue workspace with operational summaries, search and views, logical order, estimates, and Queue Inspector" width="1100">
 </p>
 
-*The main workspace brings queue management, analysis, estimates, progress, and encoding decisions together in one view.*
+*The queue workspace brings operational status, search, execution priority, estimates, and the Queue Inspector together.*
 
 ## ✨ Highlights
 
-- Batch encoding with queue analysis, recommendations, estimated output size and savings, progress, ETA, retry, pause/resume, scheduling, and queue import/export
+- Batch encoding with an operational queue dashboard, search and operational views, customizable columns, a consolidated Queue Inspector, logical execution ordering, Encode Next and explicit priority management, plus estimates, progress, ETA, retry, pause/resume, scheduling, and queue import/export
 - Encoding Plans that explain output characteristics, stream actions, target-size budgets, quality decisions, and validation/finalization outcomes
 - CPU encoding plus NVIDIA NVENC and Intel Quick Sync (QSV), subject to the selected FFmpeg build and available hardware
 - Library Analyzer with inventory, overview, statistics, health, insights, policies, integrity checks, storage opportunities, and maintenance
@@ -23,7 +23,13 @@ Use it to reduce storage without guessing, find exact or visually similar duplic
 
 ## 🧠 Encoding Intelligence
 
-Add files or folders to the Encode Queue, inspect the estimates, and choose whether to start the selected rows or the eligible queue. Queue analysis can identify likely savings and explain why a file is a strong candidate, moderate candidate, skip, or review item. Recommendations are advisory; they do not silently change settings or remove files.
+The modern queue workspace brings operational status and per-job detail into one place. Total, Ready, Running, and Attention summaries show the queue at a glance. Search matches filenames and paths; the operational View offers All, Ready, Running, Attention, Encode, Skip, and Review, with a `Showing X of Y` count. These presentation filters do not change which jobs are eligible or their execution order.
+
+The consolidated **Queue Inspector** has **Summary**, **Plan & Analysis**, **Media**, and **Diagnostics & Logs** tabs. Queue columns can be shown or hidden, resized, and reordered; those preferences persist. The **Order** column shows logical execution position. Sorting or filtering the grid changes only presentation, not execution order.
+
+**Start Queue** and **Start Selected** follow logical execution order. Use the **Queue Priority** commands deliberately to change it: **Encode Next**, **Move to Top**, **Move Up**, **Move Down**, and **Move to Bottom**. Ctrl/Shift multi-selection moves selected jobs as an order-preserving block. During an active run, already-running or dispatched jobs remain protected while undispatched pending jobs can be reprioritized safely.
+
+Queue analysis can identify likely savings and explain why a file is a strong candidate, moderate candidate, skip, or review item. Recommendations are advisory; they do not silently change settings or remove files.
 
 The Encoding Plan summarizes the intended operation before work begins, including:
 
@@ -170,11 +176,11 @@ Download the latest installer from [GitHub Releases](https://github.com/SuperBee
 
 Typical encoding workflow:
 
-1. Add files or a folder to the Encode Queue.
-2. Analyze the queue and review recommendations, estimates, and the Encoding Plan.
+1. Add files or a folder to the Encode Queue; use search and the operational View to find the jobs you want.
+2. Review the queue summaries, estimates, recommendations, and **Plan & Analysis** in the Queue Inspector.
 3. Adjust quality, target size, streams, container, preset, or optional restoration settings.
 4. Use **Compare Samples** or restoration preview when visual review is useful.
-5. Start the selected files or eligible queue and monitor progress and ETA.
+5. Use **Start Selected** or **Start Queue** and monitor progress and ETA. Use **Queue Priority** if you want to change logical execution order; grid sorting and filtering do not change it.
 6. Review the result in Job History and inspect diagnostics if needed.
 
 Installed copies can use **Help → Check for Updates** to check the stable release channel, review release notes, download, and restart. Building from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0):

@@ -118,7 +118,7 @@ public sealed class QueueWorkspaceUiTests
 
                 string[] expectedNames =
                 [
-                    "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
+                    "colOrder", "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
                     "colSourceEstimate", "colProgress", "colETA"
                 ];
                 string[] actualNames = queue.Columns.Cast<DataGridViewColumn>()

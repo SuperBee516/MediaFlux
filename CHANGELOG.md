@@ -7,6 +7,31 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-23
+
+### Queue Workspace
+
+- Redesigned the encoding queue as an operational workspace with Total, Ready, Running, and Attention summaries and a consolidated Queue Inspector.
+- Added Summary, Plan & Analysis, Media, and Diagnostics & Logs inspector views, plus customizable columns with persisted visibility, widths, and order.
+- Improved source-size-to-estimate presentation and protected active queue rows from accidental removal.
+
+### Search & Operational Views
+
+- Added filename/path search and All, Ready, Running, Attention, Encode, Skip, and Review views, with a visible `Showing X of Y` count.
+- Kept presentation filtering independent of queue eligibility and execution order.
+
+### Execution Order & Priority
+
+- Added stable logical execution ordering independent of grid sorting and filtering; Start Queue and Start Selected follow that order.
+- Preserved execution order through queue import/export and saved jobs, and added the Order column and Queue Priority commands: Encode Next, Move to Top, Move Up, Move Down, and Move to Bottom.
+- Added multi-selection block moves and safe active-run reprioritization limited to undispatched jobs.
+
+### Reliability
+
+- Prevented estimate and recommendation refreshes from overwriting active encode or recovery state.
+- Added synchronized dispatch, reorder, append, retry, duplicate-removal, and admission-closing operations, including safe ownership of appends racing queue completion.
+- Stabilized queue concurrency handling and UI regression coverage.
+
 ## [1.5.10] - 2026-09-22
 
 ### Encoding Insights
@@ -909,7 +934,8 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v0.1.41...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.5.10...v1.6.0
 [0.1.3]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.3
 [0.1.2]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.2
 [0.1.1]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.1
