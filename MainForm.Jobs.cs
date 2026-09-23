@@ -76,7 +76,7 @@ public partial class MainForm
 
     private void SaveJobFromQueue(bool selectedOnly)
     {
-        var rows = (selectedOnly ? dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>() : GetEncodeRowsInVisualOrder())
+        var rows = (selectedOnly ? GetSelectedEncodeRowsInExecutionOrder() : GetEncodeRowsInExecutionOrder())
             .Where(row => !row.IsNewRow && row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true }).ToArray();
         if (rows.Length == 0) { ShowStatusInfo(selectedOnly ? "Select eligible files to save as a job." : "The queue has no eligible files to save."); return; }
         UpdateSizeTotals(force: true);
@@ -144,7 +144,7 @@ public partial class MainForm
         if (existing.Length != job.Files.Count) ShowStatusInfo($"{job.Files.Count - existing.Length} saved source file(s) are unavailable and were not loaded.");
         if (existing.Length == 0) return;
         await ImportEncodePathsAsync(existing.Select(file => file.SourcePath), false, false, replaceExisting: true, rememberRoots: false);
-        foreach (DataGridViewRow row in GetEncodeRowsInVisualOrder())
+        foreach (DataGridViewRow row in GetEncodeRowsInExecutionOrder())
         {
             var file = existing.FirstOrDefault(item => string.Equals(item.SourcePath, GetPathFromRow(row), StringComparison.OrdinalIgnoreCase));
             if (file == null) continue;

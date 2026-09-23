@@ -30,12 +30,10 @@ namespace MediaFlux
                 return;
             }
 
-            var eligibleRows = GetEncodeRowsInVisualOrder()
-                .Where(row => row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true })
-                .ToList();
+            var eligibleRows = GetEligibleEncodeRowsInExecutionOrder().ToList();
             var scope = EncodingScopeResolver.Analyze(
                 eligibleRows,
-                dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>());
+                GetSelectedEncodeRowsInExecutionOrder());
 
             EncodingScopeChoice scopeChoice;
             if (processAllOverride == true)
@@ -151,15 +149,10 @@ namespace MediaFlux
                 ? 1
                 : GetMaxConcurrentEncodes(); // Policy rows use conservative isolated scheduling.
 
-            ReapplyCurrentEncodeQueueSort();
-
-            // Gather rows to process in the same order the user sees in the grid.
-            var rowsToProcess = GetEncodeRowsInVisualOrder()
-                .Where(r =>
-                {
-                    bool duplicateExcluded = r.Tag is RowMeta meta && meta.ExcludedFromEncodeAsDuplicate;
-                    return (requestedAll || requestedRowSet.Contains(r)) && !duplicateExcluded;
-                })
+            // Gather rows to process in stable logical queue order. Presentation
+            // sorting is intentionally not consulted here.
+            var rowsToProcess = GetEligibleEncodeRowsInExecutionOrder()
+                .Where(r => requestedAll || requestedRowSet.Contains(r))
                 .ToList();
 
             DateTime statisticsRunStartedUtc = DateTime.UtcNow;

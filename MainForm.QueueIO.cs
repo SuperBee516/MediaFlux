@@ -113,40 +113,7 @@ namespace MediaFlux
                 return;
             }
 
-            var items = new List<QueueItem>();
-            foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
-            {
-                var path = GetPathFromRow(row);
-                if (!string.IsNullOrWhiteSpace(path))
-                {
-                    DvdImportOptions? dvdOptions =
-                        (row.Tag as RowMeta)?.DvdEncodeOptions;
-                    items.Add(new QueueItem
-                    {
-                        Path = path,
-                        ContentHint = (row.Tag as RowMeta)?.ContentHint is
-                            SmartEncodeContentHint hint &&
-                            hint != SmartEncodeContentHint.Auto
-                                ? hint.ToString()
-                                : null,
-                        LibraryPolicyIntent = (row.Tag as RowMeta)?.LibraryPolicyIntent,
-                        Dvd = dvdOptions == null
-                            ? null
-                            : new DvdQueueItem
-                            {
-                                VideoTsFolder = Path.GetDirectoryName(
-                                    dvdOptions.Candidate.Segments[0].Path) ?? "",
-                                TitleSetId = dvdOptions.Candidate.TitleSetId,
-                                OutputPath = dvdOptions.OutputPath,
-                                SelectedAudioStreamIndexes =
-                                    dvdOptions.SelectedAudioStreamIndexes.ToList(),
-                                SelectedSubtitleStreamIndexes =
-                                    dvdOptions.SelectedSubtitleStreamIndexes.ToList()
-                            }
-                    });
-                }
-            }
-
+            var items = CaptureQueueItemsInExecutionOrder();
             if (items.Count == 0)
             {
                 MessageBox.Show("No valid items to export.", "Export Queue",
@@ -325,6 +292,44 @@ namespace MediaFlux
                 MessageBox.Show($"Import failed:\n{ex.Message}", "Import Queue",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private List<QueueItem> CaptureQueueItemsInExecutionOrder()
+        {
+            var items = new List<QueueItem>();
+            foreach (DataGridViewRow row in GetEncodeRowsInExecutionOrder())
+            {
+                string? path = GetPathFromRow(row);
+                if (string.IsNullOrWhiteSpace(path))
+                    continue;
+
+                DvdImportOptions? dvdOptions = (row.Tag as RowMeta)?.DvdEncodeOptions;
+                items.Add(new QueueItem
+                {
+                    Path = path,
+                    ContentHint = (row.Tag as RowMeta)?.ContentHint is
+                        SmartEncodeContentHint hint &&
+                        hint != SmartEncodeContentHint.Auto
+                            ? hint.ToString()
+                            : null,
+                    LibraryPolicyIntent = (row.Tag as RowMeta)?.LibraryPolicyIntent,
+                    Dvd = dvdOptions == null
+                        ? null
+                        : new DvdQueueItem
+                        {
+                            VideoTsFolder = Path.GetDirectoryName(
+                                dvdOptions.Candidate.Segments[0].Path) ?? "",
+                            TitleSetId = dvdOptions.Candidate.TitleSetId,
+                            OutputPath = dvdOptions.OutputPath,
+                            SelectedAudioStreamIndexes =
+                                dvdOptions.SelectedAudioStreamIndexes.ToList(),
+                            SelectedSubtitleStreamIndexes =
+                                dvdOptions.SelectedSubtitleStreamIndexes.ToList()
+                        }
+                });
+            }
+
+            return items;
         }
 
         private async Task<DvdImportOptions?> RestoreDvdQueueItemAsync(

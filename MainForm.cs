@@ -2453,6 +2453,7 @@ namespace MediaFlux
         // Dynamic in-progress queue so we can append new rows while encoding
         private List<DataGridViewRow>? _activeEncodeQueue = null;
         private readonly object _activeEncodeQueueLock = new();
+        private long _nextEncodeQueueSequence;
         private int _pendingEncodeImports = 0;
         private bool _suppressEncodeFolderSelectionScan = false;
         private int _folderImportGeneration = 0;
@@ -2471,6 +2472,7 @@ namespace MediaFlux
             private int _inspectorLogCharacters;
 
             public Guid QueueItemId = Guid.NewGuid();
+            public long QueueSequence;
             public string Path = "";
             public double DurationSec = 0; // Initialized to suppress warning
             public string Resolution = ""; // Changed to string; initialized
@@ -2546,13 +2548,24 @@ namespace MediaFlux
         private RowMeta EnsureRowMeta(DataGridViewRow row)
         {
             if (row.Tag is RowMeta rm)
+            {
+                if (rm.QueueSequence == 0)
+                    rm.QueueSequence = AllocateEncodeQueueSequence();
                 return rm;
+            }
 
             var path = GetPathFromRow(row) ?? string.Empty;
-            rm = new RowMeta { Path = path };
+            rm = new RowMeta
+            {
+                Path = path,
+                QueueSequence = AllocateEncodeQueueSequence()
+            };
             row.Tag = rm;
             return rm;
         }
+
+        private long AllocateEncodeQueueSequence() =>
+            Interlocked.Increment(ref _nextEncodeQueueSequence);
 
         private bool RowHasCustomSettings(RowMeta? meta)
         {
@@ -4811,6 +4824,51 @@ namespace MediaFlux
             }
         }
 
+        private IEnumerable<DataGridViewRow> GetEncodeRowsInExecutionOrder()
+        {
+            if (dgvEncodeQueue.Rows.Count == 0)
+                yield break;
+
+            // RowMeta.QueueSequence is the authoritative logical queue order.
+            // Do not consult Visible, SortedColumn, SortOrder, or DisplayIndex:
+            // those are presentation state only.
+            var orderedRows = dgvEncodeQueue.Rows
+                .Cast<DataGridViewRow>()
+                .Where(row => !row.IsNewRow)
+                .Select(row => new
+                {
+                    Row = row,
+                    Meta = EnsureRowMeta(row)
+                })
+                .OrderBy(item => item.Meta.QueueSequence)
+                .Select(item => item.Row)
+                .ToList();
+
+            foreach (DataGridViewRow row in orderedRows)
+                yield return row;
+        }
+
+        private IEnumerable<DataGridViewRow> GetSelectedEncodeRowsInExecutionOrder()
+        {
+            return dgvEncodeQueue.SelectedRows
+                .Cast<DataGridViewRow>()
+                .Where(row => !row.IsNewRow)
+                .Select(row => new
+                {
+                    Row = row,
+                    Meta = EnsureRowMeta(row)
+                })
+                .OrderBy(item => item.Meta.QueueSequence)
+                .Select(item => item.Row)
+                .ToList();
+        }
+
+        private IEnumerable<DataGridViewRow> GetEligibleEncodeRowsInExecutionOrder()
+        {
+            return GetEncodeRowsInExecutionOrder()
+                .Where(row => row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true });
+        }
+
         private void UpdateSelectionSizeTotals()
         {
             if (_summarySelectedCountValue != null)
@@ -5546,8 +5604,11 @@ namespace MediaFlux
                     // Move/rename on disk
                     File.Move(fullPath, newPath, overwrite: true);
 
-                    // Update row display + tag
-                    row.Tag = newPath;
+                    // Update row display while preserving the logical queue metadata.
+                    if (row.Tag is RowMeta renamedMeta)
+                        renamedMeta.Path = newPath;
+                    else
+                        row.Tag = newPath;
                     row.Cells["colName"].Value = Path.GetFileName(newPath);
 
                     // Update Size/Created, too
@@ -5777,8 +5838,10 @@ namespace MediaFlux
             if (dgvEncodeQueue.Columns.Contains("colCustom"))
                 r.Cells["colCustom"].Value = "";
 
-            // Initially tag with just the path; RowMeta will be attached by the smart estimate UI pump
-            r.Tag = path;
+            // Attach queue metadata immediately so the logical order is assigned
+            // when the item enters the queue, before any estimate work runs.
+            RowMeta queueMeta = EnsureRowMeta(r);
+            queueMeta.Path = path;
             _rowsByPath[path] = r;
             _queueSourceSizeMap[path] = sourceMb;
             _queueTotalSourceMb += sourceMb;

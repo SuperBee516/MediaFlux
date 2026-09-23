@@ -158,22 +158,19 @@ namespace MediaFlux
                             }
                             else
                             {
-                                row.Tag = new RowMeta
-                                {
-                                    Path = path,
-                                    DurationSec = durSec,
-                                    Resolution = res,
-                                    SrcMb = srcMb,
-                                    VideoCodec = codec,
-                                    Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0,
-                                    EstimateDiagnostic = item.EstimateDiagnostic,
-                                    SizePredictionCalibration = item.SizeCalibration,
-                                    EstimatedPlannedAudioBitrateKbps =
-                                        item.PlannedAudioBitrateKbps,
-                                    EstimatedPlannedMappedAncillaryBitrateKbps =
-                                        item.PlannedMappedAncillaryBitrateKbps,
-                                    QualityPreview = item.QualityResolution
-                                };
+                                RowMeta estimateMeta = EnsureRowMeta(row);
+                                estimateMeta.DurationSec = durSec;
+                                estimateMeta.Resolution = res;
+                                estimateMeta.SrcMb = srcMb;
+                                estimateMeta.VideoCodec = codec;
+                                estimateMeta.Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0;
+                                estimateMeta.EstimateDiagnostic = item.EstimateDiagnostic;
+                                estimateMeta.SizePredictionCalibration = item.SizeCalibration;
+                                estimateMeta.EstimatedPlannedAudioBitrateKbps =
+                                    item.PlannedAudioBitrateKbps;
+                                estimateMeta.EstimatedPlannedMappedAncillaryBitrateKbps =
+                                    item.PlannedMappedAncillaryBitrateKbps;
+                                estimateMeta.QualityPreview = item.QualityResolution;
                             }
 
                             TrackCodecFilterCount(path, codec);

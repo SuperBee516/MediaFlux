@@ -496,20 +496,6 @@ namespace MediaFlux
 
             double sourceMb = candidate.CombinedSizeBytes / (1024d * 1024d);
             string outputBaseName = Path.GetFileNameWithoutExtension(options.OutputPath);
-            var meta = new RowMeta
-            {
-                Path = queuePath,
-                DurationSec = candidate.CombinedDurationSeconds,
-                Resolution = candidate.VideoWidth.HasValue && candidate.VideoHeight.HasValue
-                    ? $"{candidate.VideoWidth}x{candidate.VideoHeight}"
-                    : "",
-                VideoCodec = candidate.VideoCodec,
-                Fps = candidate.FrameRate.HasValue
-                    ? (int)Math.Round(candidate.FrameRate.Value)
-                    : 0,
-                SrcMb = sourceMb,
-                DvdEncodeOptions = options
-            };
 
             _suppressRowEvents = true;
             int rowIndex;
@@ -523,7 +509,18 @@ namespace MediaFlux
             }
 
             DataGridViewRow row = dgvEncodeQueue.Rows[rowIndex];
-            row.Tag = meta;
+            RowMeta meta = EnsureRowMeta(row);
+            meta.Path = queuePath;
+            meta.DurationSec = candidate.CombinedDurationSeconds;
+            meta.Resolution = candidate.VideoWidth.HasValue && candidate.VideoHeight.HasValue
+                ? $"{candidate.VideoWidth}x{candidate.VideoHeight}"
+                : "";
+            meta.VideoCodec = candidate.VideoCodec;
+            meta.Fps = candidate.FrameRate.HasValue
+                ? (int)Math.Round(candidate.FrameRate.Value)
+                : 0;
+            meta.SrcMb = sourceMb;
+            meta.DvdEncodeOptions = options;
             row.Cells["colName"].Value =
                 $"{outputBaseName} ({candidate.TitleSetId}, DVD title)";
             row.Cells["colSize"].Value = FormatSize(sourceMb);
