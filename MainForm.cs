@@ -436,6 +436,9 @@ namespace MediaFlux
             // persist column‐width changes
             dgvEncodeQueue.ColumnWidthChanged += DgvEncodeQueue_ColumnWidthChanged;
             dgvEncodeQueue.ColumnDisplayIndexChanged += DgvEncodeQueue_ColumnDisplayIndexChanged;
+            dgvEncodeQueue.MouseDown += DgvEncodeQueue_ColumnResizeMouseDown;
+            dgvEncodeQueue.MouseUp += DgvEncodeQueue_ColumnResizeMouseUp;
+            dgvEncodeQueue.AllowUserToOrderColumns = true;
 
             // enable drag‐drop reordering
             dgvEncodeQueue.GiveFeedback += (s, ev) => ev.UseDefaultCursors = true;
@@ -626,7 +629,7 @@ namespace MediaFlux
             ApplyEncodingOptionsCollapsedState(false);
             if (_encodeInfoTabs != null)
                 _encodeInfoTabs.SelectedTab = _encodeInfoTabs.TabPages.Cast<TabPage>()
-                    .FirstOrDefault(page => page.Text == "Encoding Options");
+                    .FirstOrDefault(page => page.Text == "Plan & Analysis");
         }
 
         private void AddQueueCommandSummary()
@@ -951,37 +954,7 @@ namespace MediaFlux
             return outer;
         }
 
-        private Control CreateEncodeInfoTabs()
-        {
-            _encodeInfoTabs = new TabControl
-            {
-                Dock = DockStyle.Fill,
-                Margin = Padding.Empty
-            };
-
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Details", CreateContextualDetailsGroup()));
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Encoding Plan", CreateEncodingPlanGroup()));
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Preview", CreateEncodePreviewGroup()));
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Streams", CreateStreamsGroup()));
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Restoration", CreateRestorationGroup()));
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Statistics", CreateEncodingStatisticsGroup()));
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Diagnostics", CreateEncodingDiagnosticsGroup()));
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Encoding Options", CreateEncodingOptionsDetails()));
-            _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Duplicates", grpDuplicateFinder));
-            _encodeInfoTabs.SelectedIndexChanged += (_, __) =>
-            {
-                if (_encodeInfoTabs.SelectedTab != null && !_applyingEncodeDropdownSettings)
-                {
-                    _config.EncodeDetailsTab = _encodeInfoTabs.SelectedTab.Text;
-                    _config.Save(_configPath);
-                }
-                if (_encodeInfoTabs.SelectedTab?.Text == "Statistics")
-                    RefreshEncodingStatistics();
-                else if (_encodeInfoTabs.SelectedTab?.Text == "Diagnostics")
-                    RefreshEncodingDiagnostics();
-            };
-            return _encodeInfoTabs;
-        }
+        private Control CreateEncodeInfoTabs() => CreateQueueInspectorTabs();
 
         private Control CreateContextualDetailsGroup()
         {
@@ -1135,6 +1108,7 @@ namespace MediaFlux
             UpdateFailureAnalysis(rows);
             UpdateDetailsHeaderContext();
             UpdateCurrentOperationSummary();
+            RefreshQueueInspectorFromSelection();
         }
 
         private void UpdateFailureAnalysis(IReadOnlyList<DataGridViewRow> rows)
@@ -1300,13 +1274,15 @@ namespace MediaFlux
                 Width = 26,
                 Height = 24,
                 FlatStyle = FlatStyle.System,
-                Margin = new Padding(0, 0, 8, 0)
+                Margin = new Padding(0, 0, 8, 0),
+                AccessibleName = "Collapse queue item inspector",
+                AccessibleDescription = "Collapses the lower queue inspector."
             };
             _btnToggleEncodeInfoHeader.Click += (_, __) => ToggleEncodeInfoHeaderCollapsed();
 
             var title = new Label
             {
-                Text = "Details",
+                Text = "Queue Inspector",
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(27, 34, 43),
@@ -1359,7 +1335,15 @@ namespace MediaFlux
                 _encodeInfoHeaderContent.Visible = !collapsed;
 
             if (_btnToggleEncodeInfoHeader != null)
+            {
                 _btnToggleEncodeInfoHeader.Text = collapsed ? ">" : "v";
+                _btnToggleEncodeInfoHeader.AccessibleName = collapsed
+                    ? "Expand queue item inspector"
+                    : "Collapse queue item inspector";
+                _btnToggleEncodeInfoHeader.AccessibleDescription = collapsed
+                    ? "Expands the lower queue inspector."
+                    : "Collapses the lower queue inspector.";
+            }
 
             ApplyEncodeInfoSplitterState();
         }
@@ -1394,7 +1378,9 @@ namespace MediaFlux
 
                 int desiredDetailsHeight = collapsed
                     ? collapsedHeight
-                    : CalculateStandardEncodeDetailsHeight(availableHeight);
+                    : _config.EncodeInfoHeight > 0
+                        ? ScaleUi(_config.EncodeInfoHeight)
+                        : CalculateStandardEncodeDetailsHeight(availableHeight);
                 int detailsMinimum = collapsed ? collapsedHeight : MinimumEncodeInfoHeight;
                 int legalMaximumHeight = Math.Max(
                     0,
@@ -1437,8 +1423,11 @@ namespace MediaFlux
                 return;
             }
 
-            // Splitter position is intentionally session-only. Persist only the
-            // independent expanded/collapsed Details state.
+            int availableHeight = Math.Max(0, _encodeQueueSplit.ClientSize.Height - EncodeInfoSplitterWidth);
+            int detailsHeight = Math.Max(0, availableHeight - _encodeQueueSplit.SplitterDistance);
+            double dpiScale = Math.Max(1d, DeviceDpi / 96d);
+            _config.EncodeInfoHeight = (int)Math.Round(detailsHeight / dpiScale);
+            _config.Save(_configPath);
         }
 
         private void ClampEncodeInfoSplitterState()
@@ -1564,7 +1553,7 @@ namespace MediaFlux
         {
             var group = new GroupBox
             {
-                Text = "Output Preview",
+                Text = "Configured Output Preview (advisory)",
                 Dock = DockStyle.Fill,
                 AutoSize = true,
                 Padding = new Padding(12, 8, 12, 10),
@@ -1611,12 +1600,6 @@ namespace MediaFlux
             AddPreviewStackedMetric(audioMetrics, "Audio sample rate", "Keep source", 2);
             AddPreviewControl(_encodePreviewTable, audioMetrics);
 
-            AddPreviewSection(_encodePreviewTable, "SMART ENCODE");
-            var recommendationMetrics = CreatePreviewMetricGrid(3);
-            AddPreviewStackedMetric(recommendationMetrics, "Recommendation", "--", 0);
-            AddPreviewStackedMetric(recommendationMetrics, "Expected saving", "--", 1);
-            AddPreviewStackedMetric(recommendationMetrics, "Confidence", "--", 2);
-            AddPreviewControl(_encodePreviewTable, recommendationMetrics);
             group.Controls.Add(_encodePreviewTable);
             return group;
         }
@@ -1985,14 +1968,28 @@ namespace MediaFlux
             int height = 0;
             double fps = 0;
             double estimatedMb = 0;
+            RowMeta? previewMeta = row?.Tag as RowMeta;
+            bool activeSource = row != null && IsQueueRowActivelyEncoding(row);
 
             if (row != null)
             {
-                if (row.Tag is RowMeta meta)
+                if (previewMeta != null)
                 {
-                    durationSec = meta.DurationSec;
-                    if (meta.SrcMb > 0 && string.IsNullOrWhiteSpace(path))
-                        path = meta.Path;
+                    durationSec = previewMeta.DurationSec;
+                    fps = previewMeta.Fps;
+                    if (!string.IsNullOrWhiteSpace(previewMeta.Resolution))
+                    {
+                        string[] dimensions = previewMeta.Resolution.Split(
+                            new[] { 'x', 'X', '×' },
+                            StringSplitOptions.RemoveEmptyEntries);
+                        if (dimensions.Length == 2)
+                        {
+                            int.TryParse(dimensions[0].Trim(), out width);
+                            int.TryParse(dimensions[1].Trim(), out height);
+                        }
+                    }
+                    if (previewMeta.SrcMb > 0 && string.IsNullOrWhiteSpace(path))
+                        path = previewMeta.Path;
                 }
 
                 estimatedMb = ParseSizeToMb(row.Cells["colEstimatedSize"].Value?.ToString());
@@ -2000,13 +1997,35 @@ namespace MediaFlux
 
             if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
             {
-                if (durationSec <= 0)
-                    durationSec = ProbeDurationSeconds(path);
+                MediaInfoService.MediaInfo cachedInfo = new();
+                bool hasCachedMetadata = _mediaInfoService != null &&
+                    _mediaInfoService.TryGetCachedInfo(path, out cachedInfo);
+                if (hasCachedMetadata)
+                {
+                    if (durationSec <= 0 && cachedInfo.DurationSeconds is > 0)
+                        durationSec = cachedInfo.DurationSeconds.Value;
+                    if ((width <= 0 || height <= 0) && cachedInfo.Width is > 0 && cachedInfo.Height is > 0)
+                    {
+                        width = cachedInfo.Width.Value;
+                        height = cachedInfo.Height.Value;
+                    }
+                    if (fps <= 0 && cachedInfo.Fps is > 0)
+                        fps = cachedInfo.Fps.Value;
+                }
 
-                var dimensions = ProbeResolutionPixels(path);
-                width = dimensions.w;
-                height = dimensions.h;
-                fps = ProbeFps(path);
+                if (!activeSource)
+                {
+                    if (durationSec <= 0)
+                        durationSec = ProbeDurationSeconds(path);
+                    if (width <= 0 || height <= 0)
+                    {
+                        var dimensions = ProbeResolutionPixels(path);
+                        width = dimensions.w;
+                        height = dimensions.h;
+                    }
+                    if (fps <= 0)
+                        fps = ProbeFps(path);
+                }
 
                 if (estimatedMb <= 0 && _estimatedSizeMap.TryGetValue(path, out var mappedEstimate))
                     estimatedMb = mappedEstimate;
@@ -2089,7 +2108,8 @@ namespace MediaFlux
             SetPreviewValue("Channels", GetPreviewAudioChannelsText());
             SetPreviewValue("Audio sample rate", "Keep source");
             if (GetSelectedOutputContainer() == OutputContainerSelection.Auto &&
-                !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                !string.IsNullOrWhiteSpace(path) && File.Exists(path) &&
+                !IsEstimateSourceOwnedByActiveEncode(path))
             {
                 RequestAutoContainerPrediction(path, formatText);
             }
@@ -2445,6 +2465,11 @@ namespace MediaFlux
         // Simple metadata for a grid row
         private sealed class RowMeta
         {
+            private const int MaximumInspectorLogCharacters = 32 * 1024;
+            private readonly object _inspectorLogLock = new();
+            private readonly Queue<string> _inspectorLogLines = new();
+            private int _inspectorLogCharacters;
+
             public Guid QueueItemId = Guid.NewGuid();
             public string Path = "";
             public double DurationSec = 0; // Initialized to suppress warning
@@ -2482,6 +2507,31 @@ namespace MediaFlux
             public EncodingExecutionOutcome? IntelligenceOutcome;
             public EncodingQualityResolution? QualityPreview;
             public EncodingSizePredictionCalibration? SizePredictionCalibration;
+
+            public void AppendInspectorLogLine(string line)
+            {
+                if (string.IsNullOrEmpty(line))
+                    return;
+                if (line.Length > MaximumInspectorLogCharacters)
+                    line = line[^MaximumInspectorLogCharacters..];
+
+                lock (_inspectorLogLock)
+                {
+                    _inspectorLogLines.Enqueue(line);
+                    _inspectorLogCharacters += line.Length + Environment.NewLine.Length;
+                    while (_inspectorLogCharacters > MaximumInspectorLogCharacters && _inspectorLogLines.Count > 1)
+                    {
+                        string removed = _inspectorLogLines.Dequeue();
+                        _inspectorLogCharacters -= removed.Length + Environment.NewLine.Length;
+                    }
+                }
+            }
+
+            public string GetInspectorLogTail()
+            {
+                lock (_inspectorLogLock)
+                    return string.Join(Environment.NewLine, _inspectorLogLines);
+            }
 
             public bool HasCustomSettings =>
                 CustomTargetMb.HasValue ||
@@ -3776,8 +3826,9 @@ namespace MediaFlux
             if (_config.CreatedColumnWidth > 0 && dgvEncodeQueue.Columns.Contains("colCreated"))
                 dgvEncodeQueue.Columns["colCreated"].Width = _config.CreatedColumnWidth;
             if (dgvEncodeQueue.Columns.Contains("colEstimatedSize"))
-                dgvEncodeQueue.Columns["colEstimatedSize"].Visible = _config.ShowEstimatedOutputColumn;
+            dgvEncodeQueue.Columns["colEstimatedSize"].Visible = _config.ShowEstimatedOutputColumn;
             ApplyQueueWorkspaceColumnPreferences();
+            InitializeQueueColumnSizingPreferences();
             ApplyEncodeGridColumnLayout();
             ApplyRememberedEncodeQueueSort();
             ApplyRememberedEncodeDetailsState();
@@ -4905,7 +4956,7 @@ namespace MediaFlux
         {
             using var dlg = new MediaFluxForm
             {
-                Text = "Show / Hide Columns",
+                Text = "Queue Column Settings",
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 StartPosition = FormStartPosition.CenterParent,
                 AutoSize = true,
@@ -4917,7 +4968,7 @@ namespace MediaFlux
             {
                 AutoSize = true,
                 ColumnCount = 1,
-                RowCount = 11,
+                RowCount = 12,
                 Dock = DockStyle.Fill,
                 Padding = new Padding(0),
                 Margin = new Padding(0)
@@ -4932,6 +4983,92 @@ namespace MediaFlux
             var chkDuplicate = new CheckBox { Text = "Duplicate", Checked = _config.ShowDuplicateColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkDuplicateConfidence = new CheckBox { Text = "Duplicate confidence", Checked = _config.ShowDuplicateConfidenceColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkDuplicateAction = new CheckBox { Text = "Duplicate action", Checked = _config.ShowDuplicateActionColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
+            var chkLockWidths = new CheckBox
+            {
+                Name = "chkLockQueueColumnWidths",
+                Text = "Lock Column Widths",
+                Checked = _config.EncodeGridColumnWidthsLocked,
+                AutoSize = true,
+                AccessibleDescription = "Prevents manual resizing of queue columns while preserving their current widths."
+            };
+            var btnResetWidths = new Button
+            {
+                Name = "btnResetQueueColumnWidths",
+                Text = "Reset Column Widths",
+                AutoSize = true,
+                AccessibleDescription = "Restores MediaFlux default queue column widths without changing order or visibility."
+            };
+            btnResetWidths.Click += (_, __) =>
+            {
+                _config.EncodeGridColumnWidthsLocked = chkLockWidths.Checked;
+                ApplyQueueColumnResizeLock();
+                ResetQueueColumnWidths();
+            };
+            var orderLabel = new Label
+            {
+                Text = "Queue column order",
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                AccessibleName = "Queue column order"
+            };
+            var orderPicker = new ComboBox
+            {
+                Name = "queueColumnOrderPicker",
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 220,
+                AccessibleName = "Select queue column to move",
+                AccessibleDescription = "Choose a queue column, including hidden columns, to move in the saved order."
+            };
+            RefreshQueueColumnOrderChoices(orderPicker, null);
+            var moveLeft = new Button
+            {
+                Name = "moveQueueColumnLeft",
+                Text = "Move Left",
+                AutoSize = true,
+                AccessibleName = "Move selected queue column left",
+                AccessibleDescription = "Moves the selected column one position earlier in the queue grid."
+            };
+            var moveRight = new Button
+            {
+                Name = "moveQueueColumnRight",
+                Text = "Move Right",
+                AutoSize = true,
+                AccessibleName = "Move selected queue column right",
+                AccessibleDescription = "Moves the selected column one position later in the queue grid."
+            };
+            var resetOrder = new Button
+            {
+                Name = "resetQueueColumnOrder",
+                Text = "Reset Column Order",
+                AutoSize = true,
+                AccessibleName = "Reset queue column order",
+                AccessibleDescription = "Restores the Queue Phase 1 default column order without changing widths or visibility."
+            };
+            orderPicker.SelectedIndexChanged += (_, __) => UpdateQueueColumnMoveButtons(orderPicker, moveLeft, moveRight);
+            UpdateQueueColumnMoveButtons(orderPicker, moveLeft, moveRight);
+            moveLeft.Click += (_, __) =>
+            {
+                if (orderPicker.SelectedItem is QueueColumnSettingsItem item)
+                {
+                    MoveQueueColumn(item.ColumnName, -1);
+                    RefreshQueueColumnOrderChoices(orderPicker, item.ColumnName);
+                }
+            };
+            moveRight.Click += (_, __) =>
+            {
+                if (orderPicker.SelectedItem is QueueColumnSettingsItem item)
+                {
+                    MoveQueueColumn(item.ColumnName, 1);
+                    RefreshQueueColumnOrderChoices(orderPicker, item.ColumnName);
+                }
+            };
+            resetOrder.Click += (_, __) =>
+            {
+                ResetQueueColumnOrder();
+                RefreshQueueColumnOrderChoices(orderPicker, orderPicker.SelectedItem is QueueColumnSettingsItem item
+                    ? item.ColumnName
+                    : null);
+            };
             var btnOK = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80, Anchor = AnchorStyles.Left };
 
             layout.Controls.Add(chkName, 0, 0);
@@ -4943,7 +5080,31 @@ namespace MediaFlux
             layout.Controls.Add(chkDuplicate, 0, 6);
             layout.Controls.Add(chkDuplicateConfidence, 0, 7);
             layout.Controls.Add(chkDuplicateAction, 0, 8);
-            layout.Controls.Add(btnOK, 0, 9);
+            var sizingActions = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                WrapContents = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                Margin = new Padding(0, 4, 0, 8)
+            };
+            sizingActions.Controls.Add(chkLockWidths);
+            sizingActions.Controls.Add(btnResetWidths);
+            layout.Controls.Add(sizingActions, 0, 9);
+            var orderingActions = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                WrapContents = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                Margin = new Padding(0, 4, 0, 8),
+                AccessibleName = "Queue column ordering controls"
+            };
+            orderingActions.Controls.Add(orderLabel);
+            orderingActions.Controls.Add(orderPicker);
+            orderingActions.Controls.Add(moveLeft);
+            orderingActions.Controls.Add(moveRight);
+            orderingActions.Controls.Add(resetOrder);
+            layout.Controls.Add(orderingActions, 0, 10);
+            layout.Controls.Add(btnOK, 0, 11);
             dlg.Controls.Add(layout);
             dlg.AcceptButton = btnOK;
 
@@ -4968,6 +5129,8 @@ namespace MediaFlux
                 _config.ShowDuplicateColumn = chkDuplicate.Checked;
                 _config.ShowDuplicateConfidenceColumn = chkDuplicateConfidence.Checked;
                 _config.ShowDuplicateActionColumn = chkDuplicateAction.Checked;
+                _config.EncodeGridColumnWidthsLocked = chkLockWidths.Checked;
+                ApplyQueueColumnResizeLock();
                 _config.Save(_configPath);
                 ApplyEncodeGridColumnLayout();
             }
@@ -4975,41 +5138,7 @@ namespace MediaFlux
 
         private void ApplyEncodeGridColumnLayout()
         {
-            if (dgvEncodeQueue == null)
-                return;
-
-            if (dgvEncodeQueue.Columns.Contains("colName"))
-            {
-                var col = dgvEncodeQueue.Columns["colName"];
-                col.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-                col.MinimumWidth = ScaleUi(150);
-                col.FillWeight = 100;
-            }
-
-            SetFixedGridColumn("colSize", 92);
-            SetFixedGridColumn("colEstimatedSize", 150);
-            SetFixedGridColumn("colEncodeRecommendation", ScaleUi(120));
-            SetFixedGridColumn("colStatus", ScaleUi(86));
-            SetFixedGridColumn("colPlannedOutput", ScaleUi(190));
-            SetFixedGridColumn("colSourceEstimate", ScaleUi(205));
-            SetFixedGridColumn("colProgress", ScaleUi(72));
-            SetFixedGridColumn("colETA", ScaleUi(72));
-            SetFixedGridColumn("colCustom", 72);
-        }
-
-        private void SetFixedGridColumn(string name, int width)
-        {
-            if (!dgvEncodeQueue.Columns.Contains(name))
-                return;
-
-            var col = dgvEncodeQueue.Columns[name];
-            if (!col.Visible)
-                return;
-
-            col.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
-            col.MinimumWidth = Math.Min(width, 60);
-            if (col.Width < col.MinimumWidth)
-                col.Width = width;
+            ApplyQueueColumnLayoutPreferences();
         }
 
 
@@ -5270,36 +5399,14 @@ namespace MediaFlux
 
         private void DgvEncodeQueue_ColumnWidthChanged(object? sender, DataGridViewColumnEventArgs e)
         {
-            if (_applyingRememberedSort)
-                return;
-            if (e.Column.Name.Length > 0)
-                _config.EncodeGridColumnWidths[e.Column.Name] = e.Column.Width;
-            switch (e.Column.Name)
-            {
-                case "colName":
-                    // Name fills remaining space so the fixed columns stay visible.
-                    // Do not persist its calculated width, which can become enormous after resizing.
-                    break;
-                case "colSize":
-                    _config.SizeColumnWidth = e.Column.Width;
-                    break;
-                case "colCreated":
-                    _config.CreatedColumnWidth = e.Column.Width;
-                    break;
-            }
-            _config.Save(_configPath);
+            HandleQueueColumnWidthChanged(e.Column);
         }
 
         private void DgvEncodeQueue_ColumnDisplayIndexChanged(object? sender, DataGridViewColumnEventArgs e)
         {
-            if (_applyingRememberedSort)
+            if (_applyingRememberedSort || _applyingQueueColumnOrder)
                 return;
-            _config.EncodeGridColumnOrder = dgvEncodeQueue.Columns
-                .Cast<DataGridViewColumn>()
-                .OrderBy(column => column.DisplayIndex)
-                .Select(column => column.Name)
-                .ToList();
-            _config.Save(_configPath);
+            _queueColumnOrderChanged = true;
         }
 
         private void ApplyRememberedEncodeDetailsState()
@@ -5307,27 +5414,17 @@ namespace MediaFlux
             if (_encodeInfoTabs == null)
                 return;
 
+            string rememberedTab = NormalizeRememberedQueueInspectorTab(_config.EncodeDetailsTab);
             var tab = _encodeInfoTabs.TabPages.Cast<TabPage>()
-                .FirstOrDefault(page => string.Equals(page.Text, _config.EncodeDetailsTab, StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(page => string.Equals(page.Text, rememberedTab, StringComparison.OrdinalIgnoreCase));
             if (tab != null)
                 _encodeInfoTabs.SelectedTab = tab;
 
             _applyingRememberedSort = true;
             try
             {
-                var rememberedOrder = _config.EncodeGridColumnOrder ?? new List<string>();
-                foreach (string name in rememberedOrder)
-                {
-                    if (dgvEncodeQueue.Columns.Contains(name))
-                        dgvEncodeQueue.Columns[name].DisplayIndex = Math.Clamp(
-                            rememberedOrder.IndexOf(name), 0, dgvEncodeQueue.Columns.Count - 1);
-                }
-
-                foreach (var pair in _config.EncodeGridColumnWidths ?? new Dictionary<string, int>())
-                {
-                    if (dgvEncodeQueue.Columns.Contains(pair.Key) && pair.Value >= 40 && pair.Value <= 2000)
-                        dgvEncodeQueue.Columns[pair.Key].Width = pair.Value;
-                }
+                ApplyRememberedQueueColumnOrder();
+                ApplyQueueColumnResizeLock();
             }
             finally
             {
@@ -5958,6 +6055,7 @@ namespace MediaFlux
 
             ApplyEncodeRowVisualState(row);
             ScheduleQueueWorkspaceRefresh();
+            RefreshQueueInspectorForRow(row);
         }
 
         private void ApplyEncodeRowVisualState(DataGridViewRow row)

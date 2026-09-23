@@ -491,6 +491,7 @@ namespace MediaFlux
             void AppendJobLog(string line)
             {
                 lock (jobLog) jobLog.AppendLine(line);
+                meta.AppendInspectorLogLine(line);
             }
             var jobStartUtc = DateTime.UtcNow;
             if (meta.StatisticsStartUtc == default)

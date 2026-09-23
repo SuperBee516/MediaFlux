@@ -28,9 +28,12 @@ namespace MediaFlux.Models
         // Persist the Encode queue's last selected sort.
         public string EncodeQueueSortColumn { get; set; } = "";
         public bool EncodeQueueSortDescending { get; set; } = false;
-        public string EncodeDetailsTab { get; set; } = "Details";
+        public string EncodeDetailsTab { get; set; } = "Summary";
         public Dictionary<string, int> EncodeGridColumnWidths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public List<string> EncodeGridColumnOrder { get; set; } = new();
+        public bool QueueColumnSizingInitialized { get; set; }
+        public bool EncodeGridColumnWidthsCustomized { get; set; }
+        public bool EncodeGridColumnWidthsLocked { get; set; }
 
         // Empty means all supported extensions are enabled (legacy/default behavior).
         public List<string> EnabledVideoExtensions { get; set; } = new();
@@ -201,7 +204,7 @@ namespace MediaFlux.Models
         public CommercialDetectorPreferences CommercialDetectorPreferences { get; set; } = new();
         public bool MainWindowMaximized { get; set; } = false;
         public bool EncodeInfoHeaderCollapsed { get; set; } = false;
-        // Zero preserves the application's default Summary / Preview height.
+        // Zero uses the default lower queue-inspector height.
         public int EncodeInfoHeight { get; set; } = 0;
         // Legacy compatibility only; runtime layout no longer uses this value.
         public double EncodeInfoExpandedRatio { get; set; } = 0;

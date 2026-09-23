@@ -394,6 +394,48 @@ namespace MediaFlux.Services
             return info;
         }
 
+        /// <summary>
+        /// Returns metadata already present in the in-memory cache without starting
+        /// FFprobe. This is intended for UI projections that must remain observational.
+        /// </summary>
+        public bool TryGetCachedInfo(string path, out MediaInfo info)
+        {
+            info = new MediaInfo();
+            if (string.IsNullOrWhiteSpace(path) ||
+                !TryGetFileSignature(path, out long length, out DateTime lastWriteUtc) ||
+                !_cache.TryGetValue(path, out CacheEntry? cached) ||
+                cached.Length != length ||
+                cached.LastWriteUtc != lastWriteUtc)
+            {
+                return false;
+            }
+
+            MediaInfo source = cached.Info;
+            info = new MediaInfo
+            {
+                FormatName = source.FormatName,
+                VideoCodec = source.VideoCodec,
+                FieldOrder = source.FieldOrder,
+                Width = source.Width,
+                Height = source.Height,
+                Fps = source.Fps,
+                DurationSeconds = source.DurationSeconds,
+                ContainerDurationSeconds = source.ContainerDurationSeconds,
+                BitrateKbps = source.BitrateKbps,
+                TotalBitrateKbps = source.TotalBitrateKbps,
+                AudioBitrateKbps = source.AudioBitrateKbps,
+                SubtitleBitrateKbps = source.SubtitleBitrateKbps,
+                DataBitrateKbps = source.DataBitrateKbps,
+                VideoStreamCount = source.VideoStreamCount,
+                AudioStreamCount = source.AudioStreamCount,
+                SubtitleStreamCount = source.SubtitleStreamCount,
+                DataStreamCount = source.DataStreamCount,
+                AttachmentStreamCount = source.AttachmentStreamCount,
+                AttachmentSizeBytes = source.AttachmentSizeBytes
+            };
+            return true;
+        }
+
         private static void AddStreamBitrate(
             JsonElement stream,
             Action<int> addBitrateKbps)

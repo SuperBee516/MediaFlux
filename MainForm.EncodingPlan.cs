@@ -364,6 +364,7 @@ public partial class MainForm
             !dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().Contains(row))
             return;
         RenderEncodingPlan(meta.IntelligencePlan, meta.IntelligenceOutcome, row);
+        RefreshQueueInspectorForRow(row);
     }
 
     private void RenderEncodingPlan(EncodingPlan plan, EncodingExecutionOutcome? outcome = null, DataGridViewRow? row = null)
