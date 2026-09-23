@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-23
+
+### Fixed
+
+- Improved queue-selection responsiveness by using retained and cached metadata for interactive previews while advisory quality probing runs in the background.
+- Reduced duplicate queue-selection updates and overlapping same-row advisory preview requests.
+- Fixed staged repaint artifacts in Plan & Analysis by batching selection updates and compositing its encoding-plan section while preserving frozen-plan and presentation-cache behavior.
+
 ## [1.6.0] - 2026-09-23
 
 ### Queue Workspace
@@ -934,7 +942,8 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.5.10...v1.6.0
 [0.1.3]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.3
 [0.1.2]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.2
