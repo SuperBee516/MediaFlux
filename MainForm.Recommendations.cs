@@ -89,7 +89,7 @@ namespace MediaFlux
                 cell.ToolTipText = "";
                 ApplyRecommendationCellStyle(cell, null);
                 if (row.Selected || dgvEncodeQueue.CurrentRow == row)
-                    UpdateEncodePreview(invalidateEncodingPlan: false);
+                    UpdateQueueSelectionPreview();
                 return;
             }
 
@@ -97,7 +97,7 @@ namespace MediaFlux
             cell.ToolTipText = GetQueueAnalysisPresentation(row, meta).BuildTooltip();
             ApplyRecommendationCellStyle(cell, recommendation?.Kind);
             if (row.Selected || dgvEncodeQueue.CurrentRow == row)
-                UpdateEncodePreview(invalidateEncodingPlan: false);
+                UpdateQueueSelectionPreview();
         }
 
         private static void ApplyRecommendationCellStyle(

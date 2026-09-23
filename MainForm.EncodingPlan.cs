@@ -16,10 +16,11 @@ public partial class MainForm
     private string? _renderedIntelligenceItemKey;
     private EncodingIntelligencePresentation.PresentationKey? _renderedIntelligenceKey;
     private Guid? _renderedPlanId;
+    private Control? _encodingPlanGroup;
     private readonly Dictionary<string, Label> _dynamicIntelligenceValues = new(StringComparer.Ordinal);
     private Control CreateEncodingPlanGroup()
     {
-        var group = new GroupBox
+        var group = new CompositedEncodingPlanGroupBox
         {
             Text = "Encoding Plan",
             Dock = DockStyle.Fill,
@@ -75,8 +76,27 @@ public partial class MainForm
         _encodingPlanTable = CreateEncodingPlanTable();
         content.Controls.Add(_encodingPlanTable, 0, 5);
 
+        _encodingPlanGroup = group;
         group.Controls.Add(content);
         return group;
+    }
+
+    // This group owns the dynamically populated analysis and plan tables.
+    // Compositing its child windows prevents partially created rows from being
+    // exposed while one selected-item presentation is being installed.
+    private sealed class CompositedEncodingPlanGroupBox : GroupBox
+    {
+        private const int WsExComposited = 0x02000000;
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams parameters = base.CreateParams;
+                parameters.ExStyle |= WsExComposited;
+                return parameters;
+            }
+        }
     }
 
     private static Label CreateEncodingPlanHeader(string text) => new()
@@ -109,6 +129,13 @@ public partial class MainForm
     {
         if (_encodingPlanTable == null || _queueAnalysisTable == null || IsDisposed)
             return;
+
+        using (BeginPlanAndAnalysisLayoutUpdate(_encodingPlanGroup))
+            ScheduleEncodingPlanRefreshCore();
+    }
+
+    private void ScheduleEncodingPlanRefreshCore()
+    {
         DataGridViewRow[] rows = dgvEncodeQueue.SelectedRows
             .Cast<DataGridViewRow>()
             .Where(row => !row.IsNewRow)
@@ -245,7 +272,7 @@ public partial class MainForm
     {
         if (!IsAutomaticQualitySelected() || meta.IntelligencePlan != null ||
             meta.HasCustomSettings || string.IsNullOrWhiteSpace(meta.Path) ||
-            !File.Exists(meta.Path) || meta.QualityPreview != null)
+            meta.QualityPreview != null)
             return;
 
         int generation = _qualityPreviewGeneration;
@@ -258,10 +285,17 @@ public partial class MainForm
         if (!chkAutoTargetSize.Checked && double.TryParse(txtTargetSize.Text, out double manualMb) && manualMb > 0)
             targetMb = manualMb;
 
+        if (!TryBeginQualityPreviewRequest(meta, generation))
+            return;
+
         _ = Task.Run(async () =>
         {
+            bool requestReleasedOnUi = false;
             try
             {
+                if (!File.Exists(path))
+                    return;
+
                 var probe = await new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath)
                     .ProbeAsync(path).ConfigureAwait(false);
                 if (!probe.Success)
@@ -280,23 +314,67 @@ public partial class MainForm
                     new EncodingQualityPolicyRequest(
                         EncodingQualityIntent.Automatic(target), probe, encoder,
                         geometry, scaleMode, targetMb));
-                Ui(() =>
+                if (IsDisposed || !IsHandleCreated)
+                    return;
+
+                UiInvoke(() =>
                 {
-                    if (generation != _qualityPreviewGeneration || IsDisposed ||
-                        !ReferenceEquals(dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault(), row) ||
-                        !string.Equals(meta.Path, path, StringComparison.OrdinalIgnoreCase) ||
-                        meta.IntelligencePlan != null)
-                        return;
-                    meta.QualityPreview = quality;
-                    RenderQueueAnalysis(row, meta, null);
+                    try
+                    {
+                        if (generation != _qualityPreviewGeneration || IsDisposed ||
+                            !ReferenceEquals(dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault(), row) ||
+                            !string.Equals(meta.Path, path, StringComparison.OrdinalIgnoreCase) ||
+                            meta.IntelligencePlan != null)
+                        {
+                            return;
+                        }
+                        using (BeginPlanAndAnalysisLayoutUpdate(_encodingPlanGroup))
+                        {
+                            meta.QualityPreview = quality;
+                            RenderQueueAnalysis(row, meta, null);
+                        }
+                    }
+                    finally
+                    {
+                        EndQualityPreviewRequest(meta, generation);
+                    }
                 });
+                requestReleasedOnUi = true;
             }
             catch
             {
                 // Queue preview is advisory; encode-time preflight remains authoritative.
             }
+            finally
+            {
+                if (!requestReleasedOnUi)
+                    EndQualityPreviewRequest(meta, generation);
+            }
         });
     }
+
+    private static bool TryBeginQualityPreviewRequest(RowMeta meta, int generation)
+    {
+        while (true)
+        {
+            int current = Volatile.Read(ref meta.QualityPreviewRequestGeneration);
+            if (current == generation)
+                return false;
+            if (Interlocked.CompareExchange(
+                    ref meta.QualityPreviewRequestGeneration,
+                    generation,
+                    current) == current)
+            {
+                return true;
+            }
+        }
+    }
+
+    private static void EndQualityPreviewRequest(RowMeta meta, int generation) =>
+        Interlocked.CompareExchange(
+            ref meta.QualityPreviewRequestGeneration,
+            int.MinValue,
+            generation);
 
     private void AddQueueAnalysisSection(string title, IReadOnlyList<string> reasons)
     {

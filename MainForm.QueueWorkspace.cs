@@ -104,7 +104,6 @@ namespace MediaFlux
             dgvEncodeQueue.CellValueChanged += QueueWorkspace_CellValueChanged;
             dgvEncodeQueue.RowsAdded += (_, __) => ScheduleQueueWorkspaceRefresh();
             dgvEncodeQueue.RowsRemoved += (_, __) => ScheduleQueueWorkspaceRefresh();
-            dgvEncodeQueue.SelectionChanged += (_, __) => UpdateQueueWorkspaceActionState();
             dgvEncodeQueue.SizeChanged += (_, __) => UpdateQueueWorkspaceResponsiveLayout();
 
             if (_summaryNewSizeValue != null)

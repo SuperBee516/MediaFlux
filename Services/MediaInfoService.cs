@@ -398,6 +398,26 @@ namespace MediaFlux.Services
         /// Returns metadata already present in the in-memory cache without starting
         /// FFprobe. This is intended for UI projections that must remain observational.
         /// </summary>
+        public bool TryGetCachedInfoSnapshot(string path, out MediaInfo info)
+        {
+            info = new MediaInfo();
+            if (string.IsNullOrWhiteSpace(path) ||
+                !_cache.TryGetValue(path, out CacheEntry? cached))
+            {
+                return false;
+            }
+
+            // Immediate UI projections cannot validate the current file signature
+            // without touching the filesystem. Background GetInfo calls retain that
+            // responsibility and refresh this best-effort cached snapshot.
+            info = CopyInfo(cached.Info);
+            return true;
+        }
+
+        /// <summary>
+        /// Returns metadata already present in the in-memory cache after validating
+        /// the cached signature against the current file.
+        /// </summary>
         public bool TryGetCachedInfo(string path, out MediaInfo info)
         {
             info = new MediaInfo();
@@ -410,31 +430,32 @@ namespace MediaFlux.Services
                 return false;
             }
 
-            MediaInfo source = cached.Info;
-            info = new MediaInfo
-            {
-                FormatName = source.FormatName,
-                VideoCodec = source.VideoCodec,
-                FieldOrder = source.FieldOrder,
-                Width = source.Width,
-                Height = source.Height,
-                Fps = source.Fps,
-                DurationSeconds = source.DurationSeconds,
-                ContainerDurationSeconds = source.ContainerDurationSeconds,
-                BitrateKbps = source.BitrateKbps,
-                TotalBitrateKbps = source.TotalBitrateKbps,
-                AudioBitrateKbps = source.AudioBitrateKbps,
-                SubtitleBitrateKbps = source.SubtitleBitrateKbps,
-                DataBitrateKbps = source.DataBitrateKbps,
-                VideoStreamCount = source.VideoStreamCount,
-                AudioStreamCount = source.AudioStreamCount,
-                SubtitleStreamCount = source.SubtitleStreamCount,
-                DataStreamCount = source.DataStreamCount,
-                AttachmentStreamCount = source.AttachmentStreamCount,
-                AttachmentSizeBytes = source.AttachmentSizeBytes
-            };
+            info = CopyInfo(cached.Info);
             return true;
         }
+
+        private static MediaInfo CopyInfo(MediaInfo source) => new()
+        {
+            FormatName = source.FormatName,
+            VideoCodec = source.VideoCodec,
+            FieldOrder = source.FieldOrder,
+            Width = source.Width,
+            Height = source.Height,
+            Fps = source.Fps,
+            DurationSeconds = source.DurationSeconds,
+            ContainerDurationSeconds = source.ContainerDurationSeconds,
+            BitrateKbps = source.BitrateKbps,
+            TotalBitrateKbps = source.TotalBitrateKbps,
+            AudioBitrateKbps = source.AudioBitrateKbps,
+            SubtitleBitrateKbps = source.SubtitleBitrateKbps,
+            DataBitrateKbps = source.DataBitrateKbps,
+            VideoStreamCount = source.VideoStreamCount,
+            AudioStreamCount = source.AudioStreamCount,
+            SubtitleStreamCount = source.SubtitleStreamCount,
+            DataStreamCount = source.DataStreamCount,
+            AttachmentStreamCount = source.AttachmentStreamCount,
+            AttachmentSizeBytes = source.AttachmentSizeBytes
+        };
 
         private static void AddStreamBitrate(
             JsonElement stream,

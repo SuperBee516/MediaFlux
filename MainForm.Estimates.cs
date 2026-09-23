@@ -671,7 +671,7 @@ namespace MediaFlux
             UpdateSelectedSpaceTotals();
             // Totals and background estimates are dynamic presentation state, not
             // encoding-configuration changes. Keep the frozen Encoding Plan cached.
-            UpdateEncodePreview(invalidateEncodingPlan: false);
+            UpdateQueueSelectionPreview();
             RefreshQueueWorkspacePresentation();
         }
 

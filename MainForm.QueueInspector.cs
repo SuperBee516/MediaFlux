@@ -12,6 +12,8 @@ namespace MediaFlux;
 
 public partial class MainForm
 {
+    private TabPage? _queueInspectorPlanAnalysisTab;
+    private Control? _encodePreviewGroup;
     private Label? _queueInspectorSummaryTitle;
     private Label? _queueInspectorPath;
     private Label? _queueInspectorStatus;
@@ -47,12 +49,15 @@ public partial class MainForm
 
         _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Summary", CreateQueueInspectorSummary()));
 
+        Control encodePreviewGroup = CreateEncodePreviewGroup();
+        _encodePreviewGroup = encodePreviewGroup;
         Control planAndAnalysis = CreateInspectorStack(
             CreateEncodingPlanGroup(),
-            CreateEncodePreviewGroup(),
+            encodePreviewGroup,
             CreateEncodingOptionsDetails(),
             CreateRestorationGroup());
-        _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Plan & Analysis", planAndAnalysis));
+        _queueInspectorPlanAnalysisTab = CreateScrollableInfoTab("Plan & Analysis", planAndAnalysis);
+        _encodeInfoTabs.TabPages.Add(_queueInspectorPlanAnalysisTab);
 
         Control media = CreateInspectorStack(
             CreateQueueInspectorMediaGroup(),
@@ -98,6 +103,86 @@ public partial class MainForm
         dgvEncodeQueue.RowsRemoved += (_, __) => QueueInspector_SelectionMayHaveChanged();
         RefreshQueueInspectorFromSelection();
         return _encodeInfoTabs;
+    }
+
+    private IDisposable? BeginPlanAndAnalysisLayoutUpdate(params Control?[] affectedRoots)
+    {
+        TabPage? page = _queueInspectorPlanAnalysisTab;
+        if (page == null || page.IsDisposed || !ReferenceEquals(_encodeInfoTabs?.SelectedTab, page))
+            return null;
+
+        var controls = new HashSet<Control>();
+        foreach (Control? affectedRoot in affectedRoots)
+        {
+            if (affectedRoot == null || affectedRoot.IsDisposed)
+                continue;
+
+            var ancestors = new Stack<Control>();
+            Control? current = affectedRoot;
+            while (current != null)
+            {
+                ancestors.Push(current);
+                if (ReferenceEquals(current, page))
+                    break;
+                current = current.Parent;
+            }
+
+            if (ancestors.Count == 0 || !ReferenceEquals(ancestors.Peek(), page))
+                continue;
+
+            foreach (Control ancestor in ancestors)
+                controls.Add(ancestor);
+            AddControlTree(affectedRoot, controls);
+        }
+
+        return controls.Count == 0 ? null : new LayoutUpdateBatch(controls);
+    }
+
+    private static void AddControlTree(Control root, ISet<Control> controls)
+    {
+        controls.Add(root);
+        foreach (Control child in root.Controls)
+            AddControlTree(child, controls);
+    }
+
+    private sealed class LayoutUpdateBatch : IDisposable
+    {
+        private readonly Control[] _controls;
+        private bool _disposed;
+
+        public LayoutUpdateBatch(IEnumerable<Control> controls)
+        {
+            _controls = controls
+                .OrderBy(GetControlDepth)
+                .ToArray();
+            foreach (Control control in _controls)
+            {
+                if (!control.IsDisposed)
+                    control.SuspendLayout();
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+
+            for (int index = _controls.Length - 1; index >= 0; index--)
+            {
+                Control control = _controls[index];
+                if (!control.IsDisposed)
+                    control.ResumeLayout(index == 0);
+            }
+        }
+
+        private static int GetControlDepth(Control control)
+        {
+            int depth = 0;
+            for (Control? current = control; current != null; current = current.Parent)
+                depth++;
+            return depth;
+        }
     }
 
     private Control CreateQueueInspectorSummary()
@@ -539,7 +624,7 @@ public partial class MainForm
         string path = GetFullPathFromRow(row) ?? meta.Path;
         MediaInfoService.MediaInfo? cached = null;
         if (_mediaInfoService != null && !string.IsNullOrWhiteSpace(path) &&
-            _mediaInfoService.TryGetCachedInfo(path, out MediaInfoService.MediaInfo cachedInfo))
+            _mediaInfoService.TryGetCachedInfoSnapshot(path, out MediaInfoService.MediaInfo cachedInfo))
         {
             cached = cachedInfo;
         }
@@ -556,11 +641,8 @@ public partial class MainForm
         double? fps = meta.Fps > 0 ? meta.Fps : cached?.Fps ?? source?.FrameRate;
         double? duration = meta.DurationSec > 0 ? meta.DurationSec : cached?.DurationSeconds ?? source?.DurationSeconds;
         long? sizeBytes = source?.SizeBytes;
-        if (sizeBytes is not > 0 && File.Exists(path))
-        {
-            try { sizeBytes = new FileInfo(path).Length; }
-            catch { }
-        }
+        if (sizeBytes is not > 0 && meta.SrcMb > 0)
+            sizeBytes = (long)(meta.SrcMb * 1024d * 1024d);
 
         var text = new StringBuilder();
         string sourceSizeText = sizeBytes is > 0

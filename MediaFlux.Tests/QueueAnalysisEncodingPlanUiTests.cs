@@ -59,8 +59,30 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 Assert.Contains("20%", ControlText(analysis));
 
                 SetPlan(formType, main, analyzed);
-                Invoke(formType, main, "ScheduleEncodingPlanRefresh");
+                TabControl inspectorTabs = Field<TabControl>(formType, main, "_encodeInfoTabs");
+                inspectorTabs.SelectedTab = inspectorTabs.TabPages.Cast<TabPage>()
+                    .Single(page => page.Text == "Plan & Analysis");
+                Control planGroup = Field<Control>(formType, main, "_encodingPlanGroup");
+                PropertyInfo createParamsProperty = planGroup.GetType().GetProperty(
+                    "CreateParams", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new MissingMemberException("CreateParams");
+                object createParams = createParamsProperty.GetValue(planGroup)!;
+                int extendedStyle = (int)(createParams.GetType().GetProperty("ExStyle")?.GetValue(createParams)
+                    ?? throw new MissingMemberException("CreateParams.ExStyle"));
+                Assert.NotEqual(0, extendedStyle & 0x02000000);
+
+                int analysisLayoutCount = 0;
+                int planLayoutCount = 0;
+                LayoutEventHandler analysisLayout = (_, _) => analysisLayoutCount++;
+                LayoutEventHandler planLayout = (_, _) => planLayoutCount++;
+                analysis.Layout += analysisLayout;
                 TableLayoutPanel plan = Field<TableLayoutPanel>(formType, main, "_encodingPlanTable");
+                plan.Layout += planLayout;
+                Invoke(formType, main, "UpdateQueueSelectionPreview");
+                analysis.Layout -= analysisLayout;
+                plan.Layout -= planLayout;
+                Assert.InRange(analysisLayoutCount, 0, 1);
+                Assert.InRange(planLayoutCount, 0, 1);
                 Assert.NotEmpty(plan.Controls.Cast<Control>());
                 Control planControl = plan.Controls[0];
                 object planMeta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
