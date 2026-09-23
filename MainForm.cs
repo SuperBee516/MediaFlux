@@ -193,17 +193,19 @@ namespace MediaFlux
 
         private void MoveEncodeGridTo(Control newParent)
         {
-            if (dgvEncodeQueue.Parent == newParent) return;
+            Control surface = _queueWorkspaceHost is Control workspace ? workspace : dgvEncodeQueue;
+            if (surface.Parent == newParent) return;
 
             if (_encodeGridOriginalParent == null)
             {
-                _encodeGridOriginalParent = dgvEncodeQueue.Parent;
-                _encodeGridOriginalIndex = _encodeGridOriginalParent!.Controls.GetChildIndex(dgvEncodeQueue);
+                _encodeGridOriginalParent = surface.Parent;
+                _encodeGridOriginalIndex = _encodeGridOriginalParent!.Controls.GetChildIndex(surface);
             }
 
-            // reparent
-            dgvEncodeQueue.Parent = newParent;
-            dgvEncodeQueue.Dock = DockStyle.Fill;
+            // Keep the same authoritative grid and its summary strip together when
+            // the queue surface is shown in Monitor mode.
+            surface.Parent = newParent;
+            surface.Dock = DockStyle.Fill;
 
             // keep context menu and events intact; nothing else to do
         }
@@ -212,9 +214,10 @@ namespace MediaFlux
         {
             if (_encodeGridOriginalParent == null) return;
 
-            dgvEncodeQueue.Parent = _encodeGridOriginalParent;
-            _encodeGridOriginalParent.Controls.SetChildIndex(dgvEncodeQueue, _encodeGridOriginalIndex);
-            dgvEncodeQueue.Dock = DockStyle.Fill;
+            Control surface = _queueWorkspaceHost is Control workspace ? workspace : dgvEncodeQueue;
+            surface.Parent = _encodeGridOriginalParent;
+            _encodeGridOriginalParent.Controls.SetChildIndex(surface, _encodeGridOriginalIndex);
+            surface.Dock = DockStyle.Fill;
         }
 
 
@@ -268,6 +271,7 @@ namespace MediaFlux
             UpdateAudioUiState();
             CreateAdvancedVideoControls();
             CreateEncodeInfoPanels();
+            InitializeQueueWorkspace();
             InitializeLibraryAnalyzerMenu();
             InitializeHelpMenu();
 
@@ -353,6 +357,7 @@ namespace MediaFlux
                 UpdateSelectedSpaceTotals();
                 UpdateEncodePreview(invalidateEncodingPlan: false);
                 UpdateContextualDetails();
+                UpdateQueueWorkspaceActionState();
             };
 
             chkAutoTargetSize.CheckedChanged += (_, __) => ScheduleEstimateRefresh();
@@ -858,6 +863,7 @@ namespace MediaFlux
         {
             if (_analyzeQueueButton != null)
                 _analyzeQueueButton.Enabled = dgvEncodeQueue != null && dgvEncodeQueue.Rows.Count > 0 && !_encodingActive;
+            UpdateQueueWorkspaceActionState();
         }
 
         private void AnalyzeQueueNow()
@@ -2514,6 +2520,7 @@ namespace MediaFlux
             row.Cells["colCustom"].ToolTipText = hasCustom
                 ? BuildCustomSettingsTooltip(meta!)
                 : "";
+            RefreshQueueWorkspaceRow(row);
         }
 
         private string BuildCustomSettingsTooltip(RowMeta meta)
@@ -3465,7 +3472,12 @@ namespace MediaFlux
 
             ApplyQueueControlsCompactLayout(pnlQueueBehavior, pnlQueueActionButtons);
 
-            bool wrapControls = pnlQueueControlsCard.ClientSize.Width < 650;
+            int contentWidth = Math.Max(200, pnlQueueControlsCard.ClientSize.Width - pnlQueueControlsCard.Padding.Horizontal);
+            int actionWidth = pnlQueueActionButtons.GetPreferredSize(Size.Empty).Width;
+            int behaviorWidth = pnlQueueBehavior.GetPreferredSize(Size.Empty).Width;
+            bool wrapControls = pnlQueueControlsCard.ClientSize.Width < 650 ||
+                                actionWidth > contentWidth ||
+                                behaviorWidth > contentWidth;
             if (pnlQueueBehavior.WrapContents == wrapControls &&
                 pnlQueueActionButtons.WrapContents == wrapControls)
                 return;
@@ -3475,7 +3487,6 @@ namespace MediaFlux
             {
                 pnlQueueBehavior.WrapContents = wrapControls;
                 pnlQueueActionButtons.WrapContents = wrapControls;
-                int contentWidth = Math.Max(200, pnlQueueControlsCard.ClientSize.Width - pnlQueueControlsCard.Padding.Horizontal);
                 var maximumSize = wrapControls ? new Size(contentWidth, 0) : Size.Empty;
                 pnlQueueBehavior.MaximumSize = maximumSize;
                 pnlQueueActionButtons.MaximumSize = maximumSize;
@@ -3764,7 +3775,8 @@ namespace MediaFlux
             if (_config.CreatedColumnWidth > 0 && dgvEncodeQueue.Columns.Contains("colCreated"))
                 dgvEncodeQueue.Columns["colCreated"].Width = _config.CreatedColumnWidth;
             if (dgvEncodeQueue.Columns.Contains("colEstimatedSize"))
-                dgvEncodeQueue.Columns["colEstimatedSize"].Visible = true; // Ensure visible
+                dgvEncodeQueue.Columns["colEstimatedSize"].Visible = _config.ShowEstimatedOutputColumn;
+            ApplyQueueWorkspaceColumnPreferences();
             ApplyEncodeGridColumnLayout();
             ApplyRememberedEncodeQueueSort();
             ApplyRememberedEncodeDetailsState();
@@ -4885,25 +4897,33 @@ namespace MediaFlux
             {
                 AutoSize = true,
                 ColumnCount = 1,
-                RowCount = 7,
+                RowCount = 11,
                 Dock = DockStyle.Fill,
                 Padding = new Padding(0),
                 Margin = new Padding(0)
             };
 
             var chkName = new CheckBox { Text = "Name", Checked = true, Enabled = false, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
-            var chkSize = new CheckBox { Text = "Size", Checked = _config.ShowSizeColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+            var chkSize = new CheckBox { Text = "Source size (legacy)", Checked = _config.ShowSizeColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+            var chkEstimatedOutput = new CheckBox { Text = "Estimated output (legacy)", Checked = _config.ShowEstimatedOutputColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkCreated = new CheckBox { Text = "Created", Checked = _config.ShowCreatedColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
             var chkCustom = new CheckBox { Text = "Custom", Checked = _config.ShowCustomColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
-            var chkRecommendation = new CheckBox { Text = "Encode Recommendation", Checked = _config.ShowRecommendationColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
+            var chkRecommendation = new CheckBox { Text = "Recommendation", Checked = _config.ShowRecommendationColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
+            var chkDuplicate = new CheckBox { Text = "Duplicate", Checked = _config.ShowDuplicateColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+            var chkDuplicateConfidence = new CheckBox { Text = "Duplicate confidence", Checked = _config.ShowDuplicateConfidenceColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+            var chkDuplicateAction = new CheckBox { Text = "Duplicate action", Checked = _config.ShowDuplicateActionColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
             var btnOK = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80, Anchor = AnchorStyles.Left };
 
             layout.Controls.Add(chkName, 0, 0);
             layout.Controls.Add(chkSize, 0, 1);
-            layout.Controls.Add(chkCreated, 0, 2);
-            layout.Controls.Add(chkCustom, 0, 3);
-            layout.Controls.Add(chkRecommendation, 0, 4);
-            layout.Controls.Add(btnOK, 0, 5);
+            layout.Controls.Add(chkEstimatedOutput, 0, 2);
+            layout.Controls.Add(chkCreated, 0, 3);
+            layout.Controls.Add(chkCustom, 0, 4);
+            layout.Controls.Add(chkRecommendation, 0, 5);
+            layout.Controls.Add(chkDuplicate, 0, 6);
+            layout.Controls.Add(chkDuplicateConfidence, 0, 7);
+            layout.Controls.Add(chkDuplicateAction, 0, 8);
+            layout.Controls.Add(btnOK, 0, 9);
             dlg.Controls.Add(layout);
             dlg.AcceptButton = btnOK;
 
@@ -4911,15 +4931,23 @@ namespace MediaFlux
             {
                 dgvEncodeQueue.Columns["colName"].Visible = chkName.Checked;
                 dgvEncodeQueue.Columns["colSize"].Visible = chkSize.Checked;
+                dgvEncodeQueue.Columns["colEstimatedSize"].Visible = chkEstimatedOutput.Checked;
                 dgvEncodeQueue.Columns["colCreated"].Visible = chkCreated.Checked;
                 dgvEncodeQueue.Columns["colCustom"].Visible = chkCustom.Checked;
                 dgvEncodeQueue.Columns["colEncodeRecommendation"].Visible =
                     chkRecommendation.Checked;
+                dgvEncodeQueue.Columns["colDuplicate"].Visible = chkDuplicate.Checked;
+                dgvEncodeQueue.Columns["colDuplicateConfidence"].Visible = chkDuplicateConfidence.Checked;
+                dgvEncodeQueue.Columns["colDuplicateAction"].Visible = chkDuplicateAction.Checked;
 
                 _config.ShowSizeColumn = chkSize.Checked;
+                _config.ShowEstimatedOutputColumn = chkEstimatedOutput.Checked;
                 _config.ShowCreatedColumn = chkCreated.Checked;
                 _config.ShowCustomColumn = chkCustom.Checked;
                 _config.ShowRecommendationColumn = chkRecommendation.Checked;
+                _config.ShowDuplicateColumn = chkDuplicate.Checked;
+                _config.ShowDuplicateConfidenceColumn = chkDuplicateConfidence.Checked;
+                _config.ShowDuplicateActionColumn = chkDuplicateAction.Checked;
                 _config.Save(_configPath);
                 ApplyEncodeGridColumnLayout();
             }
@@ -4934,16 +4962,18 @@ namespace MediaFlux
             {
                 var col = dgvEncodeQueue.Columns["colName"];
                 col.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-                col.MinimumWidth = 180;
+                col.MinimumWidth = ScaleUi(150);
                 col.FillWeight = 100;
             }
 
             SetFixedGridColumn("colSize", 92);
             SetFixedGridColumn("colEstimatedSize", 150);
-            SetFixedGridColumn("colEncodeRecommendation", 142);
-            SetFixedGridColumn("colStatus", 86);
-            SetFixedGridColumn("colProgress", 78);
-            SetFixedGridColumn("colETA", 76);
+            SetFixedGridColumn("colEncodeRecommendation", ScaleUi(120));
+            SetFixedGridColumn("colStatus", ScaleUi(86));
+            SetFixedGridColumn("colPlannedOutput", ScaleUi(190));
+            SetFixedGridColumn("colSourceEstimate", ScaleUi(205));
+            SetFixedGridColumn("colProgress", ScaleUi(72));
+            SetFixedGridColumn("colETA", ScaleUi(72));
             SetFixedGridColumn("colCustom", 72);
         }
 
@@ -5460,6 +5490,7 @@ namespace MediaFlux
         private void SetStatusEncoding(bool on)
         {
             _encodingActive = on;
+            UpdateQueueWorkspaceActionState();
 
             bool isUpscale = false;
 
@@ -5614,6 +5645,7 @@ namespace MediaFlux
             _queueTotalSourceMb += sourceMb;
             _queueFileCount++;
             _queueTotalsDirty = false;
+            RefreshQueueWorkspaceRow(r);
             UpdateAnalyzeQueueButtonState();
 
             // Imports performed during an encode are automatically appended to the live queue.
@@ -5883,6 +5915,7 @@ namespace MediaFlux
             }
 
             ApplyEncodeRowVisualState(row);
+            ScheduleQueueWorkspaceRefresh();
         }
 
         private void ApplyEncodeRowVisualState(DataGridViewRow row)

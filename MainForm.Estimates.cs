@@ -580,6 +580,7 @@ namespace MediaFlux
                 if (_summarySelectedCountValue != null) _summarySelectedCountValue.Text = "0";
                 if (_summarySelectedSavedValue != null) _summarySelectedSavedValue.Text = "--";
                 UpdateQueueCommandSummary();
+                RefreshQueueWorkspacePresentation();
                 return;
             }
 
@@ -624,6 +625,7 @@ namespace MediaFlux
             // Totals and background estimates are dynamic presentation state, not
             // encoding-configuration changes. Keep the frozen Encoding Plan cached.
             UpdateEncodePreview(invalidateEncodingPlan: false);
+            RefreshQueueWorkspacePresentation();
         }
 
         private void RebuildQueueTotalsFromGrid()

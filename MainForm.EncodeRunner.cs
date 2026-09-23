@@ -687,6 +687,7 @@ namespace MediaFlux
             _runningEncodeJobs[row] = isDvdEncode
                 ? dvdOptions!.OutputPath
                 : file;
+            ScheduleQueueWorkspaceRefresh();
             UpdateTrayStatus();
             string attemptedOutputPath = string.Empty;
             string stagedOutputPath = string.Empty;
@@ -826,7 +827,11 @@ namespace MediaFlux
                     {
                         meta.IntelligencePlan = snapshot.Plan;
                         AppendJobLog(EncodingPlanService.DescribeSummary(snapshot.Plan));
-                        Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
+                        Ui(() =>
+                        {
+                            RefreshQueueWorkspaceRow(row);
+                            RefreshCurrentEncodingIntelligence(row, meta);
+                        });
                     },
                     EncodingPlanDivergenceCallback = divergence =>
                         AppendJobLog($"[EncodingPlan] Shadow divergence: {divergence}"),
@@ -1266,6 +1271,7 @@ namespace MediaFlux
                 if (diagnosticStarted && diagnosticSummary == null)
                     _encodingDiagnosticsService.Cancel(meta.StatisticsOperationId);
                 _runningEncodeJobs.TryRemove(row, out _);
+                ScheduleQueueWorkspaceRefresh();
                 UpdateTrayStatus();
                 if (ReferenceEquals(_activeJobLog.Value, jobLogCapture))
                     _activeJobLog.Value = null; // stop log capture for this job

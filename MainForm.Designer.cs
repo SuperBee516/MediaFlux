@@ -1280,7 +1280,7 @@ namespace MediaFlux
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "colName",
-                HeaderText = "Name",
+                HeaderText = "File",
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
                 MinimumWidth = 120,
                 Resizable = DataGridViewTriState.True

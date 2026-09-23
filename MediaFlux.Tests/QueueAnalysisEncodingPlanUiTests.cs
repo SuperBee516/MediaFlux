@@ -15,11 +15,13 @@ public sealed class QueueAnalysisEncodingPlanUiTests
 
         Exception? failure = null;
         MainForm? main = null;
+        string? isolatedConfigPath = null;
         var thread = new Thread(() =>
         {
             try
             {
                 main = new MainForm();
+                isolatedConfigPath = QueueWorkspaceTestSupport.UseIsolatedConfig(main);
                 main.CreateControl();
                 main.Show();
                 Application.DoEvents();
@@ -69,6 +71,13 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 DateTime frozenDecisionUtc = Assert.IsType<DateTime>(frozenPlan.SizePredictionCalibration?.DecisionUtc);
                 Invoke(formType, main, "ScheduleEncodingPlanRefresh");
                 Assert.Same(planControl, plan.Controls[0]);
+
+                analyzed.Cells["colProgress"].Value = "27%";
+                analyzed.Cells["colETA"].Value = "00:04:30";
+                Invoke(formType, main, "RefreshQueueWorkspaceRow", analyzed);
+                Invoke(formType, main, "RefreshQueueWorkspacePresentation");
+                Assert.Same(planControl, plan.Controls[0]);
+                Assert.Equal(frozenDecisionUtc, frozenPlan.SizePredictionCalibration?.DecisionUtc);
 
                 object analyzedMeta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
                     ?? throw new MissingMethodException("EnsureRowMeta")).Invoke(main, [analyzed])!;
@@ -124,7 +133,11 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 Assert.Empty(analysis.Controls.Cast<Control>());
             }
             catch (Exception ex) { failure = ex; }
-            finally { WinFormsTestLifecycle.CloseAndDispose(main); }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(main);
+                QueueWorkspaceTestSupport.DeleteIsolatedConfig(isolatedConfigPath);
+            }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();

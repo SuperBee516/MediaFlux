@@ -16,9 +16,14 @@ namespace MediaFlux.Models
 
         // Persist column visibility
         public bool ShowSizeColumn { get; set; } = true;
+        public bool ShowEstimatedOutputColumn { get; set; }
         public bool ShowCreatedColumn { get; set; } = false;
         public bool ShowCustomColumn { get; set; } = true;
         public bool ShowRecommendationColumn { get; set; } = true;
+        public bool ShowDuplicateColumn { get; set; }
+        public bool ShowDuplicateConfidenceColumn { get; set; }
+        public bool ShowDuplicateActionColumn { get; set; }
+        public bool QueueWorkspaceLayoutInitialized { get; set; }
 
         // Persist the Encode queue's last selected sort.
         public string EncodeQueueSortColumn { get; set; } = "";
