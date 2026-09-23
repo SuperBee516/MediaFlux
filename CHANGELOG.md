@@ -7,6 +7,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.10] - 2026-09-22
+
+### Encoding Insights
+
+- Added advisory Encode, Skip, and Review recommendations with estimated savings, confidence, quality-risk context, and clear reasons.
+- Added an Encoding Results dashboard for size and ETA prediction accuracy across comparable encoding cohorts.
+
+### Prediction Calibration
+
+- Added versioned adaptive calibration of historical output-size predictions, with separate training and evaluation evidence, effectiveness safeguards, and harmful-calibration suppression. Calibration affects estimates only; it does not change encoding settings or FFmpeg execution.
+
+### Encoding Estimates and Stability
+
+- Improved Source Adaptive output-size estimates for same-codec, unchanged-resolution jobs, including a measured-source-bitrate ceiling on optimistic estimates.
+- Stabilized the Encoding Plan display during background updates to prevent continuous repainting and visible jitter.
+
+### Storage and Updater Compatibility
+
+- Preserved custom storage locations across restarts and updater replacement, and moved default backups outside the UserData folder.
+- Added safe, copy-only migration of backups from former default locations without overwriting existing archives or removing source copies.
+
 ## [1.5.9] - 2026-09-22
 
 ### Source Adaptive Quality
