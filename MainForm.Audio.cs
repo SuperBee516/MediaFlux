@@ -262,20 +262,19 @@ namespace MediaFlux
 
             using (SleepPreventionService.Acquire(_config.PreventSleepDuringEncoding))
             {
+                int audioJobPosition = 0;
                 foreach (var job in jobs)
                 {
+                    audioJobPosition++;
                     var jobStartUtc = DateTime.UtcNow;
                     var outputPath = GetExpectedAudioOutputPath(job);
                     var operationLabel = job.Operation == "Extract" ? "Audio Extract" : "Audio Convert";
 
                     try
                     {
-                        // --- NEW: initialise shared metrics for this audio file ---
                         var dur = GetVideoDuration(job.InputPath); // works for audio too
-                        _currentEncodeDuration = TimeSpan.Zero;
-                        _currentEncodeTotalDuration = dur;
                         ResetEncodeMetrics();
-                        StartJobTimer();
+                        BeginAudioOperationProgress(operationLabel, audioJobPosition, jobs.Count, dur);
 
                         bool ok = job.Operation == "Extract"
                             ? await _audioService.ExtractAsync(job)
@@ -297,6 +296,10 @@ namespace MediaFlux
                         lblAudioStatus.Text = $"Error: {ex.Message}";
                         AppendAudioHistory(job, outputPath, jobStartUtc, JobStatus.Failed, ex.Message);
                         // continue with remaining jobs
+                    }
+                    finally
+                    {
+                        EndAudioOperationProgress();
                     }
                 }
             }

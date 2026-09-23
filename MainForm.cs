@@ -98,10 +98,6 @@ namespace MediaFlux
         private Label? _failureAnalysisPlanLabel;
         private Label? _streamsContextLabel;
         private Label? _restorationContextLabel;
-        private Label? _currentOperationSummaryLabel;
-        private Panel? _currentOperationBar;
-        private Label? _currentOperationTitleLabel;
-        private Label? _currentOperationMetricsLabel;
         private Label? _summarySelectedCountValue;
         private Label? _summarySelectedSavedValue;
         private Label? _summaryTotalCurrentValue;
@@ -142,10 +138,22 @@ namespace MediaFlux
 
         private PictureBox? _encodingSpinner;
         private Label? _activityLabel;
+        private ToolStripControlHost? _encodingSpinnerHost;
+        private ToolStripControlHost? _activityLabelHost;
         private ActivityIndicatorService? _activityIndicator;
         private ToolStripButton? _cancelQueueWorkButton;
         private ToolStripButton? _analyzeQueueButton;
+        private ToolStripStatusLabel? _operationProgressLabel;
+        private ToolStripStatusLabel? _operationProgressDetailsLabel;
         private ToolStripProgressBar? _queueProgressBar;
+        private bool _backgroundQueueProgressVisible;
+        private int? _backgroundQueueProgressPercent;
+        private bool _audioProgressActive;
+        private string _audioProgressOperation = string.Empty;
+        private int _audioProgressPosition;
+        private int _audioProgressTotal;
+        private TimeSpan _audioProgressTotalDuration;
+        private int? _audioProgressPercent;
         private CancellationTokenSource? _importCts;
         private CancellationTokenSource? _codecFilterCts;
         private int _lastImportDiscoveredCount;
@@ -222,31 +230,12 @@ namespace MediaFlux
 
 
 
-        // JOB TIMER FIELDS
-        private System.Windows.Forms.Timer jobTimer = new System.Windows.Forms.Timer();
-        private Stopwatch jobStopwatch = new Stopwatch();
-
         public MainForm()
         {
             InitializeComponent();
             AutoScaleMode = AutoScaleMode.Dpi;
             MinimumSize = new Size(900, 650);
-            if (progressPanel != null)
-                progressPanel.Height = ScaleUi(80);
             Text = $"MediaFlux v{UpdateManager.CurrentVersion}";
-
-
-            // Promote progressPanel to a global, bottom-docked panel shared by all modes
-            if (progressPanel != null && progressPanel.Parent != null)
-            {
-                // Remove from tlEncode and attach directly to the form
-                progressPanel.Parent.Controls.Remove(progressPanel);
-                progressPanel.Dock = DockStyle.Bottom;
-                Controls.Add(progressPanel);
-                progressPanel.SendToBack();
-                menuStrip1.BringToFront();
-                statusStrip1.BringToFront();
-            }
 
             InitializeEncodingSpinner();
 
@@ -415,10 +404,6 @@ namespace MediaFlux
             this.columnSettingsToolStripMenuItem.Click += new System.EventHandler(this.ColumnSettingsToolStripMenuItem_Click);
             InitializePresetMenu();
 
-            // Job timer wiring
-            jobTimer.Interval = 1000;
-            jobTimer.Tick += JobTimer_Tick;
-
             // wire up Load for restoring settings
             this.Load += MainForm_Load;
 
@@ -539,7 +524,6 @@ namespace MediaFlux
             tlEncode.Controls.Add(_encodeQueueSplit, position.Column, position.Row);
             tlEncode.SetColumnSpan(_encodeQueueSplit, 4);
             InitializeEncodeStatusRelocation();
-            InitializeCurrentOperationBar();
             UpdateSizeTotals();
             UpdateEncodePreview();
         }
@@ -683,100 +667,6 @@ namespace MediaFlux
             _queueCommandSummaryLabel.Text = $"{_queueFileCount} file{(_queueFileCount == 1 ? "" : "s")}  |  {estimates}";
         }
 
-        private void InitializeCurrentOperationBar()
-        {
-            if (progressPanel == null || _currentOperationBar != null)
-                return;
-
-            foreach (Control control in progressPanel.Controls)
-                control.Visible = false;
-
-            _currentOperationTitleLabel = new Label
-            {
-                AutoSize = true,
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-                Margin = new Padding(0, 0, 16, 0),
-                Anchor = AnchorStyles.Left
-            };
-            _currentOperationMetricsLabel = new Label
-            {
-                AutoSize = true,
-                ForeColor = SystemColors.GrayText,
-                Margin = Padding.Empty,
-                Anchor = AnchorStyles.Left
-            };
-            var layout = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 2,
-                Padding = new Padding(10, 4, 10, 4),
-                Margin = Padding.Empty
-            };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.Controls.Add(_currentOperationTitleLabel, 0, 0);
-            layout.SetColumnSpan(_currentOperationTitleLabel, 2);
-            layout.Controls.Add(progressBarEncode, 0, 1);
-            layout.Controls.Add(_currentOperationMetricsLabel, 1, 1);
-            progressBarEncode.Dock = DockStyle.Fill;
-            progressBarEncode.Margin = new Padding(0, 2, 16, 0);
-            _currentOperationBar = new Panel { Dock = DockStyle.Fill, Visible = false };
-            _currentOperationBar.Controls.Add(layout);
-            progressPanel.Controls.Add(_currentOperationBar);
-            _currentOperationBar.BringToFront();
-            UpdateCurrentOperationPresentation();
-        }
-
-        private void UpdateCurrentOperationPresentation()
-        {
-            if (_currentOperationBar == null || _currentOperationTitleLabel == null || _currentOperationMetricsLabel == null)
-                return;
-            if (InvokeRequired)
-            {
-                BeginInvoke(new Action(UpdateCurrentOperationPresentation));
-                return;
-            }
-
-            var row = _activeEncodeRow;
-            bool active = _encodingActive || (_activeEncodeRows?.Count ?? 0) > 0;
-            _currentOperationBar.Visible = active;
-            if (!active)
-            {
-                progressPanel!.Visible = false;
-                return;
-            }
-
-            progressPanel!.Visible = true;
-            string fileName = row == null ? "Current operation" : Path.GetFileName(GetFullPathFromRow(row) ?? "");
-            string? stage = row?.Cells["colStatus"]?.Value?.ToString();
-            if (string.IsNullOrWhiteSpace(stage)) stage = "Encoding";
-            _currentOperationTitleLabel.Text = $"{stage} — {fileName}";
-            _currentOperationMetricsLabel.Text = BuildCurrentOperationMetrics(row);
-            progressBarEncode.Visible = true;
-        }
-
-        private string BuildCurrentOperationMetrics(DataGridViewRow? row)
-        {
-            var parts = new List<string>();
-            DataGridViewRow? metricsRow = row ?? _activeEncodeRows.FirstOrDefault();
-            if (metricsRow != null && _activeEncodeMetrics.TryGetValue(metricsRow, out var metrics) && metrics.HasData)
-            {
-                if (metrics.Speed > 0) parts.Add($"Speed {metrics.Speed:0.0}x");
-                if (metrics.Fps > 0) parts.Add($"{metrics.Fps:N0} FPS");
-                if (metrics.Bitrate > 0) parts.Add($"{metrics.Bitrate:F1} kbits/s");
-                if (!string.IsNullOrWhiteSpace(metrics.TimeStr)) parts.Add(metrics.TimeStr + " elapsed");
-            }
-            if (row != null)
-            {
-                string eta = row.Cells["colETA"]?.Value?.ToString() ?? "";
-                if (!string.IsNullOrWhiteSpace(eta) && eta != "--") parts.Add("ETA " + eta);
-            }
-            return string.Join("  ·  ", parts);
-        }
-
         private void InitializeEncodeStatusRelocation()
         {
             if (lblEncodeStatus == null)
@@ -828,32 +718,241 @@ namespace MediaFlux
                 Minimum = 0,
                 Maximum = 100,
                 Value = 0,
-                Width = 140
+                Width = ScaleUi(110)
+            };
+
+            _operationProgressLabel = new ToolStripStatusLabel
+            {
+                Name = "operationProgressLabel",
+                AutoSize = false,
+                Width = ScaleUi(165),
+                Visible = false,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoToolTip = true
+            };
+            _operationProgressDetailsLabel = new ToolStripStatusLabel
+            {
+                Name = "operationProgressDetailsLabel",
+                AutoSize = false,
+                Width = ScaleUi(140),
+                Visible = false,
+                ForeColor = SystemColors.GrayText,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoToolTip = true
             };
 
             statusStrip1.Items.Add(new ToolStripStatusLabel { Spring = true });
+            if (_activityLabelHost != null)
+                statusStrip1.Items.Add(_activityLabelHost);
+            if (_encodingSpinnerHost != null)
+                statusStrip1.Items.Add(_encodingSpinnerHost);
+            statusStrip1.Items.Add(_operationProgressLabel);
             statusStrip1.Items.Add(_queueProgressBar);
+            statusStrip1.Items.Add(_operationProgressDetailsLabel);
             statusStrip1.Items.Add(_analyzeQueueButton);
             statusStrip1.Items.Add(_cancelQueueWorkButton);
+            UpdateOperationProgressPresentation();
         }
 
         private void SetQueueProgress(int current, int total, bool visible)
         {
-            if (_queueProgressBar == null)
-                return;
+            _backgroundQueueProgressVisible = visible;
+            _backgroundQueueProgressPercent = visible && total > 0
+                ? Math.Clamp((int)Math.Round((current / (double)total) * 100), 0, 100)
+                : null;
+            UpdateOperationProgressPresentation();
+        }
 
-            _queueProgressBar.Visible = visible;
-            if (!visible)
+        private void UpdateOperationProgressPresentation()
+        {
+            if (_queueProgressBar == null ||
+                _operationProgressLabel == null ||
+                _operationProgressDetailsLabel == null ||
+                IsDisposed)
             {
-                _queueProgressBar.Value = 0;
                 return;
             }
 
-            _queueProgressBar.Maximum = 100;
-            int percent = total > 0
-                ? Math.Clamp((int)Math.Round((current / (double)total) * 100), 0, 100)
-                : 0;
-            _queueProgressBar.Value = percent;
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action(UpdateOperationProgressPresentation)); } catch { }
+                return;
+            }
+
+            bool encodeActive = _encodingActive ||
+                _activeEncodeRow != null ||
+                _activeEncodeRows.Count > 0;
+            if (encodeActive)
+            {
+                DataGridViewRow? row = _activeEncodeRow;
+                if (row?.DataGridView != dgvEncodeQueue)
+                    row = _activeEncodeRows.FirstOrDefault(activeRow => activeRow.DataGridView == dgvEncodeQueue);
+
+                string stage = _cancelEncode
+                    ? "Canceling"
+                    : row?.Cells["colStatus"]?.Value?.ToString()?.Trim() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(stage) || stage.Equals("Queued", StringComparison.OrdinalIgnoreCase))
+                    stage = "Encoding";
+                if (stage.Equals("Encoding", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(toolStripStatusLabel1.Text, "Upscaling…", StringComparison.Ordinal))
+                {
+                    stage = "Upscaling";
+                }
+
+                int total;
+                lock (_activeEncodeQueueLock)
+                    total = _activeEncodeQueue?.Count ?? dgvEncodeQueue.Rows.Count;
+
+                string operationText = _encodeProcessedCount > 0 && total > 0
+                    ? $"{stage} {_encodeProcessedCount:N0} of {total:N0}"
+                    : stage;
+                int? percent = TryParseProgressPercent(row?.Cells["colProgress"]?.Value?.ToString());
+                string? eta = GetAvailableEta(row?.Cells["colETA"]?.Value?.ToString());
+                string details = BuildProgressDetails(percent, eta);
+                bool indeterminate = _activeEncodeRows.Count > 1 || !percent.HasValue;
+
+                SetOperationProgressLabels(operationText, details);
+                SetCompactProgressBar(visible: true, percent, indeterminate);
+                return;
+            }
+
+            if (_audioProgressActive)
+            {
+                string operationText = _audioProgressPosition > 0 && _audioProgressTotal > 0
+                    ? $"{_audioProgressOperation} {_audioProgressPosition:N0} of {_audioProgressTotal:N0}"
+                    : _audioProgressOperation;
+                string details = BuildProgressDetails(_audioProgressPercent, eta: null);
+                SetOperationProgressLabels(operationText, details);
+                SetCompactProgressBar(
+                    visible: true,
+                    _audioProgressPercent,
+                    indeterminate: !_audioProgressPercent.HasValue);
+                return;
+            }
+
+            if (_backgroundQueueProgressVisible)
+            {
+                string details = BuildProgressDetails(_backgroundQueueProgressPercent, eta: null);
+                SetOperationProgressLabels(string.Empty, details);
+                SetCompactProgressBar(
+                    visible: true,
+                    _backgroundQueueProgressPercent,
+                    indeterminate: !_backgroundQueueProgressPercent.HasValue);
+                return;
+            }
+
+            SetOperationProgressLabels(string.Empty, string.Empty);
+            SetCompactProgressBar(visible: false, percent: null, indeterminate: false);
+        }
+
+        private void SetOperationProgressLabels(string operationText, string details)
+        {
+            bool showOperation = !string.IsNullOrWhiteSpace(operationText);
+            if (_operationProgressLabel!.Text != operationText)
+                _operationProgressLabel.Text = operationText;
+            if (_operationProgressLabel.ToolTipText != operationText)
+                _operationProgressLabel.ToolTipText = operationText;
+            if (_operationProgressLabel.Visible != showOperation)
+                _operationProgressLabel.Visible = showOperation;
+
+            bool showDetails = !string.IsNullOrWhiteSpace(details);
+            if (_operationProgressDetailsLabel!.Text != details)
+                _operationProgressDetailsLabel.Text = details;
+            if (_operationProgressDetailsLabel.ToolTipText != details)
+                _operationProgressDetailsLabel.ToolTipText = details;
+            if (_operationProgressDetailsLabel.Visible != showDetails)
+                _operationProgressDetailsLabel.Visible = showDetails;
+        }
+
+        private void SetCompactProgressBar(bool visible, int? percent, bool indeterminate)
+        {
+            ToolStripProgressBar bar = _queueProgressBar!;
+            if (bar.Visible != visible)
+                bar.Visible = visible;
+
+            if (indeterminate && visible)
+            {
+                if (bar.Style != ProgressBarStyle.Marquee)
+                    bar.Style = ProgressBarStyle.Marquee;
+                if (bar.MarqueeAnimationSpeed != 30)
+                    bar.MarqueeAnimationSpeed = 30;
+                return;
+            }
+
+            if (bar.Style != ProgressBarStyle.Continuous)
+                bar.Style = ProgressBarStyle.Continuous;
+
+            int value = visible ? Math.Clamp(percent ?? 0, bar.Minimum, bar.Maximum) : 0;
+            if (bar.Value != value)
+                bar.Value = value;
+        }
+
+        private static int? TryParseProgressPercent(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            int percentIndex = value.LastIndexOf('%');
+            if (percentIndex <= 0)
+                return null;
+
+            int start = percentIndex - 1;
+            while (start >= 0 && char.IsDigit(value[start]))
+                start--;
+            if (start == percentIndex - 1 ||
+                !int.TryParse(value.Substring(start + 1, percentIndex - start - 1), out int percent))
+            {
+                return null;
+            }
+
+            return Math.Clamp(percent, 0, 100);
+        }
+
+        private static string? GetAvailableEta(string? value)
+        {
+            string eta = value?.Trim() ?? string.Empty;
+            return string.IsNullOrWhiteSpace(eta) ||
+                   eta == "--" ||
+                   eta == "--:--:--" ||
+                   !TimeSpan.TryParseExact(
+                       eta,
+                       @"hh\:mm\:ss",
+                       System.Globalization.CultureInfo.InvariantCulture,
+                       out _)
+                ? null
+                : eta;
+        }
+
+        private static string BuildProgressDetails(int? percent, string? eta)
+        {
+            var details = new List<string>(2);
+            if (percent.HasValue)
+                details.Add($"{percent.Value}%");
+            if (!string.IsNullOrWhiteSpace(eta))
+                details.Add($"ETA {eta}");
+            return string.Join(" · ", details);
+        }
+
+        private void BeginAudioOperationProgress(string operation, int position, int total, TimeSpan duration)
+        {
+            _audioProgressActive = true;
+            _audioProgressOperation = operation;
+            _audioProgressPosition = position;
+            _audioProgressTotal = total;
+            _audioProgressTotalDuration = duration;
+            _audioProgressPercent = duration > TimeSpan.Zero ? 0 : null;
+            UpdateOperationProgressPresentation();
+        }
+
+        private void EndAudioOperationProgress()
+        {
+            _audioProgressActive = false;
+            _audioProgressOperation = string.Empty;
+            _audioProgressPosition = 0;
+            _audioProgressTotal = 0;
+            _audioProgressTotalDuration = TimeSpan.Zero;
+            _audioProgressPercent = null;
+            UpdateOperationProgressPresentation();
         }
 
         private void SetQueueWorkCancelVisible(bool visible)
@@ -1044,17 +1143,7 @@ namespace MediaFlux
                 ForeColor = SystemColors.ControlText,
                 Text = "Queue summary"
             };
-            var operationLabel = new Label
-            {
-                AutoSize = true,
-                MaximumSize = new Size(900, 0),
-                Margin = new Padding(0, 0, 0, 8),
-                ForeColor = Color.FromArgb(35, 84, 130),
-                Visible = false
-            };
-            _currentOperationSummaryLabel ??= operationLabel;
             content.Controls.Add(contextLabel, 0, 0);
-            content.Controls.Add(operationLabel, 0, 1);
             UpdateContextualDetails();
             return content;
         }
@@ -1107,7 +1196,6 @@ namespace MediaFlux
             if (_restorationContextLabel != null) _restorationContextLabel.Text = restoration;
             UpdateFailureAnalysis(rows);
             UpdateDetailsHeaderContext();
-            UpdateCurrentOperationSummary();
             RefreshQueueInspectorFromSelection();
         }
 
@@ -1181,29 +1269,6 @@ namespace MediaFlux
                 1 => "Selected: 1 file",
                 _ => $"Selected: {selected:N0} files"
             };
-        }
-
-        private void UpdateCurrentOperationSummary()
-        {
-            if (_currentOperationSummaryLabel == null)
-                return;
-
-            if (InvokeRequired)
-            {
-                BeginInvoke(new Action(UpdateCurrentOperationSummary));
-                return;
-            }
-
-            bool active = _encodingActive || (_activeEncodeRows?.Count ?? 0) > 0;
-            _currentOperationSummaryLabel.Visible = active;
-            if (!active)
-                return;
-
-            string name = _activeEncodeRow != null
-                ? Path.GetFileName(GetFullPathFromRow(_activeEncodeRow) ?? string.Empty)
-                : "Current operation";
-            _currentOperationSummaryLabel.Text = $"Active: {name}  |  {progressBarEncode.Value}%  |  FPS {lblFPSValue.Text}  |  {lblBitrateValue.Text}  |  Elapsed {lblJobTimer.Text}";
-            UpdateCurrentOperationPresentation();
         }
 
         private Control CreateEncodingOptionsDetails()
@@ -2444,38 +2509,42 @@ namespace MediaFlux
 
         private void InitializeEncodingSpinner()
         {
-            if (progressPanel == null)
-                return;
-
             _encodingSpinner = new PictureBox
             {
                 Name = "picEncodingSpinner",
                 SizeMode = PictureBoxSizeMode.Zoom,
                 BackColor = Color.Transparent,
                 Visible = false,
-                Size = new Size(32, 32),
-                Anchor = AnchorStyles.Right | AnchorStyles.Bottom
+                Size = new Size(ScaleUi(16), ScaleUi(16))
             };
+            _encodingSpinnerHost = new ToolStripControlHost(_encodingSpinner)
+            {
+                Name = "encodingActivityIconHost",
+                AutoSize = false,
+                Size = new Size(ScaleUi(18), ScaleUi(18)),
+                Margin = new Padding(0, 0, ScaleUi(3), 0),
+                Visible = false
+            };
+            ToolStripControlHost spinnerHost = _encodingSpinnerHost;
+            _encodingSpinner.VisibleChanged += (_, __) => spinnerHost.Visible = _encodingSpinner.Visible;
 
-            progressPanel.Controls.Add(_encodingSpinner);
-            _encodingSpinner.BringToFront();
-
-            // Small status label next to the spinner (for "Encoding…", "Scanning…", etc.)
             _activityLabel = new Label
             {
                 AutoSize = true,
                 BackColor = Color.Transparent,
-                ForeColor = SystemColors.ControlText,
+                ForeColor = SystemColors.GrayText,
                 Font = new Font(Font.FontFamily, 8.25f, FontStyle.Bold),
                 Visible = false
             };
-
-            progressPanel.Controls.Add(_activityLabel);
-            _activityLabel.BringToFront();
-
-            RepositionEncodingSpinner();
-            this.Resize += (_, __) => RepositionEncodingSpinner();
-            progressPanel.Resize += (_, __) => RepositionEncodingSpinner();
+            _activityLabelHost = new ToolStripControlHost(_activityLabel)
+            {
+                Name = "activityStatusTextHost",
+                AutoSize = true,
+                Margin = new Padding(0, 0, ScaleUi(3), 0),
+                Visible = false
+            };
+            ToolStripControlHost activityLabelHost = _activityLabelHost;
+            _activityLabel.VisibleChanged += (_, __) => activityLabelHost.Visible = _activityLabel.Visible;
 
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             var config = ActivityIndicatorConfigLoader.Load(baseDir);
@@ -2486,38 +2555,6 @@ namespace MediaFlux
                 _activityLabel,
                 baseDir,
                 config);
-        }
-
-        private void RepositionEncodingSpinner()
-        {
-            if (_encodingSpinner == null || progressPanel == null)
-                return;
-
-            const int margin = 10;
-
-            _encodingSpinner.Location = new Point(
-                progressPanel.ClientSize.Width - _encodingSpinner.Width - margin,
-                progressPanel.ClientSize.Height - _encodingSpinner.Height - margin);
-
-            if (progressBarEncode != null)
-            {
-                int rightLimit = _encodingSpinner.Left - 10;
-                progressBarEncode.Width = Math.Max(120, rightLimit - progressBarEncode.Left);
-            }
-
-            if (_activityLabel != null)
-            {
-                int spacing = 8;
-
-                // Place label to the left of the spinner, vertically centered.
-                int x = _encodingSpinner.Left - _activityLabel.Width - spacing;
-                if (x < margin) x = margin;
-
-                int y = _encodingSpinner.Top +
-                        (_encodingSpinner.Height - _activityLabel.Height) / 2;
-
-                _activityLabel.Location = new Point(x, y);
-            }
         }
 
         // Pause flag for encode queue
@@ -2539,7 +2576,7 @@ namespace MediaFlux
         private int _folderImportGeneration = 0;
         private bool _duplicateRescanPending = false;
 
-        // How many items in the active queue have finished
+        // Queue position of the item currently being processed.
         private int _encodeProcessedCount = 0;
         private int _encodeRetryCount = 0;
 
@@ -5295,24 +5332,6 @@ namespace MediaFlux
             SetEtaCellColor(_activeEncodeRow, speedX);
         }
 
-        // Thread-safe label update
-        private void SetLabel(Label label, string text)
-        {
-            if (label.InvokeRequired)
-                label.Invoke(new Action(() => label.Text = text));
-            else
-                label.Text = text;
-        }
-
-        // Thread-safe progress update
-        private void SetProgress(ProgressBar bar, int value)
-        {
-            if (bar.InvokeRequired)
-                bar.Invoke(new Action(() => bar.Value = Math.Max(bar.Minimum, Math.Min(bar.Maximum, value))));
-            else
-                bar.Value = Math.Max(bar.Minimum, Math.Min(bar.Maximum, value));
-        }
-
         private TimeSpan GetVideoDuration(string file)
         {
             return _mediaInfoService.GetDuration(file);
@@ -5321,35 +5340,6 @@ namespace MediaFlux
         private int? ProbeSourceVideoBitrateKbps(string file)
         {
             return _mediaInfoService.GetBitrateKbps(file);
-        }
-
-        // JOB TIMER METHODS
-        private void JobTimer_Tick(object? sender, EventArgs e)
-
-        {
-            if (jobStopwatch.IsRunning)
-            {
-                TimeSpan elapsed = jobStopwatch.Elapsed;
-                SetLabel(lblJobTimer, elapsed.ToString(@"hh\:mm\:ss"));
-            }
-        }
-
-        private void StartJobTimer()
-        {
-            jobStopwatch.Restart();
-            jobTimer.Start();
-            SetLabel(lblJobTimer, "00:00:00");
-        }
-
-        private void StopJobTimer()
-        {
-            jobStopwatch.Stop();
-            jobTimer.Stop();
-        }
-
-        private void ResetJobTimer()
-        {
-            SetLabel(lblJobTimer, "--:--:--");
         }
 
         #endregion
@@ -5784,6 +5774,7 @@ namespace MediaFlux
             toolStripStatusLabel1.Text = on
                 ? (isUpscale ? "Upscaling…" : "Encoding…")
                 : "Ready";
+            UpdateOperationProgressPresentation();
             UpdateTrayStatus();
 
             // Keep normal cursor

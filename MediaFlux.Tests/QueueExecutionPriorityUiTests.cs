@@ -13,6 +13,80 @@ namespace MediaFlux.Tests;
 public sealed class QueueExecutionPriorityUiTests
 {
     [Fact]
+    public void CompactProgressUsesGlobalStatusStripAndHidesWhenIdle()
+    {
+        RunOnSta(main =>
+        {
+            StatusStrip status = Field<StatusStrip>(main, "statusStrip1");
+            ToolStripProgressBar progress = Field<ToolStripProgressBar>(main, "_queueProgressBar");
+            ToolStripStatusLabel operation = Field<ToolStripStatusLabel>(main, "_operationProgressLabel");
+            ToolStripStatusLabel details = Field<ToolStripStatusLabel>(main, "_operationProgressDetailsLabel");
+
+            Assert.True(status.Items.Contains(progress));
+            Assert.Equal(DockStyle.Bottom, status.Dock);
+            Assert.True(status.Visible);
+            Assert.False(progress.Visible);
+            Assert.False(operation.Visible);
+            Assert.False(details.Visible);
+            Assert.DoesNotContain(Descendants(main), control => control.Name == "progressBarEncode");
+
+            Invoke(main, "SetQueueProgress", 1, 0, true);
+            Assert.True(progress.Visible);
+            Assert.Equal(ProgressBarStyle.Marquee, progress.Style);
+            Assert.False(details.Visible);
+
+            Invoke(main, "SetQueueProgress", 1, 4, true);
+            Assert.True(progress.Visible);
+            Assert.Equal(ProgressBarStyle.Continuous, progress.Style);
+            Assert.Equal(25, progress.Value);
+            Assert.False(operation.Visible);
+            Assert.Equal("25%", details.Text);
+
+            List<DataGridViewRow> rows = AddRows(main,
+                "1.mkv", "2.mkv", "3.mkv", "4.mkv", "5.mkv", "6.mkv",
+                "7.mkv", "8.mkv", "9.mkv", "10.mkv", "11.mkv");
+            DataGridViewRow current = rows[2];
+            current.Cells["colStatus"].Value = "Encoding";
+            current.Cells["colProgress"].Value = "42%";
+            current.Cells["colETA"].Value = "00:12:34";
+            Field<List<DataGridViewRow>>(main, "_activeEncodeRows").Add(current);
+            SetField(main, "_activeEncodeRow", current);
+            SetField(main, "_encodeProcessedCount", 3);
+            SetField(main, "_encodingActive", true);
+
+            Invoke(main, "UpdateOperationProgressPresentation");
+
+            Assert.True(progress.Visible);
+            Assert.Equal(ProgressBarStyle.Continuous, progress.Style);
+            Assert.Equal(42, progress.Value);
+            Assert.True(operation.Visible);
+            Assert.Equal("Encoding 3 of 11", operation.Text);
+            Assert.True(details.Visible);
+            Assert.Equal("42% · ETA 00:12:34", details.Text);
+
+            Field<List<DataGridViewRow>>(main, "_activeEncodeRows").Add(rows[3]);
+            Invoke(main, "UpdateOperationProgressPresentation");
+            Assert.Equal(ProgressBarStyle.Marquee, progress.Style);
+
+            Field<List<DataGridViewRow>>(main, "_activeEncodeRows").Clear();
+            SetField(main, "_activeEncodeRow", null);
+            SetField(main, "_encodingActive", false);
+            Invoke(main, "UpdateOperationProgressPresentation");
+
+            Assert.True(progress.Visible);
+            Assert.Equal(25, progress.Value);
+            Assert.Equal("25%", details.Text);
+
+            Invoke(main, "SetQueueProgress", 0, 0, false);
+            Assert.False(progress.Visible);
+            Assert.Equal(ProgressBarStyle.Continuous, progress.Style);
+            Assert.Equal(0, progress.Value);
+            Assert.False(operation.Visible);
+            Assert.False(details.Visible);
+        });
+    }
+
+    [Fact]
     public void OrderColumnShowsLogicalPositionsAcrossSortAndUsesColumnPersistence()
     {
         RunOnSta(main =>
@@ -301,6 +375,16 @@ public sealed class QueueExecutionPriorityUiTests
         Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Queue execution priority UI test timed out.");
         if (failure != null)
             throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    private static IEnumerable<Control> Descendants(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            yield return child;
+            foreach (Control descendant in Descendants(child))
+                yield return descendant;
+        }
     }
 
     private static List<DataGridViewRow> AddRows(MainForm main, params string[] names)

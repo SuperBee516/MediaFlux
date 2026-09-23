@@ -188,6 +188,7 @@ namespace MediaFlux
             }
             _encodeProcessedCount = 0;
             UpdateQueueEstimatedCompletion();
+            UpdateOperationProgressPresentation();
 
             try
             {
@@ -479,14 +480,10 @@ namespace MediaFlux
                 lblEncodeStatus.Text =
                     $"Encoding: {displayName} ({_encodeProcessedCount}/{totalNow}) – Queued: {remaining}";
 
-                _currentEncodeDuration = TimeSpan.Zero;
-                _currentEncodeTotalDuration = TimeSpan.FromSeconds(durationSec > 0 ? durationSec : 0);
-                bool firstActive = BeginEncodeMetricsForRow(row);
-                if (firstActive)
-                    StartJobTimer();
-
+                BeginEncodeMetricsForRow(row);
                 _activeEncodeRow = row;
                 SetEncodeRowState(row, "Encoding", "0%", "--:--:--", "Encoding is in progress.");
+                UpdateOperationProgressPresentation();
             });
 
             // Start per-job log capture

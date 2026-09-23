@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -13,11 +13,8 @@ namespace MediaFlux
         private sealed class EncodeMetrics
         {
             public int Fps { get; set; }
-            public int SizeKiB { get; set; }
-            public double Bitrate { get; set; }
             public double Speed { get; set; }
             public string TimeStr { get; set; } = "--";
-            public bool HasData { get; set; }
             public long LastFrame { get; set; }
             public DateTime LastFrameUtc { get; set; }
             public EncodeProgressAttemptTracker AttemptTracker { get; } = new();
@@ -26,70 +23,23 @@ namespace MediaFlux
         private readonly Dictionary<DataGridViewRow, EncodeMetrics> _activeEncodeMetrics = new();
         private readonly List<DataGridViewRow> _activeEncodeRows = new();
 
-        // Parses lines and updates metrics UI (thread-safe)
+        // Captures raw FFmpeg output and presents existing audio progress in the status strip.
         private void HandleFfmpegProgressLine(string line)
         {
-            // Always capture raw ffmpeg output for the active job log
             _activeJobLog.Value?.AppendLine(line);
 
             var match = ffmpegProgressRegex.Match(line);
             if (match.Success)
             {
-                int fps = int.TryParse(match.Groups[2].Value, out var fpsVal) ? fpsVal : 0;
-                int size = int.TryParse(match.Groups[4].Value, out var sizeVal) ? sizeVal : 0;
-                string sizeUnit = match.Groups[5].Value;
                 string timeStr = match.Groups[6].Value;
-
-                double bitrate = double.TryParse(
-                    match.Groups[7].Value,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    out var br
-                ) ? br : 0;
-
-                double speed = double.TryParse(
-                    match.Groups[8].Value,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    out var sp
-                ) ? sp : 0;
-
-                int sizeKiB = (sizeUnit == "kB") ? (int)(size / 1.024) : size;
-
-                Ui(() => UpdateEncodeMetricsSingleLine(fps, sizeKiB, bitrate, speed, timeStr));
+                Ui(() => UpdateAudioProgress(timeStr));
             }
             else
             {
-                // Audio-only style: size= ... time= ... bitrate= ... speed= ...
                 var am = ffmpegAudioProgressRegex.Match(line);
                 if (am.Success)
-                {
-                    int size = int.TryParse(am.Groups[1].Value, out var sizeVal) ? sizeVal : 0;
-                    string sizeUnit = am.Groups[2].Value;
-                    string timeStr = am.Groups[3].Value;
-
-                    double bitrate = double.TryParse(
-                        am.Groups[4].Value,
-                        System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        out var br
-                    ) ? br : 0;
-
-                    double speed = double.TryParse(
-                        am.Groups[5].Value,
-                        System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        out var sp
-                    ) ? sp : 0;
-
-                    int sizeKiB = (sizeUnit == "kB") ? (int)(size / 1.024) : size;
-
-                    // For audio we don’t care about FPS (set to 0)
-                    Ui(() => UpdateEncodeMetricsSingleLine(0, sizeKiB, bitrate, speed, timeStr));
-                }
+                    Ui(() => UpdateAudioProgress(am.Groups[3].Value));
             }
-
-            // No grid/ETA updates here anymore – that’s handled per-row and per-job.
         }
 
         private void HandleFfmpegProgressLineForRowMetrics(DataGridViewRow row, string line)
@@ -187,9 +137,7 @@ namespace MediaFlux
                                    System.Globalization.CultureInfo.InvariantCulture, out var x) ? x : 0;
         }
 
-        // For encoding metrics panel and progress bar
-        private TimeSpan _currentEncodeDuration = TimeSpan.Zero;
-        private TimeSpan _currentEncodeTotalDuration = TimeSpan.Zero;
+        // Parse existing per-row progress values used by the queue and ETA summary.
         private static readonly Regex ffmpegProgressRegex = new Regex(
             @"frame=\s*(\d+)\s+fps=\s*([\d\.]+)\s+q=\s*([-\d\.]+)\s+size=\s*(\d+)(kB|KiB)\s+time=\s*(\d{2}:\d{2}:\d{2}\.\d{2})\s+bitrate=\s*([\d\.]+)kbits/s\s+speed=\s*([\d\.]+)x",
             RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -207,17 +155,7 @@ namespace MediaFlux
             if (match.Success)
             {
                 metrics.Fps = int.TryParse(match.Groups[2].Value, out var fpsVal) ? fpsVal : 0;
-                int size = int.TryParse(match.Groups[4].Value, out var sizeVal) ? sizeVal : 0;
-                string sizeUnit = match.Groups[5].Value;
                 metrics.TimeStr = match.Groups[6].Value;
-
-                metrics.Bitrate = double.TryParse(
-                    match.Groups[7].Value,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    out var br
-                ) ? br : 0;
-
                 metrics.Speed = double.TryParse(
                     match.Groups[8].Value,
                     System.Globalization.NumberStyles.Float,
@@ -225,25 +163,13 @@ namespace MediaFlux
                     out var sp
                 ) ? sp : 0;
 
-                metrics.SizeKiB = (sizeUnit == "kB") ? (int)(size / 1.024) : size;
-                metrics.HasData = true;
                 return true;
             }
 
             var am = ffmpegAudioProgressRegex.Match(line);
             if (am.Success)
             {
-                int size = int.TryParse(am.Groups[1].Value, out var sizeVal) ? sizeVal : 0;
-                string sizeUnit = am.Groups[2].Value;
                 metrics.TimeStr = am.Groups[3].Value;
-
-                metrics.Bitrate = double.TryParse(
-                    am.Groups[4].Value,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    out var br
-                ) ? br : 0;
-
                 metrics.Speed = double.TryParse(
                     am.Groups[5].Value,
                     System.Globalization.NumberStyles.Float,
@@ -251,40 +177,25 @@ namespace MediaFlux
                     out var sp
                 ) ? sp : 0;
 
-                metrics.SizeKiB = (sizeUnit == "kB") ? (int)(size / 1.024) : size;
                 metrics.Fps = 0;
-                metrics.HasData = true;
                 return true;
             }
 
             return false;
         }
 
-        private bool BeginEncodeMetricsForRow(DataGridViewRow row)
+        private void BeginEncodeMetricsForRow(DataGridViewRow row)
         {
             if (row == null)
-                return false;
+                return;
 
-            bool wasEmpty = _activeEncodeRows.Count == 0;
             if (!_activeEncodeRows.Contains(row))
                 _activeEncodeRows.Add(row);
 
             if (!_activeEncodeMetrics.ContainsKey(row))
                 _activeEncodeMetrics[row] = new EncodeMetrics();
 
-            if (wasEmpty)
-                ResetEncodeMetricsPanel();
-
-            UpdateEncodeMetricsPanel();
-            if (_activeEncodeRows.Count > 1)
-            {
-                if (progressBarEncode.Style != ProgressBarStyle.Marquee)
-                {
-                    progressBarEncode.Style = ProgressBarStyle.Marquee;
-                    progressBarEncode.MarqueeAnimationSpeed = 30;
-                }
-            }
-            return wasEmpty;
+            UpdateOperationProgressPresentation();
         }
 
         private void EndEncodeMetricsForRow(DataGridViewRow row)
@@ -298,15 +209,11 @@ namespace MediaFlux
 
             if (_activeEncodeRows.Count == 0)
             {
-                StopJobTimer();
                 ResetEncodeMetrics();
                 return;
             }
 
-            if (_activeEncodeRows.Count == 1 && progressBarEncode.Style != ProgressBarStyle.Continuous)
-                progressBarEncode.Style = ProgressBarStyle.Continuous;
-
-            UpdateEncodeMetricsPanel();
+            UpdateOperationProgressPresentation();
         }
 
         private void ApplyAiIntermediateProgress(DataGridViewRow row, AiIntermediateProgress progress)
@@ -338,13 +245,7 @@ namespace MediaFlux
                     eta,
                     progress.Message);
 
-                if (_activeEncodeRows.Count <= 1)
-                {
-                    if (progressBarEncode.Style != ProgressBarStyle.Continuous)
-                        progressBarEncode.Style = ProgressBarStyle.Continuous;
-                    SetProgress(progressBarEncode, (int)Math.Round(fraction * 100));
-                }
-                UpdateCurrentOperationSummary();
+                UpdateOperationProgressPresentation();
             });
         }
 
@@ -358,17 +259,7 @@ namespace MediaFlux
 
             _activeEncodeMetrics[row] = metrics;
 
-            UpdateEncodeMetricsPanel();
-            UpdateCurrentOperationSummary();
-
-            if (_activeEncodeRows.Count > 1)
-            {
-                if (progressBarEncode.Style != ProgressBarStyle.Marquee)
-                {
-                    progressBarEncode.Style = ProgressBarStyle.Marquee;
-                    progressBarEncode.MarqueeAnimationSpeed = 30;
-                }
-            }
+            UpdateOperationProgressPresentation();
         }
 
         private void ApplyStructuredEncodeProgress(
@@ -387,11 +278,8 @@ namespace MediaFlux
             if (attemptDisposition == EncodeProgressAttemptDisposition.AcceptAndReset)
             {
                 attemptMetrics.Fps = 0;
-                attemptMetrics.SizeKiB = 0;
-                attemptMetrics.Bitrate = 0;
                 attemptMetrics.Speed = 0;
                 attemptMetrics.TimeStr = "--";
-                attemptMetrics.HasData = false;
                 attemptMetrics.LastFrame = 0;
                 attemptMetrics.LastFrameUtc = default;
                 _activeEncodeMetrics[row] = attemptMetrics;
@@ -421,7 +309,6 @@ namespace MediaFlux
                 metrics.Speed = progress.Speed;
                 metrics.LastFrame = Math.Max(metrics.LastFrame, frame);
                 metrics.LastFrameUtc = now;
-                metrics.HasData = true;
                 _activeEncodeMetrics[row] = metrics;
                 row.Cells["colProgress"].ToolTipText =
                     $"Encoded frames: {frame:N0}" +
@@ -430,7 +317,6 @@ namespace MediaFlux
                         : progress.Basis == EncodeProgressBasis.Indeterminate
                             ? " (FFmpeg timestamp unavailable; progress indeterminate)"
                             : "");
-                UpdateEncodeMetricsPanel();
             }
             double? etaSeconds = progress.Basis is EncodeProgressBasis.MeasuredFrames or EncodeProgressBasis.DerivedCfrFrames
                 && progress.TotalFrames is long totalFrames
@@ -445,9 +331,7 @@ namespace MediaFlux
             row.Cells["colETA"].Value = etaSeconds.HasValue
                 ? TimeSpan.FromSeconds(etaSeconds.Value).ToString(@"hh\:mm\:ss")
                 : "--:--:--";
-            if (ReferenceEquals(_activeEncodeRow, row))
-                SetProgress(progressBarEncode, percent);
-            UpdateCurrentOperationSummary();
+            UpdateOperationProgressPresentation();
         }
 
         private void ApplyAuthoritativeEncodeProgress(DataGridViewRow row, string timeText, double ffmpegSpeed)
@@ -467,178 +351,35 @@ namespace MediaFlux
             row.Cells["colETA"].Value = etaSeconds.HasValue
                 ? TimeSpan.FromSeconds(etaSeconds.Value).ToString(@"hh\:mm\:ss")
                 : "--:--:--";
-            if (ReferenceEquals(_activeEncodeRow, row))
-                SetProgress(progressBarEncode, percent);
-            UpdateCurrentOperationSummary();
+            UpdateOperationProgressPresentation();
         }
 
-        // Updates all labels and progress bar (thread-safe)
-        private void UpdateEncodeMetricsSingleLine(int fps, int sizeKiB, double bitrate, double speed, string timeStr)
+        private void UpdateAudioProgress(string timeText)
         {
-            SetLabel(lblSpeedValue, $"{speed:F1}x");
-            SetLabel(lblSizeValue, $"{sizeKiB:N0} KiB");
-            SetLabel(lblFPSValue, fps.ToString());
-            SetLabel(lblBitrateValue, $"{bitrate:F1} kbits/s");
-            SetLabel(lblTimeValue, timeStr);
-
-            SetLabel(lblSpeedValue2, "--");
-            SetLabel(lblSizeValue2, "--");
-            SetLabel(lblFPSValue2, "--");
-            SetLabel(lblBitrateValue2, "--");
-            SetLabel(lblTimeValue2, "--");
-            SetLabel(lblJobTimer2, "--");
-
-            Ui(() =>
+            if (!_audioProgressActive ||
+                !TimeSpan.TryParseExact(timeText, @"hh\:mm\:ss\.ff", null, out TimeSpan current))
             {
-                lblJob1.Text = string.Empty;
-                lblJob2.Visible = false;
-                lblSpeedValue2.Visible = false;
-                lblSizeValue2.Visible = false;
-                lblFPSValue2.Visible = false;
-                lblBitrateValue2.Visible = false;
-                lblTimeValue2.Visible = false;
-                lblJobTimer2.Visible = false;
-            });
-
-            UpdateEncodeProgressBar(timeStr);
-        }
-
-        private void UpdateEncodeProgressBar(string timeStr)
-        {
-            if (progressBarEncode.Style != ProgressBarStyle.Continuous)
-                progressBarEncode.Style = ProgressBarStyle.Continuous;
-
-            if (TimeSpan.TryParseExact(timeStr, @"hh\:mm\:ss\.ff", null, out var current))
-            {
-                _currentEncodeDuration = current;
-                int percent = 0;
-                if (_currentEncodeTotalDuration.TotalSeconds > 0)
-                    percent = (int)((current.TotalSeconds / _currentEncodeTotalDuration.TotalSeconds) * 100);
-
-                SetProgress(progressBarEncode, percent);
-            }
-        }
-
-        private void UpdateEncodeMetricsPanel()
-        {
-            var rows = _activeEncodeRows.Where(_activeEncodeMetrics.ContainsKey)
-                .OrderBy(r => r.Index)
-                .Take(2)
-                .ToList();
-
-            if (progressPanel != null)
-                progressPanel.Visible = rows.Count > 0 || _encodingActive;
-
-            bool showSecond = rows.Count > 1;
-
-            Ui(() =>
-            {
-                lblJob1.Text = showSecond ? "Job 1:" : string.Empty;
-                lblJob2.Text = "Job 2:";
-                lblJob2.Visible = showSecond;
-
-                lblSpeedValue2.Visible = showSecond;
-                lblSizeValue2.Visible = showSecond;
-                lblFPSValue2.Visible = showSecond;
-                lblBitrateValue2.Visible = showSecond;
-                lblTimeValue2.Visible = showSecond;
-                lblJobTimer2.Visible = showSecond;
-            });
-
-            if (rows.Count > 0)
-                ApplyMetricsToLabels(rows[0], lblSpeedValue, lblSizeValue, lblFPSValue, lblBitrateValue, lblTimeValue);
-            else
-                ApplyEmptyMetrics(lblSpeedValue, lblSizeValue, lblFPSValue, lblBitrateValue, lblTimeValue);
-
-            if (showSecond)
-                ApplyMetricsToLabels(rows[1], lblSpeedValue2, lblSizeValue2, lblFPSValue2, lblBitrateValue2, lblTimeValue2);
-            else
-                ApplyEmptyMetrics(lblSpeedValue2, lblSizeValue2, lblFPSValue2, lblBitrateValue2, lblTimeValue2);
-
-            SetLabel(lblJobTimer2, "--");
-        }
-
-        private void ApplyMetricsToLabels(DataGridViewRow row, Label speedLabel, Label sizeLabel, Label fpsLabel, Label bitrateLabel, Label timeLabel)
-        {
-            if (!_activeEncodeMetrics.TryGetValue(row, out var metrics) || !metrics.HasData)
-            {
-                ApplyEmptyMetrics(speedLabel, sizeLabel, fpsLabel, bitrateLabel, timeLabel);
                 return;
             }
 
-            SetLabel(speedLabel, $"{metrics.Speed:F1}x");
-            SetLabel(sizeLabel, $"{metrics.SizeKiB:N0} KiB");
-            SetLabel(fpsLabel, metrics.Fps.ToString());
-            SetLabel(bitrateLabel, $"{metrics.Bitrate:F1} kbits/s");
-            SetLabel(timeLabel, metrics.TimeStr);
-        }
-
-        private void ApplyEmptyMetrics(Label speedLabel, Label sizeLabel, Label fpsLabel, Label bitrateLabel, Label timeLabel)
-        {
-            SetLabel(speedLabel, "--");
-            SetLabel(sizeLabel, "--");
-            SetLabel(fpsLabel, "--");
-            SetLabel(bitrateLabel, "--");
-            SetLabel(timeLabel, "--");
-        }
-
-        private void ResetEncodeMetricsPanel()
-        {
-            ApplyEmptyMetrics(lblSpeedValue, lblSizeValue, lblFPSValue, lblBitrateValue, lblTimeValue);
-            ApplyEmptyMetrics(lblSpeedValue2, lblSizeValue2, lblFPSValue2, lblBitrateValue2, lblTimeValue2);
-            SetLabel(lblJobTimer2, "--");
-            if (progressPanel != null && !_encodingActive)
-                progressPanel.Visible = false;
-            UpdateCurrentOperationPresentation();
-
-            Ui(() =>
+            if (_audioProgressTotalDuration.TotalSeconds > 0)
             {
-                lblJob1.Text = string.Empty;
-                lblJob2.Visible = false;
-                lblSpeedValue2.Visible = false;
-                lblSizeValue2.Visible = false;
-                lblFPSValue2.Visible = false;
-                lblBitrateValue2.Visible = false;
-                lblTimeValue2.Visible = false;
-                lblJobTimer2.Visible = false;
-            });
+                int percent = (int)((current.TotalSeconds / _audioProgressTotalDuration.TotalSeconds) * 100);
+                _audioProgressPercent = Math.Clamp(percent, 0, 100);
+            }
+            else
+            {
+                _audioProgressPercent = null;
+            }
+
+            UpdateOperationProgressPresentation();
         }
-        // Resets metrics panel to "--" and progress to 0 and job timer
+
         private void ResetEncodeMetrics()
         {
             _activeEncodeMetrics.Clear();
             _activeEncodeRows.Clear();
-
-            SetLabel(lblSpeedValue, "--");
-            SetLabel(lblSizeValue, "--");
-            SetLabel(lblFPSValue, "--");
-            SetLabel(lblBitrateValue, "--");
-            SetLabel(lblTimeValue, "--");
-            SetLabel(lblSpeedValue2, "--");
-            SetLabel(lblSizeValue2, "--");
-            SetLabel(lblFPSValue2, "--");
-            SetLabel(lblBitrateValue2, "--");
-            SetLabel(lblTimeValue2, "--");
-            SetLabel(lblJobTimer2, "--");
-
-            // Always reset to a normal, non-animated bar when idle
-            if (progressBarEncode.Style != ProgressBarStyle.Continuous)
-                progressBarEncode.Style = ProgressBarStyle.Continuous;
-
-            SetProgress(progressBarEncode, 0);
-            ResetJobTimer();
-
-            Ui(() =>
-            {
-                lblJob1.Text = string.Empty;
-                lblJob2.Visible = false;
-                lblSpeedValue2.Visible = false;
-                lblSizeValue2.Visible = false;
-                lblFPSValue2.Visible = false;
-                lblBitrateValue2.Visible = false;
-                lblTimeValue2.Visible = false;
-                lblJobTimer2.Visible = false;
-            });
+            UpdateOperationProgressPresentation();
         }
     }
 }

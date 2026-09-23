@@ -146,17 +146,6 @@ namespace MediaFlux
         private TextBox txtHistoryLog;
         private Button btnHistoryRefresh, btnHistoryRequeue, btnHistoryOpenSrc, btnHistoryOpenOut, btnHistoryDelete, btnHistoryClearAll;
 
-        // Metrics/progress panel fields
-        private Panel progressPanel;
-        private Label lblJob1, lblJob2;
-        private Label lblSpeed, lblSpeedValue, lblSpeedValue2;
-        private Label lblSize, lblSizeValue, lblSizeValue2;
-        private Label lblFPS, lblFPSValue, lblFPSValue2;
-        private Label lblBitrate, lblBitrateValue, lblBitrateValue2;
-        private Label lblTime, lblTimeValue, lblTimeValue2;
-        private Label lblJobTimer2;
-        private Label lblJobTimerDesc, lblJobTimer;
-        private ProgressBar progressBarEncode;
         private Button btnStopEncode;
         private CheckBox chkAutoTargetSize;
 
@@ -275,30 +264,6 @@ namespace MediaFlux
             lblAudioStatus = new Label();
             dgvAudioQueue = new DataGridView();
 
-            // Metrics/progress panel fields
-            progressPanel = new Panel();
-            lblJob1 = new Label();
-            lblJob2 = new Label();
-            lblSpeed = new Label();
-            lblSpeedValue = new Label();
-            lblSpeedValue2 = new Label();
-            lblSize = new Label();
-            lblSizeValue = new Label();
-            lblSizeValue2 = new Label();
-            lblFPS = new Label();
-            lblFPSValue = new Label();
-            lblFPSValue2 = new Label();
-            lblBitrate = new Label();
-            lblBitrateValue = new Label();
-            lblBitrateValue2 = new Label();
-            lblTime = new Label();
-            lblTimeValue = new Label();
-            lblTimeValue2 = new Label();
-            lblJobTimerDesc = new Label();
-            lblJobTimer = new Label();
-            lblJobTimer2 = new Label();
-            progressBarEncode = new ProgressBar();
-
             // MenuStrip
             menuStrip1.Items.AddRange(new ToolStripItem[] {
                 fileToolStripMenuItem,
@@ -352,144 +317,11 @@ namespace MediaFlux
             statusStrip1.Items.Add(toolStripStatusLabel1);
             toolStripStatusLabel1.Text = "Ready";
 
-            // progressPanel setup
-            progressPanel.Dock = DockStyle.Top;
-            progressPanel.Height = 80;
-            progressPanel.Padding = new Padding(10, 5, 10, 5);
-            progressPanel.BackColor = Color.FromArgb(245, 245, 245);
-
-            Font metricFont = new Font("Segoe UI", 9F, FontStyle.Bold);
-            Font valueFont = new Font("Segoe UI", 10F, FontStyle.Regular);
-
-            lblJob1.Text = "";
-            lblJob1.Font = metricFont;
-            lblJob1.Location = new Point(10, 8);
-            lblJob1.AutoSize = true;
-
-            lblJob2.Text = "Job 2:";
-            lblJob2.Font = metricFont;
-            lblJob2.Location = new Point(10, 26);
-            lblJob2.AutoSize = true;
-            lblJob2.Visible = false;
-
-            lblSpeed.Text = "Speed:";
-            lblSpeed.Font = metricFont;
-            lblSpeed.Location = new Point(60, 8);
-            lblSpeed.AutoSize = true;
-            lblSpeedValue.Text = "--";
-            lblSpeedValue.Font = valueFont;
-            lblSpeedValue.Location = new Point(110, 8);
-            lblSpeedValue.AutoSize = true;
-            lblSpeedValue2.Text = "--";
-            lblSpeedValue2.Font = valueFont;
-            lblSpeedValue2.Location = new Point(110, 26);
-            lblSpeedValue2.AutoSize = true;
-            lblSpeedValue2.Visible = false;
-
-            lblSize.Text = "Size:";
-            lblSize.Font = metricFont;
-            lblSize.Location = new Point(170, 8);
-            lblSize.AutoSize = true;
-            lblSizeValue.Text = "--";
-            lblSizeValue.Font = valueFont;
-            lblSizeValue.Location = new Point(210, 8);
-            lblSizeValue.AutoSize = true;
-            lblSizeValue2.Text = "--";
-            lblSizeValue2.Font = valueFont;
-            lblSizeValue2.Location = new Point(210, 26);
-            lblSizeValue2.AutoSize = true;
-            lblSizeValue2.Visible = false;
-
-            lblFPS.Text = "FPS:";
-            lblFPS.Font = metricFont;
-            lblFPS.Location = new Point(300, 8);
-            lblFPS.AutoSize = true;
-            lblFPSValue.Text = "--";
-            lblFPSValue.Font = valueFont;
-            lblFPSValue.Location = new Point(330, 8);
-            lblFPSValue.AutoSize = true;
-            lblFPSValue2.Text = "--";
-            lblFPSValue2.Font = valueFont;
-            lblFPSValue2.Location = new Point(330, 26);
-            lblFPSValue2.AutoSize = true;
-            lblFPSValue2.Visible = false;
-
-            lblBitrate.Text = "Bitrate:";
-            lblBitrate.Font = metricFont;
-            lblBitrate.Location = new Point(380, 8);
-            lblBitrate.AutoSize = true;
-            lblBitrateValue.Text = "--";
-            lblBitrateValue.Font = valueFont;
-            lblBitrateValue.Location = new Point(430, 8);
-            lblBitrateValue.AutoSize = true;
-            lblBitrateValue2.Text = "--";
-            lblBitrateValue2.Font = valueFont;
-            lblBitrateValue2.Location = new Point(430, 26);
-            lblBitrateValue2.AutoSize = true;
-            lblBitrateValue2.Visible = false;
-
-            lblTime.Text = "Time:";
-            lblTime.Font = metricFont;
-            lblTime.Location = new Point(520, 8);
-            lblTime.AutoSize = true;
-            lblTimeValue.Text = "--";
-            lblTimeValue.Font = valueFont;
-            lblTimeValue.Location = new Point(560, 8);
-            lblTimeValue.AutoSize = true;
-            lblTimeValue2.Text = "--";
-            lblTimeValue2.Font = valueFont;
-            lblTimeValue2.Location = new Point(560, 26);
-            lblTimeValue2.AutoSize = true;
-            lblTimeValue2.Visible = false;
-
-            lblJobTimerDesc.Text = "Elapsed:";
-            lblJobTimerDesc.Font = metricFont;
-            lblJobTimerDesc.Location = new Point(640, 8);
-            lblJobTimerDesc.AutoSize = true;
-            lblJobTimer.Text = "--:--:--";
-            lblJobTimer.Font = valueFont;
-            lblJobTimer.Location = new Point(700, 8);
-            lblJobTimer.AutoSize = true;
-            lblJobTimer2.Text = "--";
-            lblJobTimer2.Font = valueFont;
-            lblJobTimer2.Location = new Point(700, 26);
-            lblJobTimer2.AutoSize = true;
-            lblJobTimer2.Visible = false;
-
-            progressBarEncode.Location = new Point(10, 52);
-            progressBarEncode.Width = 770;
-            progressBarEncode.Height = 16;
-            progressBarEncode.Minimum = 0;
-            progressBarEncode.Maximum = 100;
-            progressBarEncode.Value = 0;
-
-            progressPanel.Controls.Add(lblJob1);
-            progressPanel.Controls.Add(lblJob2);
-            progressPanel.Controls.Add(lblSpeed);
-            progressPanel.Controls.Add(lblSpeedValue);
-            progressPanel.Controls.Add(lblSpeedValue2);
-            progressPanel.Controls.Add(lblSize);
-            progressPanel.Controls.Add(lblSizeValue);
-            progressPanel.Controls.Add(lblSizeValue2);
-            progressPanel.Controls.Add(lblFPS);
-            progressPanel.Controls.Add(lblFPSValue);
-            progressPanel.Controls.Add(lblFPSValue2);
-            progressPanel.Controls.Add(lblBitrate);
-            progressPanel.Controls.Add(lblBitrateValue);
-            progressPanel.Controls.Add(lblBitrateValue2);
-            progressPanel.Controls.Add(lblTime);
-            progressPanel.Controls.Add(lblTimeValue);
-            progressPanel.Controls.Add(lblTimeValue2);
-            progressPanel.Controls.Add(lblJobTimerDesc);
-            progressPanel.Controls.Add(lblJobTimer);
-            progressPanel.Controls.Add(lblJobTimer2);
-            progressPanel.Controls.Add(progressBarEncode);
-
             // panelEncode setup
             panelEncode.Dock = DockStyle.Fill;
             tlEncode.Dock = DockStyle.Fill;
             tlEncode.ColumnCount = 4;
-            tlEncode.RowCount = 14;
+            tlEncode.RowCount = 13;
             tlEncode.Padding = new Padding(10, 30, 10, 10);
 
             // UPDATED column layout: label | main input | secondary label | secondary input
@@ -500,7 +332,7 @@ namespace MediaFlux
             tlEncode.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));   // secondary inputs
 
             tlEncode.RowStyles.Clear();
-            for (int i = 0; i < 13; i++)
+            for (int i = 0; i < 12; i++)
                 tlEncode.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             tlEncode.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
@@ -1246,11 +1078,7 @@ namespace MediaFlux
             tlEncode.Controls.Add(grpDuplicateFinder, 0, 11);
             tlEncode.SetColumnSpan(grpDuplicateFinder, 4);
 
-            // Row 12: Progress Panel
-            tlEncode.SetColumnSpan(progressPanel, 4);
-            tlEncode.Controls.Add(progressPanel, 0, 12);
-
-            // Row 13: Encode Queue Grid
+            // Row 12: Encode Queue Grid
             dgvEncodeQueue = new DataGridView();
             dgvEncodeQueue.Dock = DockStyle.Fill;
             dgvEncodeQueue.Margin = new Padding(0);
@@ -1465,7 +1293,7 @@ namespace MediaFlux
                 tabs.TabPages.Add(tabHistory);            
 
             tlEncode.SetColumnSpan(dgvEncodeQueue, 4);
-            tlEncode.Controls.Add(dgvEncodeQueue, 0, 13);
+            tlEncode.Controls.Add(dgvEncodeQueue, 0, 12);
 
             panelEncode.Controls.Add(tlEncode);
 
