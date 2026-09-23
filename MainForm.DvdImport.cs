@@ -546,15 +546,7 @@ namespace MediaFlux
             _queueFileCount++;
             _queueTotalsDirty = false;
 
-            lock (_activeEncodeQueueLock)
-            {
-                if (_encodingActive &&
-                    _activeEncodeQueue != null &&
-                    !_activeEncodeQueue.Contains(row))
-                {
-                    _activeEncodeQueue.Add(row);
-                }
-            }
+            TryAppendActiveEncodeQueueRow(row);
 
             RunEstimatePass();
             UpdateAnalyzeQueueButtonState();

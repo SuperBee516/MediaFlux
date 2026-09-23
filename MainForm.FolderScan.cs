@@ -49,6 +49,11 @@ namespace MediaFlux
             if (!EnsureFfmpegToolsAvailable())
                 return;
 
+            // Register a live import before any discovery/setup work so the runner's
+            // drain check cannot close append admission while this import is underway.
+            lock (_activeEncodeQueueLock)
+                Interlocked.Increment(ref _pendingEncodeImports);
+
             int importGeneration = Interlocked.Increment(ref _folderImportGeneration);
             var previousDuplicateScan = _duplicateScanCts;
             _duplicateScanCts = null;
@@ -82,7 +87,6 @@ namespace MediaFlux
             var codecFilterToken = _codecFilterCts.Token;
             _lastImportDiscoveredCount = 0;
             _lastImportAddedCount = 0;
-            Interlocked.Increment(ref _pendingEncodeImports);
             _activityIndicator?.StartActivity(UiActivity.FolderScan);
             SetQueueWorkCancelVisible(true);
             SetQueueProgress(0, 0, visible: true);
@@ -531,20 +535,19 @@ namespace MediaFlux
             if (!_encodingActive || _activeEncodeQueue == null)
                 return;
 
-            lock (_activeEncodeQueueLock)
-            {
-                foreach (string path in importedPaths)
-                {
-                    if (!_rowsByPath.TryGetValue(path, out var row) ||
-                        row?.DataGridView != dgvEncodeQueue ||
-                        row.Tag is RowMeta meta && meta.ExcludedFromEncodeAsDuplicate ||
-                        _activeEncodeQueue.Contains(row))
-                    {
-                        continue;
-                    }
+            // importedPaths is a set used for duplicate decisions; restore the
+            // queue's logical order before appending each row to the live runner.
+            List<DataGridViewRow> importedRows = importedPaths
+                .Select(path => _rowsByPath.TryGetValue(path, out var row) ? row : null)
+                .Where(row => row != null && row.DataGridView == dgvEncodeQueue &&
+                              row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true })
+                .Cast<DataGridViewRow>()
+                .ToList();
+            List<DataGridViewRow> rowsToAppend = OrderRowsByQueueSequence(importedRows);
 
-                    _activeEncodeQueue.Add(row);
-                }
+            foreach (DataGridViewRow row in rowsToAppend)
+            {
+                TryAppendActiveEncodeQueueRow(row);
             }
         }
 

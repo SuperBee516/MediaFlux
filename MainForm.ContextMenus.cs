@@ -166,7 +166,8 @@ namespace MediaFlux
         private void IncludeSelectedDuplicateRowsInEncode_Click(object? sender, EventArgs e)
         {
             int included = 0;
-            foreach (DataGridViewRow row in dgvEncodeQueue.SelectedRows)
+            int queuedForNextRun = 0;
+            foreach (DataGridViewRow row in GetSelectedEncodeRowsInExecutionOrder())
             {
                 if (row.IsNewRow || row.Tag is not RowMeta meta || !meta.ExcludedFromEncodeAsDuplicate)
                     continue;
@@ -175,11 +176,8 @@ namespace MediaFlux
                 meta.DuplicateExclusionOverridden = true;
                 SetEncodeRowState(row, meta.StatusBeforeDuplicateExclusion, "", "", "Included in encoding by user override; the duplicate marking remains for review.");
 
-                lock (_activeEncodeQueueLock)
-                {
-                    if (_encodingActive && _activeEncodeQueue != null && !_activeEncodeQueue.Contains(row))
-                        _activeEncodeQueue.Add(row);
-                }
+                if (AppendActiveEncodeQueueRow(row) == ActiveQueueAppendOutcome.NotAdmitted)
+                    queuedForNextRun++;
                 included++;
             }
 
@@ -191,7 +189,12 @@ namespace MediaFlux
 
             UpdateDuplicateSummary(_lastDuplicateScanResult);
             SafeRefreshEstimates();
-            ShowStatusInfo($"Included {included:N0} exact duplicate file(s) in encoding. No source files were changed.");
+            string nextRunNote = queuedForNextRun == 0
+                ? string.Empty
+                : _encodingActive
+                    ? $" {queuedForNextRun:N0} remain queued for the next run because current-run admission has closed."
+                    : $" {queuedForNextRun:N0} will be available for the next encode run.";
+            ShowStatusInfo($"Included {included:N0} exact duplicate file(s) in the encode queue.{nextRunNote} No source files were changed.");
         }
 
         private void AddToEncodeQueueFromContextMenu_Click(object? sender, EventArgs e)
@@ -210,8 +213,10 @@ namespace MediaFlux
 
             int added = 0;
             int excluded = 0;
+            int alreadyInRun = 0;
+            int queuedForNextRun = 0;
 
-            foreach (DataGridViewRow row in dgvEncodeQueue.SelectedRows)
+            foreach (DataGridViewRow row in GetSelectedEncodeRowsInExecutionOrder())
             {
                 if (row.IsNewRow || row.DataGridView == null)
                     continue;
@@ -222,25 +227,30 @@ namespace MediaFlux
                     continue;
                 }
 
-                bool addedRow = false;
-                lock (_activeEncodeQueueLock)
+                switch (AppendActiveEncodeQueueRow(row))
                 {
-                    // Don’t enqueue the same row twice
-                    if (!_activeEncodeQueue.Contains(row))
-                    {
-                        _activeEncodeQueue.Add(row);
-                        addedRow = true;
-                    }
+                    case ActiveQueueAppendOutcome.Added:
+                        added++;
+                        break;
+                    case ActiveQueueAppendOutcome.AlreadyPresent:
+                        alreadyInRun++;
+                        break;
+                    case ActiveQueueAppendOutcome.NotAdmitted:
+                        queuedForNextRun++;
+                        break;
                 }
-
-                if (addedRow)
-                    added++;
             }
 
             if (added > 0)
             {
-                toolStripStatusLabel1.Text =
-                    $"Added {added} file(s) to the in-progress encode queue.";
+                string status = $"Added {added} file(s) to the in-progress encode queue.";
+                if (queuedForNextRun > 0)
+                    status += $" {queuedForNextRun} remain queued for the next run because current-run admission has closed.";
+                if (alreadyInRun > 0)
+                    status += $" {alreadyInRun} selected file(s) were already in the current run.";
+                if (excluded > 0)
+                    status += $" {excluded} soft-excluded duplicate(s) were not added.";
+                toolStripStatusLabel1.Text = status;
 
                 int totalNow;
                 lock (_activeEncodeQueueLock)
@@ -266,9 +276,21 @@ namespace MediaFlux
                 lblEncodeStatus.Text =
                     $"Encoding: {currentFileName} ({_encodeProcessedCount}/{totalNow}) – Queued: {queued}";
             }
-            else if (excluded > 0)
+            else if (queuedForNextRun > 0 || excluded > 0 || alreadyInRun > 0)
             {
-                ShowStatusInfo("Soft-excluded exact duplicates were not added. Use 'Include Selected Exact Duplicate(s) in Encode' first.");
+                string status = string.Join(" ", new[]
+                {
+                    queuedForNextRun > 0
+                        ? $"The current run is closing; {queuedForNextRun} selected file(s) remain queued for the next run."
+                        : string.Empty,
+                    alreadyInRun > 0
+                        ? $"{alreadyInRun} selected file(s) are already part of the current run."
+                        : string.Empty,
+                    excluded > 0
+                        ? $"{excluded} soft-excluded exact duplicate(s) were not added. Use 'Include Selected Exact Duplicate(s) in Encode' first."
+                        : string.Empty
+                }.Where(message => !string.IsNullOrWhiteSpace(message)));
+                ShowStatusInfo(status);
             }
         }
 

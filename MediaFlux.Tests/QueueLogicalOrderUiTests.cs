@@ -1,6 +1,7 @@
 using System.Collections;
 using System.ComponentModel;
 using System.Reflection;
+using System.Text.Json;
 using System.Windows.Forms;
 using MediaFlux.Models;
 using MediaFlux.Services;
@@ -151,6 +152,317 @@ public sealed class QueueLogicalOrderUiTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Queue import order UI test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void ExplicitReorderUsesLogicalOrderAcrossSortSearchAndDuplicateExclusion()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        Exception? failure = null;
+        MainForm? main = null;
+        string? isolatedConfigPath = null;
+        string? tempRoot = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                main = new MainForm();
+                isolatedConfigPath = QueueWorkspaceTestSupport.UseIsolatedConfig(main);
+                main.Show();
+                Application.DoEvents();
+
+                tempRoot = Path.Combine(Path.GetTempPath(), $"MediaFlux.QueueReorder.{Guid.NewGuid():N}");
+                Directory.CreateDirectory(tempRoot);
+                string[] paths = CreateFiles(tempRoot, "d.mkv", "b.mkv", "c.mkv", "a.mkv");
+                foreach (string path in paths)
+                    Assert.True((bool)Invoke(main, "AddEncodeItemIfNotPresent", path, false, false)!);
+
+                DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+                DataGridViewRow[] rows = InvokeRows(main, "GetEncodeRowsInExecutionOrder").ToArray();
+                SetMetaField(main, rows[1], "ExcludedFromEncodeAsDuplicate", true);
+
+                queue.Sort(queue.Columns["colName"], ListSortDirection.Descending);
+                TextBox search = Field<TextBox>(main, "_queueWorkspaceSearchBox");
+                search.Text = "c.mkv";
+                Assert.Equal(1, rows.Count(row => row.Visible));
+
+                object result = Invoke(
+                    main,
+                    "ReorderQueueRows",
+                    new[] { rows[3] },
+                    QueueExecutionOrderOperation.MoveToTop)!;
+                Assert.True((bool)result.GetType().GetProperty("Changed")!.GetValue(result)!);
+
+                string[] logicalPaths = InvokeRows(main, "GetEncodeRowsInExecutionOrder")
+                    .Select(row => (string)Invoke(main, "GetPathFromRow", row)!)
+                    .ToArray();
+                Assert.Equal(new[] { paths[3], paths[0], paths[1], paths[2] }, logicalPaths);
+                Assert.Equal(4, rows.Select(row => QueueSequence(main, row)).Distinct().Count());
+                Assert.Equal(new long[] { 1, 2, 3, 4 },
+                    InvokeRows(main, "GetEncodeRowsInExecutionOrder")
+                        .Select(row => QueueSequence(main, row)).ToArray());
+                Assert.Equal(
+                    new[] { paths[3], paths[0], paths[2] },
+                    InvokeRows(main, "GetEligibleEncodeRowsInExecutionOrder")
+                        .Select(row => (string)Invoke(main, "GetPathFromRow", row)!)
+                        .ToArray());
+
+                string[] exported = ExportedPaths(main);
+                Assert.Equal(logicalPaths, exported);
+                string queueJson = JsonSerializer.Serialize(
+                    Invoke(main, "CaptureQueueItemsInExecutionOrder"));
+                string[] serializedPaths;
+                using (JsonDocument document = JsonDocument.Parse(queueJson))
+                {
+                    serializedPaths = document.RootElement.EnumerateArray()
+                        .Select(item => item.GetProperty("Path").GetString()!)
+                        .ToArray();
+                }
+                Assert.Equal(logicalPaths, serializedPaths);
+
+                // The queue snapshot and saved-job file lists are ordered arrays;
+                // verify their existing serializers retain the intentional order.
+                string persistencePath = Path.Combine(tempRoot, "queue-order.json");
+                var jobService = new EncodeJobService(persistencePath);
+                jobService.Save(new[]
+                {
+                    new EncodeJob
+                    {
+                        Name = "Queue order",
+                        Files = exported.Select(path => new EncodeJobFile { SourcePath = path }).ToList()
+                    }
+                });
+                Assert.Equal(
+                    exported,
+                    jobService.Load().Single().Files.Select(file => file.SourcePath).ToArray());
+
+                // Queue import consumes the serialized item list in order. Rebuild
+                // from that list to verify a reordered export restores its priority.
+                SetField(main, "_suppressRowEvents", true);
+                try
+                {
+                    queue.Rows.Clear();
+                    Field<System.Collections.Concurrent.ConcurrentDictionary<string, DataGridViewRow>>(
+                        main, "_rowsByPath").Clear();
+                }
+                finally
+                {
+                    SetField(main, "_suppressRowEvents", false);
+                }
+                foreach (string path in serializedPaths)
+                    Assert.True((bool)Invoke(main, "AddEncodeItemIfNotPresent", path, false, false)!);
+                Assert.Equal(serializedPaths,
+                    InvokeRows(main, "GetEncodeRowsInExecutionOrder")
+                        .Select(row => (string)Invoke(main, "GetPathFromRow", row)!).ToArray());
+
+                List<DataGridViewRow> restoredRows = InvokeRows(main, "GetEncodeRowsInExecutionOrder");
+                long[] restoredSequences = restoredRows.Select(row => QueueSequence(main, row)).ToArray();
+                foreach (DataGridViewRow row in restoredRows)
+                {
+                    SetMetaField(main, row, "EstimateDiagnostic", "refresh after reorder");
+                    SetMetaField(main, row, "EncodeRecommendation", new SmartEncodeRecommendation
+                    {
+                        Kind = SmartEncodeRecommendationKind.Review,
+                        Confidence = SmartEncodeConfidence.Medium,
+                        PrimaryReason = "Order remains independent of recommendations."
+                    });
+                    Invoke(main, "EnsureRowMeta", row);
+                }
+                search.Clear();
+                Assert.Equal(logicalPaths,
+                    InvokeRows(main, "GetEncodeRowsInExecutionOrder")
+                        .Select(row => (string)Invoke(main, "GetPathFromRow", row)!).ToArray());
+                Assert.Equal(restoredSequences,
+                    restoredRows.Select(row => QueueSequence(main, row)).ToArray());
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(main);
+                QueueWorkspaceTestSupport.DeleteIsolatedConfig(isolatedConfigPath);
+                if (!string.IsNullOrWhiteSpace(tempRoot) && Directory.Exists(tempRoot))
+                    Directory.Delete(tempRoot, recursive: true);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Queue explicit reorder UI test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void ActiveReorderPreservesDispatchedPrefixAndCanPromoteAnAppendedRow()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        Exception? failure = null;
+        MainForm? main = null;
+        string? isolatedConfigPath = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                main = new MainForm();
+                isolatedConfigPath = QueueWorkspaceTestSupport.UseIsolatedConfig(main);
+                main.Show();
+                Application.DoEvents();
+
+                DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+                SetField(main, "_suppressRowEvents", true);
+                DataGridViewRow[] rows =
+                [
+                    AddRow(queue, "active-1.mkv", "Encoding"),
+                    AddRow(queue, "inactive-2.mkv", "Queued"),
+                    AddRow(queue, "excluded-3.mkv", "Excluded - exact duplicate"),
+                    AddRow(queue, "pending-4.mkv", "Queued"),
+                    AddRow(queue, "appended-5.mkv", "Queued")
+                ];
+                SetField(main, "_suppressRowEvents", false);
+                foreach (DataGridViewRow row in rows)
+                    Invoke(main, "EnsureRowMeta", row);
+
+                SetMetaField(main, rows[2], "ExcludedFromEncodeAsDuplicate", true);
+                SetField(main, "_encodingActive", true);
+                SetField(main, "_activeEncodeQueue", new List<DataGridViewRow> { rows[0], rows[2], rows[3] });
+                SetField(main, "_activeEncodeQueueDispatchedCount", 1);
+                SetField(main, "_activeEncodeQueueAccepting", true);
+
+                Assert.False((bool)Invoke(
+                    main,
+                    "TrySoftExcludePendingDuplicateRow",
+                    rows[0],
+                    rows[0].Tag!,
+                    "Queued")!);
+                Assert.False((bool)MetaField(main, rows[0], "ExcludedFromEncodeAsDuplicate"));
+                Invoke(main, "RemoveSoftExcludedRowsFromActiveEncodeQueue");
+                List<DataGridViewRow> active = (List<DataGridViewRow>)Field<object>(main, "_activeEncodeQueue");
+                Assert.Equal(new[] { rows[0], rows[3] }, active);
+                Assert.Equal(1, (int)Field<object>(main, "_activeEncodeQueueDispatchedCount"));
+
+                Assert.True((bool)Invoke(main, "TryAppendActiveEncodeQueueRow", rows[4])!);
+                object rejected = Invoke(
+                    main,
+                    "ReorderQueueRows",
+                    new[] { rows[0] },
+                    QueueExecutionOrderOperation.EncodeNext)!;
+                Assert.False((bool)rejected.GetType().GetProperty("Changed")!.GetValue(rejected)!);
+                Assert.Equal(1, (int)rejected.GetType().GetProperty("DispatchedCount")!.GetValue(rejected)!);
+
+                object promoted = Invoke(
+                    main,
+                    "ReorderQueueRows",
+                    new[] { rows[4] },
+                    QueueExecutionOrderOperation.EncodeNext)!;
+                Assert.True((bool)promoted.GetType().GetProperty("Changed")!.GetValue(promoted)!);
+
+                Assert.Equal(new[] { rows[0], rows[4], rows[3] }, active);
+                Assert.Equal(rows[0], active[0]);
+                Assert.True((bool)MetaField(main, rows[2], "ExcludedFromEncodeAsDuplicate"));
+                Assert.DoesNotContain(rows[2], active);
+
+                List<DataGridViewRow> logicalRows = InvokeRows(main, "GetEncodeRowsInExecutionOrder");
+                Assert.Equal(new[] { rows[0], rows[1], rows[2], rows[4], rows[3] }, logicalRows);
+                Assert.Equal(
+                    active.Distinct().ToArray(),
+                    logicalRows.Where(active.ToHashSet().Contains).ToArray());
+                Assert.Equal(5, logicalRows.Distinct().Count());
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (main != null)
+                {
+                    SetField(main, "_encodingActive", false);
+                    SetField(main, "_activeEncodeQueue", null!);
+                    SetField(main, "_activeEncodeQueueAccepting", false);
+                }
+                WinFormsTestLifecycle.CloseAndDispose(main);
+                QueueWorkspaceTestSupport.DeleteIsolatedConfig(isolatedConfigPath);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Active queue reorder UI test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void RetryAppendAndActiveReorderKeepPendingLogicalOrderAligned()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        Exception? failure = null;
+        MainForm? main = null;
+        string? isolatedConfigPath = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                main = new MainForm();
+                isolatedConfigPath = QueueWorkspaceTestSupport.UseIsolatedConfig(main);
+                main.Show();
+                Application.DoEvents();
+
+                DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+                SetField(main, "_suppressRowEvents", true);
+                DataGridViewRow[] rows =
+                [
+                    AddRow(queue, "retry-a.mkv", "Failed"),
+                    AddRow(queue, "pending-b.mkv", "Queued"),
+                    AddRow(queue, "appended-c.mkv", "Queued")
+                ];
+                SetField(main, "_suppressRowEvents", false);
+                foreach (DataGridViewRow row in rows)
+                    Invoke(main, "EnsureRowMeta", row);
+                long highestInitialSequence = rows.Max(row => QueueSequence(main, row));
+
+                Field<CheckBox>(main, "chkRetryFailedJobs").Checked = true;
+                SetField(main, "_encodingActive", true);
+                SetField(main, "_activeEncodeQueue", new List<DataGridViewRow> { rows[0], rows[1] });
+                SetField(main, "_activeEncodeQueueDispatchedCount", 1);
+                SetField(main, "_activeEncodeQueueAccepting", true);
+
+                Assert.True((bool)Invoke(main, "TryQueueFailedRowForAutoRetry", rows[0])!);
+                Assert.True(QueueSequence(main, rows[0]) > highestInitialSequence);
+                Assert.True((bool)Invoke(main, "TryAppendActiveEncodeQueueRow", rows[2])!);
+                Assert.True(QueueSequence(main, rows[2]) > QueueSequence(main, rows[0]));
+
+                object result = Invoke(
+                    main,
+                    "ReorderQueueRows",
+                    new[] { rows[2] },
+                    QueueExecutionOrderOperation.EncodeNext)!;
+                Assert.True((bool)result.GetType().GetProperty("Changed")!.GetValue(result)!);
+
+                List<DataGridViewRow> active = (List<DataGridViewRow>)Field<object>(main, "_activeEncodeQueue");
+                DataGridViewRow[] pendingDistinct = active.Skip(1).Distinct().ToArray();
+                List<DataGridViewRow> logicalRows = InvokeRows(main, "GetEncodeRowsInExecutionOrder");
+                Assert.Equal(new[] { rows[2], rows[1], rows[0] }, pendingDistinct);
+                Assert.Equal(
+                    pendingDistinct,
+                    logicalRows.Where(active.ToHashSet().Contains).ToArray());
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (main != null)
+                {
+                    SetField(main, "_encodingActive", false);
+                    SetField(main, "_activeEncodeQueue", null!);
+                    SetField(main, "_activeEncodeQueueAccepting", false);
+                }
+                WinFormsTestLifecycle.CloseAndDispose(main);
+                QueueWorkspaceTestSupport.DeleteIsolatedConfig(isolatedConfigPath);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Retry queue-order UI test timed out.");
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 

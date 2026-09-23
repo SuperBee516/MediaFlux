@@ -2453,6 +2453,10 @@ namespace MediaFlux
         // Dynamic in-progress queue so we can append new rows while encoding
         private List<DataGridViewRow>? _activeEncodeQueue = null;
         private readonly object _activeEncodeQueueLock = new();
+        // Number of queue entries claimed by EncodeQueueRunner. Updated under
+        // _activeEncodeQueueLock at the same instant that the runner advances jobIndex.
+        private int _activeEncodeQueueDispatchedCount;
+        private bool _activeEncodeQueueAccepting = false;
         private long _nextEncodeQueueSequence;
         private int _pendingEncodeImports = 0;
         private bool _suppressEncodeFolderSelectionScan = false;
@@ -4485,13 +4489,14 @@ namespace MediaFlux
                 .Where(row => !row.IsNewRow)
                 .ToList();
 
-            List<DataGridViewRow> queuedRows;
+            DataGridViewRow[] activeQueueSnapshot;
             lock (_activeEncodeQueueLock)
             {
-                queuedRows = _activeEncodeQueue?
-                    .Where(row => row != null && !row.IsNewRow)
-                    .ToList() ?? new List<DataGridViewRow>();
+                activeQueueSnapshot = _activeEncodeQueue?.ToArray() ?? Array.Empty<DataGridViewRow>();
             }
+            List<DataGridViewRow> queuedRows = activeQueueSnapshot
+                .Where(row => row != null && !row.IsNewRow)
+                .ToList();
 
             var rows = gridRows
                 .Concat(queuedRows)
@@ -4827,40 +4832,25 @@ namespace MediaFlux
         private IEnumerable<DataGridViewRow> GetEncodeRowsInExecutionOrder()
         {
             if (dgvEncodeQueue.Rows.Count == 0)
-                yield break;
+                return Array.Empty<DataGridViewRow>();
 
             // RowMeta.QueueSequence is the authoritative logical queue order.
             // Do not consult Visible, SortedColumn, SortOrder, or DisplayIndex:
             // those are presentation state only.
-            var orderedRows = dgvEncodeQueue.Rows
+            List<DataGridViewRow> queueRows = dgvEncodeQueue.Rows
                 .Cast<DataGridViewRow>()
                 .Where(row => !row.IsNewRow)
-                .Select(row => new
-                {
-                    Row = row,
-                    Meta = EnsureRowMeta(row)
-                })
-                .OrderBy(item => item.Meta.QueueSequence)
-                .Select(item => item.Row)
                 .ToList();
-
-            foreach (DataGridViewRow row in orderedRows)
-                yield return row;
+            return OrderRowsByQueueSequence(queueRows);
         }
 
         private IEnumerable<DataGridViewRow> GetSelectedEncodeRowsInExecutionOrder()
         {
-            return dgvEncodeQueue.SelectedRows
+            List<DataGridViewRow> selectedRows = dgvEncodeQueue.SelectedRows
                 .Cast<DataGridViewRow>()
                 .Where(row => !row.IsNewRow)
-                .Select(row => new
-                {
-                    Row = row,
-                    Meta = EnsureRowMeta(row)
-                })
-                .OrderBy(item => item.Meta.QueueSequence)
-                .Select(item => item.Row)
                 .ToList();
+            return OrderRowsByQueueSequence(selectedRows);
         }
 
         private IEnumerable<DataGridViewRow> GetEligibleEncodeRowsInExecutionOrder()
@@ -5851,11 +5841,8 @@ namespace MediaFlux
             UpdateAnalyzeQueueButtonState();
 
             // Imports performed during an encode are automatically appended to the live queue.
-            lock (_activeEncodeQueueLock)
-            {
-                if (appendToActiveQueue && _encodingActive && _activeEncodeQueue != null && !_activeEncodeQueue.Contains(r))
-                    _activeEncodeQueue.Add(r);
-            }
+            if (appendToActiveQueue)
+                TryAppendActiveEncodeQueueRow(r);
 
             // Now kick off/refresh background estimates for whatever is in the grid
             if (refreshEstimates)

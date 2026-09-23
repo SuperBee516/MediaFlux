@@ -376,17 +376,19 @@ namespace MediaFlux
                         !IsEncodeRowCurrentlyRunning(row);
                     if (isExactCandidate && !meta.DuplicateExclusionOverridden)
                     {
-                        meta.StatusBeforeDuplicateExclusion = dgvEncodeQueue.Columns.Contains("colStatus")
+                        string statusBeforeExclusion = dgvEncodeQueue.Columns.Contains("colStatus")
                             ? row.Cells["colStatus"].Value?.ToString() ?? "Queued"
                             : "Queued";
-                        meta.ExcludedFromEncodeAsDuplicate = true;
-                        _estimatedSizeMap.Remove(item.Path);
-                        SetEncodeRowState(
-                            row,
-                            "Excluded - exact duplicate",
-                            "",
-                            "",
-                            "Exact byte-for-byte duplicate soft-excluded from encoding. The source file was not changed.");
+                        if (TrySoftExcludePendingDuplicateRow(row, meta, statusBeforeExclusion))
+                        {
+                            _estimatedSizeMap.Remove(item.Path);
+                            SetEncodeRowState(
+                                row,
+                                "Excluded - exact duplicate",
+                                "",
+                                "",
+                                "Exact byte-for-byte duplicate soft-excluded from encoding. The source file was not changed.");
+                        }
                     }
                     ApplyDuplicateCells(row, meta);
                 }
@@ -455,8 +457,20 @@ namespace MediaFlux
         {
             lock (_activeEncodeQueueLock)
             {
-                _activeEncodeQueue?.RemoveAll(row =>
-                    row?.Tag is RowMeta meta && meta.ExcludedFromEncodeAsDuplicate);
+                if (_activeEncodeQueue == null)
+                    return;
+
+                // The runner's claimed prefix is immutable. Removing only pending
+                // tail entries keeps its next-dispatch index valid.
+                int pendingStart = Math.Clamp(
+                    _activeEncodeQueueDispatchedCount,
+                    0,
+                    _activeEncodeQueue.Count);
+                for (int index = _activeEncodeQueue.Count - 1; index >= pendingStart; index--)
+                {
+                    if (_activeEncodeQueue[index]?.Tag is RowMeta { ExcludedFromEncodeAsDuplicate: true })
+                        _activeEncodeQueue.RemoveAt(index);
+                }
             }
         }
 

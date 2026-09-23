@@ -180,7 +180,12 @@ namespace MediaFlux
                 initiallyRequestedRows.Where(row => !rowsToProcessSet.Contains(row)));
 
             // Expose this list so the context menu can append rows while encoding
-            _activeEncodeQueue = rowsToProcess;
+            lock (_activeEncodeQueueLock)
+            {
+                _activeEncodeQueue = rowsToProcess;
+                _activeEncodeQueueDispatchedCount = 0;
+                _activeEncodeQueueAccepting = true;
+            }
             _encodeProcessedCount = 0;
             UpdateQueueEstimatedCompletion();
 
@@ -205,7 +210,9 @@ namespace MediaFlux
                         () => _cancelEncode,
                         encodeToken,
                         _activeEncodeQueueLock,
-                        () => Volatile.Read(ref _pendingEncodeImports) > 0);
+                        () => Volatile.Read(ref _pendingEncodeImports) > 0,
+                        dispatchedCount => _activeEncodeQueueDispatchedCount = dispatchedCount,
+                        TryCompleteActiveEncodeQueueWhenDrained);
                 }
 
                 if (_cancelEncode)
@@ -228,8 +235,13 @@ namespace MediaFlux
             {
                 _mp4CompatibilityConfirmedForRun = false;
                 _activeOutputContainer = OutputContainerSelection.Mp4;
-                _encodingActive = false;
-                _activeEncodeQueue = null;
+                lock (_activeEncodeQueueLock)
+                {
+                    _encodingActive = false;
+                    _activeEncodeQueue = null;
+                    _activeEncodeQueueDispatchedCount = 0;
+                    _activeEncodeQueueAccepting = false;
+                }
                 ApplyDuplicateCandidateViewFilter();
                 btnStartEncode.Enabled = true;
                 btnStopEncode.Enabled = false;
@@ -1326,6 +1338,9 @@ namespace MediaFlux
 
             lock (_activeEncodeQueueLock)
             {
+                // The retry is appended as pending work, so its one logical row's
+                // QueueSequence follows that pending position for exports/restarts.
+                meta.QueueSequence = AllocateEncodeQueueSequence();
                 _activeEncodeQueue.Add(row);
             }
 

@@ -319,7 +319,8 @@ namespace MediaFlux
 
                 // Tell the dynamic queue runner that an append is in flight so it
                 // cannot finish in the narrow window before the UI adds the rows.
-                Interlocked.Increment(ref _pendingEncodeImports);
+                lock (_activeEncodeQueueLock)
+                    Interlocked.Increment(ref _pendingEncodeImports);
                 try
                 {
                     UiInvoke(() => EnqueueWatchedFiles(newFiles));
