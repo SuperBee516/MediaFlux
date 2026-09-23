@@ -144,6 +144,7 @@ namespace MediaFlux
             int selected = dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().Count(row => !row.IsNewRow);
             bool hasSelection = selected > 0;
             bool hasQueue = dgvEncodeQueue.Rows.Cast<DataGridViewRow>().Any(row => !row.IsNewRow);
+            bool canRemoveSelection = CanRemoveQueueRows(dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>());
             encode.DropDownItems[0].Enabled = hasSelection && !_encodingActive;
             encode.DropDownItems[1].Enabled = hasQueue && !_encodingActive;
             encode.DropDownItems[2].Enabled = hasSelection && _encodingActive;
@@ -157,8 +158,8 @@ namespace MediaFlux
             utilities.Enabled = hasSelection && !_encodingActive;
             foreach (ToolStripItem item in menu.Items)
             {
-                if (item.Text == "Remove Selected") item.Enabled = hasSelection && !_encodingActive;
-                if (item.Text == "Clear Queue") item.Enabled = hasQueue && !_encodingActive;
+                if (item.Text == "Remove Selected") item.Enabled = canRemoveSelection;
+                if (item.Text == "Clear Queue") item.Enabled = hasQueue && !IsQueueEncodingActive();
             }
         }
 

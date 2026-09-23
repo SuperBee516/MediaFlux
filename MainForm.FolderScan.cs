@@ -57,7 +57,7 @@ namespace MediaFlux
 
             if (rememberRoots)
             {
-                if (replaceExisting && !_encodingActive)
+                if (replaceExisting && !IsQueueEncodingActive())
                     _codecFilterImportRoots.Clear();
 
                 foreach (var root in roots)
@@ -101,6 +101,7 @@ namespace MediaFlux
                     _rowsByPath.Clear();
                     _estimatedSizeMap.Clear();
                     _queueSourceSizeMap.Clear();
+                    _etaSpeedState.Clear();
                     _queueTotalSourceMb = 0;
                     _queueTotalEstimatedMb = 0;
                     _queueFileCount = 0;
@@ -537,12 +538,16 @@ namespace MediaFlux
 
         private void RemoveCodecFilteredRow(DataGridViewRow row)
         {
+            if (row == null || row.IsNewRow || IsQueueRowActivelyEncoding(row))
+                return;
+
             var path = GetPathFromRow(row);
             if (!string.IsNullOrWhiteSpace(path))
             {
                 _rowsByPath.TryRemove(path, out _);
                 _estimatedSizeMap.Remove(path);
                 _queueSourceSizeMap.Remove(path);
+                _etaSpeedState.Remove(path);
             }
 
             _suppressRowEvents = true;

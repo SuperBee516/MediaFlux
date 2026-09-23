@@ -4581,10 +4581,16 @@ namespace MediaFlux
         }
 
         // Remove a row and keep internal maps tidy
-        private void RemoveRowAndCleanup(DataGridViewRow row)
+        private bool RemoveRowAndCleanup(
+            DataGridViewRow row,
+            bool allowCompletedEncodeJob = false,
+            bool refreshQueueState = true)
         {
             if (row == null || row.IsNewRow)
-                return;
+                return false;
+
+            if (!allowCompletedEncodeJob && IsQueueRowActivelyEncoding(row))
+                return false;
 
             var path = GetPathFromRow(row);
             if (!string.IsNullOrWhiteSpace(path))
@@ -4592,6 +4598,7 @@ namespace MediaFlux
                 _rowsByPath.TryRemove(path, out _);
                 _estimatedSizeMap.Remove(path);
                 _queueSourceSizeMap.Remove(path);
+                _etaSpeedState.Remove(path);
             }
 
             if (row.DataGridView == dgvEncodeQueue)
@@ -4613,13 +4620,20 @@ namespace MediaFlux
             if (_activeEncodeRows.Contains(row))
                 EndEncodeMetricsForRow(row);
 
-            if (!IsDisposed && IsHandleCreated)
+            if (refreshQueueState && !IsDisposed && IsHandleCreated)
             {
-                MarkQueueTotalsDirty();
-                SafeRefreshEstimates();
-                UpdateSizeTotals(force: true);
-                UpdateAnalyzeQueueButtonState();
+                RefreshQueueAfterRowRemoval();
             }
+
+            return true;
+        }
+
+        private void RefreshQueueAfterRowRemoval()
+        {
+            MarkQueueTotalsDirty();
+            SafeRefreshEstimates();
+            UpdateSizeTotals(force: true);
+            UpdateAnalyzeQueueButtonState();
         }
 
         private void ClearEncodeInputFolderIfQueueEmptyAfterProcessing()
@@ -5314,21 +5328,39 @@ namespace MediaFlux
 
         private void RemoveSelectedRows_Click(object? sender, EventArgs e)
         {
-            if (dgvEncodeQueue.SelectedRows.Count == 0) return;
+            DataGridViewRow[] selectedRows = dgvEncodeQueue.SelectedRows
+                .Cast<DataGridViewRow>()
+                .Where(row => !row.IsNewRow)
+                .ToArray();
+            if (selectedRows.Length == 0)
+                return;
 
-            // If you maintain a separate encode queue/list, remove from it here too.
-            foreach (DataGridViewRow r in dgvEncodeQueue.SelectedRows)
+            if (!CanRemoveQueueRows(selectedRows))
             {
-                dgvEncodeQueue.Rows.Remove(r);
+                ShowStatusInfo("Stop active queue work before removing queue items.");
+                return;
             }
-            UpdateSizeTotals();
+
+            int removed = 0;
+            foreach (DataGridViewRow row in selectedRows.OrderByDescending(row => row.Index))
+            {
+                if (RemoveRowAndCleanup(row, refreshQueueState: false))
+                    removed++;
+            }
+
+            if (removed == 0)
+                return;
+
+            RefreshQueueAfterRowRemoval();
             UpdateSelectionSizeTotals();
+            UpdateContextualDetails();
+            RefreshQueueWorkspacePresentation();
         }
 
         private void ClearGrid_Click(object? sender, EventArgs e)
         {
             if (dgvEncodeQueue.Rows.Count == 0) return;
-            if (_encodingActive)
+            if (IsQueueEncodingActive())
             {
                 ShowStatusInfo("Stop the active encode before clearing the grid.");
                 return;
@@ -5356,6 +5388,7 @@ namespace MediaFlux
                 _codecFilterImportRoots.Clear();
                 _estimatedSizeMap.Clear();
                 _queueSourceSizeMap.Clear();
+                _etaSpeedState.Clear();
                 _queueTotalSourceMb = 0;
                 _queueTotalEstimatedMb = 0;
                 _queueFileCount = 0;

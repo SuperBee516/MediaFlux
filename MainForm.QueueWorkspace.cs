@@ -621,6 +621,31 @@ namespace MediaFlux
             return false;
         }
 
+        private bool IsQueueEncodingActive() =>
+            _encodingActive ||
+            !_runningEncodeJobs.IsEmpty ||
+            _activeEncodeRows.Count > 0 ||
+            _activeEncodeRow != null;
+
+        private bool IsQueueRowActivelyEncoding(DataGridViewRow row) =>
+            _runningEncodeJobs.ContainsKey(row) ||
+            _activeEncodeRows.Contains(row) ||
+            ReferenceEquals(_activeEncodeRow, row);
+
+        private bool CanRemoveQueueRows(IEnumerable<DataGridViewRow> rows)
+        {
+            DataGridViewRow[] candidates = rows
+                .Where(row => !row.IsNewRow && row.DataGridView == dgvEncodeQueue)
+                .Distinct()
+                .ToArray();
+
+            // Match the existing queue-wide lockout while encoding, and also
+            // trust the active-job/row trackers if the display flag lags behind.
+            return candidates.Length > 0 &&
+                   !IsQueueEncodingActive() &&
+                   candidates.All(row => !IsQueueRowActivelyEncoding(row));
+        }
+
         private void UpdateQueueWorkspaceActionState()
         {
             if (_queueWorkspaceHost == null)
@@ -638,7 +663,8 @@ namespace MediaFlux
             btnPauseQueue.Enabled = _encodingActive;
             btnStopEncode.Enabled = _encodingActive;
             if (_btnRemoveSelectedQueue != null)
-                _btnRemoveSelectedQueue.Enabled = !busy && dgvEncodeQueue.SelectedRows.Count > 0;
+                _btnRemoveSelectedQueue.Enabled = !busy && CanRemoveQueueRows(
+                    dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>());
             if (_analyzeQueueButton != null)
                 _analyzeQueueButton.Enabled = dgvEncodeQueue.Rows.Count > 0 && !busy;
 

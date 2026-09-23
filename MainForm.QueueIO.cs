@@ -222,7 +222,7 @@ namespace MediaFlux
 
                 if (choice == DialogResult.No)
                 {
-                    if (_encodingActive)
+                    if (IsQueueEncodingActive())
                     {
                         MessageBox.Show(
                             this,
@@ -238,6 +238,7 @@ namespace MediaFlux
                     _rowsByPath.Clear();
                     _estimatedSizeMap.Clear();
                     _queueSourceSizeMap.Clear();
+                    _etaSpeedState.Clear();
                     _queueTotalSourceMb = 0;
                     _queueTotalEstimatedMb = 0;
                     _queueFileCount = 0;

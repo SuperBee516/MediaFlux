@@ -1022,7 +1022,7 @@ namespace MediaFlux
                         {
                             RememberCompletedEncodePaths(file, result.OutputPath);
                         }
-                        RemoveRowAndCleanup(row);
+                        RemoveRowAndCleanup(row, allowCompletedEncodeJob: true);
 
                         // Re-scan the current input folder and merge any changes
                         RescanInputFolderAndMerge(recomputeEstimates: false);
