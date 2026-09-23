@@ -12,7 +12,7 @@ public sealed class QueueColumnOrderingUiTests
 {
     private static readonly string[] PhaseOneOrder =
     [
-        "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
+        "colOrder", "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
         "colSourceEstimate", "colProgress", "colETA", "colSize", "colEstimatedSize",
         "colCreated", "colCustom", "colDuplicate", "colDuplicateConfidence", "colDuplicateAction"
     ];
@@ -43,7 +43,7 @@ public sealed class QueueColumnOrderingUiTests
                 using var picker = new ComboBox();
                 using var moveLeft = new Button();
                 using var moveRight = new Button();
-                Invoke(first, "RefreshQueueColumnOrderChoices", picker, "colName");
+                Invoke(first, "RefreshQueueColumnOrderChoices", picker, "colOrder");
                 Invoke(first, "UpdateQueueColumnMoveButtons", picker, moveLeft, moveRight);
                 Assert.False(moveLeft.Enabled);
                 Assert.True(moveRight.Enabled);

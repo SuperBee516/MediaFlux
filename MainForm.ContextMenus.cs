@@ -39,6 +39,9 @@ namespace MediaFlux
             encode.DropDownItems.Add("Add Selected to Active Queue", null, AddToEncodeQueueFromContextMenu_Click);
             menu.Items.Add(encode);
 
+            ToolStripMenuItem queuePriority = CreateQueuePriorityMenu();
+            menu.Items.Add(queuePriority);
+
             var customSettings = new ToolStripMenuItem("Encode Settings");
             var customProfileMenu = new ToolStripMenuItem("Quality / File Size");
 
@@ -127,7 +130,11 @@ namespace MediaFlux
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Remove Selected", null, RemoveSelectedRows_Click);
             menu.Items.Add("Clear Queue", null, ClearGrid_Click);
-            menu.Opening += (_, __) => UpdateEncodeQueueContextMenuState(menu, encode, customSettings, analyze, jobs, file, duplicates, utilities);
+            menu.Opening += (_, __) =>
+            {
+                UpdateEncodeQueueContextMenuState(menu, encode, customSettings, analyze, jobs, file, duplicates, utilities);
+                UpdateQueuePriorityCommandState(queuePriority);
+            };
             dgvEncodeQueue.ContextMenuStrip = menu;
         }
 

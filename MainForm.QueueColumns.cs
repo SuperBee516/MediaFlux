@@ -334,7 +334,7 @@ public partial class MainForm
     {
         string[] phaseOneOrder =
         [
-            "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
+            "colOrder", "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
             "colSourceEstimate", "colProgress", "colETA", "colSize", "colEstimatedSize",
             "colCreated", "colCustom", "colDuplicate", "colDuplicateConfidence", "colDuplicateAction"
         ];
@@ -477,6 +477,7 @@ public partial class MainForm
     private int GetQueueColumnDefaultWidth(DataGridViewColumn column) => column.Name switch
     {
         "colName" => 0,
+        "colOrder" => ScaleUi(56),
         "colSize" => 92,
         "colEstimatedSize" => 150,
         "colEncodeRecommendation" => ScaleUi(120),
@@ -496,6 +497,7 @@ public partial class MainForm
     private int GetQueueColumnMinimumWidth(DataGridViewColumn column) => column.Name switch
     {
         "colName" => ScaleUi(150),
+        "colOrder" => ScaleUi(46),
         "colStatus" => ScaleUi(64),
         "colEncodeRecommendation" => ScaleUi(92),
         "colPlannedOutput" => ScaleUi(120),

@@ -3848,6 +3848,7 @@ namespace MediaFlux
             InitializeQueueColumnSizingPreferences();
             ApplyEncodeGridColumnLayout();
             ApplyRememberedEncodeQueueSort();
+            RefreshQueueExecutionOrderPresentation();
             ApplyRememberedEncodeDetailsState();
 
             // Populate input‐folder history:
@@ -5016,13 +5017,14 @@ namespace MediaFlux
             {
                 AutoSize = true,
                 ColumnCount = 1,
-                RowCount = 12,
+                RowCount = 13,
                 Dock = DockStyle.Fill,
                 Padding = new Padding(0),
                 Margin = new Padding(0)
             };
 
             var chkName = new CheckBox { Text = "Name", Checked = true, Enabled = false, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+            var chkExecutionOrder = new CheckBox { Text = "Order", Checked = _config.ShowExecutionOrderColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkSize = new CheckBox { Text = "Source size (legacy)", Checked = _config.ShowSizeColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkEstimatedOutput = new CheckBox { Text = "Estimated output (legacy)", Checked = _config.ShowEstimatedOutputColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkCreated = new CheckBox { Text = "Created", Checked = _config.ShowCreatedColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
@@ -5120,14 +5122,15 @@ namespace MediaFlux
             var btnOK = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 80, Anchor = AnchorStyles.Left };
 
             layout.Controls.Add(chkName, 0, 0);
-            layout.Controls.Add(chkSize, 0, 1);
-            layout.Controls.Add(chkEstimatedOutput, 0, 2);
-            layout.Controls.Add(chkCreated, 0, 3);
-            layout.Controls.Add(chkCustom, 0, 4);
-            layout.Controls.Add(chkRecommendation, 0, 5);
-            layout.Controls.Add(chkDuplicate, 0, 6);
-            layout.Controls.Add(chkDuplicateConfidence, 0, 7);
-            layout.Controls.Add(chkDuplicateAction, 0, 8);
+            layout.Controls.Add(chkExecutionOrder, 0, 1);
+            layout.Controls.Add(chkSize, 0, 2);
+            layout.Controls.Add(chkEstimatedOutput, 0, 3);
+            layout.Controls.Add(chkCreated, 0, 4);
+            layout.Controls.Add(chkCustom, 0, 5);
+            layout.Controls.Add(chkRecommendation, 0, 6);
+            layout.Controls.Add(chkDuplicate, 0, 7);
+            layout.Controls.Add(chkDuplicateConfidence, 0, 8);
+            layout.Controls.Add(chkDuplicateAction, 0, 9);
             var sizingActions = new FlowLayoutPanel
             {
                 AutoSize = true,
@@ -5137,7 +5140,7 @@ namespace MediaFlux
             };
             sizingActions.Controls.Add(chkLockWidths);
             sizingActions.Controls.Add(btnResetWidths);
-            layout.Controls.Add(sizingActions, 0, 9);
+            layout.Controls.Add(sizingActions, 0, 10);
             var orderingActions = new FlowLayoutPanel
             {
                 AutoSize = true,
@@ -5151,14 +5154,15 @@ namespace MediaFlux
             orderingActions.Controls.Add(moveLeft);
             orderingActions.Controls.Add(moveRight);
             orderingActions.Controls.Add(resetOrder);
-            layout.Controls.Add(orderingActions, 0, 10);
-            layout.Controls.Add(btnOK, 0, 11);
+            layout.Controls.Add(orderingActions, 0, 11);
+            layout.Controls.Add(btnOK, 0, 12);
             dlg.Controls.Add(layout);
             dlg.AcceptButton = btnOK;
 
             if (dlg.ShowDialog() == DialogResult.OK)
             {
                 dgvEncodeQueue.Columns["colName"].Visible = chkName.Checked;
+                dgvEncodeQueue.Columns["colOrder"].Visible = chkExecutionOrder.Checked;
                 dgvEncodeQueue.Columns["colSize"].Visible = chkSize.Checked;
                 dgvEncodeQueue.Columns["colEstimatedSize"].Visible = chkEstimatedOutput.Checked;
                 dgvEncodeQueue.Columns["colCreated"].Visible = chkCreated.Checked;
@@ -5170,6 +5174,7 @@ namespace MediaFlux
                 dgvEncodeQueue.Columns["colDuplicateAction"].Visible = chkDuplicateAction.Checked;
 
                 _config.ShowSizeColumn = chkSize.Checked;
+                _config.ShowExecutionOrderColumn = chkExecutionOrder.Checked;
                 _config.ShowEstimatedOutputColumn = chkEstimatedOutput.Checked;
                 _config.ShowCreatedColumn = chkCreated.Checked;
                 _config.ShowCustomColumn = chkCustom.Checked;

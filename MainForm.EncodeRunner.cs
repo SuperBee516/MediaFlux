@@ -1344,6 +1344,7 @@ namespace MediaFlux
                 _activeEncodeQueue.Add(row);
             }
 
+            ScheduleQueueExecutionOrderPresentationRefresh();
             System.Threading.Interlocked.Increment(ref _encodeRetryCount);
             return true;
         }

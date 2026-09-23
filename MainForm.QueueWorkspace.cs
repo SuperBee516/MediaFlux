@@ -129,6 +129,21 @@ namespace MediaFlux
 
         private void AddQueueWorkspaceColumns()
         {
+            if (!dgvEncodeQueue.Columns.Contains("colOrder"))
+            {
+                dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
+                {
+                    Name = "colOrder",
+                    HeaderText = "Order",
+                    Width = ScaleUi(56),
+                    MinimumWidth = ScaleUi(46),
+                    SortMode = DataGridViewColumnSortMode.Automatic,
+                    Resizable = DataGridViewTriState.True,
+                    DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleCenter },
+                    ToolTipText = "Logical execution position. Column sorting changes presentation only; it does not change queue priority."
+                });
+            }
+
             if (!dgvEncodeQueue.Columns.Contains("colPlannedOutput"))
             {
                 dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
@@ -464,7 +479,7 @@ namespace MediaFlux
                 {
                     rememberedOrder = new List<string>
                     {
-                        "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
+                        "colOrder", "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
                         "colSourceEstimate", "colProgress", "colETA", "colSize", "colEstimatedSize",
                         "colCreated", "colCustom", "colDuplicate", "colDuplicateConfidence", "colDuplicateAction"
                     };
@@ -497,6 +512,7 @@ namespace MediaFlux
 
             dgvEncodeQueue.Columns["colName"].Visible = true;
             dgvEncodeQueue.Columns["colName"].HeaderText = "File";
+            dgvEncodeQueue.Columns["colOrder"].Visible = _config.ShowExecutionOrderColumn;
             dgvEncodeQueue.Columns["colStatus"].Visible = true;
             dgvEncodeQueue.Columns["colEncodeRecommendation"].Visible = _config.ShowRecommendationColumn;
             dgvEncodeQueue.Columns["colEncodeRecommendation"].HeaderText = "Recommendation";
@@ -562,6 +578,11 @@ namespace MediaFlux
                             : $"Current queue stage: {raw}{Environment.NewLine}{tooltip}";
                     }
                 }
+            }
+            else if (column.Name == "colOrder")
+            {
+                e.Value = FormatQueueExecutionOrderCellValue(e.Value);
+                e.FormattingApplied = true;
             }
             else if (column.Name == "colEncodeRecommendation")
             {
@@ -826,6 +847,7 @@ namespace MediaFlux
                     _queueWorkspaceRefreshPosted = false;
                     if (!IsDisposed)
                     {
+                        RefreshQueueExecutionOrderPresentation();
                         ApplyEncodeQueueViewFilter();
                         RefreshQueueWorkspacePresentation();
                     }

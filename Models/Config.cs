@@ -20,6 +20,7 @@ namespace MediaFlux.Models
         public bool ShowCreatedColumn { get; set; } = false;
         public bool ShowCustomColumn { get; set; } = true;
         public bool ShowRecommendationColumn { get; set; } = true;
+        public bool ShowExecutionOrderColumn { get; set; } = true;
         public bool ShowDuplicateColumn { get; set; }
         public bool ShowDuplicateConfidenceColumn { get; set; }
         public bool ShowDuplicateActionColumn { get; set; }

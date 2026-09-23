@@ -188,8 +188,10 @@ namespace MediaFlux
                 // in the runner list, including rows that were already in the grid.
                 meta.QueueSequence = AllocateEncodeQueueSequence();
                 _activeEncodeQueue.Add(row);
-                return ActiveQueueAppendOutcome.Added;
             }
+
+            ScheduleQueueExecutionOrderPresentationRefresh();
+            return ActiveQueueAppendOutcome.Added;
         }
 
         private bool TrySoftExcludePendingDuplicateRow(

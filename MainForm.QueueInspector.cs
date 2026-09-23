@@ -25,6 +25,7 @@ public partial class MainForm
     private Label? _queueInspectorOutput;
     private Label? _queueInspectorProgress;
     private Label? _queueInspectorEta;
+    private Label? _queueInspectorExecution;
     private Label? _queueInspectorDuplicateState;
     private TextBox? _queueInspectorMedia;
     private TextBox? _queueInspectorDiagnostics;
@@ -144,13 +145,13 @@ public partial class MainForm
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 2,
-            RowCount = 7,
+            RowCount = 8,
             Margin = new Padding(0, 4, 0, 0),
             Padding = Padding.Empty
         };
         values.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
         values.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-        for (int row = 0; row < 7; row++)
+        for (int row = 0; row < 8; row++)
             values.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _queueInspectorStatus = AddInspectorSummaryValue(values, "Status", "queueInspectorStatus", 0, 0);
@@ -164,7 +165,8 @@ public partial class MainForm
         _queueInspectorProgress = AddInspectorSummaryValue(values, "Progress", "queueInspectorProgress", 0, 4);
         _queueInspectorEta = AddInspectorSummaryValue(values, "ETA", "queueInspectorEta", 1, 4);
         _queueInspectorDuplicateState = AddInspectorSummaryValue(values, "Duplicate state", "queueInspectorDuplicateState", 0, 5);
-        _queueInspectorRationale = AddInspectorSummaryValue(values, "Recommendation rationale", "queueInspectorRationale", 0, 6);
+        _queueInspectorExecution = AddInspectorSummaryValue(values, "Execution", "queueInspectorExecution", 1, 5);
+        _queueInspectorRationale = AddInspectorSummaryValue(values, "Recommendation rationale", "queueInspectorRationale", 0, 7);
         values.SetColumnSpan(_queueInspectorRationale.Parent!, 2);
         root.Controls.Add(values, 0, 2);
         Control queueTotals = CreateQueueSummaryGroup();
@@ -441,6 +443,7 @@ public partial class MainForm
             SetInspectorText(_queueInspectorOutput, "—");
             SetInspectorText(_queueInspectorProgress, "—");
             SetInspectorText(_queueInspectorEta, "—");
+            SetInspectorText(_queueInspectorExecution, "—");
             SetInspectorText(_queueInspectorDuplicateState, "—");
             return;
         }
@@ -463,6 +466,7 @@ public partial class MainForm
             SetInspectorText(_queueInspectorOutput, "Varies by item");
             SetInspectorText(_queueInspectorProgress, running > 0 ? $"{running:N0} active item(s)" : "—");
             SetInspectorText(_queueInspectorEta, "—");
+            SetInspectorText(_queueInspectorExecution, "Varies by item");
             SetInspectorText(_queueInspectorDuplicateState, $"{rows.Count(row => row.Tag is RowMeta meta && meta.ExcludedFromEncodeAsDuplicate):N0} excluded as duplicates");
             return;
         }
@@ -504,6 +508,7 @@ public partial class MainForm
         SetInspectorText(_queueInspectorOutput, string.IsNullOrWhiteSpace(output) ? "Configured output pending" : output);
         SetInspectorText(_queueInspectorProgress, active && !string.IsNullOrWhiteSpace(progress) ? progress : "—");
         SetInspectorText(_queueInspectorEta, active && !string.IsNullOrWhiteSpace(eta) ? eta : "—");
+        SetInspectorText(_queueInspectorExecution, GetQueueExecutionPositionText(row));
         SetInspectorText(_queueInspectorDuplicateState, duplicateState);
         if (_queueInspectorPath != null)
             _uiToolTip.SetToolTip(_queueInspectorPath, path);
