@@ -113,7 +113,7 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 Application.DoEvents();
 
                 TabControl tabs = Field<TabControl>(form, "_encodeInfoTabs");
-                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Encoding Options");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Plan & Analysis");
                 Application.DoEvents();
                 ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
                 TrackBar target = Field<TrackBar>(form, "trkQualityTarget");
@@ -181,7 +181,7 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 form.Show();
                 Application.DoEvents();
                 TabControl tabs = Field<TabControl>(form, "_encodeInfoTabs");
-                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Encoding Options");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Plan & Analysis");
                 Application.DoEvents();
 
                 Label qualityLabel = Field<Label>(form, "lblCompressionProfile");

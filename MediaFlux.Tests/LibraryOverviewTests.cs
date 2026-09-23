@@ -115,9 +115,10 @@ public sealed class LibraryOverviewTests : IDisposable
     [Fact]
     public async Task DisposingAsyncFacadeCancelsAndDrainsAnInFlightRead()
     {
-        using var service = new LibraryOverviewQueryService(new SlowCatalog());
+        var catalog = new SlowCatalog();
+        using var service = new LibraryOverviewQueryService(catalog);
         Task<LibraryOverviewSnapshot> load = service.LoadAsync(1);
-        await Task.Delay(20);
+        Assert.True(catalog.ReadStarted.Wait(TimeSpan.FromSeconds(5)), "The overview read did not enter the catalog before disposal.");
         service.Dispose();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await load);
     }
@@ -134,6 +135,7 @@ public sealed class LibraryOverviewTests : IDisposable
 
     private sealed class SlowCatalog : ThrowingCatalog
     {
-        public override LibraryOverviewSnapshot GetOverviewSnapshot(int metadataVersion) { Thread.Sleep(100); return base.GetOverviewSnapshot(metadataVersion); }
+        public ManualResetEventSlim ReadStarted { get; } = new();
+        public override LibraryOverviewSnapshot GetOverviewSnapshot(int metadataVersion) { ReadStarted.Set(); Thread.Sleep(100); return base.GetOverviewSnapshot(metadataVersion); }
     }
 }

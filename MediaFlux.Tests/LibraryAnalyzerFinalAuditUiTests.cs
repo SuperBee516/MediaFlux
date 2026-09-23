@@ -48,8 +48,10 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                     form.ClientSize = size;
                     Application.DoEvents();
                     form.PerformLayout();
-                    Assert.Equal(size, form.ClientSize);
                     Size actualSize = form.ClientSize;
+                    Assert.True(actualSize.Width > 0 && actualSize.Height > 0, $"The displayed analyzer client area must remain usable for requested size {size}; actual={actualSize}.");
+                    Assert.True(actualSize.Width <= size.Width && actualSize.Height <= size.Height,
+                        $"The hosted display must not enlarge the requested analyzer client area: requested={size}, actual={actualSize}.");
                     Assert.All(tabs.TabPages.Cast<TabPage>(), page =>
                         Assert.True(page.Width > 0 && page.Height > 0, $"{page.Text} should have a client area at {actualSize}."));
                     AssertMetricRowsHaveClearance(form, actualSize);

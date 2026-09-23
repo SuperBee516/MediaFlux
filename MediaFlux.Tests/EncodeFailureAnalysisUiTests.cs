@@ -28,7 +28,7 @@ public sealed class EncodeFailureAnalysisUiTests
                 Type formType = typeof(MainForm);
                 TabControl tabs = (TabControl)(formType.GetField("_encodeInfoTabs", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)
                     ?? throw new MissingFieldException("_encodeInfoTabs"));
-                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Details");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Diagnostics & Logs");
                 Application.DoEvents();
                 DataGridView queue = (DataGridView)(formType.GetField(
                     "dgvEncodeQueue", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)

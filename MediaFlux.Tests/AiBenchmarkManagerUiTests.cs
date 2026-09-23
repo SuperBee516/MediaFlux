@@ -20,7 +20,7 @@ public sealed class AiBenchmarkManagerUiTests
             try
             {
                 SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext()); var config = new Config(); form = new AiBenchmarkManagerForm(config: config, configPath: configPath); Assert.Equal(new Size(1500, 950), RestoredSize(form)); form.Show(); Application.DoEvents(); AssertInsideWorkingArea(form); form.Size = new Size(1320, 820); Application.DoEvents(); Size displayed = form.Size; form.Close(); form.Dispose(); form = null;
-                Config saved = Config.Load(configPath); Assert.Equal(Math.Max(1100, displayed.Width), saved.AiBenchmarkManagerWindowWidth); Assert.Equal(Math.Max(700, displayed.Height), saved.AiBenchmarkManagerWindowHeight);
+                Config saved = Config.Load(configPath); Assert.Equal(displayed.Width, saved.AiBenchmarkManagerWindowWidth); Assert.Equal(displayed.Height, saved.AiBenchmarkManagerWindowHeight);
                 using (var next = new AiBenchmarkManagerForm(config: saved, configPath: configPath)) restored = RestoredSize(next);
                 Assert.Equal(new Size(saved.AiBenchmarkManagerWindowWidth, saved.AiBenchmarkManagerWindowHeight), restored);
                 saved.AiBenchmarkManagerWindowWidth = 1; saved.AiBenchmarkManagerWindowHeight = 1; saved.Save(configPath); using (var invalid = new AiBenchmarkManagerForm(config: Config.Load(configPath), configPath: configPath)) clamped = RestoredSize(invalid);
