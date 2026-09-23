@@ -2,6 +2,7 @@ using MediaFlux.Models;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 
@@ -14,12 +15,21 @@ namespace MediaFlux
         private Label? _queueWorkspaceReadyValue;
         private Label? _queueWorkspaceRunningValue;
         private Label? _queueWorkspaceAttentionValue;
+        private TextBox? _queueWorkspaceSearchBox;
+        private ComboBox? _queueWorkspaceViewSelector;
+        private Label? _queueWorkspaceShowingValue;
         private Label? _queueWorkspaceEstimateOutputValue;
         private Label? _queueWorkspaceEstimateSavingsValue;
         private Label? _queueWorkspaceEstimateEtaValue;
         private Button? _btnStartSelectedQueue;
         private Button? _btnRemoveSelectedQueue;
         private bool _queueWorkspaceRefreshPosted;
+        private bool _applyingQueueWorkspaceView;
+
+        private static readonly string[] QueueWorkspaceViews =
+        [
+            "All", "Ready", "Running", "Attention", "Encode", "Skip", "Review"
+        ];
 
         internal readonly record struct QueueWorkspaceCounts(
             int Total,
@@ -71,6 +81,7 @@ namespace MediaFlux
             return value.StartsWith("Failed", StringComparison.OrdinalIgnoreCase) ||
                    value.StartsWith("Validation Failed", StringComparison.OrdinalIgnoreCase) ||
                    value.StartsWith("Finalization Failed", StringComparison.OrdinalIgnoreCase) ||
+                   value.StartsWith("Error", StringComparison.OrdinalIgnoreCase) ||
                    value.StartsWith("Canceled", StringComparison.OrdinalIgnoreCase) ||
                    value.StartsWith("Review", StringComparison.OrdinalIgnoreCase) ||
                    value.StartsWith("Warning", StringComparison.OrdinalIgnoreCase) ||
@@ -165,17 +176,20 @@ namespace MediaFlux
             surface.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             surface.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             surface.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            surface.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             surface.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            surface.RowCount = 3;
+            surface.RowCount = 4;
 
             Control summary = CreateQueueWorkspaceSummaryCards();
+            Control viewToolbar = CreateQueueWorkspaceViewToolbar();
             Control estimates = CreateQueueWorkspaceEstimateStrip();
             dgvEncodeQueue.Dock = DockStyle.Fill;
             dgvEncodeQueue.MinimumSize = new Size(0, ScaleUi(92));
             dgvEncodeQueue.Margin = Padding.Empty;
             surface.Controls.Add(summary, 0, 0);
-            surface.Controls.Add(estimates, 0, 1);
-            surface.Controls.Add(dgvEncodeQueue, 0, 2);
+            surface.Controls.Add(viewToolbar, 0, 1);
+            surface.Controls.Add(estimates, 0, 2);
+            surface.Controls.Add(dgvEncodeQueue, 0, 3);
             panel.Controls.Add(surface);
             _queueWorkspaceHost = surface;
 
@@ -185,6 +199,88 @@ namespace MediaFlux
                 _queueCommandSummaryLabel.Visible = false;
 
             surface.SizeChanged += (_, __) => UpdateQueueWorkspaceResponsiveLayout();
+        }
+
+        private Control CreateQueueWorkspaceViewToolbar()
+        {
+            var toolbar = new TableLayoutPanel
+            {
+                Name = "queueWorkspaceViewToolbar",
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                ColumnCount = 4,
+                RowCount = 1,
+                Margin = new Padding(0, 0, 0, ScaleUi(3)),
+                Padding = new Padding(ScaleUi(4), ScaleUi(2), ScaleUi(4), ScaleUi(2)),
+                AccessibleName = "Queue presentation filters"
+            };
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+            _queueWorkspaceSearchBox = new TextBox
+            {
+                Name = "txtQueueWorkspaceSearch",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, ScaleUi(8), 0),
+                PlaceholderText = "Search queue...",
+                AccessibleName = "Search queue",
+                AccessibleDescription = "Searches queue filenames and full paths without changing queue execution."
+            };
+            _queueWorkspaceSearchBox.TextChanged += (_, __) =>
+            {
+                ApplyEncodeQueueViewFilter();
+                RefreshQueueWorkspacePresentation();
+            };
+
+            var viewLabel = new Label
+            {
+                Text = "View:",
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 3, ScaleUi(4), 0),
+                AccessibleName = "Queue view label"
+            };
+            _queueWorkspaceViewSelector = new ComboBox
+            {
+                Name = "cmbQueueWorkspaceView",
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = ScaleUi(112),
+                Margin = new Padding(0, 0, ScaleUi(10), 0),
+                AccessibleName = "Queue view",
+                AccessibleDescription = "Filters the queue presentation by operational state or recommendation."
+            };
+            _queueWorkspaceViewSelector.Items.AddRange(QueueWorkspaceViews);
+            string initialView = NormalizeQueueWorkspaceView(_config.QueueWorkspaceView);
+            _config.QueueWorkspaceView = initialView;
+            _queueWorkspaceViewSelector.SelectedItem = initialView;
+            _queueWorkspaceViewSelector.SelectedIndexChanged += (_, __) =>
+            {
+                if (_applyingQueueWorkspaceView || _queueWorkspaceViewSelector.SelectedItem == null)
+                    return;
+
+                _config.QueueWorkspaceView = NormalizeQueueWorkspaceView(
+                    _queueWorkspaceViewSelector.SelectedItem.ToString());
+                _config.Save(_configPath);
+                ApplyEncodeQueueViewFilter();
+                RefreshQueueWorkspacePresentation();
+            };
+
+            _queueWorkspaceShowingValue = new Label
+            {
+                Text = "Showing 0 of 0",
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                Margin = Padding.Empty,
+                AccessibleName = "Queue rows shown"
+            };
+
+            toolbar.Controls.Add(_queueWorkspaceSearchBox, 0, 0);
+            toolbar.Controls.Add(viewLabel, 1, 0);
+            toolbar.Controls.Add(_queueWorkspaceViewSelector, 2, 0);
+            toolbar.Controls.Add(_queueWorkspaceShowingValue, 3, 0);
+            return toolbar;
         }
 
         private Control CreateQueueWorkspaceSummaryCards()
@@ -301,7 +397,7 @@ namespace MediaFlux
             btnStartEncode.AccessibleName = "Start full queue";
             _uiToolTip.SetToolTip(
                 btnStartEncode,
-                "Starts every eligible item in the queue, in the current visual sort order. View visibility does not change execution scope.");
+                "Starts every eligible item in logical queue order. View visibility does not change execution scope.");
 
             _btnStartSelectedQueue = new Button
             {
@@ -534,6 +630,179 @@ namespace MediaFlux
             };
         }
 
+        private enum QueueWorkspaceRecommendationFilter
+        {
+            None,
+            Encode,
+            Skip,
+            Review
+        }
+
+        private static string NormalizeQueueWorkspaceView(string? value) =>
+            QueueWorkspaceViews.FirstOrDefault(view =>
+                string.Equals(view, value?.Trim(), StringComparison.OrdinalIgnoreCase)) ?? "All";
+
+        private QueueWorkspaceRecommendationFilter GetQueueWorkspaceRecommendationFilter(RowMeta? meta)
+        {
+            if (meta == null || meta.IsDvdEncode)
+                return QueueWorkspaceRecommendationFilter.None;
+
+            EncodingRecommendation? planRecommendation = meta.IntelligencePlan?.Recommendation;
+            if (planRecommendation != null)
+            {
+                return planRecommendation.Recommendation switch
+                {
+                    EncodingRecommendationKind.Encode => QueueWorkspaceRecommendationFilter.Encode,
+                    EncodingRecommendationKind.Skip => QueueWorkspaceRecommendationFilter.Skip,
+                    EncodingRecommendationKind.Review => QueueWorkspaceRecommendationFilter.Review,
+                    _ => QueueWorkspaceRecommendationFilter.None
+                };
+            }
+
+            SmartEncodeRecommendation? recommendation = meta.EncodeRecommendation;
+            if (recommendation?.IsCandidate == true)
+                return QueueWorkspaceRecommendationFilter.Encode;
+
+            return recommendation?.Kind switch
+            {
+                SmartEncodeRecommendationKind.Skip => QueueWorkspaceRecommendationFilter.Skip,
+                SmartEncodeRecommendationKind.Review or
+                SmartEncodeRecommendationKind.RemuxOnly or
+                SmartEncodeRecommendationKind.Unavailable => QueueWorkspaceRecommendationFilter.Review,
+                _ => QueueWorkspaceRecommendationFilter.None
+            };
+        }
+
+        private bool ShouldShowEncodeQueueRow(DataGridViewRow row)
+        {
+            if (row == null || row.IsNewRow || row.DataGridView != dgvEncodeQueue)
+                return false;
+
+            RowMeta? meta = row.Tag as RowMeta;
+            bool onlyDuplicates = chkOnlyDuplicateCandidates?.Checked == true && _lastDuplicateScanResult != null;
+            if (onlyDuplicates && meta?.DuplicateGroupId == null)
+                return false;
+
+            string search = _queueWorkspaceSearchBox?.Text.Trim() ?? string.Empty;
+            if (search.Length > 0)
+            {
+                string path = GetFullPathFromRow(row) ?? string.Empty;
+                string fileName = Path.GetFileName(path);
+                string displayedName = Convert.ToString(row.Cells["colName"].Value) ?? string.Empty;
+                if (!path.Contains(search, StringComparison.OrdinalIgnoreCase) &&
+                    !fileName.Contains(search, StringComparison.OrdinalIgnoreCase) &&
+                    !displayedName.Contains(search, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            string status = Convert.ToString(row.Cells["colStatus"].Value) ?? string.Empty;
+            bool running = IsQueueRowActivelyEncoding(row);
+            bool attention = QueueWorkspaceRecommendationNeedsAttention(meta) ||
+                             IsQueueWorkspaceAttentionStatus(status);
+            string view = NormalizeQueueWorkspaceView(_queueWorkspaceViewSelector?.SelectedItem?.ToString()
+                                                      ?? _config.QueueWorkspaceView);
+            return view switch
+            {
+                "Ready" => !running && !attention && IsQueueWorkspaceReadyStatus(status),
+                "Running" => running,
+                "Attention" => attention,
+                "Encode" => GetQueueWorkspaceRecommendationFilter(meta) == QueueWorkspaceRecommendationFilter.Encode,
+                "Skip" => GetQueueWorkspaceRecommendationFilter(meta) == QueueWorkspaceRecommendationFilter.Skip,
+                "Review" => GetQueueWorkspaceRecommendationFilter(meta) == QueueWorkspaceRecommendationFilter.Review,
+                _ => true
+            };
+        }
+
+        private void ApplyEncodeQueueViewFilter()
+        {
+            if (_applyingQueueWorkspaceView || dgvEncodeQueue == null || IsQueueEncodingActive())
+            {
+                UpdateQueueWorkspaceShowingCount();
+                return;
+            }
+
+            _applyingQueueWorkspaceView = true;
+            bool selectionChanged = false;
+            try
+            {
+                DataGridViewRow[] rows = dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
+                    .Where(row => !row.IsNewRow)
+                    .ToArray();
+                HashSet<DataGridViewRow> visibleRows = rows
+                    .Where(ShouldShowEncodeQueueRow)
+                    .ToHashSet();
+
+                DataGridViewRow? currentRow = dgvEncodeQueue.CurrentRow;
+                bool currentRowHidden = currentRow != null &&
+                                        !currentRow.IsNewRow &&
+                                        !visibleRows.Contains(currentRow);
+                bool hiddenRowSelected = rows.Any(row =>
+                    row.Selected && !visibleRows.Contains(row));
+                if (currentRowHidden)
+                {
+                    dgvEncodeQueue.CurrentCell = null;
+                    selectionChanged = true;
+                }
+
+                dgvEncodeQueue.SuspendLayout();
+                try
+                {
+                    foreach (DataGridViewRow row in rows)
+                    {
+                        bool shouldBeVisible = visibleRows.Contains(row);
+                        if (row.Visible != shouldBeVisible)
+                            row.Visible = shouldBeVisible;
+
+                        if (!shouldBeVisible && row.Selected)
+                        {
+                            row.Selected = false;
+                            selectionChanged = true;
+                        }
+                    }
+                }
+                finally
+                {
+                    dgvEncodeQueue.ResumeLayout(false);
+                }
+
+                if ((currentRowHidden || hiddenRowSelected) && visibleRows.Count > 0 &&
+                    !rows.Any(row => row.Selected && visibleRows.Contains(row)))
+                {
+                    DataGridViewRow replacement = rows.First(row => visibleRows.Contains(row));
+                    replacement.Selected = true;
+                    dgvEncodeQueue.CurrentCell = replacement.Cells["colName"];
+                    selectionChanged = true;
+                }
+
+                if (selectionChanged)
+                    UpdateContextualDetails();
+                dgvEncodeQueue.Invalidate();
+            }
+            catch (InvalidOperationException)
+            {
+                // Presentation visibility is best effort and must never invalidate queue state.
+            }
+            finally
+            {
+                _applyingQueueWorkspaceView = false;
+            }
+
+            UpdateQueueWorkspaceShowingCount();
+        }
+
+        private void UpdateQueueWorkspaceShowingCount()
+        {
+            if (_queueWorkspaceShowingValue == null || dgvEncodeQueue == null)
+                return;
+
+            int total = dgvEncodeQueue.Rows.Cast<DataGridViewRow>().Count(row => !row.IsNewRow);
+            int visible = dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
+                .Count(row => !row.IsNewRow && row.Visible);
+            SetQueueWorkspaceLabel(_queueWorkspaceShowingValue, $"Showing {visible:N0} of {total:N0}");
+        }
+
         private void ScheduleQueueWorkspaceRefresh()
         {
             if (_queueWorkspaceHost == null || IsDisposed || !IsHandleCreated)
@@ -556,7 +825,10 @@ namespace MediaFlux
                 {
                     _queueWorkspaceRefreshPosted = false;
                     if (!IsDisposed)
+                    {
+                        ApplyEncodeQueueViewFilter();
                         RefreshQueueWorkspacePresentation();
+                    }
                 }));
             }
             catch (InvalidOperationException)
@@ -569,6 +841,8 @@ namespace MediaFlux
         {
             if (_queueWorkspaceHost == null || dgvEncodeQueue == null)
                 return;
+
+            UpdateQueueWorkspaceShowingCount();
 
             var items = dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
                 .Where(row => !row.IsNewRow)

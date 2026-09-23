@@ -431,23 +431,10 @@ namespace MediaFlux
 
         private void ApplyDuplicateCandidateViewFilter()
         {
-            if (dgvEncodeQueue == null || _encodingActive)
+            if (dgvEncodeQueue == null)
                 return;
 
-            bool onlyDuplicates = chkOnlyDuplicateCandidates?.Checked == true && _lastDuplicateScanResult != null;
-            try
-            {
-                dgvEncodeQueue.CurrentCell = null;
-                foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
-                {
-                    if (!row.IsNewRow)
-                        row.Visible = !onlyDuplicates || (row.Tag as RowMeta)?.DuplicateGroupId != null;
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // Visibility is a convenience view. Never let it invalidate scan results.
-            }
+            ApplyEncodeQueueViewFilter();
         }
 
         private int GetDuplicateSoftExcludedCount()
@@ -496,6 +483,7 @@ namespace MediaFlux
                 meta.DuplicateReason = "";
                 ApplyDuplicateCells(row, meta);
             }
+            ApplyEncodeQueueViewFilter();
             UpdateDuplicateSummary(null);
         }
 
@@ -530,9 +518,8 @@ namespace MediaFlux
                 }
 
                 ApplyDuplicateCells(row, row.Tag as RowMeta);
-                if (!row.IsNewRow)
-                    row.Visible = true;
             }
+            ApplyEncodeQueueViewFilter();
             UpdateDuplicateSummary(resetResult ? null : _lastDuplicateScanResult);
         }
 

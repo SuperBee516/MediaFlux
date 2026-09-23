@@ -28,6 +28,7 @@ namespace MediaFlux.Models
         // Persist the Encode queue's last selected sort.
         public string EncodeQueueSortColumn { get; set; } = "";
         public bool EncodeQueueSortDescending { get; set; } = false;
+        public string QueueWorkspaceView { get; set; } = "All";
         public string EncodeDetailsTab { get; set; } = "Summary";
         public Dictionary<string, int> EncodeGridColumnWidths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public List<string> EncodeGridColumnOrder { get; set; } = new();
