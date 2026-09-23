@@ -17,6 +17,7 @@ namespace MediaFlux.Services
         private readonly SmartEncodeDecisionService _decisionService = new();
         private readonly EncodingStatisticsService? _statistics;
         private readonly EncodingPredictionAccuracyService _accuracy = new();
+        private readonly Func<string, bool> _isSourceOwnedByActiveJob;
         private readonly object _resetLock = new();
         private readonly int _workerCount = Math.Max(1, Math.Min(4, Environment.ProcessorCount - 1));
 
@@ -29,16 +30,21 @@ namespace MediaFlux.Services
 
         private int _pendingEstimates;
 
-        public EstimateBackgroundService(MediaInfoService mediaInfoService, EncodingStatisticsService? statistics = null)
+        public EstimateBackgroundService(
+            MediaInfoService mediaInfoService,
+            EncodingStatisticsService? statistics = null,
+            Func<string, bool>? isSourceOwnedByActiveJob = null)
         {
             _mediaInfoService = mediaInfoService ?? throw new ArgumentNullException(nameof(mediaInfoService));
             _statistics = statistics;
+            _isSourceOwnedByActiveJob = isSourceOwnedByActiveJob ?? (_ => false);
             StartWorkers();
         }
 
         public readonly struct SmartEstimateResult
         {
             public int Generation { get; }
+            public Guid QueueItemId { get; }
             public string Path { get; }
             public double SourceMb { get; }
             public double EstimatedMb { get; }
@@ -57,6 +63,7 @@ namespace MediaFlux.Services
 
             public SmartEstimateResult(
                 int generation,
+                Guid queueItemId,
                 string path,
                 double sourceMb,
                 double estimatedMb,
@@ -74,6 +81,7 @@ namespace MediaFlux.Services
                 EncodingSizePredictionCalibration? sizeCalibration = null)
             {
                 Generation = generation;
+                QueueItemId = queueItemId;
                 Path = path;
                 SourceMb = sourceMb;
                 EstimatedMb = estimatedMb;
@@ -97,6 +105,7 @@ namespace MediaFlux.Services
         {
             public EstimateWorkItem(
                 int generation,
+                Guid queueItemId,
                 string path,
                 bool auto,
                 string profile,
@@ -113,6 +122,7 @@ namespace MediaFlux.Services
                 bool sourceAdaptiveCeilingEligible)
             {
                 Generation = generation;
+                QueueItemId = queueItemId;
                 Path = path;
                 Auto = auto;
                 Profile = profile;
@@ -130,6 +140,7 @@ namespace MediaFlux.Services
             }
 
             public int Generation { get; }
+            public Guid QueueItemId { get; }
             public string Path { get; }
             public bool Auto { get; }
             public string Profile { get; }
@@ -168,13 +179,15 @@ namespace MediaFlux.Services
             StorageSavingsOptions storageSavings,
             EncodingQualityIntent? qualityIntent = null,
             bool sourceAdaptiveCeilingEligible = false,
-            bool historicalCalibrationEnabled = true)
+            bool historicalCalibrationEnabled = true,
+            Guid queueItemId = default)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return;
 
             QueueWork(new EstimateWorkItem(
                 Volatile.Read(ref _generation),
+                queueItemId,
                 path,
                 auto,
                 profile,
@@ -268,7 +281,8 @@ namespace MediaFlux.Services
 
                     try
                     {
-                        if (item.Generation == Volatile.Read(ref _generation))
+                        if (item.Generation == Volatile.Read(ref _generation) &&
+                            !_isSourceOwnedByActiveJob(item.Path))
                         {
                             ProcessSmartEstimate(item);
                         }
@@ -290,6 +304,11 @@ namespace MediaFlux.Services
         {
             try
             {
+                // A job may claim a source after its estimate was queued. Do not
+                // begin metadata probing for a source now owned by encode/recovery.
+                if (_isSourceOwnedByActiveJob(item.Path))
+                    return;
+
                 double srcMb = GetMbOnDisk(item.Path);
                 var info = new MediaInfoService.MediaInfo();
                 string? res = null;
@@ -311,9 +330,22 @@ namespace MediaFlux.Services
                     // best-effort only
                 }
 
-                double durSec = info.DurationSeconds is > 0
-                    ? info.DurationSeconds.Value
-                    : _mediaInfoService.GetDurationSeconds(item.Path);
+                // GetInfo may synchronously launch FFprobe. If execution claimed
+                // the source while it was running, skip follow-up probing and publication.
+                if (_isSourceOwnedByActiveJob(item.Path))
+                    return;
+
+                double durSec;
+                if (info.DurationSeconds is > 0)
+                {
+                    durSec = info.DurationSeconds.Value;
+                }
+                else
+                {
+                    if (_isSourceOwnedByActiveJob(item.Path))
+                        return;
+                    durSec = _mediaInfoService.GetDurationSeconds(item.Path);
+                }
 
                 bool useProfileEstimate = SizeEstimateService.ShouldUseProfileEstimate(
                     item.Auto,
@@ -460,9 +492,12 @@ namespace MediaFlux.Services
                         });
                 }
 
+                if (_isSourceOwnedByActiveJob(item.Path))
+                    return;
+
                 _smartResults.Enqueue(
                     new SmartEstimateResult(
-                        item.Generation, item.Path, srcMb, displayEstMb, durSec, res, codec, fps,
+                        item.Generation, item.QueueItemId, item.Path, srcMb, displayEstMb, durSec, res, codec, fps,
                         item.IsCustom, unavailableReason, recommendation, estimateDiagnostic,
                         estimateBreakdown?.PlannedAudioBitrateKbps ?? 0,
                         estimateBreakdown?.PlannedMappedAncillaryBitrateKbps ?? 0,
@@ -470,11 +505,14 @@ namespace MediaFlux.Services
             }
             catch (Exception ex)
             {
+                if (_isSourceOwnedByActiveJob(item.Path))
+                    return;
+
                 System.Diagnostics.Debug.WriteLine(
                     $"Error in smart estimate for {item.Path}: {ex.Message}");
                 _smartResults.Enqueue(
                     new SmartEstimateResult(
-                        item.Generation, item.Path, 0, 0, 0, null, null, 0,
+                        item.Generation, item.QueueItemId, item.Path, 0, 0, 0, null, null, 0,
                         item.IsCustom, "Metadata unavailable", null,
                         $"Estimate failed: {ex.Message}", 0, 0,
                         sizeCalibration: null));

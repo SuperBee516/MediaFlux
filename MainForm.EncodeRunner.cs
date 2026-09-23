@@ -364,6 +364,37 @@ namespace MediaFlux
             CancellationToken cancellationToken,
             OutputContainerSelection runOutputContainer)
         {
+            if (_cancelEncode || cancellationToken.IsCancellationRequested ||
+                row == null || row.IsNewRow || row.DataGridView == null ||
+                !TryGetRowPathAndDuration(row, out string sourcePath, out _))
+            {
+                return;
+            }
+
+            // Publish job ownership before pre-encode metadata probing. This lets
+            // estimate workers exclude the exact source even during parallel
+            // dispatch/recovery stages before FFmpeg itself is launched.
+            RowMeta meta = EnsureRowMeta(row);
+            string activeJobPath = meta.IsDvdEncode && meta.DvdEncodeOptions != null
+                ? meta.DvdEncodeOptions.OutputPath
+                : sourcePath;
+            _runningEncodeJobs[row] = activeJobPath;
+            try
+            {
+                await EncodeSingleRowCore(row, cancellationToken, runOutputContainer);
+            }
+            finally
+            {
+                _runningEncodeJobs.TryRemove(row, out _);
+                UiInvoke(() => RestoreQueuedStateAfterEstimate(row));
+            }
+        }
+
+        private async Task EncodeSingleRowCore(
+            DataGridViewRow row,
+            CancellationToken cancellationToken,
+            OutputContainerSelection runOutputContainer)
+        {
             if (_cancelEncode || cancellationToken.IsCancellationRequested)
                 return;
 

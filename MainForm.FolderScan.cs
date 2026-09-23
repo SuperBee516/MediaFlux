@@ -161,8 +161,20 @@ namespace MediaFlux
                         string codec = "";
                         if (requireCodecProbeDuringDiscovery)
                         {
-                            codec = GetVideoCodec(file);
-                            if (!PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther))
+                            bool activeSource = IsEstimateSourceOwnedByActiveEncode(file);
+                            if (activeSource)
+                            {
+                                // Keep active inputs in the scan without touching
+                                // their open source with an import-time probe.
+                                codec = string.Empty;
+                            }
+                            else
+                            {
+                                codec = GetVideoCodec(file);
+                            }
+
+                            if (!activeSource &&
+                                !PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther))
                                 return;
                         }
 
@@ -314,9 +326,9 @@ namespace MediaFlux
                 if (holdActiveQueueAppend)
                     AppendEligibleImportedRowsToActiveQueue(importedPaths);
 
-                // Avoid competing media probes while FFmpeg is active. EncodeSingleRow
-                // resolves the metadata it needs when each appended job is dispatched.
-                if (added > 0 && !_encodingActive && (!largeQueue || _config.AutoAnalyzeLargeQueues))
+                // Estimate independently eligible idle rows during parallel encoding;
+                // active sources are excluded by queue-job ownership in the estimator.
+                if (added > 0 && (!largeQueue || _config.AutoAnalyzeLargeQueues))
                     RunEstimatePass();
                 else if (added > 0 && largeQueue)
                 {

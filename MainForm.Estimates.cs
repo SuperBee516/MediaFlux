@@ -76,7 +76,11 @@ namespace MediaFlux
                     System.Diagnostics.Debug.WriteLine(
                         $"Dequeued {item.Path}: srcMb={item.SourceMb}, estMb={item.EstimatedMb}, dur={item.DurationSec}, res={item.Resolution}");
 
-                    if (_rowsByPath.TryGetValue(item.Path, out var row) && row?.Cells != null)
+                    if (_rowsByPath.TryGetValue(item.Path, out var row) &&
+                        row?.Cells != null &&
+                        row.Tag is RowMeta resultMeta &&
+                        resultMeta.QueueItemId == item.QueueItemId &&
+                        PathsIdentifySameSource(resultMeta.Path, item.Path))
                     {
                         try
                         {
@@ -315,6 +319,12 @@ namespace MediaFlux
             {
                 if (row.IsNewRow) continue;
 
+                // The active job owns both execution state and source probing for
+                // this item. Leave its estimate/presentation data intact while
+                // continuing to schedule unrelated idle rows.
+                if (IsQueueRowActivelyEncoding(row))
+                    continue;
+
                 var meta = row.Tag as RowMeta;
                 string? path = meta?.Path ?? row.Tag as string;
 
@@ -391,6 +401,13 @@ namespace MediaFlux
                     continue;
                 }
 
+                if (IsQueueRowActivelyEncoding(row))
+                    continue;
+
+                RowMeta estimateMeta = meta ?? EnsureRowMeta(row);
+                if (string.IsNullOrWhiteSpace(estimateMeta.Path))
+                    estimateMeta.Path = path;
+
                 // Keep the path → row map in sync for the UI pump
                 _rowsByPath[path] = row;
                 _estimatedSizeMap.Remove(path);
@@ -398,14 +415,15 @@ namespace MediaFlux
                 row.Cells["colEstimatedSize"].Tag = null;
                 row.Cells["colEstimatedSize"].ToolTipText = "Reading this file's metadata and recalculating with the current encoding settings.";
                 SetRecommendationAnalyzing(row);
-                if (row.Cells["colStatus"].Value?.ToString() is not "Encoding" and not "Done" and not "Failed" and not "Canceled" and not "Retry Queued")
+                if (!IsQueueRowActivelyEncoding(row) &&
+                    row.Cells["colStatus"].Value?.ToString() is not "Encoding" and not "Done" and not "Failed" and not "Canceled" and not "Retry Queued")
                     SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
 
                 // Queue estimate work; UI pump will apply results
                 StorageSavingsOptions rowStorageSavings =
                     _config.StorageSavings.CloneNormalized();
-                if (meta?.CustomTargetMb is > 0 ||
-                    !string.IsNullOrWhiteSpace(meta?.CustomCompressionProfile))
+                if (estimateMeta.CustomTargetMb is > 0 ||
+                    !string.IsNullOrWhiteSpace(estimateMeta.CustomCompressionProfile))
                 {
                     rowStorageSavings.Enabled = false;
                 }
@@ -421,7 +439,8 @@ namespace MediaFlux
                     isCustom,
                     rowStorageSavings,
                     isCustom ? null : automaticQualityIntent,
-                    sourceAdaptiveCeilingEligible);
+                    sourceAdaptiveCeilingEligible,
+                    estimateMeta.QueueItemId);
                 queued++;
             }
 
@@ -470,6 +489,10 @@ namespace MediaFlux
 
         private void RestoreQueuedStateAfterEstimate(DataGridViewRow row)
         {
+            if (row == null || row.IsNewRow || row.DataGridView != dgvEncodeQueue ||
+                IsQueueRowActivelyEncoding(row))
+                return;
+
             string status = row.Cells["colStatus"].Value?.ToString() ?? "";
             if (status.Equals("Estimating", StringComparison.OrdinalIgnoreCase) ||
                 string.IsNullOrWhiteSpace(status))
@@ -494,7 +517,8 @@ namespace MediaFlux
             bool isCustom,
             StorageSavingsOptions storageSavings,
             EncodingQualityIntent? qualityIntent,
-            bool sourceAdaptiveCeilingEligible)
+            bool sourceAdaptiveCeilingEligible,
+            Guid queueItemId)
         {
             _estimateService.QueueSmartEstimate(
                 path,
@@ -511,8 +535,34 @@ namespace MediaFlux
                 storageSavings,
                 qualityIntent,
                 sourceAdaptiveCeilingEligible,
-                _config.UseHistoricalSizePredictionCalibration);
+                _config.UseHistoricalSizePredictionCalibration,
+                queueItemId);
         }
+
+        private bool IsEstimateSourceOwnedByActiveEncode(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+
+            string normalizedPath = NormalizeEstimatePath(path);
+            return _runningEncodeJobs.Values.Any(activePath =>
+                StringComparer.OrdinalIgnoreCase.Equals(
+                    NormalizeEstimatePath(activePath),
+                    normalizedPath));
+        }
+
+        private static string NormalizeEstimatePath(string path)
+        {
+            try { return Path.GetFullPath(path); }
+            catch { return path.Trim(); }
+        }
+
+        private static bool PathsIdentifySameSource(string left, string right) =>
+            !string.IsNullOrWhiteSpace(left) &&
+            !string.IsNullOrWhiteSpace(right) &&
+            StringComparer.OrdinalIgnoreCase.Equals(
+                NormalizeEstimatePath(left),
+                NormalizeEstimatePath(right));
 
         private int? GetEstimateTargetHeight()
         {

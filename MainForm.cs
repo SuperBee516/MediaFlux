@@ -2445,6 +2445,7 @@ namespace MediaFlux
         // Simple metadata for a grid row
         private sealed class RowMeta
         {
+            public Guid QueueItemId = Guid.NewGuid();
             public string Path = "";
             public double DurationSec = 0; // Initialized to suppress warning
             public string Resolution = ""; // Changed to string; initialized
@@ -4539,7 +4540,12 @@ namespace MediaFlux
                     if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext))
                         continue;
 
-                    var codec = GetVideoCodec(file);
+                    bool activeSource = IsEstimateSourceOwnedByActiveEncode(file);
+                    string codec = activeSource
+                        ? _rowsByPath.TryGetValue(file, out var activeRow) && activeRow.Tag is RowMeta activeMeta
+                            ? activeMeta.VideoCodec
+                            : string.Empty
+                        : GetVideoCodec(file);
                     if (IsH264Codec(codec))
                         h264Count++;
                     else if (IsH265Codec(codec))
@@ -4549,7 +4555,7 @@ namespace MediaFlux
                     else
                         otherCount++;
 
-                    if (PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther))
+                    if (activeSource || PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther))
                         fsFiles.Add(file);
                 }
 
@@ -4557,7 +4563,7 @@ namespace MediaFlux
 
                 // Add any new files that aren't already in the grid
                 foreach (var path in fsFiles)
-                    AddEncodeItemIfNotPresent(path);
+                    AddEncodeItemIfNotPresent(path, refreshEstimates: false);
 
                 // Remove rows for files that no longer match / no longer exist
                 foreach (DataGridViewRow row in dgvEncodeQueue.Rows.Cast<DataGridViewRow>().ToList())
@@ -5116,7 +5122,10 @@ namespace MediaFlux
                 AppPaths.DataDirectory);
 
             _sizeEstimateService = new SizeEstimateService(_mediaInfoService);
-            _estimateService = new EstimateBackgroundService(_mediaInfoService, _encodingStatisticsService);
+            _estimateService = new EstimateBackgroundService(
+                _mediaInfoService,
+                _encodingStatisticsService,
+                IsEstimateSourceOwnedByActiveEncode);
             _duplicateDetectionService = new DuplicateDetectionService(
                 _mediaInfoService,
                 AppPaths.InstallDirectory,
