@@ -181,7 +181,7 @@ public partial class MainForm
         _config.OutputSuffix = settings.OutputSuffix;
         _config.VideoRestoration = settings.Restoration?.Clone() ?? new VideoRestorationSettings();
         if (comboQualityMode != null)
-            SelectComboText(comboQualityMode, settings.QualityMode);
+            SelectQualityMode(comboQualityMode, settings.QualityMode);
         if (trkQualityTarget != null)
             trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(settings.QualityTarget));
         UpdateQualityIntentUi();

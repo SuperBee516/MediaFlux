@@ -165,9 +165,9 @@ namespace MediaFlux
                     HeaderText = "Source Size → Estimate",
                     Width = ScaleUi(205),
                     MinimumWidth = ScaleUi(165),
-                    SortMode = DataGridViewColumnSortMode.NotSortable,
+                    SortMode = DataGridViewColumnSortMode.Automatic,
                     Resizable = DataGridViewTriState.True,
-                    ToolTipText = "A display projection of the existing source-size and output-estimate values."
+                    ToolTipText = "A display projection of the existing source-size and output-estimate values. Click the header to sort by source file size."
                 });
             }
         }
@@ -322,7 +322,7 @@ namespace MediaFlux
                     ColumnCount = 2,
                     RowCount = 1,
                     Margin = new Padding(index == 0 ? 0 : ScaleUi(3), 0, index == captions.Length - 1 ? 0 : ScaleUi(3), 0),
-                    Padding = new Padding(ScaleUi(8), ScaleUi(4), ScaleUi(8), ScaleUi(4)),
+                    Padding = new Padding(ScaleUi(8), 0, ScaleUi(8), 0),
                     BackColor = index == 3 ? Color.FromArgb(255, 248, 235) : Color.FromArgb(248, 249, 251),
                     AccessibleRole = AccessibleRole.Grouping,
                     AccessibleName = captions[index]
@@ -1147,8 +1147,8 @@ namespace MediaFlux
                          .Where(control => control.AccessibleRole == AccessibleRole.Grouping))
             {
                 card.Padding = compact
-                    ? new Padding(ScaleUi(5), ScaleUi(3), ScaleUi(5), ScaleUi(3))
-                    : new Padding(ScaleUi(8), ScaleUi(4), ScaleUi(8), ScaleUi(4));
+                    ? new Padding(ScaleUi(5), 0, ScaleUi(5), 0)
+                    : new Padding(ScaleUi(8), 0, ScaleUi(8), 0);
             }
         }
     }

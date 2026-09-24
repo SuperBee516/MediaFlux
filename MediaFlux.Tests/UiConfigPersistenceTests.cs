@@ -68,15 +68,77 @@ public sealed class UiConfigPersistenceTests : IDisposable
     }
 
     [Fact]
-    public void QueueControlsChildrenRemainContentSizedInsteadOfFillingTheCard()
+    public void QueueControlsRefreshTheirWidthConstraintWhenWrapStateStaysTheSame()
     {
+        using var card = new TableLayoutPanel();
         using var behavior = new FlowLayoutPanel { Dock = DockStyle.Fill };
         using var actions = new FlowLayoutPanel { Dock = DockStyle.Fill };
 
-        MainForm.ApplyQueueControlsCompactLayout(behavior, actions);
+        MainForm.ApplyQueueControlsCompactLayout(card, behavior, actions, wrapControls: true, contentWidth: 200);
 
         Assert.Equal(DockStyle.Top, behavior.Dock);
         Assert.Equal(DockStyle.Top, actions.Dock);
+        Assert.True(behavior.WrapContents);
+        Assert.True(actions.WrapContents);
+        Assert.Equal(200, behavior.MaximumSize.Width);
+        Assert.Equal(200, actions.MaximumSize.Width);
+
+        // A restored/resized window can remain in wrapping mode while gaining width.
+        // The width limit must follow the new bounds even though the wrap flag is unchanged.
+        MainForm.ApplyQueueControlsCompactLayout(card, behavior, actions, wrapControls: true, contentWidth: 620);
+        Assert.Equal(620, behavior.MaximumSize.Width);
+        Assert.Equal(620, actions.MaximumSize.Width);
+
+        MainForm.ApplyQueueControlsCompactLayout(card, behavior, actions, wrapControls: false, contentWidth: 800);
+        Assert.False(behavior.WrapContents);
+        Assert.False(actions.WrapContents);
+        Assert.Equal(System.Drawing.Size.Empty, behavior.MaximumSize);
+        Assert.Equal(System.Drawing.Size.Empty, actions.MaximumSize);
+    }
+
+    [Fact]
+    public void AutomaticQualityModeRoundTripsAndMissingPreferenceDefaultsToManual()
+    {
+        string path = Path.Combine(_root, "quality-mode.json");
+        new Config { LastQualityMode = "Automatic" }.Save(path);
+
+        Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+
+        File.WriteAllText(path, "{}");
+        Assert.Equal("Manual", Config.Load(path).LastQualityMode);
+    }
+
+    [Fact]
+    public void AutomaticQualityModeRestoresOnMainFormConstructionWithoutBeingOverwritten()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(_root, "automatic-quality-startup.json");
+        new Config { LastQualityMode = "Automatic" }.Save(path);
+
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                form = new MainForm(path);
+                Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+                Assert.Equal("Automatic", Field<Config>(form, "_config").LastQualityMode);
+                ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
+
+                Assert.Equal("Automatic • Source Adaptive", mode.Text);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Quality preference startup test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
     [Fact]
@@ -170,13 +232,15 @@ public sealed class UiConfigPersistenceTests : IDisposable
         if (!OperatingSystem.IsWindows())
             return;
 
+        string configPath = Path.Combine(_root, "encoding-profile-layout.json");
+        new Config { LastQualityMode = "Manual" }.Save(configPath);
         Exception? failure = null;
         MainForm? form = null;
         var thread = new Thread(() =>
         {
             try
             {
-                form = new MainForm();
+                form = new MainForm(configPath);
                 form.CreateControl();
                 form.Show();
                 Application.DoEvents();
@@ -205,7 +269,12 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 Assert.True(right.Bounds.Height > 0);
             }
             catch (Exception ex) { failure = ex; }
-            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(form);
+                if (File.Exists(configPath))
+                    File.Delete(configPath);
+            }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();

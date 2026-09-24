@@ -1118,6 +1118,7 @@ namespace MediaFlux
                 Name = "colSize",
                 HeaderText = "Size",
                 Width = 100,
+                SortMode = DataGridViewColumnSortMode.Automatic,
                 Resizable = DataGridViewTriState.True
             });
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn

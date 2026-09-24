@@ -230,7 +230,11 @@ namespace MediaFlux
 
 
 
-        public MainForm()
+        public MainForm() : this(null)
+        {
+        }
+
+        internal MainForm(string? configPath)
         {
             InitializeComponent();
             AutoScaleMode = AutoScaleMode.Dpi;
@@ -240,7 +244,7 @@ namespace MediaFlux
             InitializeEncodingSpinner();
 
             // load configuration before constructing FFmpeg-dependent services
-            _configPath = AppPaths.ConfigFile;
+            _configPath = configPath ?? AppPaths.ConfigFile;
             _config = Config.Load(_configPath);
             InitializeFfmpegAvailabilityBanner();
             InitializeEncoderSelectionControls();
@@ -1939,7 +1943,7 @@ namespace MediaFlux
                         (int)nudAutoQuality.Minimum,
                         (int)nudAutoQuality.Maximum);
                 }
-                SelectComboText(comboQualityMode!, _config.LastQualityMode);
+                SelectQualityMode(comboQualityMode!, _config.LastQualityMode);
                 if (trkQualityTarget != null)
                     trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(_config.LastQualityTarget));
                 UpdateQualityIntentUi();
@@ -2012,6 +2016,24 @@ namespace MediaFlux
                 string toolTip = key is "Output" or "Source" ? actual : string.Empty;
                 if (!string.Equals(_uiToolTip.GetToolTip(label), toolTip, StringComparison.Ordinal))
                     _uiToolTip.SetToolTip(label, toolTip);
+            }
+        }
+
+        private static void SelectQualityMode(ComboBox? combo, string? savedMode)
+        {
+            if (combo == null || string.IsNullOrWhiteSpace(savedMode))
+                return;
+
+            string value = savedMode.Trim();
+            if (value.Equals("Automatic", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("Automatic • Source Adaptive", StringComparison.OrdinalIgnoreCase))
+            {
+                combo.SelectedIndex = 0;
+            }
+            else if (value.Equals("Manual", StringComparison.OrdinalIgnoreCase) ||
+                     value.Equals("Manual • Legacy Numeric", StringComparison.OrdinalIgnoreCase))
+            {
+                combo.SelectedIndex = 1;
             }
         }
 
@@ -2596,6 +2618,7 @@ namespace MediaFlux
             public string VideoCodec = "";
             public int Fps = 0; // Initialized to suppress warning
             public double SrcMb = 0; // Initialized to suppress warning
+            public long? SourceSizeBytes;
             public string? CustomCompressionProfile = null;
             public double? CustomTargetMb = null;
             public bool AutoRetryScheduled = false;
@@ -3132,6 +3155,9 @@ namespace MediaFlux
                 "Automatic • Source Adaptive",
                 "Manual • Legacy Numeric"
             });
+            // Establish the legacy default before wiring persistence. The saved
+            // preference is applied later by ApplyRememberedEncodeDropdowns.
+            comboQualityMode.SelectedIndex = 1;
             comboQualityMode.SelectedIndexChanged += (_, __) =>
             {
                 UpdateQualityIntentUi();
@@ -3229,7 +3255,6 @@ namespace MediaFlux
             // the same responsive mode.
             _encodingProfileStacked = null;
             UpdateEncodingProfileResponsiveLayout();
-            comboQualityMode.SelectedIndex = 1;
             UpdateQualityIntentUi();
             LayoutQualityTargetLabels();
         }
@@ -3652,40 +3677,59 @@ namespace MediaFlux
             if (pnlQueueControlsCard == null || pnlQueueBehavior == null || pnlQueueActionButtons == null)
                 return;
 
-            ApplyQueueControlsCompactLayout(pnlQueueBehavior, pnlQueueActionButtons);
-
             int contentWidth = Math.Max(200, pnlQueueControlsCard.ClientSize.Width - pnlQueueControlsCard.Padding.Horizontal);
             int actionWidth = pnlQueueActionButtons.GetPreferredSize(Size.Empty).Width;
             int behaviorWidth = pnlQueueBehavior.GetPreferredSize(Size.Empty).Width;
             bool wrapControls = pnlQueueControlsCard.ClientSize.Width < 650 ||
                                 actionWidth > contentWidth ||
                                 behaviorWidth > contentWidth;
-            if (pnlQueueBehavior.WrapContents == wrapControls &&
-                pnlQueueActionButtons.WrapContents == wrapControls)
-                return;
-
-            pnlQueueControlsCard.SuspendLayout();
-            try
-            {
-                pnlQueueBehavior.WrapContents = wrapControls;
-                pnlQueueActionButtons.WrapContents = wrapControls;
-                var maximumSize = wrapControls ? new Size(contentWidth, 0) : Size.Empty;
-                pnlQueueBehavior.MaximumSize = maximumSize;
-                pnlQueueActionButtons.MaximumSize = maximumSize;
-            }
-            finally
-            {
-                pnlQueueControlsCard.ResumeLayout(true);
-            }
+            ApplyQueueControlsCompactLayout(
+                pnlQueueControlsCard,
+                pnlQueueBehavior,
+                pnlQueueActionButtons,
+                wrapControls,
+                contentWidth);
         }
 
-        internal static void ApplyQueueControlsCompactLayout(FlowLayoutPanel behavior, FlowLayoutPanel actions)
+        internal static void ApplyQueueControlsCompactLayout(
+            TableLayoutPanel card,
+            FlowLayoutPanel behavior,
+            FlowLayoutPanel actions,
+            bool wrapControls,
+            int contentWidth)
         {
             // These panels are AutoSize children of an AutoSize card. Fill docking creates a
             // circular preferred-height calculation during TableLayoutPanel negotiation and
-            // can inflate the entire Queue Controls region on startup or resize.
-            behavior.Dock = DockStyle.Top;
-            actions.Dock = DockStyle.Top;
+            // can inflate the entire Queue Controls region on startup or resize. The maximum
+            // width is also responsive state: it must be refreshed when bounds change even if
+            // the wrap/no-wrap decision remains the same.
+            Size maximumSize = wrapControls
+                ? new Size(Math.Max(200, contentWidth), 0)
+                : Size.Empty;
+            if (behavior.Dock == DockStyle.Top &&
+                actions.Dock == DockStyle.Top &&
+                behavior.WrapContents == wrapControls &&
+                actions.WrapContents == wrapControls &&
+                behavior.MaximumSize == maximumSize &&
+                actions.MaximumSize == maximumSize)
+            {
+                return;
+            }
+
+            card.SuspendLayout();
+            try
+            {
+                behavior.Dock = DockStyle.Top;
+                actions.Dock = DockStyle.Top;
+                behavior.WrapContents = wrapControls;
+                actions.WrapContents = wrapControls;
+                behavior.MaximumSize = maximumSize;
+                actions.MaximumSize = maximumSize;
+            }
+            finally
+            {
+                card.ResumeLayout(true);
+            }
         }
 
         private void UpdateEncodingOptionsResponsiveLayout()
@@ -4253,7 +4297,12 @@ namespace MediaFlux
 
         private void DgvEncodeQueue_SortCompare(object? sender, DataGridViewSortCompareEventArgs e)
         {
-            if (e.Column.Name == "colSize" || e.Column.Name == "colEstimatedSize")
+            if (e.Column.Name is "colSize" or "colSourceEstimate")
+            {
+                e.SortResult = CompareQueueSourceSizeRows(e.RowIndex1, e.RowIndex2);
+                e.Handled = true;
+            }
+            else if (e.Column.Name == "colEstimatedSize")
             {
                 double val1 = ParseSizeToMb(e.CellValue1?.ToString());
                 double val2 = ParseSizeToMb(e.CellValue2?.ToString());
@@ -4267,6 +4316,39 @@ namespace MediaFlux
                     .CompareTo(RecommendationSortRank(e.CellValue2));
                 e.Handled = true;
             }
+        }
+
+        private int CompareQueueSourceSizeRows(int firstRowIndex, int secondRowIndex)
+        {
+            (long? SizeBytes, string Path, long Sequence) first = GetQueueSourceSizeSortKey(firstRowIndex);
+            (long? SizeBytes, string Path, long Sequence) second = GetQueueSourceSizeSortKey(secondRowIndex);
+            bool firstKnown = first.SizeBytes is >= 0;
+            bool secondKnown = second.SizeBytes is >= 0;
+            if (firstKnown != secondKnown)
+                return firstKnown ? 1 : -1;
+
+            if (firstKnown)
+            {
+                int sizeComparison = first.SizeBytes!.Value.CompareTo(second.SizeBytes!.Value);
+                if (sizeComparison != 0)
+                    return sizeComparison;
+            }
+
+            int pathComparison = StringComparer.OrdinalIgnoreCase.Compare(first.Path, second.Path);
+            return pathComparison != 0
+                ? pathComparison
+                : first.Sequence.CompareTo(second.Sequence);
+        }
+
+        private (long? SizeBytes, string Path, long Sequence) GetQueueSourceSizeSortKey(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= dgvEncodeQueue.Rows.Count)
+                return (null, string.Empty, rowIndex);
+
+            DataGridViewRow row = dgvEncodeQueue.Rows[rowIndex];
+            RowMeta? meta = row.Tag as RowMeta;
+            string path = meta?.Path ?? Convert.ToString(row.Cells["colName"].Value) ?? string.Empty;
+            return (meta?.SourceSizeBytes, path, meta?.QueueSequence ?? rowIndex);
         }
 
         #region Download Tab
@@ -5675,6 +5757,8 @@ namespace MediaFlux
 
                     // Update Size/Created, too
                     var fi = new FileInfo(newPath);
+                    if (row.Tag is RowMeta resizedMeta)
+                        resizedMeta.SourceSizeBytes = fi.Length;
                     row.Cells["colSize"].Value = FormatSize(fi.Length);
                     row.Cells["colCreated"].Value = fi.CreationTime.ToString("yyyy-MM-dd HH:mm");
                 }
@@ -5905,6 +5989,7 @@ namespace MediaFlux
             // when the item enters the queue, before any estimate work runs.
             RowMeta queueMeta = EnsureRowMeta(r);
             queueMeta.Path = path;
+            queueMeta.SourceSizeBytes = fi.Length;
             _rowsByPath[path] = r;
             _queueSourceSizeMap[path] = sourceMb;
             _queueTotalSourceMb += sourceMb;
@@ -6019,7 +6104,7 @@ namespace MediaFlux
                         (int)nudAutoQuality.Maximum);
                 }
                 if (comboQualityMode != null)
-                    SelectComboText(comboQualityMode, s.QualityMode);
+                    SelectQualityMode(comboQualityMode, s.QualityMode);
                 if (trkQualityTarget != null)
                     trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(s.QualityTarget));
                 UpdateQualityIntentUi();

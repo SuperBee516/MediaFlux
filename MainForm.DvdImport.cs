@@ -520,6 +520,7 @@ namespace MediaFlux
                 ? (int)Math.Round(candidate.FrameRate.Value)
                 : 0;
             meta.SrcMb = sourceMb;
+            meta.SourceSizeBytes = candidate.CombinedSizeBytes;
             meta.DvdEncodeOptions = options;
             row.Cells["colName"].Value =
                 $"{outputBaseName} ({candidate.TitleSetId}, DVD title)";

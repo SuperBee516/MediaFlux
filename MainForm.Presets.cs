@@ -191,7 +191,7 @@ namespace MediaFlux
                         (int)nudAutoQuality.Maximum);
                 }
                 if (comboQualityMode != null)
-                    SelectComboText(comboQualityMode, preset.QualityMode);
+                    SelectQualityMode(comboQualityMode, preset.QualityMode);
                 if (trkQualityTarget != null)
                     trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(preset.QualityTarget));
                 UpdateQualityIntentUi();

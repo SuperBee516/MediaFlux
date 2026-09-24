@@ -30,6 +30,64 @@ public sealed class QueueWorkspaceUiTests
     }
 
     [Fact]
+    public void QueueControlsAndStatusCardsStayCompactAcrossRestoredMaximizedAndResizedLayouts()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        string configPath = Path.Combine(Path.GetTempPath(), $"MediaFlux.QueueLayout.{Guid.NewGuid():N}.json");
+        Rectangle workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+        var savedBounds = new Rectangle(workingArea.Left + 20, workingArea.Top + 20, 1100, 760);
+        new Config
+        {
+            MainWindowX = savedBounds.X,
+            MainWindowY = savedBounds.Y,
+            MainWindowWidth = savedBounds.Width,
+            MainWindowHeight = savedBounds.Height
+        }.Save(configPath);
+
+        Exception? failure = null;
+        MainForm? main = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                main = new MainForm(configPath) { StartPosition = FormStartPosition.Manual };
+                main.Show();
+                Application.DoEvents();
+
+                Assert.Equal(savedBounds.Size, main.Bounds.Size);
+                AssertCompactWorkspaceLayout(main);
+
+                main.WindowState = FormWindowState.Maximized;
+                Application.DoEvents();
+                AssertCompactWorkspaceLayout(main);
+
+                main.WindowState = FormWindowState.Normal;
+                Application.DoEvents();
+                foreach (Size size in new[] { new Size(1100, 700), new Size(1360, 840), new Size(1800, 1100) })
+                {
+                    main.ClientSize = size;
+                    Application.DoEvents();
+                    main.PerformLayout();
+                    AssertCompactWorkspaceLayout(main);
+                }
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(main);
+                if (File.Exists(configPath))
+                    File.Delete(configPath);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Queue workspace layout test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
     public void QueueWorkspaceKeepsGlobalCountsAndActionsStableAcrossSupportedSizes()
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -199,6 +257,22 @@ public sealed class QueueWorkspaceUiTests
     private static T Field<T>(MainForm main, string name) where T : class =>
         (T)(typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)
             ?? throw new MissingFieldException(name));
+
+    private static void AssertCompactWorkspaceLayout(MainForm main)
+    {
+        TableLayoutPanel controls = Field<TableLayoutPanel>(main, "pnlQueueControlsCard");
+        int maxCardHeight = (int)Math.Ceiling(190d * main.DeviceDpi / 96d);
+        Assert.True(controls.Height <= maxCardHeight,
+            $"Queue Controls should remain compact; card height={controls.Height}, maximum={maxCardHeight}, client={main.ClientSize}.");
+
+        TableLayoutPanel summary = main.Controls.Find("queueWorkspaceSummaryCards", searchAllChildren: true)
+            .OfType<TableLayoutPanel>()
+            .Single();
+        TableLayoutPanel[] cards = summary.Controls.OfType<TableLayoutPanel>().ToArray();
+        Assert.Equal(4, cards.Length);
+        Assert.All(cards, card => Assert.Equal(0, card.Padding.Vertical));
+        Assert.All(cards, card => Assert.Equal(1, card.RowCount));
+    }
 
     private static void SetField(MainForm main, string name, object value) =>
         (typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
