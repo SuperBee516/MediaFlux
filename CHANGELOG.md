@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.6.4] - 2026-09-24
+
+### Encoding Reliability
+
+- Corrected NVENC runtime capability probes to use supported frame dimensions, avoiding false reports that H.264 or HEVC NVENC is unavailable on capable systems.
+- Use the same runtime capability check before Library Analyzer and normal encoding workflows start an NVENC encode, and provide actionable diagnostics when a requested encoder is unavailable.
+- Added focused coverage for capability classification, cache behavior, encoder gating, and live NVENC workflows.
+
 ## [1.6.3] - 2026-09-24
 
 ### Library Analyzer
@@ -971,7 +979,8 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.3...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.4...HEAD
+[1.6.4]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.3...v1.6.4
 [1.6.3]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.2...v1.6.3
 [1.6.2]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.0...v1.6.1
