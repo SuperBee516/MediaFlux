@@ -334,6 +334,9 @@ public sealed class AiRestorationIntermediateVideoService
         if (!report.IsValid) throw new AiRestorationValidationException(report.Format());
     }
     internal static AiFrameSetValidationReport AuditFrameSet(string restoredDirectory, IReadOnlyList<string> expected, IReadOnlyList<string>? inputs, int chunkNumber, int chunkTotal)
+        => AuditFrameSet(restoredDirectory, expected, inputs, chunkNumber, chunkTotal, beforeFilesystemStabilityWait: null);
+
+    internal static AiFrameSetValidationReport AuditFrameSet(string restoredDirectory, IReadOnlyList<string> expected, IReadOnlyList<string>? inputs, int chunkNumber, int chunkTotal, Action? beforeFilesystemStabilityWait)
     {
         var report = new AiFrameSetValidationReport(chunkNumber, chunkTotal, inputs is { Count: > 0 } ? Path.GetDirectoryName(inputs[0])! : "<not-applicable>", restoredDirectory, expected.Count);
         report.ValidationStartedAt = DateTimeOffset.UtcNow;
@@ -371,6 +374,7 @@ public sealed class AiRestorationIntermediateVideoService
             .GroupBy(value => int.Parse(value.Stem[6..], CultureInfo.InvariantCulture), value => value.File))
             if (group.Count() > 1) report.DuplicateFrameNumbers.Add($"{group.Key:D8}: {string.Join(", ", group.Select(file => file.Name))}");
         report.ImageVerificationElapsed = stopwatch.Elapsed;
+        beforeFilesystemStabilityWait?.Invoke();
         stopwatch.Restart();
         Thread.Sleep(TimeSpan.FromMilliseconds(50));
         foreach (FileInfo file in files)
