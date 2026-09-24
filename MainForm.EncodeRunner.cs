@@ -77,7 +77,7 @@ namespace MediaFlux
 
             if (!EnsureFfmpegToolsAvailable())
                 return;
-            if (!EnsureRequestedVideoEncodersAvailable(requestedRows))
+            if (!await EnsureRequestedVideoEncodersAvailable(requestedRows))
                 return;
             if (!await ConfirmExplicitMp4CompatibilityAsync(requestedRows))
                 return;

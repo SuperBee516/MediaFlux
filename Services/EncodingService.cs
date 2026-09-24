@@ -298,7 +298,7 @@ namespace MediaFlux.Services
         /// Preferred encoder-neutral API. Legacy overloads remain available while
         /// existing UI and persisted settings migrate to stable encoder IDs.
         /// </summary>
-        public Task<EncodeResult> EncodeWithResultAsync(EncodingRequest request)
+        public async Task<EncodeResult> EncodeWithResultAsync(EncodingRequest request)
         {
             ArgumentNullException.ThrowIfNull(request);
             ArgumentNullException.ThrowIfNull(request.Input);
@@ -317,7 +317,16 @@ namespace MediaFlux.Services
                     request.ConcurrentEncoderSessions);
             EnsureEncoderAvailable(validated.Resolved.Selection);
 
-            return EncodeInternalAsync(
+            if (validated.Resolved.Selection.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase))
+            {
+                FfmpegNvencRuntimeCapability capability = await FfmpegNvencRuntimeCapabilityService.Shared
+                    .CheckAsync(_ffmpegPath, validated.Resolved.Selection.FfmpegCodec, request.CancellationToken)
+                    .ConfigureAwait(false);
+                if (!capability.IsAvailable)
+                    throw new InvalidOperationException(capability.Diagnostic);
+            }
+
+            return await EncodeInternalAsync(
                 request.Input,
                 request.OutputFolder,
                 request.Suffix,
@@ -360,7 +369,7 @@ namespace MediaFlux.Services
                  request.QualityIntent,
                 request.QualityResolutionCallback,
                 request.FailureDiagnosticReportCallback,
-                request.SizePredictionCalibration);
+                request.SizePredictionCalibration).ConfigureAwait(false);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)

@@ -532,10 +532,19 @@ namespace MediaFlux
 
             FfmpegManagedRuntimeValidation runtime = await FfmpegManagedRuntimeValidator.ValidateAsync(tools.FfmpegPath, tools.FfprobePath);
             string version = tools.Source == FfmpegToolSource.Managed ? FfmpegManagedComponents.Release.Version : (runtime.FfmpegVersion.Length == 0 ? "Unavailable" : runtime.FfmpegVersion);
+            FfmpegNvencRuntimeCapability[] nvenc = await Task.WhenAll(
+                FfmpegNvencRuntimeCapabilityService.Shared.CheckAsync(tools.FfmpegPath, "hevc_nvenc"),
+                FfmpegNvencRuntimeCapabilityService.Shared.CheckAsync(tools.FfmpegPath, "h264_nvenc"));
+            FfmpegNvencRuntimeCapability hevc = nvenc[0];
+            FfmpegNvencRuntimeCapability h264 = nvenc[1];
+            string NvencLine(FfmpegNvencRuntimeCapability capability) =>
+                $"{capability.Encoder}: {capability.State switch { FfmpegNvencRuntimeState.Available => "Ready", FfmpegNvencRuntimeState.DriverIncompatible => "Driver incompatible", FfmpegNvencRuntimeState.EncoderMissing => "Encoder missing", FfmpegNvencRuntimeState.TimedOut => "Probe timed out", FfmpegNvencRuntimeState.Unavailable => "Unavailable", _ => "Unknown" }}";
             _ffmpegSetupSummary.Text = runtime.FfmpegSucceeded && runtime.FfprobeSucceeded
-                ? $"Status: Ready\r\nVersion: {version}\r\nFFmpeg: Available\r\nFFprobe: Available\r\nSource: {tools.Source switch { FfmpegToolSource.Configured => "Configured / Manual", FfmpegToolSource.Managed => "Managed by MediaFlux", FfmpegToolSource.Legacy => "Legacy", FfmpegToolSource.SystemPath => "System / PATH", _ => "Configured / Manual" }}"
+                ? $"Status: Ready\r\nVersion: {version}\r\nFFmpeg: Available\r\nFFprobe: Available\r\n{NvencLine(hevc)}\r\n{NvencLine(h264)}\r\nSource: {tools.Source switch { FfmpegToolSource.Configured => "Configured / Manual", FfmpegToolSource.Managed => "Managed by MediaFlux", FfmpegToolSource.Legacy => "Legacy", FfmpegToolSource.SystemPath => "System / PATH", _ => "Configured / Manual" }}"
                 : "Status: Runtime validation failed\r\nFFmpeg or FFprobe could not be launched. See diagnostics for details.";
-            _ffmpegSetupSummary.ForeColor = runtime.FfmpegSucceeded && runtime.FfprobeSucceeded ? Color.DarkGreen : Color.Firebrick;
+            _ffmpegSetupSummary.ForeColor = runtime.FfmpegSucceeded && runtime.FfprobeSucceeded ? (hevc.IsAvailable && h264.IsAvailable ? Color.DarkGreen : Color.DarkOrange) : Color.Firebrick;
+            if (!hevc.IsAvailable) _ffmpegSetupSummary.Text += $"\r\n{hevc.Diagnostic}";
+            else if (!h264.IsAvailable) _ffmpegSetupSummary.Text += $"\r\n{h264.Diagnostic}";
         }
 
         private async Task InstallFfmpegAsync()

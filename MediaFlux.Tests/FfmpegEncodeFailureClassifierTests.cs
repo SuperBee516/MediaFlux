@@ -38,6 +38,7 @@ public sealed class FfmpegEncodeFailureClassifierTests
 
     [Theory]
     [InlineData("Unknown encoder 'hevc_nvenc'", "Unavailable")]
+    [InlineData("Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0", "DriverIncompatible")]
     [InlineData("[hevc_nvenc] InitializeEncoder failed: invalid param", "UnsupportedConfiguration")]
     [InlineData("[h264_nvenc] NV_ENC_ERR_GENERIC", "RuntimeFailure")]
     public void NvencFailuresAreClassifiedWithoutMakingThemFallbackCandidates(string stderr, string expected)

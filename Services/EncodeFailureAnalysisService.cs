@@ -76,6 +76,8 @@ public static class EncodeFailureAnalysisService
         {
             string action = nvenc.Kind == FfmpegNvencFailureKind.Unavailable
                 ? "Verify NVIDIA encoder availability or select a software video encoder."
+                : nvenc.Kind == FfmpegNvencFailureKind.DriverIncompatible
+                    ? "Update the NVIDIA driver to a version that supports this FFmpeg build's NVENC API."
                 : nvenc.Kind == FfmpegNvencFailureKind.UnsupportedConfiguration
                     ? "Review the selected codec, profile, pixel format, and preset for NVENC compatibility."
                     : "Check NVIDIA driver/GPU health and competing encoder sessions, then review Diagnostics.";

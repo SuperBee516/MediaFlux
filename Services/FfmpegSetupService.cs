@@ -24,5 +24,6 @@ public static class FfmpegSetupService
     {
         FfmpegEncoderCapabilityService.ClearCache();
         FfmpegRestorationCapabilityService.ClearCache();
+        FfmpegNvencRuntimeCapabilityService.Shared.ClearCache();
     }
 }

@@ -156,12 +156,18 @@ namespace MediaFlux
             return item.TargetContainer;
         }
 
-        private bool EnsureRequestedVideoEncodersAvailable(IReadOnlyList<DataGridViewRow> rows)
+        private async Task<bool> EnsureRequestedVideoEncodersAvailable(IReadOnlyList<DataGridViewRow> rows)
         {
             if (rows.Any(row => row.Tag is not RowMeta { LibraryPolicyIntent: not null }) && !EnsureSelectedVideoEncoderAvailable())
                 return false;
             FfmpegEncoderCapabilities capabilities = GetFfmpegEncoderCapabilities();
-            if (!capabilities.InspectionSucceeded) return true;
+            var nvencSelections = new List<VideoEncoderSelection>();
+            if (rows.Any(row => row.Tag is not RowMeta { LibraryPolicyIntent: not null }))
+            {
+                ResolvedVideoEncoder selected = EncoderRegistry.Default.Resolve(GetSelectedEncoderId(), GetSelectedVideoCodecFamily());
+                if (selected.Provider.Capabilities.IsHardware && selected.Selection.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase))
+                    nvencSelections.Add(selected.Selection);
+            }
             foreach (LibraryPolicyQueueItem intent in rows.Select(row => (row.Tag as RowMeta)?.LibraryPolicyIntent).Where(value => value != null).Cast<LibraryPolicyQueueItem>())
             {
                 try
@@ -176,11 +182,25 @@ namespace MediaFlux
                     ResolvedVideoEncoder resolved = EncoderRegistry.Default.Resolve(encoderId, codec);
                     if (!capabilities.Contains(resolved.Selection.FfmpegCodec))
                         throw new InvalidOperationException($"The configured FFmpeg build does not provide '{resolved.Selection.FfmpegCodec}'.");
+                    if (resolved.Provider.Capabilities.IsHardware && resolved.Selection.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase))
+                        nvencSelections.Add(resolved.Selection);
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show(this, $"Library policy '{intent.PolicyName}' requires attention before encoding.\r\n\r\n{ex.Message}",
                         "Policy encoder unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
+                }
+            }
+
+            foreach (VideoEncoderSelection selection in nvencSelections.DistinctBy(value => value.FfmpegCodec, StringComparer.OrdinalIgnoreCase))
+            {
+                FfmpegToolPaths tools = ResolveFfmpegTools();
+                FfmpegNvencRuntimeCapability runtime = await FfmpegNvencRuntimeCapabilityService.Shared
+                    .CheckAsync(tools.FfmpegPath, selection.FfmpegCodec);
+                if (!runtime.IsAvailable)
+                {
+                    MessageBox.Show(this, runtime.Diagnostic, "NVENC unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return false;
                 }
             }

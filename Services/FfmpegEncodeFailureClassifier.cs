@@ -84,6 +84,7 @@ internal enum FfmpegNvencFailureKind
 {
     None,
     Unavailable,
+    DriverIncompatible,
     UnsupportedConfiguration,
     RuntimeFailure
 }
@@ -95,6 +96,7 @@ internal sealed record FfmpegNvencFailure(FfmpegNvencFailureKind Kind, IReadOnly
     public string Describe() => Kind switch
     {
         FfmpegNvencFailureKind.Unavailable => "the requested NVENC encoder is unavailable; verify the NVIDIA driver and FFmpeg build",
+        FfmpegNvencFailureKind.DriverIncompatible => "the installed NVIDIA driver does not support the NVENC API required by this FFmpeg build",
         FfmpegNvencFailureKind.UnsupportedConfiguration => "the requested NVENC configuration is unsupported; adjust codec, profile, pixel format, or preset",
         FfmpegNvencFailureKind.RuntimeFailure => "the NVENC runtime failed; check GPU/driver health and competing encoder sessions",
         _ => "no reliable NVENC failure evidence was found"
@@ -107,7 +109,9 @@ internal static class FfmpegNvencFailureClassifier
     {
         if (string.IsNullOrWhiteSpace(standardError))
             return new(FfmpegNvencFailureKind.None, Array.Empty<string>());
-        if (Contains(standardError, "Unknown encoder", "Cannot load libnvidia-encode", "No NVENC capable devices found", "minimum required Nvidia driver"))
+        if (Contains(standardError, "does not support the required nvenc api version", "minimum required Nvidia driver"))
+            return new(FfmpegNvencFailureKind.DriverIncompatible, Evidence(standardError));
+        if (Contains(standardError, "Unknown encoder", "Cannot load libnvidia-encode", "No NVENC capable devices found"))
             return new(FfmpegNvencFailureKind.Unavailable, Evidence(standardError));
         if (Contains(standardError, "InitializeEncoder failed: invalid param", "NV_ENC_ERR_INVALID_PARAM", "unsupported preset"))
             return new(FfmpegNvencFailureKind.UnsupportedConfiguration, Evidence(standardError));
