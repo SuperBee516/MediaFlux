@@ -23,7 +23,7 @@ public sealed partial class LibraryAnalyzerForm
     private Button _maintenanceRunButton=new();
     private Button _maintenanceToggleButton=new();
     private Button _maintenanceDeferButton=new();
-    private readonly ToolTip _maintenanceToolTip=new();
+    private ToolTip? _maintenanceToolTip=new();
     private long _lastMaintenanceUiUpdateTicks;
 
     private void BuildScheduledMaintenanceTab()
@@ -37,7 +37,7 @@ public sealed partial class LibraryAnalyzerForm
         AnalyzerUi.StyleAttention(_maintenanceRunButton);
         _maintenanceToggleButton=AddButton(actions,"Enable Schedule",async(_,_)=>await ToggleSelectedMaintenanceAsync());
         _maintenanceDeferButton=AddButton(actions,"Defer Current Maintenance",(_,_)=>_runtime.Maintenance.DeferCurrent());
-        _maintenanceToolTip.SetToolTip(_maintenanceDeferButton,"Stops the active maintenance run at a safe boundary. It can run again according to its schedule.");
+        _maintenanceToolTip!.SetToolTip(_maintenanceDeferButton,"Stops the active maintenance run at a safe boundary. It can run again according to its schedule.");
         AddButton(actions,"Refresh",async(_,_)=>await RefreshMaintenanceAsync());
 
         AddMaintenanceColumn(_maintenanceGrid,"Location",160,true);

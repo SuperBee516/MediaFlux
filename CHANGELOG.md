@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-09-24
+
+### Library Analyzer
+
+- Made scheduled maintenance more dependable across application restarts, missed schedule times, daylight-saving changes, encoding conflicts, and multiple due locations. Maintenance history now records the scheduled occurrence and clearer reasons for runs that wait, defer, skip, fail, or find a location unavailable.
+- Added a guided schedule editor with a live schedule summary and Quick Scrub options, plus a clearer maintenance workspace with per-location details and readable run history.
+- Dispose the maintenance tooltip with the Library Analyzer form to avoid retaining its native UI resource after the form closes.
+- Expanded duplicate-family comparison with navigation between eligible families and the ability to change the keeper from the comparison view.
+
+### Encoding Reliability
+
+- Check NVENC runtime availability before encoding and report when the installed driver cannot support the FFmpeg build's NVENC API, with guidance for resolving the issue.
+
+### Queue Workspace
+
+- Improved queue workspace sizing, responsive layout, and settings persistence. Source file size can now be sorted from the queue's size columns.
+- Refined first-run encoding defaults, including Automatic quality, Auto output container, and source-aware target sizing, while preserving existing saved preferences.
+
 ## [1.6.2] - 2026-09-23
 
 ### Main Window
@@ -953,7 +971,8 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.2...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.3...HEAD
+[1.6.3]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.2...v1.6.3
 [1.6.2]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.5.10...v1.6.0

@@ -334,6 +334,8 @@ namespace MediaFlux
             _overviewRefreshQueued = false;
             _overviewToolTip.Dispose();
             _visualActionToolTip.Dispose();
+            _maintenanceToolTip?.Dispose();
+            _maintenanceToolTip = null;
             _overviewRefreshCancellation.Cancel();
             _overviewRefreshCancellation.Dispose();
             if (_visualPreviewFocus) RestoreVisualWorkspace();

@@ -130,6 +130,38 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
+    [Fact]
+    public void MaintenanceTooltipIsDisposedWithAnalyzerForm()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            LibraryAnalyzerForm? form = null;
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                using var catalog = new SqliteLibraryCatalog(Path.Combine(_root, "tooltip.db"), Path.Combine(_root, "tooltip-backups"), Path.Combine(_root, "tooltip-recovery"));
+                catalog.Initialize();
+                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual(), startMaintenanceScheduler: false);
+                form = new LibraryAnalyzerForm(runtime);
+                form.Show();
+                Application.DoEvents();
+                Assert.NotNull(Field<ToolTip>(form, "_maintenanceToolTip"));
+
+                WinFormsTestLifecycle.CloseAndDispose(form);
+
+                Assert.Null(form.GetType().GetField("_maintenanceToolTip", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(form));
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Maintenance tooltip lifecycle test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
     private static Task InvokeTask(object form, string method) =>
         (Task)(form.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(form, null)
             ?? throw new MissingMethodException(method));
