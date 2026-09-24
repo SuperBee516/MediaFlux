@@ -108,6 +108,7 @@ internal sealed class AnalyzerStatusBadge : Label
 
 internal static class AnalyzerUi
 {
+    public static Color AttentionTextColor => Color.FromArgb(128, 78, 0);
     public static TableLayoutPanel MetricRow(int height, params Control[] cards)
     {
         int cardHeight = cards.Length == 0
@@ -161,7 +162,7 @@ internal static class AnalyzerUi
         button.AccessibleRole = AccessibleRole.PushButton;
         if (string.IsNullOrWhiteSpace(button.AccessibleName)) button.AccessibleName = button.Text;
         button.BackColor = Color.FromArgb(255, 244, 224);
-        button.ForeColor = Color.FromArgb(128, 78, 0);
+        button.ForeColor = AttentionTextColor;
         button.FlatStyle = FlatStyle.Flat;
         button.FlatAppearance.BorderColor = Color.FromArgb(218, 165, 72);
         button.Margin = new Padding(3);

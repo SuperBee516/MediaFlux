@@ -16,6 +16,7 @@ public sealed partial class LibraryAnalyzerForm
     private readonly AnalyzerMetricCard _familyReviewMetric = new("Review state");
     private readonly CheckBox _familyShowIgnored = new() { Text = "Show ignored", AutoSize = true, Margin = new Padding(10, 10, 3, 3) };
     private Button? _familyReviewButton;
+    private Button? _familyCompareButton;
     private Button? _familyCleanupButton;
     private long _familyTotal;
     private CancellationTokenSource? _familyCleanupCancellation;
@@ -30,6 +31,7 @@ public sealed partial class LibraryAnalyzerForm
         AddButton(actions, "Rebuild from current pair evidence", async (_, _) => await RebuildVisualFamiliesAsync());
         _familyReviewButton = AddButton(actions, "Review family…", async (_, _) => await OpenVisualFamilyReviewAsync());
         AnalyzerUi.StylePrimary(_familyReviewButton);
+        _familyCompareButton = AddButton(actions, "Compare with keeper", async (_, _) => await CompareFamilyMemberWithKeeperAsync());
         AddButton(actions, "Mark selected reviewed", async (_, _) => await SaveSelectedFamiliesStateAsync(reviewed: true));
         AddButton(actions, "Ignore / restore", async (_, _) => await ToggleSelectedFamilyIgnoredAsync());
         _familyCleanupButton = AddButton(actions, "Clean selected…", async (_, _) => await PreviewFamilyCleanupAsync(allReviewedFamilies: false));
@@ -61,17 +63,22 @@ public sealed partial class LibraryAnalyzerForm
 
         foreach ((string name, string header, int width) in new[]
         {
-            ("Keeper","Keeper",80),("Protected","Protected",75),("Path","Path",380),("Size","Size",85),
+            ("Role","Role",120),("Protected","Protected",75),("Path","Path",380),("Size","Size",85),
             ("Codec","Codec",75),("Resolution","Resolution",90),("Bitrate","Bitrate",90),("HDR","HDR",50),
             ("Audio","Audio",120),("Availability","Availability",90),("Evidence","Direct confidence",110)
         })
             _familyMembersGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = header, Width = width });
         _familyMembersGrid.Columns["Path"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _familyMembersGrid.MultiSelect = true;
-        _familyMembersGrid.CellDoubleClick += (_, e) =>
+        _familyMembersGrid.SelectionChanged += (_, _) => UpdateFamilyActionState();
+        _familyMembersGrid.CellDoubleClick += async (_, e) =>
         {
-            if (e.RowIndex >= 0 && _familyMembersGrid.Rows[e.RowIndex].Tag is VisualFamilyMemberRecord member)
-                PlayFamilyMember(member);
+            if (e.RowIndex < 0 || _familyMembersGrid.Rows[e.RowIndex].Tag is not VisualFamilyMemberRecord member) return;
+            _familyMembersGrid.ClearSelection();
+            _familyMembersGrid.Rows[e.RowIndex].Selected = true;
+            _familyMembersGrid.CurrentCell = _familyMembersGrid.Rows[e.RowIndex].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            if (CanCompareFamilyMemberWithKeeper(member)) await CompareFamilyMemberWithKeeperAsync();
+            else PlayFamilyMember(member);
         };
 
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 235, Panel1MinSize = 120, Panel2MinSize = 150 };
@@ -79,7 +86,7 @@ public sealed partial class LibraryAnalyzerForm
         split.Panel2.Controls.Add(_familyMembersGrid);
         var notice = new Label
         {
-            Dock = DockStyle.Bottom, Height = 38, Padding = new Padding(8, 7, 0, 0), ForeColor = Color.DarkOrange,
+            Dock = DockStyle.Bottom, Height = 38, Padding = new Padding(8, 7, 0, 0), ForeColor = AnalyzerUi.AttentionTextColor,
             Text = "Families require direct visual evidence between every pair. Ambiguous overlaps remain in pair review. Cleanup still revalidates each candidate independently."
         };
         tab.Controls.Add(split);
@@ -164,9 +171,9 @@ public sealed partial class LibraryAnalyzerForm
         SetMenuState(_familyMembersMenu, "Play", single && File.Exists(member!.FullPath));
         SetMenuState(_familyMembersMenu, "Folder", valid && members.All(value => Directory.Exists(Path.GetDirectoryName(value.FullPath))));
         SetMenuState(_familyMembersMenu, "CopyPath", valid, members.Length > 1 ? "Copy File Paths" : "Copy File Path");
-        SetMenuState(_familyMembersMenu, "Keeper", single && IsAvailableFamilyMember(member!) && member!.FileId != family!.ManualKeeperFileId);
+        SetMenuState(_familyMembersMenu, "Keeper", single && IsAvailableFamilyMember(member!) && member!.FileId != keeperId);
         SetMenuState(_familyMembersMenu, "Protect", valid, members.All(value => value.IsProtected) ? "Unprotect" : "Protect");
-        SetMenuState(_familyMembersMenu, "CompareKeeper", single && keeper != null && keeper.FileId != member!.FileId && IsAvailableFamilyMember(keeper) && IsAvailableFamilyMember(member));
+        SetMenuState(_familyMembersMenu, "CompareKeeper", single && CanCompareFamilyMemberWithKeeper(member!));
         SetMenuState(_familyMembersMenu, "ComparePair", members.Length == 2 && members.All(IsAvailableFamilyMember));
         SetMenuState(_familyMembersMenu, "Reanalyze", valid);
         SetMenuState(_familyMembersMenu, "SelectOthers", family != null && keeperId.HasValue && _familyMembersGrid.Rows.Count > 1);
@@ -239,6 +246,11 @@ public sealed partial class LibraryAnalyzerForm
         bool hasFamily = SelectedVisualFamily() != null;
         if (_familyReviewButton != null) _familyReviewButton.Enabled = hasFamily;
         if (_familyCleanupButton != null) _familyCleanupButton.Enabled = hasFamily;
+        if (_familyCompareButton != null)
+        {
+            VisualFamilyMemberRecord[] selectedMembers = SelectedFamilyMembers();
+            _familyCompareButton.Enabled = selectedMembers.Length == 1 && CanCompareFamilyMemberWithKeeper(selectedMembers[0]);
+        }
     }
 
     private async Task RefreshVisualFamilyMembersAsync()
@@ -257,16 +269,22 @@ public sealed partial class LibraryAnalyzerForm
             IReadOnlyList<VisualFamilyMemberRecord> members = await Task.Run(() =>
                 _runtime.FamilyCatalog.GetVisualFamilyMembers(family.FamilyId));
             if (version != Volatile.Read(ref _familyMemberLoadVersion) || _lifecycleCleanupCompleted || IsDisposed || Disposing || _familyMembersGrid.IsDisposed) return;
+            long[] selectedMemberIds = SelectedFamilyMembers().Select(member => member.FileId).ToArray();
             _familyMembersGrid.Rows.Clear();
             foreach (VisualFamilyMemberRecord member in members)
             {
-                string keeper = member.IsManualKeeper ? "Manual" : member.IsSuggestedKeeper ? "Suggested" : "";
-                int row = _familyMembersGrid.Rows.Add(keeper, member.IsProtected ? "Yes" : "No", member.FullPath, FormatBytes(member.SizeBytes),
+                bool isEffectiveKeeper = member.IsManualKeeper || (!family.ManualKeeperFileId.HasValue && member.IsSuggestedKeeper);
+                string role = isEffectiveKeeper
+                    ? member.IsManualKeeper ? "Keeper (Manual)" : "Keeper (Automatic)"
+                    : "Candidate";
+                int row = _familyMembersGrid.Rows.Add(role, member.IsProtected ? "Yes" : "No", member.FullPath, FormatBytes(member.SizeBytes),
                     member.VideoCodec.ToUpperInvariant(), member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
                     member.TotalBitRate.HasValue ? $"{member.TotalBitRate.Value / 1_000_000d:0.##} Mbps" : "", member.IsHdr ? "Yes" : "No",
                     member.AudioSummary, member.Availability, $"{member.MinimumMemberConfidence:0.0}%");
                 _familyMembersGrid.Rows[row].Tag = member;
+                _familyMembersGrid.Rows[row].Selected = selectedMemberIds.Contains(member.FileId);
             }
+            UpdateFamilyActionState();
         }
         finally { _familyMemberRefreshLock.Release(); }
     }
@@ -407,11 +425,21 @@ public sealed partial class LibraryAnalyzerForm
 
     private async Task SetSelectedFamilyKeeperAsync()
     {
-        if (SelectedVisualFamily() is not { } family || SelectedFamilyMembers().SingleOrDefault() is not { } member ||
-            !IsAvailableFamilyMember(member)) return;
+        VisualFamilyMemberRecord[] selectedMembers = SelectedFamilyMembers();
+        if (SelectedVisualFamily() is not { } family || selectedMembers.Length != 1 ||
+            selectedMembers[0].FamilyId != family.FamilyId || !IsAvailableFamilyMember(selectedMembers[0]) ||
+            selectedMembers[0].FileId == (family.ManualKeeperFileId ?? family.SuggestedKeeperFileId)) return;
+        VisualFamilyMemberRecord member = selectedMembers[0];
+        long selectedFileId = member.FileId;
         await Task.Run(() => _runtime.FamilyCatalog.SaveVisualFamilyDecision(new VisualFamilyDecision(
             family.FamilyId, member.FileId, true, family.Ignored)));
         await RefreshVisualFamiliesAsync();
+        if (_familyMembersGrid.Rows.Cast<DataGridViewRow>().FirstOrDefault(row => (row.Tag as VisualFamilyMemberRecord)?.FileId == selectedFileId) is { } selectedRow)
+        {
+            _familyMembersGrid.ClearSelection();
+            selectedRow.Selected = true;
+            _familyMembersGrid.CurrentCell = selectedRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+        }
     }
 
     private async Task ToggleSelectedFamilyProtectionAsync()
@@ -447,7 +475,9 @@ public sealed partial class LibraryAnalyzerForm
 
     private async Task CompareFamilyMemberWithKeeperAsync()
     {
-        if (SelectedVisualFamily() is not { } family || SelectedFamilyMembers().SingleOrDefault() is not { } member) return;
+        VisualFamilyMemberRecord[] selectedMembers = SelectedFamilyMembers();
+        if (SelectedVisualFamily() is not { } family || selectedMembers.Length != 1 || !CanCompareFamilyMemberWithKeeper(selectedMembers[0])) return;
+        VisualFamilyMemberRecord member = selectedMembers[0];
         long? keeperId = family.ManualKeeperFileId ?? family.SuggestedKeeperFileId;
         if (!keeperId.HasValue || keeperId == member.FileId) return;
         VisualFamilyMemberRecord? keeper = _familyMembersGrid.Rows.Cast<DataGridViewRow>()
@@ -455,6 +485,17 @@ public sealed partial class LibraryAnalyzerForm
         if (keeper == null) return;
         await OpenMemberComparisonAsync("Compare Family Member With Keeper",
             new[] { ToVisualMember(keeper), ToVisualMember(member) }, keeper.FileId);
+    }
+
+    private bool CanCompareFamilyMemberWithKeeper(VisualFamilyMemberRecord member)
+    {
+        VisualFamilyRecord? family = SelectedVisualFamily();
+        if (family == null || member.FamilyId != family.FamilyId) return false;
+        long? keeperId = family.ManualKeeperFileId ?? family.SuggestedKeeperFileId;
+        if (!keeperId.HasValue || keeperId.Value == member.FileId) return false;
+        VisualFamilyMemberRecord? keeper = _familyMembersGrid.Rows.Cast<DataGridViewRow>()
+            .Select(row => row.Tag).OfType<VisualFamilyMemberRecord>().FirstOrDefault(value => value.FileId == keeperId.Value);
+        return keeper != null && IsAvailableFamilyMember(keeper) && IsAvailableFamilyMember(member);
     }
 
     private async Task CompareSelectedFamilyPairAsync()

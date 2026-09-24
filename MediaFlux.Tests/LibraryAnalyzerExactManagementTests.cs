@@ -387,6 +387,119 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
     }
 
     [Fact]
+    public void VisualFamilyCompareAndKeeperActionsUseSelectedMemberAndRefreshRoles()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        RunSta(() =>
+        {
+            using SqliteLibraryCatalog catalog = CreateCatalog(Path.Combine(_root, "family-ui.db"));
+            string library = Path.Combine(_root, "family-ui");
+            Directory.CreateDirectory(library);
+            string[] files = Enumerable.Range(0, 3).Select(index => Write(library, $"family-{index}.mkv", Enumerable.Repeat((byte)(70 + index), 2048).ToArray())).ToArray();
+            AddInventory(catalog, library, files);
+            VisualAnalysisHandle run = catalog.BeginVisualAnalysis("family-ui", 1);
+            catalog.PrepareVisualSimilarityGroups(run);
+            catalog.AppendVisualSimilarityGroups(run, new[]
+            {
+                (0, 1, 98d), (0, 2, 97d), (1, 2, 96d)
+            }.Select(pair => new VisualMatchWrite(catalog.GetFileByPath(files[pair.Item1])!.Id,
+                catalog.GetFileByPath(files[pair.Item2])!.Id, pair.Item3, 6, 6, 1, 0, "family UI test")).ToArray());
+            catalog.PublishVisualSimilarityGroups(run);
+            catalog.CompleteVisualAnalysis(run, new VisualAnalysisCompletion(DuplicateAnalysisStatus.Completed, 3, 3, 3, 3, 0));
+            catalog.RebuildVisualFamilies();
+            VisualFamilyRecord family = Assert.Single(catalog.QueryVisualFamilies(new VisualFamilyQuery()).Families);
+            long keeperId = catalog.GetFileByPath(files[0])!.Id;
+            catalog.SetVisualFamilySuggestedKeeper(family.FamilyId, null);
+
+            var comparisons = new ConcurrentQueue<IReadOnlyList<string>>();
+            using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyMetadataProbe(), new EmptyVisualExtractor());
+            using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
+                ComparisonLauncher: (_, paths) => { comparisons.Enqueue(paths); return Task.CompletedTask; }));
+            form.Show();
+            TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
+            TabPage tab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Duplicates — Families");
+            tabs.SelectedTab = tab;
+            form.Size = new System.Drawing.Size(1100, 700);
+            PumpTask(InvokePrivateTask(form, "RefreshVisualFamiliesAsync"));
+            DataGridView members = GetPrivateField<DataGridView>(form, "_familyMembersGrid");
+            PumpUntil(() => members.Rows.Count == 3);
+            Button compare = Descendants<Button>(tab).Single(button => button.Text == "Compare with keeper");
+            FlowLayoutPanel actionBar = (FlowLayoutPanel)compare.Parent!;
+            Assert.True(actionBar.WrapContents);
+            Assert.True(actionBar.AutoScroll);
+            Assert.True(compare.Visible);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.False(compare.Enabled);
+            catalog.SetVisualFamilySuggestedKeeper(family.FamilyId, keeperId);
+            PumpTask(InvokePrivateTask(form, "RefreshVisualFamiliesAsync"));
+            PumpUntil(() => members.Rows.Count == 3 && members.Rows.Cast<DataGridViewRow>().Any(row => row.Cells["Role"].Value?.ToString() == "Keeper (Automatic)"));
+            DataGridView families = GetPrivateField<DataGridView>(form, "_familyGrid");
+            string potentialSpaceBeforeKeeperChange = Convert.ToString(families.Rows[0].Cells["Space"].Value)!;
+            DataGridViewRow keeperRow = members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == keeperId);
+            Assert.Equal("Keeper (Automatic)", keeperRow.Cells["Role"].Value);
+
+            VisualFamilyMemberRecord candidate = members.Rows.Cast<DataGridViewRow>().Select(row => (VisualFamilyMemberRecord)row.Tag!).First(member => member.FileId != keeperId);
+            Assert.Equal("Candidate", members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == candidate.FileId).Cells["Role"].Value);
+            DataGridViewRow candidateRow = members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == candidate.FileId);
+            candidateRow.Selected = true;
+            members.CurrentCell = candidateRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.True(compare.Enabled);
+            PumpTask(InvokePrivateTask(form, "CompareFamilyMemberWithKeeperAsync"));
+            Assert.Equal(new[] { files[0], candidate.FullPath }, comparisons.Single());
+            typeof(DataGridView).GetMethod("OnCellDoubleClick", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(members, new object[] { new DataGridViewCellEventArgs(candidateRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible).ColumnIndex, candidateRow.Index) });
+            PumpUntil(() => comparisons.Count == 2);
+
+            ContextMenuStrip menu = GetPrivateField<ContextMenuStrip>(form, "_familyMembersMenu");
+            InvokePrivate(form, "UpdateFamilyMembersMenuState", new CancelEventArgs());
+            Assert.True(menu.Items.Find("CompareKeeper", false).Single().Enabled);
+            Assert.True(menu.Items.Find("Keeper", false).Single().Enabled);
+            PumpTask(InvokePrivateTask(form, "SetSelectedFamilyKeeperAsync"));
+            VisualFamilyRecord changedFamily = catalog.GetVisualFamily(family.FamilyId)!;
+            Assert.Equal(candidate.FileId, changedFamily.ManualKeeperFileId);
+            Assert.True(changedFamily.Reviewed);
+            Assert.Equal(potentialSpaceBeforeKeeperChange, Convert.ToString(families.Rows[0].Cells["Space"].Value));
+            Assert.Equal(candidate.FileId, ((VisualFamilyMemberRecord)members.SelectedRows.Cast<DataGridViewRow>().Single().Tag!).FileId);
+            Assert.Equal("Keeper (Manual)", members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == candidate.FileId).Cells["Role"].Value);
+            Assert.All(members.Rows.Cast<DataGridViewRow>(), row => Assert.False(((VisualFamilyMemberRecord)row.Tag!).IsProtected));
+            var familyCleanup = new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog);
+            var familyService = new LibraryVisualFamilyService(catalog, familyCleanup);
+            VisualFamilyCleanupProposal cleanupProposal = familyService.BuildCleanupProposal(family.FamilyId);
+            Assert.Equal(2, cleanupProposal.Items.Count);
+            Assert.DoesNotContain(cleanupProposal.Items, item => item.Candidate.FileId == candidate.FileId);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.False(compare.Enabled);
+            InvokePrivate(form, "UpdateFamilyMembersMenuState", new CancelEventArgs());
+            Assert.False(menu.Items.Find("Keeper", false).Single().Enabled);
+            Assert.All(files, path => Assert.True(File.Exists(path)));
+
+            VisualFamilyMemberRecord otherCandidate = members.Rows.Cast<DataGridViewRow>().Select(row => (VisualFamilyMemberRecord)row.Tag!).First(member => member.FileId != candidate.FileId);
+            DataGridViewRow otherCandidateRow = members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == otherCandidate.FileId);
+            members.ClearSelection();
+            otherCandidateRow.Selected = true;
+            members.CurrentCell = otherCandidateRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.True(compare.Enabled);
+            File.Delete(otherCandidate.FullPath);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.False(compare.Enabled);
+            File.WriteAllBytes(otherCandidate.FullPath, Enumerable.Repeat((byte)89, 2048).ToArray());
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.True(compare.Enabled);
+            File.Delete(candidate.FullPath);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.False(compare.Enabled);
+            int comparisonCount = comparisons.Count;
+            typeof(DataGridView).GetMethod("OnCellDoubleClick", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(members, new object[] { new DataGridViewCellEventArgs(otherCandidateRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible).ColumnIndex, otherCandidateRow.Index) });
+            Application.DoEvents();
+            Assert.Equal(comparisonCount, comparisons.Count);
+            form.Close();
+        });
+    }
+
+    [Fact]
     public void LocationSelectionSurvivesRealTimerPollingAndStatusChanges()
     {
         if (!OperatingSystem.IsWindows()) return;
