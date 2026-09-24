@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-09-23
+
+### Main Window
+
+- Replaced the large progress panel with a compact status bar for encoding, audio, and background queue work, showing progress and ETA when available.
+
+### Library Analyzer
+
+- Added Families comparison against the designated keeper, clearer keeper and candidate roles, and immediate presentation refresh when changing the keeper.
+- Improved contrast for Families warning text.
+
 ## [1.6.1] - 2026-09-23
 
 ### Fixed
@@ -942,7 +953,8 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.1...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.2...HEAD
+[1.6.2]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.5.10...v1.6.0
 [0.1.3]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.3
