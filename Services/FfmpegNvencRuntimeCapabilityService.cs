@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services;
 
@@ -38,6 +39,10 @@ public interface IFfmpegNvencProbeRunner
 
 public sealed class FfmpegNvencRuntimeCapabilityService
 {
+    // NVENC on supported GPUs can reject tiny frames before the runtime has
+    // been validated. 64x64 fails on the RTX 4090; 256x256 initializes all
+    // three NVENC encoders without requiring a real input file.
+    private const string ProbeInput = "color=c=black:s=256x256:r=1";
     private static readonly Regex ApiMismatch = new(
         @"required\s*:\s*(?<required>\d+(?:\.\d+)*)\s+found\s*:\s*(?<found>\d+(?:\.\d+)*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -60,15 +65,23 @@ public sealed class FfmpegNvencRuntimeCapabilityService
 
     public Task<FfmpegNvencRuntimeCapability> CheckAsync(string ffmpegPath, string encoder, CancellationToken cancellationToken = default)
     {
-        if (encoder is not ("h264_nvenc" or "hevc_nvenc"))
+        if (encoder is not ("h264_nvenc" or "hevc_nvenc" or "av1_nvenc"))
             throw new ArgumentException("Only NVENC encoders supported by MediaFlux can be probed.", nameof(encoder));
         string key = CacheKey(ffmpegPath, encoder);
         Lazy<Task<FfmpegNvencRuntimeCapability>> lazy = _cache.GetOrAdd(key, _ =>
             new Lazy<Task<FfmpegNvencRuntimeCapability>>(() => ProbeAsync(ffmpegPath, encoder, cancellationToken), LazyThreadSafetyMode.ExecutionAndPublication));
-        return AwaitAndEvictCanceledAsync(key, lazy);
+        return AwaitAndEvictTransientAsync(key, lazy);
     }
 
     public void ClearCache() => _cache.Clear();
+
+    public async Task<FfmpegNvencRuntimeCapability?> CheckRequestedAsync(
+        string ffmpegPath, VideoEncoderSelection selection, CancellationToken cancellationToken = default)
+    {
+        if (!selection.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase))
+            return null;
+        return await CheckAsync(ffmpegPath, selection.FfmpegCodec, cancellationToken).ConfigureAwait(false);
+    }
 
     public static FfmpegNvencRuntimeCapability Classify(
         string ffmpegPath, string encoder, int? exitCode, string stdout, string stderr, bool timedOut = false)
@@ -84,6 +97,7 @@ public sealed class FfmpegNvencRuntimeCapabilityService
         FfmpegNvencRuntimeState state;
         string diagnostic;
         if (timedOut) { state = FfmpegNvencRuntimeState.TimedOut; diagnostic = $"The {encoder} initialization probe timed out."; }
+        else if (exitCode == 0) { state = FfmpegNvencRuntimeState.Available; diagnostic = $"{encoder} initialized successfully."; }
         else if (raw.Contains("Unknown encoder", StringComparison.OrdinalIgnoreCase))
         { state = FfmpegNvencRuntimeState.EncoderMissing; diagnostic = $"This FFmpeg build does not provide {encoder}."; }
         else if (api.Success || raw.Contains("minimum required Nvidia driver", StringComparison.OrdinalIgnoreCase))
@@ -97,17 +111,38 @@ public sealed class FfmpegNvencRuntimeCapabilityService
             if (minimumDriver.Length > 0 && api.Success)
                 diagnostic = $"NVENC unavailable — FFmpeg requires NVENC API {required}, but the installed NVIDIA driver provides {found}; this build requires NVIDIA driver {minimumDriver} or newer.";
         }
-        else if (exitCode == 0) { state = FfmpegNvencRuntimeState.Available; diagnostic = $"{encoder} initialized successfully."; }
-        else if (exitCode.HasValue)
+        else if (raw.Contains("Frame Dimension less than the minimum supported value", StringComparison.OrdinalIgnoreCase) ||
+                 raw.Contains("Frame dimensions are less than the minimum supported value", StringComparison.OrdinalIgnoreCase))
+        {
+            state = FfmpegNvencRuntimeState.ProbeFailed;
+            diagnostic = "MediaFlux's NVENC test frame is smaller than this encoder supports.";
+        }
+        else if (IsRuntimeInitializationFailure(raw))
         {
             state = FfmpegNvencRuntimeState.Unavailable;
             diagnostic = "NVENC could not initialize with the current FFmpeg and GPU runtime.";
         }
-        else { state = FfmpegNvencRuntimeState.ProbeFailed; diagnostic = "The NVENC initialization probe could not be completed."; }
+        else { state = FfmpegNvencRuntimeState.ProbeFailed; diagnostic = "The NVENC initialization probe failed. The FFmpeg error is in the Central Error Log."; }
 
         return new(state, encoder, ffmpegPath, version, exitCode, diagnostic, raw, required.Length == 0 ? null : required,
             found.Length == 0 ? null : found, minimumDriver.Length == 0 ? null : minimumDriver);
     }
+
+    private static bool IsRuntimeInitializationFailure(string raw) =>
+        new[]
+        {
+            "OpenEncodeSessionEx failed",
+            "No NVENC capable devices found",
+            "No capable devices found",
+            "Cannot load nvEncodeAPI64.dll",
+            "Cannot load nvcuda.dll",
+            "Failed loading nvEncodeAPI64.dll",
+            "Failed to create CUDA context"
+        }.Any(message => raw.Contains(message, StringComparison.OrdinalIgnoreCase));
+
+    internal static string[] BuildProbeArguments(string encoder) =>
+        ["-nostdin", "-f", "lavfi", "-i", ProbeInput, "-frames:v", "1",
+            "-an", "-c:v", encoder, "-f", "null", "-"];
 
     private async Task<FfmpegNvencRuntimeCapability> ProbeAsync(string path, string encoder, CancellationToken token)
     {
@@ -131,14 +166,37 @@ public sealed class FfmpegNvencRuntimeCapabilityService
     }
 
     private static void LogCapability(FfmpegNvencRuntimeCapability capability) =>
-        ErrorLogService.Append(AppPaths.InstallDirectory, "NVENC runtime capability",
-            details: $"FFmpeg: {capability.FfmpegPath}{Environment.NewLine}Version: {capability.FfmpegVersion}{Environment.NewLine}Encoder: {capability.Encoder}{Environment.NewLine}Result: {capability.State}{Environment.NewLine}Exit code: {capability.ExitCode?.ToString() ?? "n/a"}{Environment.NewLine}Required NVENC API: {capability.RequiredApiVersion ?? "not reported"}{Environment.NewLine}Detected NVENC API: {capability.DetectedApiVersion ?? "not reported"}{Environment.NewLine}Minimum driver: {capability.MinimumDriverVersion ?? "not reported"}{Environment.NewLine}{capability.Diagnostic}{Environment.NewLine}{capability.RawDiagnostic}");
+        ErrorLogService.Append(AppPaths.UserDataDirectory, "NVENC runtime capability",
+            details: DiagnosticDetails(capability));
 
-    private async Task<FfmpegNvencRuntimeCapability> AwaitAndEvictCanceledAsync(string key, Lazy<Task<FfmpegNvencRuntimeCapability>> lazy)
+    public static void LogBlocked(FfmpegNvencRuntimeCapability capability, string stage) =>
+        ErrorLogService.Append(AppPaths.UserDataDirectory, "NVENC encode blocked",
+            details: $"Stage: {stage}{Environment.NewLine}{DiagnosticDetails(capability)}");
+
+    public static string BlockedMessage(FfmpegNvencRuntimeCapability capability) =>
+        $"{capability.Diagnostic}{Environment.NewLine}{Environment.NewLine}" +
+        $"Encoder: {capability.Encoder}{Environment.NewLine}" +
+        "Full FFmpeg output: File > View Error Log > Central Error Log.";
+
+    private static string DiagnosticDetails(FfmpegNvencRuntimeCapability capability) =>
+        $"FFmpeg: {capability.FfmpegPath}{Environment.NewLine}Version: {capability.FfmpegVersion}{Environment.NewLine}Probe: \"{capability.FfmpegPath}\" {string.Join(" ", BuildProbeArguments(capability.Encoder))}{Environment.NewLine}Encoder: {capability.Encoder}{Environment.NewLine}Result: {capability.State}{Environment.NewLine}Exit code: {capability.ExitCode?.ToString() ?? "n/a"}{Environment.NewLine}Required NVENC API: {capability.RequiredApiVersion ?? "not reported"}{Environment.NewLine}Detected NVENC API: {capability.DetectedApiVersion ?? "not reported"}{Environment.NewLine}Minimum driver: {capability.MinimumDriverVersion ?? "not reported"}{Environment.NewLine}{capability.Diagnostic}{Environment.NewLine}{capability.RawDiagnostic}";
+
+    private async Task<FfmpegNvencRuntimeCapability> AwaitAndEvictTransientAsync(string key, Lazy<Task<FfmpegNvencRuntimeCapability>> lazy)
     {
-        try { return await lazy.Value.ConfigureAwait(false); }
-        catch (OperationCanceledException) { _cache.TryRemove(key, out _); throw; }
+        try
+        {
+            FfmpegNvencRuntimeCapability capability = await lazy.Value.ConfigureAwait(false);
+            if (capability.State is FfmpegNvencRuntimeState.Unavailable or
+                FfmpegNvencRuntimeState.TimedOut or FfmpegNvencRuntimeState.ProbeFailed)
+                Evict(key, lazy);
+            return capability;
+        }
+        catch (OperationCanceledException) { Evict(key, lazy); throw; }
     }
+
+    private void Evict(string key, Lazy<Task<FfmpegNvencRuntimeCapability>> lazy) =>
+        ((ICollection<KeyValuePair<string, Lazy<Task<FfmpegNvencRuntimeCapability>>>>)_cache)
+            .Remove(new(key, lazy));
 
     private static string CacheKey(string path, string encoder)
     {
@@ -158,7 +216,7 @@ public sealed class FfmpegNvencRuntimeCapabilityService
                 RedirectStandardOutput = true, RedirectStandardError = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             }};
-            foreach (string arg in new[] { "-nostdin", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1", "-frames:v", "1", "-an", "-c:v", encoder, "-f", "null", "-" })
+            foreach (string arg in BuildProbeArguments(encoder))
                 process.StartInfo.ArgumentList.Add(arg);
             process.Start();
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

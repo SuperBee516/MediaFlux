@@ -317,13 +317,13 @@ namespace MediaFlux.Services
                     request.ConcurrentEncoderSessions);
             EnsureEncoderAvailable(validated.Resolved.Selection);
 
-            if (validated.Resolved.Selection.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase))
+            FfmpegNvencRuntimeCapability? capability = await FfmpegNvencRuntimeCapabilityService.Shared
+                .CheckRequestedAsync(_ffmpegPath, validated.Resolved.Selection, request.CancellationToken)
+                .ConfigureAwait(false);
+            if (capability is { IsAvailable: false })
             {
-                FfmpegNvencRuntimeCapability capability = await FfmpegNvencRuntimeCapabilityService.Shared
-                    .CheckAsync(_ffmpegPath, validated.Resolved.Selection.FfmpegCodec, request.CancellationToken)
-                    .ConfigureAwait(false);
-                if (!capability.IsAvailable)
-                    throw new InvalidOperationException(capability.Diagnostic);
+                FfmpegNvencRuntimeCapabilityService.LogBlocked(capability, "Encoding service");
+                throw new InvalidOperationException(FfmpegNvencRuntimeCapabilityService.BlockedMessage(capability));
             }
 
             return await EncodeInternalAsync(

@@ -196,11 +196,13 @@ namespace MediaFlux
             foreach (VideoEncoderSelection selection in nvencSelections.DistinctBy(value => value.FfmpegCodec, StringComparer.OrdinalIgnoreCase))
             {
                 FfmpegToolPaths tools = ResolveFfmpegTools();
-                FfmpegNvencRuntimeCapability runtime = await FfmpegNvencRuntimeCapabilityService.Shared
-                    .CheckAsync(tools.FfmpegPath, selection.FfmpegCodec);
-                if (!runtime.IsAvailable)
+                FfmpegNvencRuntimeCapability? runtime = await FfmpegNvencRuntimeCapabilityService.Shared
+                    .CheckRequestedAsync(tools.FfmpegPath, selection);
+                if (runtime is { IsAvailable: false })
                 {
-                    MessageBox.Show(this, runtime.Diagnostic, "NVENC unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    FfmpegNvencRuntimeCapabilityService.LogBlocked(runtime, "Queue startup");
+                    MessageBox.Show(this, FfmpegNvencRuntimeCapabilityService.BlockedMessage(runtime),
+                        "NVENC unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return false;
                 }
             }
