@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 15;
+        public const int CurrentVersion = 16;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -779,7 +779,11 @@ namespace MediaFlux.Services.LibraryCatalog
                     ) STRICT;
                     CREATE INDEX ix_library_overview_history_completed
                         ON library_overview_scan_history(completed_utc_ticks DESC);
-                    """)
+                    """),
+                new LibraryCatalogMigration(
+                    16,
+                    "Scheduled maintenance occurrence tracking",
+                    "ALTER TABLE library_maintenance_runs ADD COLUMN scheduled_occurrence_utc_ticks INTEGER NULL;")
             };
 
         public static void Apply(

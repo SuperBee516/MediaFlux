@@ -13,9 +13,127 @@ public sealed class LibraryMaintenanceUiTests : IDisposable
 {
     private readonly string _root=Path.Combine(Path.GetTempPath(),"MediaFlux-MaintenanceUi",Guid.NewGuid().ToString("N"));
     public LibraryMaintenanceUiTests()=>Directory.CreateDirectory(_root);
-    [Fact] public void ScheduledMaintenanceTabShowsAnalysisModeConflictAndDisabledLocation()
+    [Fact] public void ScheduledMaintenanceGridUsesFriendlyColumnsAndContextualActions()
     {
-        if(!OperatingSystem.IsWindows())return;Exception? failure=null;var thread=new Thread(()=>{try{SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());using var catalog=new SqliteLibraryCatalog(Path.Combine(_root,"ui.db"),Path.Combine(_root,"b"),Path.Combine(_root,"r"));catalog.Initialize();catalog.UpsertLocation(new(Path.Combine(_root,"media")));using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},new Probe(),new Visual());using var form=new LibraryAnalyzerForm(runtime);form.Show();TabControl tabs=Field<TabControl>(form,"_tabs");tabs.SelectedTab=tabs.TabPages.Cast<TabPage>().Single(x=>x.Text=="Scheduled Maintenance");Task task=Invoke(form,"RefreshMaintenanceAsync");Pump(task);DataGridView grid=Field<DataGridView>(form,"_maintenanceGrid");Assert.Single(grid.Rows.Cast<DataGridViewRow>(),x=>!x.IsNewRow);Assert.Equal("No",grid.Rows[0].Cells["Enabled"].Value);Assert.Equal("Incremental",grid.Rows[0].Cells["Mode"].Value);Assert.Equal("Wait",grid.Rows[0].Cells["Conflict"].Value);Assert.Contains("Refresh / scan library catalog",grid.Rows[0].Cells["Actions"].Value?.ToString());DataGridView history=Field<DataGridView>(form,"_maintenanceHistory");Assert.Contains(history.Columns.Cast<DataGridViewColumn>(),x=>x.Name=="Jobs");Assert.Contains(history.Columns.Cast<DataGridViewColumn>(),x=>x.Name=="Mode");form.Close();Application.DoEvents();}catch(Exception ex){failure=ex;}});thread.SetApartmentState(ApartmentState.STA);thread.Start();Assert.True(thread.Join(TimeSpan.FromSeconds(30)));if(failure!=null)throw new Xunit.Sdk.XunitException(failure.ToString());
+        if(!OperatingSystem.IsWindows())return;
+        RunSta(() =>
+        {
+            using var catalog=new SqliteLibraryCatalog(Path.Combine(_root,"ui.db"),Path.Combine(_root,"b"),Path.Combine(_root,"r"));
+            catalog.Initialize();long id=catalog.UpsertLocation(new(Path.Combine(_root,"media"))).Id;
+            catalog.SaveMaintenanceProfile(EditorProfile(id) with{Cadence=LibraryMaintenanceCadence.Weekly,Days=LibraryMaintenanceDays.Tuesday,Enabled=false,MissedRun=LibraryMaintenanceMissedRun.RunAtNextWindow,AnalysisMode=LibraryMaintenanceAnalysisMode.FullReanalysis,ConflictBehavior=LibraryMaintenanceConflictBehavior.Skip});
+            DateTime runAt=DateTime.UtcNow;long runId=catalog.BeginMaintenanceRun(id,LibraryMaintenanceTrigger.Scheduled,runAt);
+            catalog.CompleteMaintenanceRun(new LibraryMaintenanceRun(runId,id,LibraryMaintenanceTrigger.Scheduled,LibraryMaintenanceOutcome.Deferred,"Deferred",runAt,runAt,0,0,0,0,0,0,0,0,"Maintenance window closed after waiting for active encoding.",LibraryMaintenanceActions.IncrementalScan,LibraryMaintenanceAnalysisMode.FullReanalysis,LibraryMaintenanceConflictBehavior.Skip,false,runAt));
+            using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},new Probe(),new Visual());
+            using var form=new LibraryAnalyzerForm(runtime);form.Show();Field<TabControl>(form,"_tabs").SelectedTab=Field<TabControl>(form,"_tabs").TabPages.Cast<TabPage>().Single(page=>page.Text=="Scheduled Maintenance");
+            Pump(Invoke(form,"RefreshMaintenanceAsync"));DataGridView grid=Field<DataGridView>(form,"_maintenanceGrid");
+            Assert.Equal(new[]{"Location","Schedule","Next Run","Tasks","Last Run","Result","Enabled"},grid.Columns.Cast<DataGridViewColumn>().Select(column=>column.Name));
+            DataGridViewRow row=Assert.Single(grid.Rows.Cast<DataGridViewRow>());Assert.Equal("No",row.Cells["Enabled"].Value);Assert.Contains("Weekly · Tue",row.Cells["Schedule"].Value?.ToString());Assert.Contains("Catalog",row.Cells["Tasks"].Value?.ToString());
+            Assert.DoesNotContain(grid.Rows.Cast<DataGridViewRow>().SelectMany(item=>item.Cells.Cast<DataGridViewCell>()).Select(cell=>cell.Value?.ToString()??""),value=>new[]{"ManualOnly","OnStartup","RunAtNextWindow","RunOnNextStartup","FullReanalysis","ConflictBehavior"}.Any(enumName=>value.Contains(enumName,StringComparison.Ordinal)));
+            row.Selected=true;Application.DoEvents();Assert.Contains("Full reanalysis",Field<Label>(form,"_maintenanceDetails").Text);Assert.Contains("Skip this run",Field<Label>(form,"_maintenanceDetails").Text);Assert.Contains("Run later during the maintenance window",Field<Label>(form,"_maintenanceDetails").Text);
+            Assert.True(Field<Button>(form,"_maintenanceToggleButton").Enabled);Assert.Equal("Enable Schedule",Field<Button>(form,"_maintenanceToggleButton").Text);Assert.True(Field<Button>(form,"_maintenanceRunButton").Enabled);Assert.False(Field<Button>(form,"_maintenanceDeferButton").Enabled);
+            Assert.Equal("Defer Current Maintenance",Field<Button>(form,"_maintenanceDeferButton").Text);Assert.Contains("safe boundary",Field<ToolTip>(form,"_maintenanceToolTip").GetToolTip(Field<Button>(form,"_maintenanceDeferButton")),StringComparison.OrdinalIgnoreCase);
+            Pump((Task)form.GetType().GetMethod("ToggleSelectedMaintenanceAsync",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(form,null)!);Assert.Equal("Disable Schedule",Field<Button>(form,"_maintenanceToggleButton").Text);
+            DataGridView history=Field<DataGridView>(form,"_maintenanceHistory");Assert.Equal(new[]{"Started","Location","Tasks","Scope","Trigger","Result","Activity","Details"},history.Columns.Cast<DataGridViewColumn>().Select(column=>column.Name));
+            DataGridViewRow historyRow=Assert.Single(history.Rows.Cast<DataGridViewRow>());Assert.Equal("Scheduled",historyRow.Cells["Trigger"].Value);Assert.Equal("Full reanalysis",historyRow.Cells["Scope"].Value);Assert.Contains("Deferred — window closed",historyRow.Cells["Result"].Value?.ToString());Assert.DoesNotContain("FullReanalysis",historyRow.Cells["Scope"].Value?.ToString());
+            form.Close();Application.DoEvents();
+        });
+    }
+
+    [Fact]
+    public void ScheduledMaintenanceShowsEmptyAndAllDisabledStates()
+    {
+        if(!OperatingSystem.IsWindows())return;
+        RunSta(() =>
+        {
+            using var catalog=new SqliteLibraryCatalog(Path.Combine(_root,"empty.db"),Path.Combine(_root,"empty-b"),Path.Combine(_root,"empty-r"));catalog.Initialize();
+            using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},new Probe(),new Visual());using var form=new LibraryAnalyzerForm(runtime);form.Show();Field<TabControl>(form,"_tabs").SelectedTab=Field<TabControl>(form,"_tabs").TabPages.Cast<TabPage>().Single(page=>page.Text=="Scheduled Maintenance");
+            Pump(Invoke(form,"RefreshMaintenanceAsync"));Label empty=Field<Label>(form,"_maintenanceEmptyState");Assert.True(empty.Visible);Assert.Contains("No scheduled maintenance is configured",empty.Text);Assert.Contains("Configure automatic library maintenance",empty.Text);
+            AnalyzerMetricCard nextMetric=Field<AnalyzerMetricCard>(form,"_maintenanceNextMetric");Assert.Contains("No automatic run scheduled",AllControls(nextMetric).OfType<Label>().Select(label=>label.Text));
+            long id=catalog.UpsertLocation(new(Path.Combine(_root,"disabled-media"))).Id;catalog.SaveMaintenanceProfile(EditorProfile(id) with{Cadence=LibraryMaintenanceCadence.Daily,Enabled=false});
+            Pump(Invoke(form,"RefreshMaintenanceAsync"));Assert.False(empty.Visible);DataGridView grid=Field<DataGridView>(form,"_maintenanceGrid");Assert.Single(grid.Rows.Cast<DataGridViewRow>());
+            grid.ClearSelection();Assert.Contains("Automatic maintenance is currently disabled for all locations",Field<Label>(form,"_maintenanceDetails").Text);
+            form.Close();Application.DoEvents();
+        });
+    }
+
+    [Fact]
+    public void ScheduleEditorUsesFriendlyTermsAndShowsOnlyRelevantScheduleControls()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        RunSta(() =>
+        {
+            LibraryMaintenanceProfile profile=EditorProfile() with { Enabled=true,Cadence=LibraryMaintenanceCadence.Weekly, Days=LibraryMaintenanceDays.Tuesday|LibraryMaintenanceDays.Wednesday };
+            using var dialog=new LibraryMaintenanceScheduleEditorDialog(profile,"Y:\\Media",()=>new DateTime(2026,9,22,2,0,0,DateTimeKind.Utc),TimeZoneInfo.Utc);
+            dialog.Show();Application.DoEvents();
+            Assert.True(dialog.WeekdayPanel.Visible);Assert.True(dialog.WindowPanel.Visible);
+            Assert.DoesNotContain(VisibleWords(dialog),word=>new[]{"ManualOnly","OnStartup","RunAtNextWindow","RunOnNextStartup"}.Contains(word,StringComparer.Ordinal));
+            dialog.Frequency.SelectedItem="Daily";Application.DoEvents();Assert.False(dialog.WeekdayPanel.Visible);Assert.True(dialog.WindowPanel.Visible);
+            dialog.Frequency.SelectedItem="When MediaFlux starts";Application.DoEvents();Assert.False(dialog.WeekdayPanel.Visible);Assert.False(dialog.WindowPanel.Visible);Assert.True(dialog.StartupWindowNote.Visible);Assert.False(dialog.MissedRun.Visible);
+            Assert.Contains("not restricted by the normal maintenance window",dialog.StartupWindowNote.Text,StringComparison.OrdinalIgnoreCase);
+            dialog.Frequency.SelectedItem="Manual only";Application.DoEvents();Assert.False(dialog.WeekdayPanel.Visible);Assert.False(dialog.WindowPanel.Visible);Assert.False(dialog.MissedRun.Visible);Assert.True(dialog.ManualOnlyNote.Visible);Assert.False(dialog.RunAutomatically.Enabled);Assert.False(dialog.RunAutomatically.Checked);
+            Assert.Equal("This maintenance profile runs manually only.",dialog.ScheduleSummary.Text.Split(Environment.NewLine)[0]);
+            dialog.Frequency.SelectedItem="Daily";Application.DoEvents();Assert.True(dialog.RunAutomatically.Enabled);Assert.True(dialog.RunAutomatically.Checked);dialog.Frequency.SelectedItem="Manual only";Application.DoEvents();
+            Assert.True(dialog.TryCreateProfile(out LibraryMaintenanceProfile saved,out _));Assert.False(saved.Enabled);Assert.Equal(profile.Days,saved.Days);Assert.Equal(profile.StartTime,saved.StartTime);Assert.Equal(profile.EndTime,saved.EndTime);Assert.Equal(profile.MissedRun,saved.MissedRun);
+            Button saveButton=FindControl<Button>(dialog,"saveSchedule");Panel scroll=FindControl<Panel>(dialog,"maintenanceEditorScroll");
+            foreach(Size size in new[]{new Size(800,680),new Size(840,860),new Size(1200,900)})
+            {
+                dialog.Size=size;Application.DoEvents();
+                Assert.True(saveButton.Visible);Assert.True(saveButton.Bounds.Right<=saveButton.Parent!.ClientSize.Width);Assert.True(saveButton.Bounds.Bottom<=saveButton.Parent.ClientSize.Height);Assert.False(scroll.HorizontalScroll.Visible);
+            }
+            dialog.Close();Application.DoEvents();
+        });
+    }
+
+    [Fact]
+    public void ScheduleEditorRoundTripsPersistedSettingsAndQuickScrubAdvancedOptions()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        RunSta(() =>
+        {
+            using var catalog=new SqliteLibraryCatalog(Path.Combine(_root,"editor-roundtrip.db"),Path.Combine(_root,"editor-b"),Path.Combine(_root,"editor-r"));
+            catalog.Initialize();long location=catalog.UpsertLocation(new(Path.Combine(_root,"roundtrip-media"))).Id;
+            LibraryMaintenanceActions all=LibraryMaintenanceActions.IncrementalScan|LibraryMaintenanceActions.Metadata|LibraryMaintenanceActions.ExactDuplicates|LibraryMaintenanceActions.VisualDuplicates|LibraryMaintenanceActions.QuickScrubNew|LibraryMaintenanceActions.QuickScrubNeverChecked|LibraryMaintenanceActions.QuickScrubStale|LibraryMaintenanceActions.QuickScrubFailed;
+            DateTime lastOccurrence=new(2026,9,16,3,0,0,DateTimeKind.Utc);
+            LibraryMaintenanceProfile original=EditorProfile(location) with { Enabled=true,Cadence=LibraryMaintenanceCadence.Weekly,Days=LibraryMaintenanceDays.Tuesday|LibraryMaintenanceDays.Wednesday,StartTime=TimeSpan.FromHours(3),EndTime=TimeSpan.FromHours(8),MissedRun=LibraryMaintenanceMissedRun.RunOnNextStartup,Actions=all,PeriodicQuickScrubDays=90,AnalysisMode=LibraryMaintenanceAnalysisMode.FullReanalysis,ConflictBehavior=LibraryMaintenanceConflictBehavior.Skip,AnalyzeFamilies=true,LastScheduledUtc=lastOccurrence };
+            catalog.SaveMaintenanceProfile(original);
+            using var dialog=new LibraryMaintenanceScheduleEditorDialog(catalog.GetMaintenanceProfile(location),"Y:\\Media",()=>new DateTime(2026,9,22,2,0,0,DateTimeKind.Utc),TimeZoneInfo.Utc);
+            dialog.Show();Application.DoEvents();dialog.QuickScrubAdvancedButton.PerformClick();Application.DoEvents();
+            Assert.True(dialog.QuickScrubAdvanced.Visible);Assert.Equal("90 days",dialog.PeriodicHealthyRecheck.SelectedItem);Assert.True(dialog.QuickScrubFailed.Checked);
+            Assert.True(dialog.TryCreateProfile(out LibraryMaintenanceProfile edited,out string error),error);
+            catalog.SaveMaintenanceProfile(edited);LibraryMaintenanceProfile persisted=catalog.GetMaintenanceProfile(location);
+            Assert.Equal(original.Enabled,persisted.Enabled);Assert.Equal(original.Cadence,persisted.Cadence);Assert.Equal(original.Days,persisted.Days);Assert.Equal(original.StartTime,persisted.StartTime);Assert.Equal(original.EndTime,persisted.EndTime);Assert.Equal(original.MissedRun,persisted.MissedRun);Assert.Equal(original.Actions,persisted.Actions);Assert.Equal(original.PeriodicQuickScrubDays,persisted.PeriodicQuickScrubDays);Assert.Equal(original.AnalysisMode,persisted.AnalysisMode);Assert.Equal(original.ConflictBehavior,persisted.ConflictBehavior);Assert.Equal(original.AnalyzeFamilies,persisted.AnalyzeFamilies);Assert.Equal(original.LastScheduledUtc,persisted.LastScheduledUtc);
+            dialog.Close();Application.DoEvents();
+
+            using var neverDialog=new LibraryMaintenanceScheduleEditorDialog(persisted with{PeriodicQuickScrubDays=0},"Y:\\Media");
+            Assert.Equal("Never",neverDialog.PeriodicHealthyRecheck.SelectedItem);
+        });
+    }
+
+    [Fact]
+    public void ScheduleSummaryTracksCurrentSettingsAndUsesTheScheduleCalculator()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        RunSta(() =>
+        {
+            DateTime now=new(2026,9,22,2,0,0,DateTimeKind.Utc);
+            LibraryMaintenanceProfile profile=EditorProfile() with { Enabled=true,Cadence=LibraryMaintenanceCadence.Weekly,Days=LibraryMaintenanceDays.Tuesday|LibraryMaintenanceDays.Wednesday,StartTime=TimeSpan.FromHours(3),EndTime=TimeSpan.FromHours(8),MissedRun=LibraryMaintenanceMissedRun.RunAtNextWindow,ConflictBehavior=LibraryMaintenanceConflictBehavior.Wait,AnalysisMode=LibraryMaintenanceAnalysisMode.Incremental };
+            using var dialog=new LibraryMaintenanceScheduleEditorDialog(profile,"Y:\\Media",()=>now,TimeZoneInfo.Utc);
+            dialog.Show();Application.DoEvents();
+            Assert.Contains("Every Tuesday and Wednesday between 3:00 AM and 8:00 AM",dialog.ScheduleSummary.Text);
+            Assert.Contains("Runs incremental maintenance",dialog.ScheduleSummary.Text);Assert.Contains("waits for active encoding",dialog.ScheduleSummary.Text);Assert.Contains("runs later during the available maintenance window",dialog.ScheduleSummary.Text);
+            DateTime? calculated=LibraryMaintenanceScheduleCalculator.GetNextRunUtc(profile,now,TimeZoneInfo.Utc);Assert.NotNull(calculated);
+            string formatted=TimeZoneInfo.ConvertTimeFromUtc(calculated!.Value,TimeZoneInfo.Utc).ToString("dddd, MMMM d 'at' h:mm tt");Assert.Contains($"Next run: {formatted}",dialog.ScheduleSummary.Text);
+
+            dialog.FullScope.Checked=true;dialog.EncodingConflict.SelectedIndex=1;dialog.MissedRun.SelectedIndex=1;Application.DoEvents();
+            Assert.Contains("Runs full reanalysis",dialog.ScheduleSummary.Text);Assert.Contains("scheduled run is skipped",dialog.ScheduleSummary.Text);Assert.Contains("May run outside the normal maintenance window when MediaFlux next starts",dialog.ScheduleSummary.Text);Assert.Contains("This may run outside the normal maintenance window",dialog.MissedRunHelper.Text);
+            dialog.RunAutomatically.Checked=false;Application.DoEvents();Assert.Contains("Schedule disabled",dialog.ScheduleSummary.Text);Assert.Contains("Not scheduled while disabled",dialog.ScheduleSummary.Text);
+            dialog.RunAutomatically.Checked=true;dialog.Weekdays.SetItemChecked(2,false);dialog.Weekdays.SetItemChecked(3,false);Application.DoEvents();Assert.Contains("Choose at least one weekday",dialog.ValidationMessage.Text);Assert.False(dialog.TryCreateProfile(out _,out string validation));Assert.Contains("at least one weekday",validation);
+            dialog.Close();Application.DoEvents();
+
+            LibraryMaintenanceProfile startup=profile with{Cadence=LibraryMaintenanceCadence.OnStartup,MissedRun=LibraryMaintenanceMissedRun.Skip};
+            using var startupDialog=new LibraryMaintenanceScheduleEditorDialog(startup,"Y:\\Media",()=>now,TimeZoneInfo.Utc);
+            Assert.Contains("When MediaFlux starts",startupDialog.ScheduleSummary.Text);Assert.Contains("not restricted by the normal maintenance window",startupDialog.ScheduleSummary.Text);Assert.DoesNotContain("Skip the missed run",startupDialog.ScheduleSummary.Text);
+        });
     }
     [Fact] public void MaintenanceProgressCarriesCountersCurrentItemAndCompletionState()
     {
@@ -213,7 +331,34 @@ public sealed class LibraryMaintenanceUiTests : IDisposable
     }
     private sealed class Probe:ILibraryMetadataProbe{public string ToolVersion=>"test";public Task<MediaProbeResult> ProbeAsync(string p,CancellationToken t)=>Task.FromResult(new MediaProbeResult{Success=false});}
     private sealed class Visual:ILibraryVisualFingerprintExtractor{public string ToolVersion=>"test";public Task<IReadOnlyList<ulong>> ExtractAsync(VisualFingerprintCandidate c,CancellationToken t)=>Task.FromResult<IReadOnlyList<ulong>>(Array.Empty<ulong>());}
+    private static LibraryMaintenanceProfile EditorProfile(long locationId=1)=>new(locationId,1,false,LibraryMaintenanceCadence.ManualOnly,LibraryMaintenanceDays.All,TimeSpan.FromHours(3),TimeSpan.FromHours(8),LibraryMaintenanceMissedRun.RunAtNextWindow,LibraryMaintenanceActions.Default,0,DateTime.UtcNow,DateTime.UtcNow);
+    private static IEnumerable<string> VisibleWords(Control root)
+    {
+        if (!string.IsNullOrWhiteSpace(root.Text)) yield return root.Text;
+        if (root is ComboBox combo) foreach (object item in combo.Items) yield return item.ToString()??string.Empty;
+        foreach (Control child in root.Controls) foreach (string word in VisibleWords(child)) yield return word;
+    }
+    private static T FindControl<T>(Control root,string name) where T:Control
+    {
+        if(root.Name==name&&root is T found)return found;
+        foreach(Control child in root.Controls){T? match=TryFind<T>(child,name);if(match!=null)return match;}
+        throw new InvalidOperationException($"Could not find control named {name}.");
+    }
+    private static T? TryFind<T>(Control root,string name) where T:Control
+    {
+        if(root.Name==name&&root is T found)return found;
+        foreach(Control child in root.Controls){T? match=TryFind<T>(child,name);if(match!=null)return match;}
+        return null;
+    }
+    private static void RunSta(Action action)
+    {
+        Exception? failure=null;
+        var thread=new Thread(()=>{try{SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());action();}catch(Exception ex){failure=ex;}});
+        thread.SetApartmentState(ApartmentState.STA);thread.Start();Assert.True(thread.Join(TimeSpan.FromSeconds(30)),"STA UI test did not finish.");
+        if(failure!=null)throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
     private static T Field<T>(object o,string n)=>(T)(o.GetType().GetField(n,BindingFlags.Instance|BindingFlags.NonPublic)?.GetValue(o)??throw new MissingFieldException(n));private static Task Invoke(object o,string n)=>(Task)(o.GetType().GetMethod(n,BindingFlags.Instance|BindingFlags.NonPublic)?.Invoke(o,null)??throw new MissingMethodException(n));private static void Pump(Task t){while(!t.IsCompleted){Application.DoEvents();Thread.Sleep(10);}t.GetAwaiter().GetResult();}
     private static IEnumerable<Control> Descendants(Control root){foreach(Control child in root.Controls){yield return child;foreach(Control descendant in Descendants(child))yield return descendant;}}
+    private static IEnumerable<Control> AllControls(Control root)=>new[]{root}.Concat(Descendants(root));
     public void Dispose(){SqliteConnection.ClearAllPools();if(Directory.Exists(_root))Directory.Delete(_root,true);}
 }

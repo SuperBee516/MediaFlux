@@ -38,7 +38,8 @@ public sealed record LibraryMaintenanceRun(
     LibraryMaintenanceActions Actions = LibraryMaintenanceActions.None,
     LibraryMaintenanceAnalysisMode AnalysisMode = LibraryMaintenanceAnalysisMode.Incremental,
     LibraryMaintenanceConflictBehavior ConflictBehavior = LibraryMaintenanceConflictBehavior.Wait,
-    bool AnalyzeFamilies = false);
+    bool AnalyzeFamilies = false,
+    DateTime? ScheduledOccurrenceUtc = null);
 
 public sealed record LibraryMaintenanceProgress(
     long RunId,

@@ -47,7 +47,8 @@ namespace MediaFlux.Services.LibraryCatalog
             MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null,
             string integrityFfmpegPath = "",
             IMediaToolProcessRunner? integrityProcessRunner = null,
-            bool startBackgroundWork = false)
+            bool startBackgroundWork = false,
+            bool startMaintenanceScheduler = true)
         {
             _catalog = catalog;
             _catalog.Initialize();
@@ -117,7 +118,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     $"Library Analyzer scan: {eventName}",
                     exception: exception,
                     details: details));
-            Maintenance = new LibraryMaintenanceCoordinator(_catalog, _catalog, Scanner, _enrichment, _duplicates, _visual, Integrity, isEncodingActive);
+            Maintenance = new LibraryMaintenanceCoordinator(_catalog, _catalog, Scanner, _enrichment, _duplicates, _visual, Integrity, isEncodingActive, start:startMaintenanceScheduler);
             if (startBackgroundWork)
             {
                 _ = QueuePendingSafelyAsync();
