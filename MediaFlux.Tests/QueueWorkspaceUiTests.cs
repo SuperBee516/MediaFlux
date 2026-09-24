@@ -268,10 +268,44 @@ public sealed class QueueWorkspaceUiTests
         TableLayoutPanel summary = main.Controls.Find("queueWorkspaceSummaryCards", searchAllChildren: true)
             .OfType<TableLayoutPanel>()
             .Single();
+        TableLayoutPanel workspace = Field<TableLayoutPanel>(main, "_queueWorkspaceHost");
         TableLayoutPanel[] cards = summary.Controls.OfType<TableLayoutPanel>().ToArray();
         Assert.Equal(4, cards.Length);
         Assert.All(cards, card => Assert.Equal(0, card.Padding.Vertical));
         Assert.All(cards, card => Assert.Equal(1, card.RowCount));
+        Assert.Equal(DockStyle.Fill, summary.Dock);
+        Assert.False(summary.AutoSize);
+        int compactStripHeight = (int)Math.Round(64d * main.DeviceDpi / 96d);
+        int compactStripMinimum = (int)Math.Round(60d * main.DeviceDpi / 96d);
+        int compactStripMaximum = (int)Math.Round(70d * main.DeviceDpi / 96d);
+        RowStyle statusRow = workspace.RowStyles[0];
+        int[] hostRows = workspace.GetRowHeights();
+        Assert.Equal(SizeType.Absolute, statusRow.SizeType);
+        Assert.Equal((float)compactStripHeight, statusRow.Height);
+        Assert.InRange(hostRows[0], compactStripMinimum, compactStripMaximum);
+        Assert.True(summary.Height <= compactStripHeight,
+            $"Status card strip should stay compact; height={summary.Height}, allocated row={hostRows[0]}, maximum={compactStripHeight}, dpi={main.DeviceDpi}, client={main.ClientSize}.");
+        Assert.Equal(hostRows[0] - summary.Margin.Vertical, summary.Height);
+        Assert.True(hostRows[0] <= compactStripHeight + (int)Math.Round(4d * main.DeviceDpi / 96d),
+            $"Status card row should stay compact; height={hostRows[0]}, strip={summary.Height}, maximum={compactStripHeight}, dpi={main.DeviceDpi}, client={main.ClientSize}.");
+        Assert.Equal(Enumerable.Range(0, 4), cards.Select(card => summary.GetColumn(card)));
+        Assert.All(cards, card => Assert.Equal(0, summary.GetRow(card)));
+        Assert.All(cards, card => Assert.Equal(summary.ClientSize.Height, card.Height));
+        Assert.All(cards, card =>
+        {
+            Label[] contents = card.Controls.OfType<Label>().ToArray();
+            Assert.Equal(2, contents.Length);
+            int cardCenter = card.ClientSize.Height / 2;
+            Assert.All(contents, label =>
+                Assert.InRange(Math.Abs(label.Top + (label.Height / 2) - cardCenter), 0, 1));
+        });
+
+        DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+        Assert.Equal(DockStyle.Fill, queue.Dock);
+        Assert.Equal(Math.Max(hostRows[^1], queue.MinimumSize.Height), queue.Height);
+        Assert.Equal(hostRows.Take(3).Sum(), queue.Top);
+        Assert.True(queue.Bottom >= workspace.ClientSize.Height - 1,
+            $"Queue grid should fill the remaining workspace; gridBottom={queue.Bottom}, workspaceHeight={workspace.ClientSize.Height}, client={main.ClientSize}.");
     }
 
     private static void SetField(MainForm main, string name, object value) =>

@@ -130,27 +130,27 @@ namespace MediaFlux.Models
         public bool HideWatchFolderStatusText { get; set; } = false;
 
         // Per-checkbox “last used” values:
-        public bool LastChkAutoTargetSize { get; set; } = false;
+        public bool LastChkAutoTargetSize { get; set; } = true;
         public bool LastChkDeleteSource { get; set; } = true;
         public bool LastChkFilterX264 { get; set; } = true;
-        public bool LastChkFilterX265 { get; set; } = true;
-        public bool LastChkFilterAv1 { get; set; } = true;
+        public bool LastChkFilterX265 { get; set; } = false;
+        public bool LastChkFilterAv1 { get; set; } = false;
         public bool LastChkDownloadPlaylist { get; set; } = false;
-        public bool LastChkProcessAll { get; set; } = true;
+        public bool LastChkProcessAll { get; set; } = false;
 
         // Per-dropdown "last used" values.
         public string LastCompressionProfile { get; set; } = "Medium Quality (Default)";
         // Legacy JSON field retained to migrate NVENC-only configuration files.
-        public string LastEncodingSpeedPreset { get; set; } = "Balanced (Recommended)";
+        public string LastEncodingSpeedPreset { get; set; } = "Slow (p5)";
         public string LastEncoderId { get; set; } = VideoEncoderIds.Nvenc;
         public string LastVideoCodec { get; set; } = nameof(VideoCodecFamily.Hevc);
         public string LastEncoderPreset { get; set; } = "p5";
-        public string LastOutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
+        public string LastOutputContainer { get; set; } = nameof(OutputContainerSelection.Auto);
         public string ContainerCompatibilityPolicy { get; set; } = nameof(Models.ContainerCompatibilityPolicy.Intelligent);
         public int LastQualityValue { get; set; } = 22;
-        // Quality intent is persisted separately from the legacy numeric value.
-        // Missing fields intentionally remain Manual for backward compatibility.
-        public string LastQualityMode { get; set; } = "Manual";
+        // A brand-new installation starts in Automatic mode. Config.Load keeps
+        // existing files that predate this field on the legacy Manual behavior.
+        public string LastQualityMode { get; set; } = "Automatic";
         public string LastQualityTarget { get; set; } = nameof(QualityTarget.Balanced);
         public VideoRestorationSettings VideoRestoration { get; set; } = new();
 
@@ -220,8 +220,8 @@ namespace MediaFlux.Models
 
         // Persist which codecs to show
         public bool ShowX264Files { get; set; } = true;
-        public bool ShowX265Files { get; set; } = true;
-        public bool ShowAv1Files { get; set; } = true;
+        public bool ShowX265Files { get; set; } = false;
+        public bool ShowAv1Files { get; set; } = false;
         public bool ShowOtherCodecFiles { get; set; } = true;
 
         // Persist arbitrary main-form checkbox states keyed by a stable control path.
@@ -234,6 +234,25 @@ namespace MediaFlux.Models
 
             var json = File.ReadAllText(path);
             var config = JsonSerializer.Deserialize<Config>(json) ?? new Config();
+
+            // Keep settings that were absent from an existing config at their
+            // historical values; the new values above apply only to fresh installs.
+            if (!json.Contains("\"LastChkAutoTargetSize\"", StringComparison.OrdinalIgnoreCase))
+                config.LastChkAutoTargetSize = false;
+            if (!json.Contains("\"LastChkFilterX265\"", StringComparison.OrdinalIgnoreCase))
+                config.LastChkFilterX265 = true;
+            if (!json.Contains("\"LastChkFilterAv1\"", StringComparison.OrdinalIgnoreCase))
+                config.LastChkFilterAv1 = true;
+            if (!json.Contains("\"LastChkProcessAll\"", StringComparison.OrdinalIgnoreCase))
+                config.LastChkProcessAll = true;
+            if (!json.Contains("\"LastOutputContainer\"", StringComparison.OrdinalIgnoreCase))
+                config.LastOutputContainer = nameof(OutputContainerSelection.Mp4);
+            if (!json.Contains("\"LastQualityMode\"", StringComparison.OrdinalIgnoreCase))
+                config.LastQualityMode = "Manual";
+            if (!json.Contains("\"ShowX265Files\"", StringComparison.OrdinalIgnoreCase))
+                config.ShowX265Files = true;
+            if (!json.Contains("\"ShowAv1Files\"", StringComparison.OrdinalIgnoreCase))
+                config.ShowAv1Files = true;
 
             config.CheckboxStates ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
             config.CommercialDetectorPreferences ??= new CommercialDetectorPreferences();

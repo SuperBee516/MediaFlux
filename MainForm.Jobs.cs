@@ -96,7 +96,8 @@ public partial class MainForm
         OutputFolder = cmbEncodeOutput.Text, CompressionProfile = comboCompressionProfile.Text,
         EncoderId = _config.LastEncoderId, VideoCodec = _config.LastVideoCodec, EncoderPreset = _config.LastEncoderPreset,
         OutputContainer = _config.LastOutputContainer, QualityValue = _config.LastQualityValue,
-        QualityMode = _config.LastQualityMode, QualityTarget = _config.LastQualityTarget,
+        QualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual",
+        QualityTarget = GetSelectedQualityTarget().ToString(),
         TenBit = chkTenBit?.Checked == true, AudioChannels = comboAudioChannels?.Text ?? "", VideoFormat = comboVideoFormat.Text,
         AutoTargetSize = chkAutoTargetSize.Checked, TargetSize = txtTargetSize.Text, Resolution = comboResolution?.Text ?? "",
         DeleteSourceAfterCompression = chkDeleteSource.Checked, EnableOutputSuffix = _config.EnableOutputSuffix,
@@ -174,16 +175,16 @@ public partial class MainForm
             RefreshVideoFormatItems(VideoEncoderCompatibility.ParseCodecFamily(settings.VideoCodec));
             RefreshEncoderPresetItems(settings.EncoderPreset);
             if (nudAutoQuality != null) nudAutoQuality.Value = Math.Clamp(settings.QualityValue, (int)nudAutoQuality.Minimum, (int)nudAutoQuality.Maximum);
+            if (comboQualityMode != null)
+                SelectQualityMode(comboQualityMode, settings.QualityMode);
+            if (trkQualityTarget != null)
+                trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(settings.QualityTarget));
         }
         finally { _applyingEncodeDropdownSettings = false; }
         _config.EnableOutputSuffix = settings.EnableOutputSuffix;
         _config.EnableCodecSuffix = settings.EnableCodecSuffix;
         _config.OutputSuffix = settings.OutputSuffix;
         _config.VideoRestoration = settings.Restoration?.Clone() ?? new VideoRestorationSettings();
-        if (comboQualityMode != null)
-            SelectQualityMode(comboQualityMode, settings.QualityMode);
-        if (trkQualityTarget != null)
-            trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(settings.QualityTarget));
         UpdateQualityIntentUi();
         if (_restorationPreset != null)
             _restorationPreset.SelectedIndex = (int)_config.VideoRestoration.Mode;

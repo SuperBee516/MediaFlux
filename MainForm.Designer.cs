@@ -522,7 +522,7 @@ namespace MediaFlux
 
             chkAutoTargetSize.Text = "Auto-determine best target size";
             chkAutoTargetSize.AutoSize = true;
-            chkAutoTargetSize.Checked = false;
+            chkAutoTargetSize.Checked = true;
             chkAutoTargetSize.Anchor = AnchorStyles.Left;
             chkAutoTargetSize.Margin = new Padding(0, 2, 0, 4);
             chkAutoTargetSize.CheckedChanged += (s, e) => {
@@ -816,18 +816,22 @@ namespace MediaFlux
 
             chkFilterX264.Text = "H.264 / x264";
             chkFilterX264.AutoSize = true;
+            chkFilterX264.Checked = true;
             chkFilterX264.Margin = new Padding(0, 3, 8, 3);
 
             chkFilterX265.Text = "H.265 / x265";
             chkFilterX265.AutoSize = true;
+            chkFilterX265.Checked = false;
             chkFilterX265.Margin = new Padding(0, 3, 8, 3);
 
             chkFilterAv1.Text = "AV1";
             chkFilterAv1.AutoSize = true;
+            chkFilterAv1.Checked = false;
             chkFilterAv1.Margin = new Padding(0, 3, 8, 3);
 
             chkFilterOtherCodecs.Text = "Other codecs";
             chkFilterOtherCodecs.AutoSize = true;
+            chkFilterOtherCodecs.Checked = true;
             chkFilterOtherCodecs.Margin = new Padding(0, 3, 8, 3);
 
             chkRetryFailedJobs.Text = "Retry failed jobs at end";

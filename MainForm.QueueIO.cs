@@ -86,7 +86,7 @@ namespace MediaFlux
                 QualityValue = nudAutoQuality == null
                     ? null
                     : (int)nudAutoQuality.Value,
-                QualityMode = _config.LastQualityMode,
+                QualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual",
                 QualityTarget = _config.LastQualityTarget,
                 TenBit = chkTenBit?.Checked,
                 AudioChannels = comboAudioChannels?.Text ?? "",

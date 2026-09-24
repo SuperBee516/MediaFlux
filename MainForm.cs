@@ -1997,8 +1997,6 @@ namespace MediaFlux
                 comboEncoderPreset?.Text ?? _config.LastEncodingSpeedPreset;
             if (nudAutoQuality != null)
                 _config.LastQualityValue = (int)nudAutoQuality.Value;
-            if (comboQualityMode != null)
-                _config.LastQualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual";
             if (trkQualityTarget != null)
                 _config.LastQualityTarget = GetSelectedQualityTarget().ToString();
 
@@ -3155,14 +3153,16 @@ namespace MediaFlux
                 "Automatic • Source Adaptive",
                 "Manual • Legacy Numeric"
             });
-            // Establish the legacy default before wiring persistence. The saved
-            // preference is applied later by ApplyRememberedEncodeDropdowns.
-            comboQualityMode.SelectedIndex = 1;
+            // Fresh installs use Automatic; saved configuration is applied later.
+            comboQualityMode.SelectedIndex = 0;
             comboQualityMode.SelectedIndexChanged += (_, __) =>
             {
                 UpdateQualityIntentUi();
                 if (!_applyingEncodeDropdownSettings)
+                {
+                    _config.LastQualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual";
                     PersistEncoderSelection();
+                }
                 UpdateEncodePreview();
             };
 
@@ -3346,6 +3346,7 @@ namespace MediaFlux
                 Name = "chkTenBit",
                 Text = "Use 10-bit for HEVC/AV1",
                 AutoSize = true,
+                Checked = true,
                 Margin = new Padding(0, 2, 0, 3),
                 Anchor = AnchorStyles.Left
             };
@@ -4219,6 +4220,8 @@ namespace MediaFlux
                     string key = GetCheckboxPersistenceKey(checkbox);
                     if (_config.CheckboxStates.TryGetValue(key, out bool isChecked))
                         checkbox.Checked = isChecked;
+                    else if (ReferenceEquals(checkbox, chkAutoTargetSize))
+                        checkbox.Checked = _config.LastChkAutoTargetSize;
                 }
             }
             finally

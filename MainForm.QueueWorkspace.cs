@@ -26,6 +26,8 @@ namespace MediaFlux
         private bool _queueWorkspaceRefreshPosted;
         private bool _applyingQueueWorkspaceView;
 
+        private const int QueueWorkspaceSummaryRowHeight = 64;
+
         private static readonly string[] QueueWorkspaceViews =
         [
             "All", "Ready", "Running", "Attention", "Encode", "Skip", "Review"
@@ -188,7 +190,8 @@ namespace MediaFlux
                 GrowStyle = TableLayoutPanelGrowStyle.AddRows
             };
             surface.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            surface.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            // The former AutoSize summary retained its 100px GrowOnly starting height.
+            surface.RowStyles.Add(new RowStyle(SizeType.Absolute, ScaleUi(QueueWorkspaceSummaryRowHeight)));
             surface.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             surface.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             surface.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
@@ -302,14 +305,15 @@ namespace MediaFlux
             var cards = new TableLayoutPanel
             {
                 Name = "queueWorkspaceSummaryCards",
-                Dock = DockStyle.Top,
-                AutoSize = true,
+                Dock = DockStyle.Fill,
+                AutoSize = false,
                 ColumnCount = 4,
                 RowCount = 1,
                 Margin = new Padding(0, 0, 0, ScaleUi(3)),
                 Padding = Padding.Empty,
                 AccessibleName = "Queue summary"
             };
+            cards.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
             string[] captions = ["TOTAL", "READY", "RUNNING", "ATTENTION"];
             Label?[] values = new Label?[4];
@@ -329,6 +333,7 @@ namespace MediaFlux
                 };
                 card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
                 card.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                card.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
                 var caption = new Label
                 {
@@ -1139,6 +1144,17 @@ namespace MediaFlux
                 return;
 
             UpdateQueueControlsResponsiveLayout();
+
+            if (_queueWorkspaceHost.RowStyles.Count > 0)
+            {
+                RowStyle summaryRow = _queueWorkspaceHost.RowStyles[0];
+                float summaryHeight = ScaleUi(QueueWorkspaceSummaryRowHeight);
+                if (summaryRow.SizeType != SizeType.Absolute || summaryRow.Height != summaryHeight)
+                {
+                    summaryRow.SizeType = SizeType.Absolute;
+                    summaryRow.Height = summaryHeight;
+                }
+            }
 
             int width = _queueWorkspaceHost.ClientSize.Width;
             bool compact = width < ScaleUi(980);

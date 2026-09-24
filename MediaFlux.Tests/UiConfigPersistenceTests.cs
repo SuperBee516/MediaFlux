@@ -142,6 +142,129 @@ public sealed class UiConfigPersistenceTests : IDisposable
     }
 
     [Fact]
+    public void FreshInstallMainFormUsesRequestedVisibleEncodingDefaults()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(_root, "fresh-encoding-ui.json");
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                Assert.Equal("Automatic • Source Adaptive", Field<ComboBox>(form, "comboQualityMode").Text);
+                Assert.Equal(2, Field<TrackBar>(form, "trkQualityTarget").Value);
+                Assert.True(Field<CheckBox>(form, "chkAutoTargetSize").Checked);
+                Assert.False(Field<CheckBox>(form, "chkProcessAll").Checked);
+                Assert.False(Field<CheckBox>(form, "chkRetryFailedJobs").Checked);
+                Assert.True(Field<CheckBox>(form, "chkFilterX264").Checked);
+                Assert.False(Field<CheckBox>(form, "chkFilterX265").Checked);
+                Assert.False(Field<CheckBox>(form, "chkFilterAv1").Checked);
+                Assert.True(Field<CheckBox>(form, "chkFilterOtherCodecs").Checked);
+                Assert.Equal("Auto", Field<ComboBox>(form, "comboOutputContainer").Text);
+                Assert.Equal("Compatibility: Intelligent (Automatic)", Field<ComboBox>(form, "comboContainerCompatibilityPolicy").Text);
+                Assert.Equal("Keep source layout", Field<ComboBox>(form, "comboAudioChannels").Text);
+                CheckBox tenBit = Field<CheckBox>(form, "chkTenBit");
+                if (tenBit.Enabled)
+                    Assert.True(tenBit.Checked);
+
+                Config fresh = Config.Load(path);
+                Assert.Equal(VideoEncoderIds.Nvenc, fresh.LastEncoderId);
+                Assert.Equal("Automatic", fresh.LastQualityMode);
+                Assert.Equal(VideoRestorationMode.Off, fresh.VideoRestoration.Mode);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Fresh encoding defaults UI test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void ManualQualityModeSurvivesSaveReloadAndPresetOrJobRestoration()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(_root, "manual-quality-snapshot.json");
+        new Config { LastQualityMode = "Automatic" }.Save(path);
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
+                mode.SelectedIndex = 1;
+                Application.DoEvents();
+                Assert.Equal("Manual", Config.Load(path).LastQualityMode);
+
+                form.Dispose();
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+                mode = Field<ComboBox>(form, "comboQualityMode");
+                Assert.Equal("Manual • Legacy Numeric", mode.Text);
+
+                mode.SelectedIndex = 0;
+                Application.DoEvents();
+                Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+
+                var preset = new EncodingPreset
+                {
+                    Name = "Manual snapshot",
+                    EncoderId = VideoEncoderIds.Nvenc,
+                    VideoCodec = nameof(VideoCodecFamily.Hevc),
+                    VideoFormat = "Hevc",
+                    EncoderPreset = "p5",
+                    QualityMode = "Manual",
+                    OutputContainer = nameof(OutputContainerSelection.Auto)
+                };
+                typeof(MainForm).GetMethod("ApplyPresetToUi", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(form, new object[] { preset });
+                Assert.Equal("Automatic", Field<Config>(form, "_config").LastQualityMode);
+                Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+
+                var jobSettings = new EncodeJobSettings
+                {
+                    EncoderId = VideoEncoderIds.Nvenc,
+                    VideoCodec = nameof(VideoCodecFamily.Hevc),
+                    EncoderPreset = "p5",
+                    OutputContainer = nameof(OutputContainerSelection.Auto),
+                    QualityMode = "Manual"
+                };
+                typeof(MainForm).GetMethod("ApplyJobSettings", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(form, new object[] { jobSettings });
+                Assert.Equal("Automatic", Field<Config>(form, "_config").LastQualityMode);
+                Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Quality mode persistence UI test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
     public void QualityTargetTrackPositionsUseThumbInsetAndRemainOrdered()
     {
         const int trackWidth = 500;

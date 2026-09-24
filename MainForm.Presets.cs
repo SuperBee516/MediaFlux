@@ -138,7 +138,7 @@ namespace MediaFlux
                 QualityValue = nudAutoQuality == null
                     ? null
                     : (int)nudAutoQuality.Value,
-                QualityMode = _config.LastQualityMode,
+                QualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual",
                 QualityTarget = _config.LastQualityTarget,
                 TenBit = chkTenBit?.Checked == true,
                 AudioChannels = comboAudioChannels?.Text ?? "",
@@ -219,7 +219,6 @@ namespace MediaFlux
                     _config.LastEncodingSpeedPreset;
                 if (nudAutoQuality != null)
                     _config.LastQualityValue = (int)nudAutoQuality.Value;
-                _config.LastQualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual";
                 _config.LastQualityTarget = GetSelectedQualityTarget().ToString();
                 _config.Save(_configPath);
             }
