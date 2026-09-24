@@ -54,6 +54,49 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
     }
 
     [Fact]
+    public void FamilyComparisonSelectionSkipsInvalidFamiliesAndKeepsMemberOrderAndRoleSemantics()
+    {
+        VisualFamilyRecord automaticFamily = Family(10, suggestedKeeper: 1, manualKeeper: null);
+        VisualFamilyRecord unresolvedFamily = Family(20, suggestedKeeper: null, manualKeeper: null);
+        VisualFamilyRecord unavailableFamily = Family(30, suggestedKeeper: null, manualKeeper: 4);
+        VisualFamilyMemberRecord keeper = FamilyMember(1, "keeper", suggested: true);
+        VisualFamilyMemberRecord firstCandidate = FamilyMember(2, "candidate-a");
+        VisualFamilyMemberRecord preferredCandidate = FamilyMember(3, "candidate-b");
+        VisualFamilyMemberRecord unavailableKeeper = FamilyMember(4, "missing-keeper", manual: true);
+        VisualFamilyMemberRecord unavailableCandidate = FamilyMember(5, "missing-candidate");
+        var files = new HashSet<string>(StringComparer.Ordinal) { "keeper", "candidate-a", "candidate-b" };
+        IReadOnlyList<VisualFamilyMemberRecord>[] familyMembers =
+        {
+            new[] { keeper, firstCandidate, preferredCandidate },
+            new[] { FamilyMember(6, "unresolved-a"), FamilyMember(7, "unresolved-b") },
+            new[] { unavailableKeeper, unavailableCandidate }
+        };
+        var byFamily = new Dictionary<long, IReadOnlyList<VisualFamilyMemberRecord>>
+        {
+            [10] = familyMembers[0], [20] = familyMembers[1], [30] = familyMembers[2]
+        };
+
+        Assert.Equal(new long[] { 10 }, LibraryAnalyzerForm.ResolveEligibleFamilyComparisonOrder(
+            new[] { automaticFamily, unresolvedFamily, unavailableFamily }, byFamily, files.Contains));
+        Assert.Equal(preferredCandidate, LibraryAnalyzerForm.ResolveFamilyComparisonCandidate(
+            familyMembers[0], keeper.FileId, preferredCandidate.FileId, files.Contains));
+        Assert.Equal(firstCandidate, LibraryAnalyzerForm.ResolveFamilyComparisonCandidate(
+            familyMembers[0], keeper.FileId, preferredMemberFileId: 99, fileExists: files.Contains));
+        Assert.Null(LibraryAnalyzerForm.ResolveFamilyComparisonCandidate(
+            familyMembers[2], unavailableKeeper.FileId, preferredMemberFileId: null, fileExists: files.Contains));
+
+        long[] eligibleOrder = { 10, 40 };
+        Assert.Null(LibraryAnalyzerForm.ResolveAdjacentFamilyComparisonIndex(eligibleOrder, 10, -1));
+        Assert.Equal(1, LibraryAnalyzerForm.ResolveAdjacentFamilyComparisonIndex(eligibleOrder, 10, 1));
+        Assert.Equal(0, LibraryAnalyzerForm.ResolveAdjacentFamilyComparisonIndex(eligibleOrder, 40, -1));
+        Assert.Null(LibraryAnalyzerForm.ResolveAdjacentFamilyComparisonIndex(eligibleOrder, 40, 1));
+        Assert.Equal("Keeper (Automatic)", LibraryAnalyzerForm.ResolveVisualFamilyMemberRole(automaticFamily, keeper));
+        Assert.Equal("Candidate", LibraryAnalyzerForm.ResolveVisualFamilyMemberRole(automaticFamily, firstCandidate));
+        Assert.Equal("Keeper (Manual)", LibraryAnalyzerForm.ResolveVisualFamilyMemberRole(
+            Family(40, suggestedKeeper: 1, manualKeeper: 3), preferredCandidate with { IsManualKeeper = true }));
+    }
+
+    [Fact]
     public void LocationSelectionSurvivesPollingAndUpdatesAndHandlesAddRemove()
     {
         Assert.Equal(new long[] { 2 }, LibraryLocationSelectionPolicy.Resolve(new long[] { 2 }, new long[] { 1, 2, 3 }));
@@ -470,6 +513,9 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             Assert.DoesNotContain(cleanupProposal.Items, item => item.Candidate.FileId == candidate.FileId);
             InvokePrivate(form, "UpdateFamilyActionState");
             Assert.False(compare.Enabled);
+            int comparisonsBeforeKeeperSelfCheck = comparisons.Count;
+            PumpTask(InvokePrivateTask(form, "CompareFamilyMemberWithKeeperAsync"));
+            Assert.Equal(comparisonsBeforeKeeperSelfCheck, comparisons.Count);
             InvokePrivate(form, "UpdateFamilyMembersMenuState", new CancelEventArgs());
             Assert.False(menu.Items.Find("Keeper", false).Single().Enabled);
             Assert.All(files, path => Assert.True(File.Exists(path)));
@@ -582,6 +628,15 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
         1, fileId, path, path.ToUpperInvariant(), Path.GetPathRoot(path) ?? "", 100,
         new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2021, 1, 1, 0, 0, 0, DateTimeKind.Utc),
         "", "", fileId.ToString(), false, IndexedFileAvailability.Present, "", null, null, null, null, false, false, false);
+
+    private static VisualFamilyRecord Family(long familyId, long? suggestedKeeper, long? manualKeeper) =>
+        new(familyId, $"family-{familyId}", 3, 95, 100, suggestedKeeper, manualKeeper, false, false,
+            LibraryMatchEligibilityState.Active, "");
+
+    private static VisualFamilyMemberRecord FamilyMember(long fileId, string path, bool suggested = false, bool manual = false) =>
+        new(1, fileId, path, Path.GetDirectoryName(path) ?? "", 100,
+            new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc), IndexedFileAvailability.Present,
+            "h264", 1920, 1080, 1_000_000, 60, false, suggested, manual, false, "AAC", 95);
 
     private static int CountAuditRows(SqliteLibraryCatalog catalog, long planId)
     {

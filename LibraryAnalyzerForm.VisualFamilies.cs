@@ -273,10 +273,7 @@ public sealed partial class LibraryAnalyzerForm
             _familyMembersGrid.Rows.Clear();
             foreach (VisualFamilyMemberRecord member in members)
             {
-                bool isEffectiveKeeper = member.IsManualKeeper || (!family.ManualKeeperFileId.HasValue && member.IsSuggestedKeeper);
-                string role = isEffectiveKeeper
-                    ? member.IsManualKeeper ? "Keeper (Manual)" : "Keeper (Automatic)"
-                    : "Candidate";
+                string role = ResolveVisualFamilyMemberRole(family, member);
                 int row = _familyMembersGrid.Rows.Add(role, member.IsProtected ? "Yes" : "No", member.FullPath, FormatBytes(member.SizeBytes),
                     member.VideoCodec.ToUpperInvariant(), member.Width.HasValue && member.Height.HasValue ? $"{member.Width}×{member.Height}" : "",
                     member.TotalBitRate.HasValue ? $"{member.TotalBitRate.Value / 1_000_000d:0.##} Mbps" : "", member.IsHdr ? "Yes" : "No",
@@ -430,16 +427,34 @@ public sealed partial class LibraryAnalyzerForm
             selectedMembers[0].FamilyId != family.FamilyId || !IsAvailableFamilyMember(selectedMembers[0]) ||
             selectedMembers[0].FileId == (family.ManualKeeperFileId ?? family.SuggestedKeeperFileId)) return;
         VisualFamilyMemberRecord member = selectedMembers[0];
-        long selectedFileId = member.FileId;
+        await SaveFamilyKeeperAsync(family, member.FileId);
+    }
+
+    private async Task SaveFamilyKeeperAsync(VisualFamilyRecord family, long keeperFileId)
+    {
+        VisualFamilyMemberRecord? member = _familyMembersGrid.Rows.Cast<DataGridViewRow>()
+            .Select(row => row.Tag).OfType<VisualFamilyMemberRecord>()
+            .FirstOrDefault(value => value.FamilyId == family.FamilyId && value.FileId == keeperFileId);
+        if (member == null || !IsAvailableFamilyMember(member) ||
+            keeperFileId == (family.ManualKeeperFileId ?? family.SuggestedKeeperFileId)) return;
+
+        // This is the same durable family decision used by the member-grid command.
+        // It only records the keeper/review decision; it performs no media operations.
         await Task.Run(() => _runtime.FamilyCatalog.SaveVisualFamilyDecision(new VisualFamilyDecision(
-            family.FamilyId, member.FileId, true, family.Ignored)));
+            family.FamilyId, keeperFileId, true, family.Ignored)));
         await RefreshVisualFamiliesAsync();
-        if (_familyMembersGrid.Rows.Cast<DataGridViewRow>().FirstOrDefault(row => (row.Tag as VisualFamilyMemberRecord)?.FileId == selectedFileId) is { } selectedRow)
-        {
-            _familyMembersGrid.ClearSelection();
-            selectedRow.Selected = true;
-            _familyMembersGrid.CurrentCell = selectedRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-        }
+        SelectFamilyMemberRow(keeperFileId);
+    }
+
+    private void SelectFamilyMemberRow(long fileId)
+    {
+        if (_familyMembersGrid.Rows.Cast<DataGridViewRow>()
+                .FirstOrDefault(row => (row.Tag as VisualFamilyMemberRecord)?.FileId == fileId) is not { } row)
+            return;
+        _familyMembersGrid.ClearSelection();
+        row.Selected = true;
+        _familyMembersGrid.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+        UpdateFamilyActionState();
     }
 
     private async Task ToggleSelectedFamilyProtectionAsync()
@@ -483,8 +498,120 @@ public sealed partial class LibraryAnalyzerForm
         VisualFamilyMemberRecord? keeper = _familyMembersGrid.Rows.Cast<DataGridViewRow>()
             .Select(row => row.Tag).OfType<VisualFamilyMemberRecord>().FirstOrDefault(value => value.FileId == keeperId.Value);
         if (keeper == null) return;
-        await OpenMemberComparisonAsync("Compare Family Member With Keeper",
-            new[] { ToVisualMember(keeper), ToVisualMember(member) }, keeper.FileId);
+        long currentFamilyId = family.FamilyId;
+        long currentCandidateId = member.FileId;
+        long[] navigableFamilyIds = await GetNavigableFamilyIdsAsync();
+
+        async Task<MemberComparisonSnapshot?> LoadCurrentAsync()
+        {
+            VisualFamilyRecord? currentFamily = _runtime.FamilyCatalog.GetVisualFamily(currentFamilyId);
+            if (currentFamily == null) return null;
+            IReadOnlyList<VisualFamilyMemberRecord> currentMembers = await Task.Run(() =>
+                _runtime.FamilyCatalog.GetVisualFamilyMembers(currentFamilyId));
+            long? effectiveKeeperId = currentFamily.ManualKeeperFileId ?? currentFamily.SuggestedKeeperFileId;
+            if (!effectiveKeeperId.HasValue) return null;
+            VisualFamilyMemberRecord? currentKeeper = currentMembers.FirstOrDefault(value => value.FileId == effectiveKeeperId.Value);
+            VisualFamilyMemberRecord? candidate = ResolveFamilyComparisonCandidate(
+                currentMembers, effectiveKeeperId.Value, currentCandidateId, File.Exists);
+            if (currentKeeper == null || candidate == null || !IsAvailableFamilyMember(currentKeeper)) return null;
+            currentCandidateId = candidate.FileId;
+            return new MemberComparisonSnapshot(
+                new[] { ToVisualMember(currentKeeper), ToVisualMember(candidate) },
+                effectiveKeeperId,
+                $"Family {currentFamilyId} · {currentFamily.MemberCount} members. The selected keeper is marked on its comparison card.");
+        }
+
+        async Task<bool> NavigateAsync(int direction)
+        {
+            int currentIndex = Array.IndexOf(navigableFamilyIds, currentFamilyId);
+            int index = currentIndex + Math.Sign(direction);
+            while (index >= 0 && index < navigableFamilyIds.Length)
+            {
+                long targetId = navigableFamilyIds[index];
+                VisualFamilyRecord? target = _runtime.FamilyCatalog.GetVisualFamily(targetId);
+                IReadOnlyList<VisualFamilyMemberRecord> targetMembers = await Task.Run(() =>
+                    _runtime.FamilyCatalog.GetVisualFamilyMembers(targetId));
+                long? targetKeeperId = target?.ManualKeeperFileId ?? target?.SuggestedKeeperFileId;
+                VisualFamilyMemberRecord? targetKeeper = targetKeeperId.HasValue
+                    ? targetMembers.FirstOrDefault(value => value.FileId == targetKeeperId.Value)
+                    : null;
+                VisualFamilyMemberRecord? targetCandidate = targetKeeperId.HasValue
+                    ? ResolveFamilyComparisonCandidate(targetMembers, targetKeeperId.Value, null, File.Exists)
+                    : null;
+                if (target != null && targetKeeper != null && targetCandidate != null &&
+                    IsAvailableFamilyMember(targetKeeper) && target.FamilyId != currentFamilyId)
+                {
+                    currentFamilyId = target.FamilyId;
+                    currentCandidateId = targetCandidate.FileId;
+                    await SelectFamilyWorkspaceAsync(target.FamilyId, targetCandidate.FileId);
+                    return true;
+                }
+                index += Math.Sign(direction);
+            }
+            return false;
+        }
+
+        bool CanNavigate(int direction)
+        {
+            return ResolveAdjacentFamilyComparisonIndex(navigableFamilyIds, currentFamilyId, direction).HasValue;
+        }
+
+        async Task SetKeeperAsync(long fileId)
+        {
+            VisualFamilyRecord? currentFamily = _runtime.FamilyCatalog.GetVisualFamily(currentFamilyId);
+            if (currentFamily == null) return;
+            await SaveFamilyKeeperAsync(currentFamily, fileId);
+            // Keep the comparison pair stable: if its former candidate became keeper,
+            // the previous keeper naturally becomes the candidate on reload.
+            currentCandidateId = fileId;
+        }
+
+        MemberComparisonSnapshot? initial = await LoadCurrentAsync();
+        if (initial == null) return;
+        await OpenMemberComparisonAsync("Compare Family Member With Keeper", initial.Members, initial.KeeperFileId,
+            new MemberComparisonWorkflow(LoadCurrentAsync, NavigateAsync, CanNavigate, SetKeeperAsync));
+    }
+
+    private async Task<long[]> GetNavigableFamilyIdsAsync()
+    {
+        long[] orderedIds = _familyGrid.Rows.Cast<DataGridViewRow>()
+            .Select(row => row.Tag as VisualFamilyRecord)
+            .Where(family => family != null)
+            .Select(family => family!.FamilyId)
+            .ToArray();
+        return await Task.Run(() =>
+        {
+            VisualFamilyRecord[] families = orderedIds.Select(_runtime.FamilyCatalog.GetVisualFamily)
+                .Where(family => family != null).Select(family => family!).ToArray();
+            var members = families.ToDictionary(family => family.FamilyId,
+                family => _runtime.FamilyCatalog.GetVisualFamilyMembers(family.FamilyId));
+            return ResolveEligibleFamilyComparisonOrder(families, members, File.Exists);
+        });
+    }
+
+    internal static long[] ResolveEligibleFamilyComparisonOrder(
+        IReadOnlyList<VisualFamilyRecord> orderedFamilies,
+        IReadOnlyDictionary<long, IReadOnlyList<VisualFamilyMemberRecord>> membersByFamily,
+        Func<string, bool> fileExists) => orderedFamilies.Where(family =>
+    {
+        long? keeperId = family.ManualKeeperFileId ?? family.SuggestedKeeperFileId;
+        if (!keeperId.HasValue || !membersByFamily.TryGetValue(family.FamilyId, out IReadOnlyList<VisualFamilyMemberRecord>? members))
+            return false;
+        VisualFamilyMemberRecord? keeper = members.FirstOrDefault(member => member.FileId == keeperId.Value);
+        return keeper != null && keeper.Availability == IndexedFileAvailability.Present && fileExists(keeper.FullPath) &&
+               ResolveFamilyComparisonCandidate(members, keeperId.Value, null, fileExists) != null;
+    }).Select(family => family.FamilyId).ToArray();
+
+    private async Task SelectFamilyWorkspaceAsync(long familyId, long memberId)
+    {
+        DataGridViewRow? familyRow = _familyGrid.Rows.Cast<DataGridViewRow>()
+            .FirstOrDefault(row => (row.Tag as VisualFamilyRecord)?.FamilyId == familyId);
+        if (familyRow == null) return;
+        _familyGrid.ClearSelection();
+        familyRow.Selected = true;
+        _familyGrid.CurrentCell = familyRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+        await RefreshVisualFamilyMembersAsync();
+        SelectFamilyMemberRow(memberId);
     }
 
     private bool CanCompareFamilyMemberWithKeeper(VisualFamilyMemberRecord member)
