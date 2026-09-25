@@ -1217,7 +1217,7 @@ namespace MediaFlux
                 bool retryQueued = false;
                 if (!isCanceled)
                 {
-                    retryQueued = terminalResult != EncodingTerminalResult.SourceUnrecoverable &&
+                    retryQueued = EncodingRetryPolicy.AllowsAutomaticRetry(terminalResult) &&
                         TryQueueFailedRowForAutoRetry(row);
                     if (!retryQueued)
                         System.Threading.Interlocked.Increment(ref _encodeFailedCount);

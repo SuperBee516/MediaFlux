@@ -89,7 +89,19 @@ internal static class FfmpegVideoDecodeRecoveryPolicy
         if (!corruption.IsReliable)
             return FfmpegVideoDecodeRecoveryDecision.NotEligible("reliable source video corruption evidence is absent");
 
-        if (FfmpegStorageFailureClassifier.Classify(standardError, outputPath).IsReliable)
+        FfmpegDiagnosticSummary? diagnosticSummary = benchmark
+            ? null
+            : FfmpegSourceDecodeCorruptionClassifier.SummarizeDiagnostics(standardError);
+        bool strongSourceEvidence = benchmark ||
+            FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(corruption, diagnosticSummary, standardError);
+        bool knownStandaloneContainerCorruption = !benchmark &&
+            FfmpegSourceDecodeCorruptionClassifier.HasKnownStandaloneContainerCorruption(corruption, diagnosticSummary);
+        if (!strongSourceEvidence && !knownStandaloneContainerCorruption)
+            return FfmpegVideoDecodeRecoveryDecision.NotEligible("corroborated source-integrity evidence is absent or follows an output failure");
+
+        FfmpegStorageFailure storageFailure = FfmpegStorageFailureClassifier.Classify(standardError, outputPath);
+        if (storageFailure.IsReliable &&
+            !(strongSourceEvidence && FfmpegSourceDecodeCorruptionClassifier.IsMuxTeardownFailure(storageFailure)))
             return FfmpegVideoDecodeRecoveryDecision.NotEligible("output/storage failure evidence is present");
 
         // A benchmark decoder failure that causally precedes teardown is primary;

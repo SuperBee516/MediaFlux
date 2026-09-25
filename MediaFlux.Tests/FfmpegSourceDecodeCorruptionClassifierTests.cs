@@ -100,6 +100,53 @@ public sealed class FfmpegSourceDecodeCorruptionClassifierTests
             strongSourceIntegrityEvidence: result.IsStrongSourceIntegrityEvidence));
     }
 
+    [Fact]
+    public void GenericFailureAndPacketWarningRemainInsufficientForSourceRecovery()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Packet corrupt (stream = 0, dts = 30030).\nConversion failed!");
+
+        Assert.False(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+            result, FfmpegSourceDecodeCorruptionClassifier.SummarizeDiagnostics(
+                "Packet corrupt (stream = 0, dts = 30030).\nConversion failed!"),
+            "Packet corrupt (stream = 0, dts = 30030).\nConversion failed!"));
+        Assert.False(FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
+            automaticRecoveryDisabled: false,
+            isFileInput: true,
+            cancellationRequested: false,
+            strongSourceIntegrityEvidence: result.IsStrongSourceIntegrityEvidence));
+    }
+
+    [Fact]
+    public void CorroboratedSourceEvidenceBeforeMuxTeardownRemainsEligible()
+    {
+        const string stderr = "Invalid NAL unit size (0 > 10)\n" +
+            "missing picture in access unit\n" +
+            "Error splitting the input into NAL units\n" +
+            "Error submitting packet to decoder: Invalid data found when processing input\n" +
+            "Error writing trailer: Invalid argument";
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(stderr);
+
+        Assert.True(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+            result, FfmpegSourceDecodeCorruptionClassifier.SummarizeDiagnostics(stderr), stderr));
+    }
+
+    [Fact]
+    public void CorroboratedSourceTextAfterMuxFailureCannotAuthorizeRecovery()
+    {
+        const string stderr = "Starting second pass: moving the moov atom to the beginning of the file\n" +
+            "Error writing trailer: Invalid argument\n" +
+            "Invalid NAL unit size (0 > 10)\n" +
+            "missing picture in access unit\n" +
+            "Error splitting the input into NAL units\n" +
+            "Error submitting packet to decoder: Invalid data found when processing input";
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(stderr);
+
+        Assert.True(result.IsStrongSourceIntegrityEvidence);
+        Assert.False(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+            result, FfmpegSourceDecodeCorruptionClassifier.SummarizeDiagnostics(stderr), stderr));
+    }
+
     [Theory]
     [InlineData(false, true, false, true, true)]
     [InlineData(true, true, false, true, false)]

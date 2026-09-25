@@ -34,6 +34,36 @@ public sealed class FfmpegVideoDecodeRecoveryPolicyTests
     }
 
     [Fact]
+    public void IsolatedDecoderFailureDoesNotAuthorizeTolerantSourceRecovery()
+    {
+        Assert.False(Evaluate(
+            "Error submitting packet to decoder: Invalid data found when processing input").Eligible);
+    }
+
+    [Fact]
+    public void SourceCorruptionBeforeMuxTeardownAllowsTheBoundedRecovery()
+    {
+        FfmpegVideoDecodeRecoveryDecision decision = Evaluate(
+            ReliableVideoCorruption + "\nError writing trailer: Invalid argument");
+        FfmpegDiagnosticSummary summary = FfmpegSourceDecodeCorruptionClassifier.SummarizeDiagnostics(
+            ReliableVideoCorruption + "\nError writing trailer: Invalid argument");
+        Assert.True(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+            FfmpegSourceDecodeCorruptionClassifier.Classify(ReliableVideoCorruption), summary,
+            ReliableVideoCorruption + "\nError writing trailer: Invalid argument"),
+            string.Join(";", summary.Families.Select(family => $"{family.FirstOrder}:{family.Category}:{family.Family}")));
+        Assert.True(decision.Eligible, decision.Evidence);
+    }
+
+    [Fact]
+    public void SourceCorruptionAfterMp4FinalizationFailureDoesNotAuthorizeRecovery()
+    {
+        string diagnostics = "Starting second pass: moving the moov atom to the beginning of the file\n" +
+            "Error writing trailer: Invalid argument\n" + ReliableVideoCorruption;
+
+        Assert.False(Evaluate(diagnostics).Eligible);
+    }
+
+    [Fact]
     public void DurationFailureWithoutCurrentCorruptionEvidenceIsNotRecoverable()
     {
         Assert.False(Evaluate("FFmpeg completed; staged output duration is 25 seconds short").Eligible);

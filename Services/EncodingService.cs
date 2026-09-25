@@ -1228,7 +1228,7 @@ namespace MediaFlux.Services
             string initialStandardError = runResult.StandardError;
             bool strongInitialSourceCorruption =
                 FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
-                    initialSourceCorruption, runResult.DiagnosticSummary);
+                    initialSourceCorruption, runResult.DiagnosticSummary, runResult.StandardError);
             bool sourceRecoveryEligible = FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
                 disableAutomaticFfmpegRecovery,
                 inputSource.Kind == EncodingInputKind.File,
@@ -1420,7 +1420,7 @@ namespace MediaFlux.Services
                 FfmpegSourceDecodeCorruption retrySourceCorruption =
                     FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
                 if (FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
-                        retrySourceCorruption, runResult.DiagnosticSummary))
+                        retrySourceCorruption, runResult.DiagnosticSummary, runResult.StandardError))
                 {
                     sourceUnrecoverable = true;
                     recoveryDiagnostics += "The single frozen-plan retry reproduced strong source-integrity corruption; recursive recovery was not attempted." + Environment.NewLine;

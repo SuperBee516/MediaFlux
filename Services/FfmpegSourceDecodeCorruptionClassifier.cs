@@ -99,8 +99,22 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
 
     public static bool HasStrongSourceIntegrityEvidence(
         FfmpegSourceDecodeCorruption rawCorruption,
-        FfmpegDiagnosticSummary? diagnosticSummary)
+        FfmpegDiagnosticSummary? diagnosticSummary,
+        string? standardError = null)
     {
+        // Raw stderr is useful evidence, but it must not override the causal
+        // ordering in structured diagnostics when a mux failure happened first.
+        // In that case, only source evidence collected before the mux failure
+        // can authorize source recovery.
+        if (diagnosticSummary is not null)
+        {
+            bool hasCausalStrongEvidence = standardError is null
+                ? HasStrongEvidenceBeforeFirstMuxFailure(diagnosticSummary)
+                : HasStrongEvidenceBeforeFirstMuxFailure(standardError);
+            if (!hasCausalStrongEvidence)
+                return false;
+        }
+
         if (rawCorruption.IsStrongSourceIntegrityEvidence)
             return true;
 
@@ -119,6 +133,81 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
             family.Equals("Decoder packet submission failure", StringComparison.OrdinalIgnoreCase) ||
             family.Equals("Decoder packet processing failure", StringComparison.OrdinalIgnoreCase));
         return hasNalStructure && hasDecoderRejection;
+    }
+
+    public static bool HasKnownStandaloneContainerCorruption(FfmpegSourceDecodeCorruption corruption) =>
+        corruption.MatchedEvidence.Any(value =>
+            value.Contains("missing mandatory atoms", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("broken header", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("invalid as first byte of an EBML number", StringComparison.OrdinalIgnoreCase));
+
+    public static bool HasKnownStandaloneContainerCorruption(
+        FfmpegSourceDecodeCorruption corruption,
+        FfmpegDiagnosticSummary? diagnosticSummary)
+    {
+        if (!HasKnownStandaloneContainerCorruption(corruption))
+            return false;
+
+        FfmpegDiagnosticFamilySummary? firstMuxFailure = diagnosticSummary?.Families
+            .Where(family => family.Category == FfmpegDiagnosticCategory.Muxing &&
+                             family.Severity == FfmpegDiagnosticSeverity.Error)
+            .OrderBy(family => family.FirstOrder)
+            .FirstOrDefault();
+        return firstMuxFailure is null || diagnosticSummary!.Families.Any(family =>
+            family.Family == "Broken or incomplete container header" &&
+            family.FirstOrder < firstMuxFailure.FirstOrder);
+    }
+
+    public static bool IsMuxTeardownFailure(FfmpegStorageFailure failure) =>
+        failure.IsReliable && failure.MatchedEvidence.All(value =>
+            value.Contains("Error writing trailer", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("Error muxing a packet", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("av_interleaved_write_frame", StringComparison.OrdinalIgnoreCase));
+
+    public static FfmpegDiagnosticSummary SummarizeDiagnostics(string? standardError)
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        if (!string.IsNullOrWhiteSpace(standardError))
+        {
+            foreach (string line in standardError.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries))
+                collector.Observe(line, FfmpegDiagnosticComponent.Ffmpeg);
+        }
+        return collector.Complete();
+    }
+
+    private static bool HasStrongEvidenceBeforeFirstMuxFailure(FfmpegDiagnosticSummary summary)
+    {
+        FfmpegDiagnosticFamilySummary? firstMuxFailure = summary.Families
+            .Where(family => family.Category == FfmpegDiagnosticCategory.Muxing &&
+                             family.Severity == FfmpegDiagnosticSeverity.Error)
+            .OrderBy(family => family.FirstOrder)
+            .FirstOrDefault();
+        if (firstMuxFailure is null)
+            return true;
+
+        string precedingSourceEvidence = string.Join("\n", summary.Families
+            .Where(family => family.FirstOrder < firstMuxFailure.FirstOrder)
+            .SelectMany(family => family.RepresentativeRawMessages));
+        return Classify(precedingSourceEvidence).IsStrongSourceIntegrityEvidence;
+    }
+
+    private static bool HasStrongEvidenceBeforeFirstMuxFailure(string standardError)
+    {
+        string[] lines = standardError.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+        var normalizer = new FfmpegDiagnosticNormalizer();
+        int firstMuxFailure = -1;
+        for (int index = 0; index < lines.Length; index++)
+        {
+            FfmpegDiagnosticEvent diagnostic = normalizer.Normalize(lines[index], FfmpegDiagnosticComponent.Ffmpeg, index + 1, DateTimeOffset.UtcNow);
+            if (diagnostic.Category == FfmpegDiagnosticCategory.Muxing && diagnostic.Severity == FfmpegDiagnosticSeverity.Error)
+            {
+                firstMuxFailure = index;
+                break;
+            }
+        }
+        if (firstMuxFailure < 0)
+            return true;
+        return Classify(string.Join("\n", lines.Take(firstMuxFailure))).IsStrongSourceIntegrityEvidence;
     }
 
     /// <summary>
