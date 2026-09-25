@@ -90,6 +90,8 @@ namespace MediaFlux.Services
         public string TerminalResult { get; set; } = "";
         // Additive JSONL field; older schema versions deserialize with null.
         public SourceAdaptiveShadowOutcome? SourceAdaptiveShadow { get; set; }
+        // Versioned effective NVENC quality-mode settings; absent on legacy records.
+        public string QualityModeSettingsSignature { get; set; } = "";
     }
 
     public readonly record struct EncodingStatisticsUtcRange(
@@ -258,6 +260,7 @@ namespace MediaFlux.Services
             record.CalibrationEffectivenessState = record.CalibrationEffectivenessState?.Trim() ?? "";
             record.CalibrationPolicyId = record.CalibrationPolicyId?.Trim() ?? "";
             record.TerminalResult = record.TerminalResult?.Trim() ?? "";
+            record.QualityModeSettingsSignature = record.QualityModeSettingsSignature?.Trim() ?? "";
             if (record.DiagnosticSummary is { } diagnostic)
             {
                 record.DiagnosticSummary = diagnostic with

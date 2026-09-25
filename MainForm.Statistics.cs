@@ -564,7 +564,11 @@ namespace MediaFlux
                                 outcome == EncodingStatisticsOutcome.Success,
                                 finalOutputProbe,
                                 outputSizeBytes)
-                            : null
+                            : null,
+                        QualityModeSettingsSignature = predictionPlan?.SourceAdaptiveShadow?.IsPrimaryCalibrationCandidate == true
+                            ? NvencQualityModeVideoBitratePredictionService.EffectiveSettingsSignature(
+                                encoderId, codec, encoderPreset, outputBitDepth, concurrentEncoderSessions)
+                            : ""
                     };
                 bool added = _encodingStatisticsService.AppendFinalized(statisticsRecord);
 
