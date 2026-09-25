@@ -281,9 +281,10 @@ public partial class MainForm
         VideoEncoderSelection encoder = GetSelectedVideoEncoderSelection();
         EncodingService.ScaleMode scaleMode = GetSelectedScaleMode();
         bool tenBit = chkTenBit?.Checked == true;
-        double? targetMb = null;
-        if (!chkAutoTargetSize.Checked && double.TryParse(txtTargetSize.Text, out double manualMb) && manualMb > 0)
-            targetMb = manualMb;
+        double? targetMb = EncodingTargetSizeResolver.ResolveAutomaticQualityTargetMb(
+            automaticQuality: true,
+            autoTargetSize: chkAutoTargetSize.Checked,
+            configuredManualTarget: txtTargetSize.Text);
 
         if (!TryBeginQualityPreviewRequest(meta, generation))
             return;

@@ -669,11 +669,13 @@ namespace MediaFlux
             }
             else if (automaticQuality)
             {
-                // Automatic Source Adaptive resolves the frozen CRF/CQ/ICQ
-                // decision from QualityTarget. The legacy file-size profile is
-                // intentionally not allowed to turn that intent into a fixed
-                // target-size command.
-                targetMb = null;
+                // An active manual target is explicit user intent and remains
+                // authoritative over Automatic Source Adaptive quality. Dormant
+                // textbox values are rejected by the shared resolver.
+                targetMb = EncodingTargetSizeResolver.ResolveAutomaticQualityTargetMb(
+                    automaticQuality,
+                    autoTargetSize,
+                    targetText);
             }
             else
             {

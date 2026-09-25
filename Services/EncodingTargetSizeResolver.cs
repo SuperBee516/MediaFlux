@@ -8,6 +8,16 @@ namespace MediaFlux.Services;
 /// </summary>
 internal static class EncodingTargetSizeResolver
 {
+    public static double? ResolveAutomaticQualityTargetMb(
+        bool automaticQuality,
+        bool autoTargetSize,
+        string? configuredManualTarget)
+    {
+        return automaticQuality
+            ? ResolveConfiguredManualTargetMb(autoTargetSize, configuredManualTarget)
+            : null;
+    }
+
     public static double? ResolveConfiguredManualTargetMb(
         bool autoTargetSize,
         string? configuredManualTarget)

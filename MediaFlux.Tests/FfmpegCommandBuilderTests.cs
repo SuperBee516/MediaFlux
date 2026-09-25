@@ -477,6 +477,25 @@ public sealed class FfmpegCommandBuilderTests
         Assert.DoesNotContain("-global_quality ", arguments);
     }
 
+    [Fact]
+    public void AutomaticQualityWithActiveManualTargetUsesTargetSizeArguments()
+    {
+        double? targetMb = EncodingTargetSizeResolver.ResolveAutomaticQualityTargetMb(
+            automaticQuality: true,
+            autoTargetSize: false,
+            configuredManualTarget: "500");
+        string arguments = CreateBuilder().Build(CreateRequest(
+            new VideoEncoderSelection(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"),
+            useGpu: true, qualityValue: 19, targetMb: targetMb,
+            knownDuration: TimeSpan.FromSeconds(100), knownAudioBitrateKbps: 160));
+
+        Assert.Contains("-b:v ", arguments);
+        Assert.Contains("-rc vbr", arguments);
+        Assert.DoesNotContain("-cq ", arguments);
+        Assert.DoesNotContain("-crf ", arguments);
+        Assert.DoesNotContain("-global_quality ", arguments);
+    }
+
     [Theory]
     [InlineData("libx264", "-c:v libx264 -crf 23 -preset slow ")]
     [InlineData("libx265", "-c:v libx265 -crf 24 -preset slow ")]
