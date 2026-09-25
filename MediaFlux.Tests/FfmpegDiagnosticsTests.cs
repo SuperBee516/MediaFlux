@@ -138,4 +138,37 @@ public sealed class FfmpegDiagnosticsTests
 
         Assert.Contains(collector.Complete().Families, family => family.Family == "Muxing failure");
     }
+
+    [Fact]
+    public void EarlyCorruptionRetainsCausalSourceClassificationAfterMuxTeardown()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Packet corrupt (stream = 0, dts = 30030).", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Invalid NAL unit size (39140 > 28165).", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("missing picture in access unit with size 28190", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("corrupt input packet in stream 0", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error muxing a packet", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error writing trailer: Invalid argument", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticClassification classification = collector.Complete().Classification;
+        Assert.Equal(FfmpegDiagnosticCategory.SourceIntegrity, classification.PrimaryCategory);
+        Assert.Equal(FfmpegDiagnosticConfidence.High, classification.Confidence);
+    }
+
+    [Fact]
+    public void CompletedMp4FaststartFailureHasExplicitDiagnosis()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("frame=115821 time=01:04:20.60", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Starting second pass: moving the moov atom to the beginning of the file", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error writing trailer: Invalid argument", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error closing file: Invalid argument", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("frame=115867 time=01:04:22.13", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Conversion failed!", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticClassification classification = collector.Complete().Classification;
+        Assert.Equal(FfmpegDiagnosticCategory.Muxing, classification.PrimaryCategory);
+        Assert.Equal(FfmpegDiagnosticConfidence.High, classification.Confidence);
+        Assert.Contains("faststart", classification.ProbableCause, StringComparison.OrdinalIgnoreCase);
+    }
 }

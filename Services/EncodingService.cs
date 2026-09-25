@@ -819,7 +819,8 @@ namespace MediaFlux.Services
             var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
             var preflightOutcomes = new List<EncodingPreflightOutcome>
             {
-                new(EncodingPreflightCheckKind.SourceProbe, EncodingPreflightStatus.Passed),
+                new(EncodingPreflightCheckKind.SourceProbe, EncodingPreflightStatus.Passed,
+                    "FFprobe resolved container and stream metadata; full elementary-stream decode integrity was not checked."),
                 new(EncodingPreflightCheckKind.SourceTiming,
                     inputSource.Kind == EncodingInputKind.File ? EncodingPreflightStatus.Passed : EncodingPreflightStatus.Skipped,
                     inputSource.Kind == EncodingInputKind.File ? preplannedTimelineReconstructionRate is { } approvedRate ? $"Stream-copy normalization preserved unsafe timing; full-stream evidence approved one deterministic {approvedRate.Text} reconstruction encode with mandatory output timeline validation." : timelineRecovery is null ? "Existing source timing analysis passed." : timelineRecovery.Reason : "Not applicable to this input source.")

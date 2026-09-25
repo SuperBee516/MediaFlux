@@ -19,7 +19,8 @@ public sealed record FfmpegDiagnosticFamilySummary(
     string Fingerprint, string Family, FfmpegDiagnosticCategory Category,
     FfmpegDiagnosticSeverity Severity, long Occurrences, DateTimeOffset FirstOccurrence,
     DateTimeOffset LastOccurrence, IReadOnlyList<string> RepresentativeRawMessages,
-    IReadOnlyDictionary<string, (long Minimum, long Maximum)> ValueRanges, bool SamplesTruncated);
+    IReadOnlyDictionary<string, (long Minimum, long Maximum)> ValueRanges, bool SamplesTruncated,
+    long FirstOrder = 0);
 
 public sealed record FfmpegDiagnosticClassification(
     FfmpegDiagnosticCategory PrimaryCategory, string ProbableCause,
@@ -63,6 +64,7 @@ public sealed partial class FfmpegDiagnosticNormalizer
         (string family, FfmpegDiagnosticCategory category, FfmpegDiagnosticSeverity severity) = comparable switch
         {
             var x when x.Contains("No space left", StringComparison.OrdinalIgnoreCase) => ("Output write failure", FfmpegDiagnosticCategory.DiskIo, FfmpegDiagnosticSeverity.Error),
+            var x when x.Contains("Starting second pass: moving the moov atom", StringComparison.OrdinalIgnoreCase) => ("MP4 faststart relocation", FfmpegDiagnosticCategory.Muxing, FfmpegDiagnosticSeverity.Info),
             var x when IsAffirmativeMuxingFailure(x) => ("Muxing failure", FfmpegDiagnosticCategory.Muxing, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("Error splitting the input into NAL units", StringComparison.OrdinalIgnoreCase) => ("Error splitting input into NAL units", FfmpegDiagnosticCategory.SourceDecode, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("missing mandatory atoms", StringComparison.OrdinalIgnoreCase) || x.Contains("broken header", StringComparison.OrdinalIgnoreCase) => ("Broken or incomplete container header", FfmpegDiagnosticCategory.SourceIntegrity, FfmpegDiagnosticSeverity.Error),
@@ -172,7 +174,7 @@ public sealed class FfmpegDiagnosticAggregator
         private readonly FfmpegDiagnosticEvent _first; private readonly List<string> _samples = new(); private readonly Dictionary<string, (long Min, long Max)> _ranges = new(); private long _count; private DateTimeOffset _last; private bool _truncated;
         public Family(FfmpegDiagnosticEvent item) { _first = item; _last = item.CapturedAt; }
         public void Add(FfmpegDiagnosticEvent item) { _count++; _last = item.CapturedAt; foreach (var v in item.Values) _ranges[v.Key] = _ranges.TryGetValue(v.Key, out var range) ? (Math.Min(range.Min, v.Value), Math.Max(range.Max, v.Value)) : (v.Value, v.Value); if (_samples.Count < 3) _samples.Add(item.RawMessage); else { if (_samples.Count < MaxSamplesPerFamily) _samples.Add(item.RawMessage); else { _samples.RemoveAt(3); _samples.Add(item.RawMessage); _truncated = true; } } }
-        public FfmpegDiagnosticFamilySummary Summary() => new(_first.Fingerprint, _first.Family, _first.Category, _first.Severity, _count, _first.CapturedAt, _last, _samples.ToArray(), new ReadOnlyDictionary<string, (long Minimum, long Maximum)>(_ranges.ToDictionary(x => x.Key, x => (x.Value.Min, x.Value.Max))), _truncated);
+        public FfmpegDiagnosticFamilySummary Summary() => new(_first.Fingerprint, _first.Family, _first.Category, _first.Severity, _count, _first.CapturedAt, _last, _samples.ToArray(), new ReadOnlyDictionary<string, (long Minimum, long Maximum)>(_ranges.ToDictionary(x => x.Key, x => (x.Value.Min, x.Value.Max))), _truncated, _first.Order);
     }
 }
 
@@ -180,14 +182,34 @@ public static class FfmpegDiagnosticClassifier
 {
     public static FfmpegDiagnosticClassification Classify(IReadOnlyList<FfmpegDiagnosticFamilySummary> families)
     {
-        string[] source = families.Where(x => x.Category is FfmpegDiagnosticCategory.SourceDecode or FfmpegDiagnosticCategory.SourceIntegrity).Select(x => x.Family).Distinct().ToArray();
+        FfmpegDiagnosticFamilySummary? firstMuxFailure = families.Where(x => x.Category == FfmpegDiagnosticCategory.Muxing && x.Severity == FfmpegDiagnosticSeverity.Error).OrderBy(x => x.FirstOrder).FirstOrDefault();
+        FfmpegDiagnosticFamilySummary[] causalSource = families.Where(x =>
+            (x.Category is FfmpegDiagnosticCategory.SourceDecode or FfmpegDiagnosticCategory.SourceIntegrity) &&
+            (firstMuxFailure is null || x.FirstOrder <= firstMuxFailure.FirstOrder)).ToArray();
+        string[] source = causalSource.Select(x => x.Family).Distinct().ToArray();
         bool nal = source.Contains("Invalid NAL unit size"), split = source.Contains("Error splitting input into NAL units"), packet = source.Contains("Decoder packet submission failure") || source.Contains("Invalid input data");
+        bool corruptVideoPacket = causalSource.Any(x => x.Family == "Corrupt packet" &&
+            x.RepresentativeRawMessages.Any(message =>
+                message.Contains("stream = 0", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("stream 0", StringComparison.OrdinalIgnoreCase)));
+        bool missingPicture = source.Contains("Missing picture in access unit");
         bool container = source.Contains("Broken or incomplete container header");
-        if (nal && split && (packet || container)) return new(FfmpegDiagnosticCategory.SourceIntegrity, "Malformed or corrupt H.264 bitstream data is probable.", FfmpegDiagnosticConfidence.High, source);
+        FfmpegDiagnosticFamilySummary? firstSource = causalSource.OrderBy(x => x.FirstOrder).FirstOrDefault();
+        bool sourcePrecedesMux = firstSource is not null;
+        if (sourcePrecedesMux && nal && split && (packet || container)) return new(FfmpegDiagnosticCategory.SourceIntegrity, "Malformed or corrupt H.264 bitstream data is probable.", FfmpegDiagnosticConfidence.High, source);
+        if (sourcePrecedesMux && nal && missingPicture && corruptVideoPacket)
+            return new(FfmpegDiagnosticCategory.SourceIntegrity, "Corrupt video packets and malformed H.264 access units are probable.", FfmpegDiagnosticConfidence.High, source);
         FfmpegDiagnosticFamilySummary? hardware = families.FirstOrDefault(x => x.Category == FfmpegDiagnosticCategory.HardwareAcceleration);
         if (hardware is not null) return new(FfmpegDiagnosticCategory.HardwareAcceleration, "Hardware-acceleration or encoder-device failure is probable.", FfmpegDiagnosticConfidence.Moderate, new[] { hardware.Family });
-        if (source.Length >= 2) return new(FfmpegDiagnosticCategory.SourceDecode, "Source decode or bitstream-integrity failure is probable.", FfmpegDiagnosticConfidence.Moderate, source);
-        FfmpegDiagnosticFamilySummary? primary = families.OrderByDescending(x => x.Occurrences).FirstOrDefault(x => x.Category != FfmpegDiagnosticCategory.Unknown);
+        if (source.Length >= 2 && sourcePrecedesMux)
+            return new(FfmpegDiagnosticCategory.SourceDecode, "Source decode or bitstream-integrity failure is probable.", FfmpegDiagnosticConfidence.Moderate, source);
+        FfmpegDiagnosticFamilySummary? faststart = families.FirstOrDefault(x => x.Family == "MP4 faststart relocation");
+        if (faststart is not null && firstMuxFailure is not null &&
+            faststart.FirstOrder <= firstMuxFailure.FirstOrder &&
+            (firstSource is null || firstSource.FirstOrder > firstMuxFailure.FirstOrder))
+            return new(FfmpegDiagnosticCategory.Muxing, "MP4 faststart relocation or trailer finalization failed after media processing.", FfmpegDiagnosticConfidence.High,
+                [faststart.Family, firstMuxFailure.Family]);
+        FfmpegDiagnosticFamilySummary? primary = families.Where(x => x.Severity == FfmpegDiagnosticSeverity.Error).OrderByDescending(x => x.Occurrences).FirstOrDefault(x => x.Category != FfmpegDiagnosticCategory.Unknown);
         return primary == null ? new(FfmpegDiagnosticCategory.Unknown, "No confident diagnostic interpretation is available.", FfmpegDiagnosticConfidence.Unknown, Array.Empty<string>()) : new(primary.Category, "A single diagnostic family was observed; cause remains uncertain.", FfmpegDiagnosticConfidence.Low, new[] { primary.Family });
     }
 }

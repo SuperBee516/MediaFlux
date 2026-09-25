@@ -67,6 +67,25 @@ public sealed class FfmpegSourceDecodeCorruptionClassifierTests
         Assert.False(result.IsStrongSourceIntegrityEvidence);
     }
 
+    [Theory]
+    [InlineData("Packet corrupt (stream = 0, dts = 30030).\nInvalid NAL unit size (39140 > 28165).\nmissing picture in access unit with size 28190\ncorrupt input packet in stream 0\nTask finished with error code: -1094995529")]
+    [InlineData("Packet corrupt (stream = 0, dts = 8070).\nInvalid NAL unit size (14426 > 467).\nmissing picture in access unit with size 477\ncorrupt input packet in stream 0\nTask finished with error code: -1094995529")]
+    public void EarlyVideoPacketCorruptionIsStrongEnoughForExistingBoundedRecovery(string stderr)
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(stderr);
+        Assert.True(result.IsStrongSourceIntegrityEvidence);
+        Assert.True(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(result, null));
+    }
+
+    [Fact]
+    public void IsolatedPacketCorruptionDoesNotEnterStrongSourceRecovery()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "corrupt input packet in stream 0\nError writing trailer: Invalid argument");
+        Assert.False(result.IsReliable);
+        Assert.False(result.IsStrongSourceIntegrityEvidence);
+    }
+
     [Fact]
     public void DownstreamEncoderAbortIsNotHardwareEvidence()
     {

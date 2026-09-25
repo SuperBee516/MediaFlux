@@ -14,7 +14,8 @@ internal sealed record FfmpegSourceDecodeCorruption(
     public bool IsStrongSourceIntegrityEvidence =>
         HasStructuralEvidence &&
         MatchedEvidence.Count(IsStructuralSignature) >= 2 &&
-        (HasDecoderRejection || MatchedEvidence.Any(IsContainerSignature));
+        (HasDecoderRejection || MatchedEvidence.Any(IsContainerSignature) ||
+         MatchedEvidence.Any(value => value.Equals("corrupt input packet in stream 0", StringComparison.OrdinalIgnoreCase)));
 
     public string DescribeEvidence() => MatchedEvidence.Count == 0
         ? "none"
@@ -63,6 +64,11 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
         "broken header"
     ];
 
+    private static readonly string[] VideoPacketCorruptionSignatures =
+    [
+        "corrupt input packet in stream 0"
+    ];
+
     public static FfmpegSourceDecodeCorruption Classify(string? standardError)
     {
         if (string.IsNullOrWhiteSpace(standardError))
@@ -77,8 +83,11 @@ internal static class FfmpegSourceDecodeCorruptionClassifier
         string[] containerMatches = ContainerCorruptionSignatures
             .Where(signature => standardError.Contains(signature, StringComparison.OrdinalIgnoreCase))
             .ToArray();
+        string[] packetMatches = VideoPacketCorruptionSignatures
+            .Where(signature => standardError.Contains(signature, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
         return new(decoderMatches.Length > 0 || containerMatches.Length > 0,
-            bitstreamMatches.Concat(decoderMatches).Concat(containerMatches).ToArray());
+            bitstreamMatches.Concat(decoderMatches).Concat(containerMatches).Concat(packetMatches).ToArray());
     }
 
     public static bool HasStrongSourceIntegrityEvidence(
