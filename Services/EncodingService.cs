@@ -639,6 +639,7 @@ namespace MediaFlux.Services
             var performance = new PerformanceTimingService();
             string? sourceTimelineRepairPath = null;
             string? sourceContainerRepairPath = null;
+            Guid recoveryOperationId = Guid.Empty;
             try
             {
             cancellationToken.ThrowIfCancellationRequested();
@@ -816,6 +817,7 @@ namespace MediaFlux.Services
                     : null,
                 sizePredictionCalibration);
             EncodingPlan shadowPlan = EncodingPlanService.Create(planContext);
+            recoveryOperationId = shadowPlan.PlanId;
             var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
             var preflightOutcomes = new List<EncodingPreflightOutcome>
             {
@@ -1227,9 +1229,27 @@ namespace MediaFlux.Services
             bool strongInitialSourceCorruption =
                 FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
                     initialSourceCorruption, runResult.DiagnosticSummary);
-            if (!disableAutomaticFfmpegRecovery &&
-                inputSource.Kind == EncodingInputKind.File &&
-                strongInitialSourceCorruption)
+            bool sourceRecoveryEligible = FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
+                disableAutomaticFfmpegRecovery,
+                inputSource.Kind == EncodingInputKind.File,
+                cancellationToken.IsCancellationRequested,
+                strongInitialSourceCorruption);
+            string sourceRecoveryDecisionReason = disableAutomaticFfmpegRecovery
+                ? "automatic-recovery-disabled"
+                : inputSource.Kind != EncodingInputKind.File
+                    ? "input-is-not-a-file"
+                    : cancellationToken.IsCancellationRequested
+                        ? "cancellation-requested"
+                        : !strongInitialSourceCorruption
+                            ? "strong-source-integrity-evidence-not-established"
+                            : "eligible";
+            _log?.Invoke(
+                $"[EncodingRecovery] Operation={shadowPlan.PlanId:N}; Stage=SourceRecoveryEligibility; " +
+                $"Eligible={sourceRecoveryEligible}; Reason={sourceRecoveryDecisionReason}; " +
+                $"InitialExit={runResult.ExitCode}; SourceEvidenceReliable={initialSourceCorruption.IsReliable}; " +
+                $"StrongSourceIntegrityEvidence={strongInitialSourceCorruption}; " +
+                $"Evidence={initialSourceCorruption.DescribeEvidence()}." );
+            if (sourceRecoveryEligible)
             {
                 recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceCorruptionDetected));
                 sourceContainerRecoveryAttempted = true;
@@ -1237,13 +1257,13 @@ namespace MediaFlux.Services
                 string initialEvidence = initialSourceCorruption.MatchedEvidence.Count > 0
                     ? initialSourceCorruption.DescribeEvidence()
                     : string.Join(" | ", runResult.DiagnosticSummary.Classification.SupportingFamilies);
-                _log?.Invoke($"[EncodingRecovery] Type=SourceContainerRemux; Failure=SourceIntegrity; InitialMode=Strict; RecoveryMode=StreamCopyRemux; ProcessResult=NotStarted; MediaDisposition=NotAttempted; source={inputSource.SourcePath}; temporary={sourceContainerRepairPath}; evidence={initialEvidence}.");
+                _log?.Invoke($"[EncodingRecovery] Operation={shadowPlan.PlanId:N}; Type=SourceContainerRemux; Failure=SourceIntegrity; InitialMode=Strict; RecoveryMode=StreamCopyRemux; Attempt=1/1; ProcessResult=NotStarted; MediaDisposition=NotAttempted; source={inputSource.SourcePath}; temporary={sourceContainerRepairPath}; evidence={initialEvidence}.");
                 recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.AttemptingSourceRecovery));
                 callback("[MediaFlux] Source corruption detected; attempting one container remux for verification.");
                 if (TryDeleteFailedStagingOutput(output))
                 {
                     SourceContainerRecoveryResult repair = await new SourceContainerRecoveryService(
-                        _ffmpegPath, _ffprobePath, log: _log)
+                        _ffmpegPath, _ffprobePath, log: _log, operationId: shadowPlan.PlanId.ToString("N"))
                         .TryRemuxAndValidateAsync(
                             inputSource.SourcePath,
                             sourceContainerRepairPath,
@@ -1331,7 +1351,7 @@ namespace MediaFlux.Services
                                     recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.AttemptingDegradedSourceSalvage));
                                     callback("[MediaFlux] Attempting degraded source salvage with tolerant software decode; damaged media may be discarded.");
                                     tolerantSalvageDetail = $"Tier 1 rejected copied corruption; strategy=TolerantDecodeReencode; software-decode=yes; audio={(tolerantSalvageAudioReconstructed ? "reconstructed" : "validated-copy")}; damaged packets/frames may have been discarded.";
-                                    _log?.Invoke($"[EncodingRecovery] Type=TolerantDecodeReencode; Failure=SourceContainerCorruption; InitialMode=Strict; RecoveryMode=TolerantDecodeReencode; source={inputSource.SourcePath}; {tolerantSalvageDetail}");
+                                    _log?.Invoke($"[EncodingRecovery] Operation={shadowPlan.PlanId:N}; Type=TolerantDecodeReencode; Failure=SourceContainerCorruption; InitialMode=Strict; RecoveryMode=TolerantDecodeReencode; Attempt=1/1; source={inputSource.SourcePath}; {tolerantSalvageDetail}");
                                     ffArgs = BuildFfmpegArgs(
                                         inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
                                         encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
@@ -2114,8 +2134,8 @@ namespace MediaFlux.Services
             using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.TemporaryFileCleanup))
             {
                 if (aiIntermediate is not null) aiIntermediate.Dispose();
-                DeleteTemporaryTimelineRepair(sourceTimelineRepairPath);
-                DeleteTemporaryTimelineRepair(sourceContainerRepairPath);
+                DeleteTemporaryTimelineRepair(sourceTimelineRepairPath, recoveryOperationId);
+                DeleteTemporaryTimelineRepair(sourceContainerRepairPath, recoveryOperationId);
                 scope.Complete();
             }
             performance.LogSummary(_log);
@@ -2135,24 +2155,25 @@ namespace MediaFlux.Services
             }
             catch
             {
-                DeleteTemporaryTimelineRepair(sourceTimelineRepairPath);
-                DeleteTemporaryTimelineRepair(sourceContainerRepairPath);
+                DeleteTemporaryTimelineRepair(sourceTimelineRepairPath, recoveryOperationId);
+                DeleteTemporaryTimelineRepair(sourceContainerRepairPath, recoveryOperationId);
                 performance.LogSummary(_log);
                 throw;
             }
         }
 
-        private void DeleteTemporaryTimelineRepair(string? path)
+        private void DeleteTemporaryTimelineRepair(string? path, Guid operationId)
         {
             if (string.IsNullOrWhiteSpace(path)) return;
+            string operation = operationId == Guid.Empty ? "unavailable" : operationId.ToString("N");
             try
             {
                 if (File.Exists(path)) File.Delete(path);
-                _log?.Invoke($"[EncodingRecovery] Temporary timeline repair cleanup: path={path}; removed={!File.Exists(path)}.");
+                _log?.Invoke($"[EncodingRecovery] Operation={operation}; Temporary recovery artifact cleanup: path={path}; removed={!File.Exists(path)}.");
             }
             catch (Exception ex)
             {
-                _log?.Invoke($"[EncodingRecovery] Temporary timeline repair cleanup failed: path={path}; error={ex.Message}");
+                _log?.Invoke($"[EncodingRecovery] Operation={operation}; Temporary recovery artifact cleanup failed: path={path}; error={ex.Message}");
             }
         }
 

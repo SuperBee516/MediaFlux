@@ -87,6 +87,33 @@ public sealed class FfmpegSourceDecodeCorruptionClassifierTests
     }
 
     [Fact]
+    public void IsolatedPacketCorruptWarningDoesNotEnableAutomaticSourceRecovery()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Packet corrupt (stream = 0, dts = 30030).\nError writing trailer: Invalid argument");
+
+        Assert.False(result.IsStrongSourceIntegrityEvidence);
+        Assert.False(FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
+            automaticRecoveryDisabled: false,
+            isFileInput: true,
+            cancellationRequested: false,
+            strongSourceIntegrityEvidence: result.IsStrongSourceIntegrityEvidence));
+    }
+
+    [Theory]
+    [InlineData(false, true, false, true, true)]
+    [InlineData(true, true, false, true, false)]
+    [InlineData(false, false, false, true, false)]
+    [InlineData(false, true, true, true, false)]
+    [InlineData(false, true, false, false, false)]
+    public void AutomaticSourceRecoveryGateUsesExistingEligibilityFacts(
+        bool disabled, bool fileInput, bool canceled, bool strongEvidence, bool expected)
+    {
+        Assert.Equal(expected, FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
+            disabled, fileInput, canceled, strongEvidence));
+    }
+
+    [Fact]
     public void DownstreamEncoderAbortIsNotHardwareEvidence()
     {
         EncodingSourceFailureClassification result = EncodingSourceFailureClassifier.Classify(

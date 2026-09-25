@@ -206,9 +206,10 @@ public sealed class EncodingRecoverySemanticsTests
         using TempFiles files = new();
         string original = File.ReadAllText(files.SourcePath);
         var runner = new SuccessfulRunner();
+        var logs = new List<string>();
         bool validationStarted = false;
         SourceContainerRecoveryResult result = await new SourceContainerRecoveryService(
-            "ffmpeg", files.FfprobePath, runner, new FixedDecodeService(true))
+            "ffmpeg", files.FfprobePath, runner, new FixedDecodeService(true), logs.Add, "test-operation")
             .TryRemuxAndValidateAsync(files.SourcePath, files.OutputPath, files.Probe, 10, CancellationToken.None, () => validationStarted = true);
 
         Assert.True(result.Success);
@@ -228,6 +229,28 @@ public sealed class EncodingRecoverySemanticsTests
         Assert.DoesNotContain("0", runner.FfmpegRequest.Arguments.Where((value, index) => index > 0 && runner.FfmpegRequest.Arguments[index - 1] == "-map"));
         Assert.Equal("matroska", runner.FfmpegRequest.Arguments[runner.FfmpegRequest.Arguments.ToList().IndexOf("-f") + 1]);
         Assert.EndsWith(".mkv.partial", runner.FfmpegRequest.Arguments[^1], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(logs, line => line.Contains("Operation=test-operation", StringComparison.Ordinal) && line.Contains("Stage=SourceContainerRemuxValidation; Result=Passed", StringComparison.Ordinal));
+        Assert.Contains(logs, line => line.Contains("Operation=test-operation", StringComparison.Ordinal) && line.Contains("Stage=SourceContainerRemuxCleanup", StringComparison.Ordinal) && line.Contains("Staging=not-present", StringComparison.Ordinal) && line.Contains("Repair=promoted", StringComparison.Ordinal) && line.Contains("Result=Complete", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ContainerRemuxCancellationRemovesPartialAndPreservesSource()
+    {
+        using TempFiles files = new();
+        using var cts = new CancellationTokenSource();
+        var runner = new BlockingRunner();
+        Task<SourceContainerRecoveryResult> operation = new SourceContainerRecoveryService(
+            "ffmpeg", files.FfprobePath, runner)
+            .TryRemuxAndValidateAsync(files.SourcePath, files.OutputPath, files.Probe, 10, cts.Token);
+
+        await runner.Started.Task;
+        Assert.True(File.Exists(files.OutputPath + ".partial"));
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+        Assert.False(File.Exists(files.OutputPath + ".partial"));
+        Assert.False(File.Exists(files.OutputPath));
+        Assert.Equal("original", File.ReadAllText(files.SourcePath));
     }
 
     [Fact]

@@ -43,6 +43,13 @@ internal sealed record FfmpegSourceDecodeCorruption(
 
 internal static class FfmpegSourceDecodeCorruptionClassifier
 {
+    internal static bool ShouldAttemptAutomaticRecovery(
+        bool automaticRecoveryDisabled,
+        bool isFileInput,
+        bool cancellationRequested,
+        bool strongSourceIntegrityEvidence) =>
+        !automaticRecoveryDisabled && isFileInput && !cancellationRequested && strongSourceIntegrityEvidence;
+
     private static readonly string[] BitstreamFailureSignatures =
     [
         "Invalid NAL unit size",

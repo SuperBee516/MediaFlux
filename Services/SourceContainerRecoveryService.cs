@@ -41,19 +41,22 @@ internal sealed class SourceContainerRecoveryService
     private readonly IMediaToolProcessRunner _runner;
     private readonly IDecodeIntegritySpotCheckService _decodeIntegrity;
     private readonly Action<string>? _log;
+    private readonly string _operationId;
 
     public SourceContainerRecoveryService(
         string ffmpegPath,
         string ffprobePath,
         IMediaToolProcessRunner? runner = null,
         IDecodeIntegritySpotCheckService? decodeIntegrity = null,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        string? operationId = null)
     {
         _ffmpegPath = ffmpegPath;
         _ffprobePath = ffprobePath;
         _runner = runner ?? new MediaToolProcessRunner();
         _decodeIntegrity = decodeIntegrity ?? new FfmpegDecodeIntegritySpotCheckService(_ffmpegPath, _runner);
         _log = log;
+        _operationId = string.IsNullOrWhiteSpace(operationId) ? "unavailable" : operationId;
     }
 
     public async Task<SourceContainerRecoveryResult> TryRemuxAndValidateAsync(
@@ -69,6 +72,7 @@ internal sealed class SourceContainerRecoveryService
             return SourceContainerRecoveryResult.Failed("The temporary source-recovery path was invalid or replaced the original source.");
 
         string stagingPath = repairedPath + ".partial";
+        bool promoted = false;
         try
         {
             TryDelete(stagingPath);
@@ -108,7 +112,8 @@ internal sealed class SourceContainerRecoveryService
                     SourceContainerRecoveryFailureKind.Validation);
 
             File.Move(stagingPath, repairedPath, overwrite: false);
-            _log?.Invoke($"[EncodingRecovery] Container remux validation passed: repaired={repairedPath}; samples={string.Join(",", decode.PositionsSeconds.Select(x => x.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)))}.");
+            promoted = true;
+            Log($"[EncodingRecovery] Operation={_operationId}; Stage=SourceContainerRemuxValidation; Result=Passed; repaired={repairedPath}; samples={string.Join(",", decode.PositionsSeconds.Select(x => x.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)))}.");
             return new(true, repairedPath, repairedProbe,
                 "Container stream-copy remux completed and sampled decode validation passed.", true, true);
         }
@@ -116,15 +121,34 @@ internal sealed class SourceContainerRecoveryService
         catch (Exception ex) { return SourceContainerRecoveryResult.Failed("Container remux recovery failed: " + ex.Message); }
         finally
         {
-            TryDelete(stagingPath);
-            if (!File.Exists(repairedPath))
-                TryDelete(repairedPath);
+            bool stagingExisted = File.Exists(stagingPath);
+            bool stagingRemoved = TryDelete(stagingPath);
+            bool repairedRemoved = true;
+            bool repairedExisted = File.Exists(repairedPath);
+            if (!promoted && repairedExisted)
+                repairedRemoved = TryDelete(repairedPath);
+            Log(
+                $"[EncodingRecovery] Operation={_operationId}; Stage=SourceContainerRemuxCleanup; " +
+                $"Staging={(File.Exists(stagingPath) ? "remaining" : stagingExisted && stagingRemoved ? "removed" : "not-present")}; " +
+                $"Repair={(promoted && File.Exists(repairedPath) ? "promoted" : File.Exists(repairedPath) ? "remaining" : repairedExisted && repairedRemoved ? "removed" : "not-present")}; " +
+                $"Result={(!File.Exists(stagingPath) && (promoted ? File.Exists(repairedPath) : !File.Exists(repairedPath)) ? "Complete" : "Incomplete") }.");
         }
     }
 
-    private static void TryDelete(string path)
+    private void Log(string message)
     {
-        try { if (File.Exists(path)) File.Delete(path); } catch { }
+        try { _log?.Invoke(message); }
+        catch { /* Observability callbacks must not change recovery outcomes. */ }
+    }
+
+    private static bool TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+            return !File.Exists(path);
+        }
+        catch { return false; }
     }
 
     private static bool IsInfrastructureFailure(MediaToolProcessResult process)
