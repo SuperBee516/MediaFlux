@@ -122,6 +122,7 @@ public sealed class EncodingPlan
     public EncodingFinalizationIntent? FinalizationIntent { get; init; }
     public EncodingPlanValidation? Validation { get; init; }
     public EncodingQualityResolution? Quality { get; init; }
+    public SourceAdaptiveShadowCalibration? SourceAdaptiveShadow { get; init; }
     public EncodingPlanEstimates Estimates { get; init; } = new(null, null, null);
     public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
     public EncodingRecommendation? Recommendation { get; internal set; }

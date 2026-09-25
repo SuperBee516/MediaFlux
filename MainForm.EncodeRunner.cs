@@ -1016,6 +1016,12 @@ namespace MediaFlux
                     // We ignore this; the encode itself succeeded.
                 }
 
+                if (meta.IntelligencePlan?.SourceAdaptiveShadow is { } shadowDecision)
+                {
+                    AppendJobLog(SourceAdaptiveShadowOutcome.FromOutput(
+                        shadowDecision, result.FinalOutputProbe, outputSizeBytes).Describe());
+                }
+
                 RecordEncodingStatistics(
                     meta.StatisticsOperationId,
                     meta.StatisticsStartUtc,
@@ -1041,7 +1047,8 @@ namespace MediaFlux
                     diagnosticSummary: diagnosticSummary,
                     recoveredSuccessful: jobLog.ToString().Contains("Result=Succeeded", StringComparison.Ordinal),
                     predictionPlan: meta.IntelligencePlan,
-                    executionOutcome: meta.IntelligenceOutcome);
+                    executionOutcome: meta.IntelligenceOutcome,
+                    finalOutputProbe: result.FinalOutputProbe);
 
                 try
                 {

@@ -66,6 +66,7 @@ namespace MediaFlux.Services
             public OutputContainerSelection RequestedOutputContainer { get; }
             public OutputContainer ResolvedOutputContainer { get; }
             public string ContainerDecisionReason { get; }
+            public MediaProbeResult? FinalOutputProbe { get; }
 
             public EncodeResult(
                 bool success,
@@ -78,7 +79,8 @@ namespace MediaFlux.Services
                 OutputContainerSelection requestedOutputContainer = OutputContainerSelection.Mp4,
                 OutputContainer resolvedOutputContainer = OutputContainer.Mp4,
                 string containerDecisionReason = "",
-                long? finalOutputLastWriteUtcTicks = null)
+                long? finalOutputLastWriteUtcTicks = null,
+                MediaProbeResult? finalOutputProbe = null)
             {
                 Success = success;
                 OutputPath = outputPath;
@@ -91,6 +93,7 @@ namespace MediaFlux.Services
                 RequestedOutputContainer = requestedOutputContainer;
                 ResolvedOutputContainer = resolvedOutputContainer;
                 ContainerDecisionReason = containerDecisionReason;
+                FinalOutputProbe = finalOutputProbe;
             }
         }
 
@@ -2167,7 +2170,9 @@ namespace MediaFlux.Services
                 resolvedOutputContainer: containerDecision.Resolved,
                 containerDecisionReason: containerDecision.Reason,
                     finalOutputLastWriteUtcTicks:
-                    finalization.FinalOutputLastWriteUtcTicks);
+                    finalization.FinalOutputLastWriteUtcTicks,
+                finalOutputProbe: finalization.PromotedValidationResult?.Evidence?.OutputProbe ??
+                    finalization.StagedValidationResult?.Evidence?.OutputProbe);
             }
             catch
             {

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
@@ -87,6 +88,8 @@ namespace MediaFlux.Services
         public string PredictionQuality { get; set; } = "";
         public string PredictionAssessment { get; set; } = "";
         public string TerminalResult { get; set; } = "";
+        // Additive JSONL field; older schema versions deserialize with null.
+        public SourceAdaptiveShadowOutcome? SourceAdaptiveShadow { get; set; }
     }
 
     public readonly record struct EncodingStatisticsUtcRange(

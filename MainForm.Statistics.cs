@@ -488,12 +488,12 @@ namespace MediaFlux
             EncodingDiagnosticSummary? diagnosticSummary = null,
             bool recoveredSuccessful = false,
             EncodingPlan? predictionPlan = null,
-            EncodingExecutionOutcome? executionOutcome = null)
+            EncodingExecutionOutcome? executionOutcome = null,
+            MediaProbeResult? finalOutputProbe = null)
         {
             try
             {
-                bool added = _encodingStatisticsService.AppendFinalized(
-                    new EncodingStatisticsRecord
+                var statisticsRecord = new EncodingStatisticsRecord
                     {
                         Id = operationId,
                         StartUtc = startUtc,
@@ -557,8 +557,19 @@ namespace MediaFlux
                         PredictionRecommendation = predictionPlan?.Recommendation?.Recommendation.ToString() ?? "",
                         PredictionQuality = predictionPlan?.Quality?.EffectiveQuality?.ToString() ?? "",
                         PredictionAssessment = predictionPlan?.Quality?.Assessment.ToString() ?? "",
-                        TerminalResult = executionOutcome?.TerminalResult.ToString() ?? ""
-                    });
+                        TerminalResult = executionOutcome?.TerminalResult.ToString() ?? "",
+                        SourceAdaptiveShadow = predictionPlan?.SourceAdaptiveShadow is { } shadow
+                            ? SourceAdaptiveShadowOutcome.ForTerminalOutcome(
+                                shadow,
+                                outcome == EncodingStatisticsOutcome.Success,
+                                finalOutputProbe,
+                                outputSizeBytes)
+                            : null
+                    };
+                bool added = _encodingStatisticsService.AppendFinalized(statisticsRecord);
+
+                if (statisticsRecord.SourceAdaptiveShadow is { } shadowOutcome)
+                    Debug.WriteLine(shadowOutcome.Describe());
 
                 if (added)
                     Ui(RefreshEncodingStatistics);

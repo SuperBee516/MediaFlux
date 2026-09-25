@@ -126,6 +126,8 @@ public static class EncodingPlanService
             new EncodingQualityPolicyRequest(
                 qualityIntent, context.Source, context.Encoder, geometry,
                 context.ScaleMode, context.TargetMb));
+        SourceAdaptiveShadowCalibration sourceAdaptiveShadow =
+            new SourceAdaptiveShadowCalibrationService().CreateSafely(context, quality, geometry);
 
         double? targetKbps = context.TargetMb is > 0 && context.KnownDuration > TimeSpan.Zero
             ? context.TargetMb.Value * 8192d / context.KnownDuration.TotalSeconds : null;
@@ -173,6 +175,7 @@ public static class EncodingPlanService
             FinalizationIntent = new EncodingFinalizationIntent(true, true, true, true, "Collision-safe, no-overwrite promotion"),
             Validation = new EncodingPlanValidation(context.ValidationProfile.ToString(), true, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison),
             Quality = quality,
+            SourceAdaptiveShadow = sourceAdaptiveShadow,
             Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio, historicalPrediction),
             SizePredictionCalibration = context.SizePredictionCalibration,
             Risks = risks,
@@ -303,9 +306,17 @@ public static class EncodingPlanService
         string recommendation = plan.Recommendation is { } advisory
             ? $"Recommendation={advisory.DisplayName}; Reason={advisory.PrimaryReason}; Confidence={advisory.Confidence}"
             : "Recommendation=Unavailable";
+        SourceAdaptiveShadowCalibration? shadow = plan.SourceAdaptiveShadow;
+        string shadowSummary = shadow is null ? "" :
+            $" Source Adaptive shadow: status={shadow.Status}; CQ={shadow.InitialCq?.ToString() ?? "n/a"} (unchanged); " +
+            $"source-video={shadow.SourceVideoBitrateKbps?.ToString("0") ?? "unknown"} kbps [{shadow.SourceBitrateProvenance}]; " +
+            $"predicted-video={shadow.PredictedOutputVideoBitrateKbps?.ToString("0") ?? "unknown"} kbps; " +
+            $"video-ratio={shadow.PredictedVideoRatio?.ToString("0.##") ?? "unknown"}x; " +
+            $"total-bytes={shadow.PredictedTotalOutputBytes?.ToString() ?? "unknown"}; " +
+            $"reason={shadow.EligibilityReason}; execution-adjustment=none (shadow mode).";
         return $"[EncodingPlan] PlanId={plan.PlanId}; Source={source}; Video={video}; Container={container}; {recommendation}; " +
             $"Recovery={plan.Recovery?.InitialDecodeMode}; VideoRecoveryPermitted={videoRecovery?.Permitted}; " +
-            $"AudioRecoveryPermitted={audioRecovery?.Permitted}; Risks={plan.Risks.Count} informational.";
+            $"AudioRecoveryPermitted={audioRecovery?.Permitted}; Risks={plan.Risks.Count} informational.{shadowSummary}";
     }
 
     private static void AddCompatibilityRisks(OutputContainerDecision decision, List<EncodingRisk> risks)
