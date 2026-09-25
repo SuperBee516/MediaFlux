@@ -219,7 +219,13 @@ public sealed class EncodingServiceBenchmarkJobRunner : IEncoderBenchmarkJobRunn
                 exit.Success ? int.Parse(exit.Groups[1].Value) : null,
                 string.IsNullOrWhiteSpace(decoderDiagnostics.ToString())
                     ? ex.Message
-                    : $"{ex.Message}{Environment.NewLine}{decoderDiagnostics}");
+                    : $"{ex.Message}{Environment.NewLine}{decoderDiagnostics}",
+                FailureClassification: ex is EncodeFinalizationException
+                {
+                    Result.FailureKind: EncodeFinalizationFailureKind.Validation
+                }
+                    ? "Output validation failure"
+                    : "");
         }
     }
 
@@ -326,7 +332,10 @@ public sealed class EncoderBenchmarkService : IDisposable
             ? measurements.Any(x => x.UsedAlternateSample) ? "Completed (alternate sample)"
             : measurements.Any(x => x.UsedDecodeRecovery) ? "Completed (decode recovery)" : "Completed"
             : measurements.Where(x => !x.Success).All(x => x.FailureClassification == "Video decode corruption")
-                ? "Source sample decode failed" : "Encoder failed";
+                ? "Source sample decode failed"
+                : measurements.Where(x => !x.Success).All(x => x.FailureClassification == "Output validation failure")
+                    ? "Output validation failed"
+                    : "Encoder failed";
         return new EncoderBenchmarkConfigurationResult(
             preset, concurrency, measurements.All(x => x.Success), measurements,
             Average(measurements.Where(x => x.Success).Select(x => x.EncodeFps)), averageSpeed,
@@ -380,8 +389,11 @@ public sealed class EncoderBenchmarkService : IDisposable
                 definition.Settings.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase), folder);
             if (!decision.Eligible)
             {
-                attemptDetails.Add($"{attempt.sample.Start:g} ({(attempt.tolerant ? "tolerant" : "strict")}): failed; Other failure");
-                return measurement with { AttemptCount = attempts.Count, FailureClassification = "Other failure", AttemptDetails = string.Join("; ", attemptDetails) };
+                string failureClassification = string.IsNullOrWhiteSpace(measurement.FailureClassification)
+                    ? "Other failure"
+                    : measurement.FailureClassification;
+                attemptDetails.Add($"{attempt.sample.Start:g} ({(attempt.tolerant ? "tolerant" : "strict")}): failed; {failureClassification}");
+                return measurement with { AttemptCount = attempts.Count, FailureClassification = failureClassification, AttemptDetails = string.Join("; ", attemptDetails) };
             }
             attemptDetails.Add($"{attempt.sample.Start:g} ({(attempt.tolerant ? "tolerant" : "strict")}): failed; video decode corruption ({decision.Evidence})");
 

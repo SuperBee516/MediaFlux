@@ -788,27 +788,51 @@ namespace MediaFlux.Services
                 return "";
             MediaProbeStreamInfo[] expected = SelectedStreams(source, request, "audio");
             MediaProbeStreamInfo[] actual = output.Streams.Where(stream => IsType(stream, "audio")).ToArray();
+            double sourceProgramStart = FirstStream(source, "video")?.StartTimeSeconds ?? 0;
+            EncodeOutputTemporalWindow? expectedSampleWindow =
+                request.Profile == EncodeOutputValidationProfile.BenchmarkSample
+                    ? request.ExpectedTemporalWindow
+                    : null;
             for (int index = 0; index < Math.Min(expected.Length, actual.Length); index++)
             {
                 double? sourceDurationValue = expected[index].DurationSeconds;
                 double? outputDurationValue = actual[index].DurationSeconds;
-                if (sourceDurationValue is not > 0 || outputDurationValue is not > 0)
+                if (outputDurationValue is not > 0)
                     continue;
-                double sourceDuration = sourceDurationValue.GetValueOrDefault();
                 double outputDuration = outputDurationValue.GetValueOrDefault();
-                double sourceDelta = Math.Abs(sourceDuration - authoritativeDuration.Value);
-                double expectedOutputDuration = sourceDelta > BoundarySeconds
-                    ? sourceDuration
-                    : authoritativeDuration.Value;
-                double outputDelta = Math.Abs(outputDuration - expectedOutputDuration);
-                log?.Invoke($"[EncodeOutputValidation] Audio duration stream={index}; source={sourceDuration:0.###}; output={outputDuration:0.###}; expected={expectedOutputDuration:0.###}; source-av-delta={sourceDelta:0.###}; result={(outputDelta <= BoundarySeconds ? "accepted" : "rejected")}.");
-                if (outputDelta > BoundarySeconds)
+                double expectedOutputDuration;
+                double sourceDelta;
+                string basis;
+                if (expectedSampleWindow is { } temporalWindow)
                 {
-                    string basis = sourceDelta > BoundarySeconds
+                    double streamStart = expected[index].StartTimeSeconds is double startTime
+                        ? startTime - sourceProgramStart
+                        : 0;
+                    expectedOutputDuration = temporalWindow.GetOverlapDuration(streamStart, sourceDurationValue);
+                    sourceDelta = double.NaN;
+                    basis = "the requested benchmark sample's available source audio interval";
+                }
+                else
+                {
+                    if (sourceDurationValue is not > 0)
+                        continue;
+                    double sourceDuration = sourceDurationValue.GetValueOrDefault();
+                    sourceDelta = Math.Abs(sourceDuration - authoritativeDuration.Value);
+                    expectedOutputDuration = sourceDelta > BoundarySeconds
+                        ? sourceDuration
+                        : authoritativeDuration.Value;
+                    basis = sourceDelta > BoundarySeconds
                         ? "the source stream's pre-existing audio duration"
                         : "the authoritative program duration";
-                    return $"Output audio stream {index + 1} duration is {outputDuration:0.###} seconds, but {basis} is {expectedOutputDuration:0.###} seconds; MediaFlux detected material output-introduced A/V loss or desynchronization.";
                 }
+                double outputDelta = Math.Abs(outputDuration - expectedOutputDuration);
+                log?.Invoke($"[EncodeOutputValidation] Audio duration stream={index}; source={sourceDurationValue?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}; output={outputDuration:0.###}; expected={expectedOutputDuration:0.###}; " +
+                    (expectedSampleWindow is { } window
+                        ? $"sample-window=[{window.StartSeconds:0.###},{window.StartSeconds + window.DurationSeconds:0.###}]; "
+                        : $"source-av-delta={sourceDelta:0.###}; ") +
+                    $"result={(outputDelta <= BoundarySeconds ? "accepted" : "rejected")}.");
+                if (outputDelta > BoundarySeconds)
+                    return $"Output audio stream {index + 1} duration is {outputDuration:0.###} seconds, but {basis} is {expectedOutputDuration:0.###} seconds; MediaFlux detected material output-introduced A/V loss or desynchronization.";
             }
             return "";
         }

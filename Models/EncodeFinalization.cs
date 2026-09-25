@@ -39,6 +39,8 @@ namespace MediaFlux.Models
         };
         public MediaProbeResult? SourceProbe { get; init; }
         public double? ExpectedDurationSeconds { get; init; }
+        /// <summary>Source-timeline interval intentionally represented by a validated partial-media output.</summary>
+        public EncodeOutputTemporalWindow? ExpectedTemporalWindow { get; init; }
         public long? ExpectedVideoFrameCount { get; init; }
         public FrameCountProvenance ExpectedVideoFrameCountProvenance { get; init; } = FrameCountProvenance.Unavailable;
         /// <summary>
@@ -60,6 +62,41 @@ namespace MediaFlux.Models
         public int? ExpectedVideoHeight { get; init; }
         public PerformanceTimingService? PerformanceTiming { get; init; }
         public EncodeOutputValidationProfile Profile { get; init; } = EncodeOutputValidationProfile.Production;
+    }
+
+    public sealed record EncodeOutputTemporalWindow(double StartSeconds, double DurationSeconds)
+    {
+        public static EncodeOutputTemporalWindow FromSample(
+            double startSeconds,
+            double requestedDurationSeconds,
+            double? sourceProgramDurationSeconds)
+        {
+            if (!double.IsFinite(startSeconds))
+                throw new ArgumentOutOfRangeException(nameof(startSeconds));
+            if (!double.IsFinite(requestedDurationSeconds) || requestedDurationSeconds <= 0)
+                throw new ArgumentOutOfRangeException(nameof(requestedDurationSeconds));
+
+            double start = Math.Max(0, startSeconds);
+            double end = start + requestedDurationSeconds;
+            if (sourceProgramDurationSeconds is double sourceDuration && sourceDuration > 0 && double.IsFinite(sourceDuration))
+                end = Math.Min(end, sourceDuration);
+            return new EncodeOutputTemporalWindow(start, Math.Max(0, end - start));
+        }
+
+        public double GetOverlapDuration(double streamStartSeconds, double? streamDurationSeconds)
+        {
+            if (!double.IsFinite(StartSeconds) || StartSeconds < 0 ||
+                !double.IsFinite(DurationSeconds) || DurationSeconds <= 0 ||
+                !double.IsFinite(streamStartSeconds))
+                return 0;
+
+            double windowEnd = StartSeconds + DurationSeconds;
+            double overlapStart = Math.Max(StartSeconds, streamStartSeconds);
+            double overlapEnd = windowEnd;
+            if (streamDurationSeconds is double streamDuration && streamDuration > 0 && double.IsFinite(streamDuration))
+                overlapEnd = Math.Min(windowEnd, streamStartSeconds + streamDuration);
+            return Math.Max(0, overlapEnd - overlapStart);
+        }
     }
 
     /// <summary>Conservative evidence of the video frames and presentation tail that remained decodable from a proven-corrupt source.</summary>

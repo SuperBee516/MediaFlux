@@ -100,6 +100,23 @@ public sealed class EncoderBenchmarkTests : IDisposable
     }
 
     [Fact]
+    public async Task OutputValidationFailureIsNotReportedAsEncoderFailure()
+    {
+        var runner = new ScriptedRunner(_ => new EncoderBenchmarkJobMeasurement(
+            1, false, TimeSpan.FromSeconds(3), 0, 0, 0, "", "NVENC", null,
+            "Output validation failed: audio stream duration was shorter than the sample window.",
+            FailureClassification: "Output validation failure"));
+        EncoderBenchmarkReport report = await Service(runner).RunAsync(new EncoderBenchmarkRequest(
+            Definition(), new[] { "p5" }, new[] { 1 }, 25));
+        EncoderBenchmarkConfigurationResult result = Assert.Single(report.Results);
+
+        Assert.Equal("Output validation failed", result.Status);
+        EncoderBenchmarkJobMeasurement job = Assert.Single(result.Jobs);
+        Assert.Equal("Output validation failure", job.FailureClassification);
+        Assert.Contains("Output validation failure", job.AttemptDetails, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task HealthyBenchmarkUsesOnlyTheExistingStrictSampleAttempt()
     {
         var runner = new ScriptedRunner(_ => SuccessfulMeasurement());

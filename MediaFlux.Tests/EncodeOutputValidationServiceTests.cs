@@ -810,6 +810,85 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
     }
 
     [Fact]
+    public void BenchmarkSampleAudioDurationUsesRequestedSourceWindow()
+    {
+        const double sourceDuration = 4607.44;
+        const double sampleStart = 2060.8462751;
+        MediaProbeResult source = AvProbe(sourceDuration, 4607.424);
+        MediaProbeResult output = AvProbe(24.89, 25.003, output: true);
+        EncodeOutputValidationRequest request = Request(
+            profile: EncodeOutputValidationProfile.BenchmarkSample,
+            expectedDurationSeconds: 25,
+            expectedTemporalWindow: EncodeOutputTemporalWindow.FromSample(sampleStart, 25, sourceDuration));
+
+        string error = EncodeOutputValidationService.ValidateProbe(request, source, output);
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
+    public void BenchmarkSampleStillRejectsAudioTruncatedWithinRequestedWindow()
+    {
+        MediaProbeResult source = AvProbe(4607.44, 4607.424);
+        MediaProbeResult output = AvProbe(25, 8, output: true);
+        EncodeOutputValidationRequest request = Request(
+            profile: EncodeOutputValidationProfile.BenchmarkSample,
+            expectedDurationSeconds: 25,
+            expectedTemporalWindow: EncodeOutputTemporalWindow.FromSample(2060.8462751, 25, 4607.44));
+
+        string error = EncodeOutputValidationService.ValidateProbe(request, source, output);
+
+        Assert.Contains("requested benchmark sample's available source audio interval", error, StringComparison.Ordinal);
+        Assert.Contains("output-introduced A/V loss", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FullFileEncodeStillRejectsSampleLengthOutputAgainstFullSource()
+    {
+        string error = EncodeOutputValidationService.ValidateProbe(
+            Request(),
+            AvProbe(4607.44, 4607.424),
+            AvProbe(25, 25.003, output: true));
+
+        Assert.Contains("encoded output duration differs from the source", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FullFileAudioValidationDoesNotUseBenchmarkTemporalWindow()
+    {
+        EncodeOutputValidationRequest request = Request(
+            expectedDurationSeconds: 4607.44,
+            expectedTemporalWindow: EncodeOutputTemporalWindow.FromSample(2060.8462751, 25, 4607.44));
+
+        string error = EncodeOutputValidationService.ValidateProbe(
+            request,
+            AvProbe(4607.44, 4607.424),
+            AvProbe(4607.44, 25.003, output: true));
+
+        Assert.Contains("authoritative program duration", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("output-introduced A/V loss", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BenchmarkSampleNearEofUsesAvailableAudioAndProgramDuration()
+    {
+        const double sourceDuration = 4607.44;
+        const double sampleStart = 4590;
+        EncodeOutputTemporalWindow window = EncodeOutputTemporalWindow.FromSample(sampleStart, 25, sourceDuration);
+        double availableProgramDuration = window.DurationSeconds;
+        MediaProbeResult source = AvProbe(sourceDuration, 4607.424);
+        MediaProbeResult output = AvProbe(availableProgramDuration, availableProgramDuration, output: true);
+        EncodeOutputValidationRequest request = Request(
+            profile: EncodeOutputValidationProfile.BenchmarkSample,
+            expectedDurationSeconds: availableProgramDuration,
+            expectedTemporalWindow: window);
+
+        string error = EncodeOutputValidationService.ValidateProbe(request, source, output);
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
     public void BenchmarkSampleDurationUsesVideoTimelineNotAuxiliaryContainerTail()
     {
         EncodeOutputValidationRequest request = Request(
@@ -910,7 +989,9 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         int? expectedHeight = null,
         EncodeOutputValidationProfile profile = EncodeOutputValidationProfile.Production,
         OutputContainerDecision? containerDecision = null,
-        bool requireMonotonicOutputTimeline = false) => new()
+        bool requireMonotonicOutputTimeline = false,
+        double? expectedDurationSeconds = null,
+        EncodeOutputTemporalWindow? expectedTemporalWindow = null) => new()
     {
         Input = EncodingInputSource.FromFile(_sourcePath),
         OutputPath = _outputPath,
@@ -923,6 +1004,8 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         TenBit = tenBit,
         MapMode = EncodingService.StreamMapMode.KeepAll,
         CopySubtitles = copySubtitles,
+        ExpectedDurationSeconds = expectedDurationSeconds,
+        ExpectedTemporalWindow = expectedTemporalWindow,
         ExpectedVideoWidth = expectedWidth,
         ExpectedVideoHeight = expectedHeight,
         RequireMonotonicOutputTimeline = requireMonotonicOutputTimeline,

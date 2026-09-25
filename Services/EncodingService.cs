@@ -1758,8 +1758,22 @@ namespace MediaFlux.Services
                 "[EncodingService] ffmpeg completed successfully; validating staged output.");
             EncodeOutputValidationRequest BuildValidationRequest(
                 RecoverableSourceBaseline? recoverableBaseline = null,
-                EncodingSourceFailureClassification? sourceFailure = null) => new()
+                EncodingSourceFailureClassification? sourceFailure = null)
             {
+                double? expectedDuration = sampleDuration?.TotalSeconds ?? programDuration.DurationSeconds;
+                EncodeOutputTemporalWindow? expectedTemporalWindow = null;
+                if (validationProfile == EncodeOutputValidationProfile.BenchmarkSample &&
+                    sampleDuration is { } benchmarkDuration && benchmarkDuration > TimeSpan.Zero)
+                {
+                    expectedTemporalWindow = EncodeOutputTemporalWindow.FromSample(
+                        sampleStart?.TotalSeconds ?? 0,
+                        benchmarkDuration.TotalSeconds,
+                        programDuration.DurationSeconds);
+                    expectedDuration = expectedTemporalWindow.DurationSeconds;
+                }
+
+                return new()
+                {
                         Input = inputSource,
                         OutputPath = output,
                         FinalOutputPath = finalOutput,
@@ -1773,7 +1787,8 @@ namespace MediaFlux.Services
                         CopyAttachments = allowAttachmentCopy,
                         ContainerDecision = containerDecision,
                         SourceProbe = sourceProbe,
-                        ExpectedDurationSeconds = sampleDuration?.TotalSeconds ?? programDuration.DurationSeconds,
+                        ExpectedDurationSeconds = expectedDuration,
+                        ExpectedTemporalWindow = expectedTemporalWindow,
                         ExpectedVideoFrameCount = sampleDuration is null ? programDuration.PrimaryVideo?.FrameCount : null,
                         ExpectedVideoFrameCountProvenance = sampleDuration is null && programDuration.PrimaryVideo?.FrameCount is > 0
                             ? FrameCountProvenance.Measured
@@ -1790,7 +1805,8 @@ namespace MediaFlux.Services
                         ExpectedVideoHeight = plannedOutputGeometry?.Height,
                         PerformanceTiming = performance
                         ,Profile = validationProfile
-            };
+                };
+            }
             finalization =
                 await _finalizationService.FinalizeAsync(
                     BuildValidationRequest(),
