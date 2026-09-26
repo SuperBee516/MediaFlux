@@ -149,7 +149,9 @@ namespace MediaFlux.Services.LibraryCatalog
         string Codec,
         int? Channels,
         string ChannelLayout,
-        string Language);
+        string Language,
+        long? BitRateBps = null,
+        int? SampleRateHz = null);
 
     public sealed record LibrarySubtitleStreamMetadata(
         string Codec,
@@ -186,7 +188,15 @@ namespace MediaFlux.Services.LibraryCatalog
         IReadOnlyList<LibrarySubtitleStreamMetadata> SubtitleStreams,
         int ChapterCount,
         int AttachmentCount,
-        string ErrorMessage);
+        string ErrorMessage,
+        long? VideoBitRateBps = null,
+        int? SelectedVideoStreamIndex = null,
+        int? VideoStreamCount = null,
+        double? AverageFrameRate = null,
+        double? NominalFrameRate = null,
+        string? FrameRateBasis = null,
+        string? SampleAspectRatio = null,
+        string? DisplayAspectRatio = null);
 
     public sealed record LibraryEnrichmentCandidate(
         long FileId,

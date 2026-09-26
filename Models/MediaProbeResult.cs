@@ -36,6 +36,7 @@ namespace MediaFlux.Models
         public long? BitRate { get; init; }
         public string TimeBase { get; init; } = "";
         public string DisplayAspectRatio { get; init; } = "";
+        public string SampleAspectRatio { get; init; } = "";
         public string FieldOrder { get; init; } = "";
         public string PixelFormat { get; init; } = "";
         public int? BitsPerRawSample { get; init; }
@@ -50,6 +51,7 @@ namespace MediaFlux.Models
         public int? Width { get; init; }
         public int? Height { get; init; }
         public int? Channels { get; init; }
+        public int? SampleRateHz { get; init; }
         /// <summary>Presentation timestamp of the first stream packet, when FFprobe reports one.</summary>
         public double? StartTimeSeconds { get; init; }
         public double? DurationSeconds { get; init; }

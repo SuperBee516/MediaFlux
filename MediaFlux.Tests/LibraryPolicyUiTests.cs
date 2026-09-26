@@ -95,7 +95,8 @@ public sealed class LibraryPolicyUiTests : IDisposable
                 new MediaProbeStreamInfo { CodecType = "audio", CodecName = "aac", Channels = 2 }
             }
         };
-        catalog.SaveMediaMetadata(LibraryMetadataMapper.Map(new LibraryEnrichmentRequest(mutation.FileId, path, "", 12L * 1024 * 1024 * 1024, DateTime.UtcNow),
+        catalog.SaveMediaMetadata(LibraryMetadataMapper.Map(new LibraryEnrichmentRequest(mutation.FileId, path, "", 12L * 1024 * 1024 * 1024,
+                new DateTime(mutation.LastWriteUtcTicks, DateTimeKind.Utc)),
             probe, 1, "policy-ui", DateTime.UtcNow, null));
         catalog.CompleteScan(scan, new LibraryScanCompletion(LibraryScanStatus.Completed, 1, 0, 1, 0, 0, 0));
         return path;

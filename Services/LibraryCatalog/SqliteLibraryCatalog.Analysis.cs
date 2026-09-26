@@ -468,7 +468,14 @@ namespace MediaFlux.Services.LibraryCatalog
                               AND metadata.next_retry_utc_ticks <= $now)
                       )
                       AND (metadata.probe_status IS NULL OR metadata.probe_status <> $in_progress)
-                    ORDER BY file.id
+                    ORDER BY CASE
+                        WHEN metadata.file_id IS NULL
+                          OR metadata.source_size_bytes <> file.size_bytes
+                          OR metadata.source_last_write_utc_ticks <> file.last_write_utc_ticks
+                          OR metadata.probe_tool_version <> $tool_version
+                          OR metadata.probe_status = $pending THEN 0
+                        WHEN metadata.metadata_version <> $metadata_version THEN 1
+                        ELSE 2 END, file.id
                     LIMIT $limit;
                     """;
                 select.Parameters.AddWithValue("$present", (int)IndexedFileAvailability.Present);
@@ -554,15 +561,25 @@ namespace MediaFlux.Services.LibraryCatalog
                         video_profile, video_level, width, height, frame_rate, pixel_format,
                         bit_depth, field_order, color_range, color_space, color_transfer,
                         color_primaries, audio_streams_json, subtitle_streams_json,
-                        chapter_count, attachment_count, error_message, updated_utc_ticks)
-                    VALUES (
+                        chapter_count, attachment_count, error_message, updated_utc_ticks,
+                        video_bitrate_bps, selected_video_stream_index, video_stream_count,
+                        average_frame_rate, nominal_frame_rate, frame_rate_basis,
+                        sample_aspect_ratio, display_aspect_ratio)
+                    SELECT
                         $file_id, $metadata_version, $tool_version, $status,
                         $attempt_count, $next_retry, $last_attempt, $last_success,
                         $source_size, $source_last_write, $format, $duration, $bitrate,
                         $video_codec, $profile, $level, $width, $height, $frame_rate,
                         $pixel_format, $bit_depth, $field_order, $color_range, $color_space,
                         $color_transfer, $color_primaries, $audio, $subtitles,
-                        $chapters, $attachments, $error, $updated)
+                        $chapters, $attachments, $error, $updated,
+                        $video_bitrate, $selected_video_index, $video_count,
+                        $average_frame_rate, $nominal_frame_rate, $frame_rate_basis,
+                        $sample_aspect_ratio, $display_aspect_ratio
+                    FROM indexed_files AS source
+                    WHERE source.id = $file_id
+                      AND source.size_bytes = $source_size
+                      AND source.last_write_utc_ticks = $source_last_write
                     ON CONFLICT(file_id) DO UPDATE SET
                         metadata_version=excluded.metadata_version,
                         probe_tool_version=excluded.probe_tool_version,
@@ -594,10 +611,47 @@ namespace MediaFlux.Services.LibraryCatalog
                         chapter_count=excluded.chapter_count,
                         attachment_count=excluded.attachment_count,
                         error_message=excluded.error_message,
-                        updated_utc_ticks=excluded.updated_utc_ticks;
+                        updated_utc_ticks=excluded.updated_utc_ticks,
+                        video_bitrate_bps=excluded.video_bitrate_bps,
+                        selected_video_stream_index=excluded.selected_video_stream_index,
+                        video_stream_count=excluded.video_stream_count,
+                        average_frame_rate=excluded.average_frame_rate,
+                        nominal_frame_rate=excluded.nominal_frame_rate,
+                        frame_rate_basis=excluded.frame_rate_basis,
+                        sample_aspect_ratio=excluded.sample_aspect_ratio,
+                        display_aspect_ratio=excluded.display_aspect_ratio;
                     """;
                 AddMetadataParameters(command, metadata);
-                command.ExecuteNonQuery();
+                if (command.ExecuteNonQuery() == 0)
+                {
+                    // A scan changed the indexed source while this probe was in flight.
+                    // Retire its claim so the durable pending-work loop can claim the
+                    // current stamp after the worker releases its in-memory queue slot.
+                    using SqliteCommand stale = connection.CreateCommand();
+                    stale.Transaction = transaction;
+                    stale.CommandText =
+                        """
+                        UPDATE media_metadata
+                        SET probe_status = $pending, next_retry_utc_ticks = NULL,
+                            error_message = 'Indexed source changed during metadata enrichment.',
+                            updated_utc_ticks = $updated
+                        WHERE file_id = $file_id AND probe_status = $in_progress
+                          AND source_size_bytes = $source_size
+                          AND source_last_write_utc_ticks = $source_last_write
+                          AND EXISTS (
+                              SELECT 1 FROM indexed_files AS source
+                              WHERE source.id = $file_id
+                                AND (source.size_bytes <> $source_size
+                                  OR source.last_write_utc_ticks <> $source_last_write));
+                        """;
+                    stale.Parameters.AddWithValue("$pending", (int)LibraryProbeStatus.Pending);
+                    stale.Parameters.AddWithValue("$in_progress", (int)LibraryProbeStatus.InProgress);
+                    stale.Parameters.AddWithValue("$updated", DateTime.UtcNow.Ticks);
+                    stale.Parameters.AddWithValue("$file_id", metadata.FileId);
+                    stale.Parameters.AddWithValue("$source_size", metadata.SourceSizeBytes);
+                    stale.Parameters.AddWithValue("$source_last_write", metadata.SourceLastWriteUtc.Ticks);
+                    stale.ExecuteNonQuery();
+                }
                 return null;
             });
         }
@@ -780,6 +834,14 @@ namespace MediaFlux.Services.LibraryCatalog
             command.Parameters.AddWithValue("$format", metadata.FormatName ?? "");
             command.Parameters.AddWithValue("$duration", Db(metadata.DurationSeconds));
             command.Parameters.AddWithValue("$bitrate", Db(metadata.TotalBitRate));
+            command.Parameters.AddWithValue("$video_bitrate", Db(metadata.VideoBitRateBps));
+            command.Parameters.AddWithValue("$selected_video_index", Db(metadata.SelectedVideoStreamIndex));
+            command.Parameters.AddWithValue("$video_count", Db(metadata.VideoStreamCount));
+            command.Parameters.AddWithValue("$average_frame_rate", Db(metadata.AverageFrameRate));
+            command.Parameters.AddWithValue("$nominal_frame_rate", Db(metadata.NominalFrameRate));
+            command.Parameters.AddWithValue("$frame_rate_basis", Db(metadata.FrameRateBasis));
+            command.Parameters.AddWithValue("$sample_aspect_ratio", Db(metadata.SampleAspectRatio));
+            command.Parameters.AddWithValue("$display_aspect_ratio", Db(metadata.DisplayAspectRatio));
             command.Parameters.AddWithValue("$video_codec", metadata.VideoCodec ?? "");
             command.Parameters.AddWithValue("$profile", metadata.VideoProfile ?? "");
             command.Parameters.AddWithValue("$level", Db(metadata.VideoLevel));
@@ -810,7 +872,9 @@ namespace MediaFlux.Services.LibraryCatalog
                    video_level, width, height, frame_rate, pixel_format, bit_depth, field_order,
                    color_range, color_space, color_transfer, color_primaries,
                    audio_streams_json, subtitle_streams_json, chapter_count, attachment_count,
-                   error_message
+                   error_message, video_bitrate_bps, selected_video_stream_index,
+                   video_stream_count, average_frame_rate, nominal_frame_rate,
+                   frame_rate_basis, sample_aspect_ratio, display_aspect_ratio
             FROM media_metadata
             """;
 
@@ -835,7 +899,15 @@ namespace MediaFlux.Services.LibraryCatalog
                 reader.GetString(22), reader.GetString(23), reader.GetString(24), reader.GetString(25),
                 ReadJson<List<LibraryAudioStreamMetadata>>(reader.GetString(26)) ?? new(),
                 ReadJson<List<LibrarySubtitleStreamMetadata>>(reader.GetString(27)) ?? new(),
-                reader.GetInt32(28), reader.GetInt32(29), reader.GetString(30));
+                reader.GetInt32(28), reader.GetInt32(29), reader.GetString(30),
+                reader.IsDBNull(31) ? null : reader.GetInt64(31),
+                reader.IsDBNull(32) ? null : reader.GetInt32(32),
+                reader.IsDBNull(33) ? null : reader.GetInt32(33),
+                reader.IsDBNull(34) ? null : reader.GetDouble(34),
+                reader.IsDBNull(35) ? null : reader.GetDouble(35),
+                reader.IsDBNull(36) ? null : reader.GetString(36),
+                reader.IsDBNull(37) ? null : reader.GetString(37),
+                reader.IsDBNull(38) ? null : reader.GetString(38));
         }
 
         private static void AddFileQueryParameters(

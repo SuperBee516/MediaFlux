@@ -420,7 +420,10 @@ namespace MediaFlux.Services.LibraryCatalog
         };
 
         private static string DynamicRangeSql(string alias) =>
-            $"CASE WHEN {alias}.file_id IS NULL OR ({alias}.color_transfer='' AND {alias}.color_primaries='') THEN 'Unknown' WHEN lower({alias}.color_transfer) IN ('smpte2084','arib-std-b67') OR lower({alias}.color_primaries)='bt2020' THEN 'HDR' ELSE 'SDR' END";
+            $"CASE WHEN {alias}.file_id IS NULL THEN 'Unknown' " +
+            $"WHEN lower({alias}.color_transfer) IN ('smpte2084','arib-std-b67') THEN 'HDR' " +
+            $"WHEN lower({alias}.color_transfer) IN ('bt709','smpte170m','bt470bg','gamma22','gamma28','iec61966-2-1','bt2020-10','bt2020-12') THEN 'SDR' " +
+            "ELSE 'Unknown' END";
 
         private static string ResolutionTierSql(string alias) =>
             $"CASE WHEN {alias}.width IS NULL OR {alias}.height IS NULL THEN 'Unknown' WHEN {alias}.width>=7680 OR {alias}.height>=4320 THEN '8K+' WHEN {alias}.width>=3840 OR {alias}.height>=2160 THEN '4K' WHEN {alias}.width>=2560 OR {alias}.height>=1440 THEN '1440p' WHEN {alias}.width>=1920 OR {alias}.height>=1080 THEN '1080p' WHEN {alias}.width>=1280 OR {alias}.height>=720 THEN '720p' ELSE 'SD' END";

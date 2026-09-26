@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 16;
+        public const int CurrentVersion = 17;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -783,7 +783,20 @@ namespace MediaFlux.Services.LibraryCatalog
                 new LibraryCatalogMigration(
                     16,
                     "Scheduled maintenance occurrence tracking",
-                    "ALTER TABLE library_maintenance_runs ADD COLUMN scheduled_occurrence_utc_ticks INTEGER NULL;")
+                    "ALTER TABLE library_maintenance_runs ADD COLUMN scheduled_occurrence_utc_ticks INTEGER NULL;"),
+                new LibraryCatalogMigration(
+                    17,
+                    "Selected-stream media facts",
+                    """
+                    ALTER TABLE media_metadata ADD COLUMN video_bitrate_bps INTEGER NULL CHECK(video_bitrate_bps > 0);
+                    ALTER TABLE media_metadata ADD COLUMN selected_video_stream_index INTEGER NULL CHECK(selected_video_stream_index >= 0);
+                    ALTER TABLE media_metadata ADD COLUMN video_stream_count INTEGER NULL CHECK(video_stream_count >= 0);
+                    ALTER TABLE media_metadata ADD COLUMN average_frame_rate REAL NULL CHECK(average_frame_rate > 0);
+                    ALTER TABLE media_metadata ADD COLUMN nominal_frame_rate REAL NULL CHECK(nominal_frame_rate > 0);
+                    ALTER TABLE media_metadata ADD COLUMN frame_rate_basis TEXT NULL CHECK(frame_rate_basis IN ('average', 'nominal'));
+                    ALTER TABLE media_metadata ADD COLUMN sample_aspect_ratio TEXT NULL;
+                    ALTER TABLE media_metadata ADD COLUMN display_aspect_ratio TEXT NULL;
+                    """)
             };
 
         public static void Apply(

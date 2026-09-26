@@ -146,6 +146,58 @@ public sealed class LibraryCatalogFoundationTests : IDisposable
     }
 
     [Fact]
+    public void VersionSixteenMetadataMigratesWithoutChangingExistingFacts()
+    {
+        string databasePath = GetDatabasePath();
+        var oldDatabase = new LibraryCatalogDatabase(databasePath,
+            Path.Combine(_root, "backups"), Path.Combine(_root, "recovery"));
+        Assert.Equal(16, oldDatabase.InitializeForTesting(16).SchemaVersion);
+        InsertVersionOneFixture(databasePath);
+        ExecuteRaw(databasePath,
+            """
+            INSERT INTO media_metadata(file_id,metadata_version,probe_tool_version,probe_status,
+                source_size_bytes,source_last_write_utc_ticks,total_bitrate,audio_streams_json,updated_utc_ticks)
+            SELECT id,1,'ffprobe-old',2,size_bytes,last_write_utc_ticks,15000000,
+                '[{"codec":"aac","channels":2,"channelLayout":"stereo","language":"eng"}]',
+                last_write_utc_ticks FROM indexed_files;
+            """);
+        SqliteConnection.ClearAllPools();
+
+        long fileId;
+        using (SqliteLibraryCatalog catalog = CreateCatalog(databasePath))
+        {
+            LibraryCatalogInitializationResult result = catalog.TryInitialize();
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(17, result.Diagnostics?.SchemaVersion);
+            Assert.True(File.Exists(result.MigrationBackupPath));
+            IndexedFileRecord file = Assert.IsType<IndexedFileRecord>(catalog.GetFileByPath(
+                Path.Combine(_root, "legacy", "movie.mkv")));
+            fileId = file.Id;
+            LibraryMediaMetadata metadata = Assert.IsType<LibraryMediaMetadata>(catalog.GetMediaMetadata(fileId));
+            Assert.Equal(1, metadata.MetadataVersion);
+            Assert.Equal(15_000_000, metadata.TotalBitRate);
+            Assert.Null(metadata.VideoBitRateBps);
+            Assert.Null(metadata.SelectedVideoStreamIndex);
+            Assert.Null(metadata.VideoStreamCount);
+            Assert.Null(metadata.AverageFrameRate);
+            Assert.Null(metadata.NominalFrameRate);
+            Assert.Null(metadata.FrameRateBasis);
+            Assert.Null(metadata.SampleAspectRatio);
+            Assert.Null(metadata.DisplayAspectRatio);
+            LibraryAudioStreamMetadata audio = Assert.Single(metadata.AudioStreams);
+            Assert.Equal("aac", audio.Codec);
+            Assert.Null(audio.BitRateBps);
+            Assert.Null(audio.SampleRateHz);
+        }
+
+        using SqliteLibraryCatalog reopened = CreateCatalog(databasePath);
+        Assert.Equal(17, reopened.Initialize().SchemaVersion);
+        Assert.Equal(15_000_000, reopened.GetMediaMetadata(fileId)?.TotalBitRate);
+        Assert.Equal(fileId, Assert.Single(reopened.ClaimEnrichmentBatch(1, 2,
+            "ffprobe-old", DateTime.UtcNow)).FileId);
+    }
+
+    [Fact]
     public void InventoryBatchCommitsAtomicallyAndRollsBackOnConstraintFailure()
     {
         using SqliteLibraryCatalog catalog = CreateInitializedCatalog();

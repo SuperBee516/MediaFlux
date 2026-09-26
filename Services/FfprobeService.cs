@@ -254,6 +254,7 @@ namespace MediaFlux.Services
                     BitRate = GetPositiveLong(stream, "bit_rate"),
                     TimeBase = GetString(stream, "time_base"),
                     DisplayAspectRatio = GetString(stream, "display_aspect_ratio"),
+                    SampleAspectRatio = GetString(stream, "sample_aspect_ratio"),
                     FieldOrder = GetString(stream, "field_order"),
                     PixelFormat = GetString(stream, "pix_fmt"),
                     BitsPerRawSample = GetInt32(stream, "bits_per_raw_sample"),
@@ -267,6 +268,8 @@ namespace MediaFlux.Services
                     Width = GetInt32(stream, "width"),
                     Height = GetInt32(stream, "height"),
                     Channels = GetInt32(stream, "channels"),
+                    SampleRateHz = GetInt32(stream, "sample_rate") is int sampleRate && sampleRate > 0
+                        ? sampleRate : null,
                     StartTimeSeconds = GetFiniteDouble(stream, "start_time"),
                     DurationSeconds = GetPositiveDouble(stream, "duration"),
                     FrameCount = GetPositiveLong(stream, "nb_frames"),
@@ -398,9 +401,9 @@ namespace MediaFlux.Services
 
         private static double? ParseFrameRate(string average, string nominal)
         {
-            return TryParseFraction(average, out double parsed) && parsed > 0
+            return TryParseFraction(average, out double parsed) && double.IsFinite(parsed) && parsed > 0
                 ? parsed
-                : TryParseFraction(nominal, out parsed) && parsed > 0
+                : TryParseFraction(nominal, out parsed) && double.IsFinite(parsed) && parsed > 0
                     ? parsed
                     : null;
         }
