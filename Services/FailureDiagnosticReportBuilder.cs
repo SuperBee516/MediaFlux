@@ -9,7 +9,13 @@ public sealed record FailureDiagnosticReportContext(
     string Operation, string SourcePath, string OutputPath, int? FfmpegExitCode,
     string TerminalFailure, FfmpegDiagnosticSummary? Diagnostics, string RawCapturedStandardError,
     EncodingPlan? Plan = null, EncodingExecutionOutcome? Execution = null,
-    string? JobId = null, string? SourceContainer = null, long? SourceSizeBytes = null);
+    string? JobId = null, string? SourceContainer = null, long? SourceSizeBytes = null,
+    IReadOnlyList<FfmpegAttemptDiagnostic>? Attempts = null);
+
+/// <summary>Bounded, attempt-scoped FFmpeg evidence retained for failure reporting.</summary>
+public sealed record FfmpegAttemptDiagnostic(
+    int Attempt, string Name, string Command, int ExitCode, string StandardError,
+    FfmpegDiagnosticSummary? Diagnostics, bool IsTerminal = false);
 
 public sealed record FailureDiagnosticReportArtifact(string ReportPath, string RawEvidencePath);
 
@@ -42,6 +48,7 @@ public sealed class FailureDiagnosticReportBuilder
         Line(report, "Source size", context.SourceSizeBytes is > 0 ? $"{context.SourceSizeBytes.Value:N0} bytes" : "Not available");
         RenderPlan(report, context.Plan);
         RenderTimeline(report, context.Execution);
+        RenderAttempts(report, context.Attempts);
         RenderClassification(report, context.Diagnostics);
         RenderDiagnosticSummary(report, context.Diagnostics);
         RenderEvidence(report, context.Diagnostics);
@@ -96,6 +103,29 @@ public sealed class FailureDiagnosticReportBuilder
         foreach (EncodingPreflightOutcome item in execution.Preflight) report.AppendLine($"Preflight {item.Kind}: {item.Status}{(string.IsNullOrWhiteSpace(item.Detail) ? "" : " — " + item.Detail)}");
         foreach (EncodingRecoveryOutcome item in execution.Recovery) report.AppendLine($"Recovery attempt {item.Attempt}/{item.MaximumAttempts}: {item.Kind}/{item.RecoveryMode}; process={item.ProcessResult}; media={item.MediaDisposition}; result={item.Result}{(string.IsNullOrWhiteSpace(item.Detail) ? "" : " — " + item.Detail)}");
         report.AppendLine($"Terminal result: {execution.TerminalResult}");
+    }
+    private static void RenderAttempts(StringBuilder report, IReadOnlyList<FfmpegAttemptDiagnostic>? attempts)
+    {
+        if (attempts is not { Count: > 0 })
+            return;
+
+        Section(report, "FFMPEG ATTEMPTS");
+        foreach (FfmpegAttemptDiagnostic attempt in attempts.OrderBy(x => x.Attempt))
+        {
+            report.AppendLine($"Attempt {attempt.Attempt}: {Value(attempt.Name)}{(attempt.IsTerminal ? " [terminal]" : "")}");
+            Line(report, "Command", Value(attempt.Command));
+            Line(report, "Exit", attempt.ExitCode.ToString(CultureInfo.InvariantCulture));
+            if (attempt.Diagnostics is { } diagnostics)
+                Line(report, "Interpretation", DiagnosticCause(diagnostics));
+
+            string[] lines = attempt.StandardError.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries)
+                .TakeLast(MaxTerminalLines).ToArray();
+            report.AppendLine(lines.Length == 0
+                ? "Captured stderr: none"
+                : $"Captured stderr (last {lines.Length} retained line(s)):");
+            foreach (string line in lines)
+                report.AppendLine("  " + LimitLine(line));
+        }
     }
     private static void RenderClassification(StringBuilder report, FfmpegDiagnosticSummary? diagnostics)
     {

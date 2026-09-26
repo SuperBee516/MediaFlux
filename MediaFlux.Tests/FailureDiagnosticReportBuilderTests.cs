@@ -127,6 +127,71 @@ public sealed class FailureDiagnosticReportBuilderTests
         Assert.Contains(summary.Families, x => x.Family == "Downstream encoder abort" && x.Category == FfmpegDiagnosticCategory.EncoderInitialization);
     }
 
+    [Fact]
+    public void SingleAttemptReportRetainsCommandExitAndBoundedStderrContext()
+    {
+        string longLine = new('x', 1500);
+        var attempt = new FfmpegAttemptDiagnostic(
+            1, "Primary encode", "-i source.mkv -c:v hevc_nvenc", 1,
+            "first stderr\n" + longLine, null, IsTerminal: true);
+
+        string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+            "Encode", "source.mkv", "output.mkv", 1, "FFmpeg process failure", null,
+            attempt.StandardError, Attempts: new[] { attempt }));
+
+        Assert.Contains("Attempt 1: Primary encode [terminal]", report);
+        Assert.Contains("Command", report);
+        Assert.Contains("-i source.mkv -c:v hevc_nvenc", report);
+        Assert.Contains("Exit", report);
+        Assert.Contains(": 1", report);
+        Assert.Contains("first stderr", report);
+        Assert.Contains("[line truncated in curated report]", report);
+        Assert.DoesNotContain(longLine, report);
+    }
+
+    [Fact]
+    public void FailedPrimaryAndFallbackRemainDistinctAndOrdered()
+    {
+        var attempts = new[]
+        {
+            new FfmpegAttemptDiagnostic(1, "Primary encode", "primary-command", 1, "primary stderr", null),
+            new FfmpegAttemptDiagnostic(2, "Software decode fallback", "fallback-command", 1, "fallback stderr", null, IsTerminal: true)
+        };
+
+        string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+            "Encode", "source.mkv", "output.mkv", 1, "FFmpeg process failure", null,
+            "===== FFmpeg attempt 1 =====\nprimary stderr\n===== FFmpeg attempt 2 =====\nfallback stderr",
+            Attempts: attempts));
+
+        int primary = report.IndexOf("Attempt 1: Primary encode", StringComparison.Ordinal);
+        int fallback = report.IndexOf("Attempt 2: Software decode fallback [terminal]", StringComparison.Ordinal);
+        Assert.True(primary >= 0 && fallback > primary);
+        Assert.Contains("primary-command", report);
+        Assert.Contains("fallback-command", report);
+        Assert.Contains("primary stderr", report);
+        Assert.Contains("fallback stderr", report);
+    }
+
+    [Fact]
+    public void SuccessfulFallbackCanBeMarkedAsTerminalAttempt()
+    {
+        var attempts = new[]
+        {
+            new FfmpegAttemptDiagnostic(1, "Primary encode", "primary-command", 1, "primary stderr", null),
+            new FfmpegAttemptDiagnostic(2, "Software decode fallback", "fallback-command", 0, "fallback completed", null, IsTerminal: true)
+        };
+
+        string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+            "Encode", "source.mkv", "output.mkv", 0, "Validation", null,
+            "fallback completed", Attempts: attempts));
+
+        Assert.Contains("Attempt 1: Primary encode", report);
+        Assert.Contains("Attempt 2: Software decode fallback [terminal]", report);
+        Assert.Contains("Exit", report);
+        Assert.Contains(": 0", report);
+        Assert.Contains("fallback completed", report);
+    }
+
     private static EncodingPlan CreatePlan() => new()
     {
         IsAvailable = true,

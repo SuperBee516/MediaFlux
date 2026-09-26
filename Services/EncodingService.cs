@@ -1207,12 +1207,14 @@ namespace MediaFlux.Services
 
             FfmpegProcessResult runResult;
             int ffmpegAttempt = 0;
+            var ffmpegAttempts = new List<FfmpegAttemptDiagnostic>();
             using (PerformanceTimingService.PerformanceScope initialEncodeScope = performance.Measure(PerformanceTimingStage.FinalEncode))
             {
                 runResult = await RunFfmpegAsync(
                     ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
                     progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification,
                     ++ffmpegAttempt).ConfigureAwait(false);
+                RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Primary encode", ffArgs, runResult);
                 initialEncodeScope.Complete();
             }
 
@@ -1228,7 +1230,6 @@ namespace MediaFlux.Services
             FfmpegSourceDecodeCorruption initialSourceCorruption =
                 FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
             FfmpegDiagnosticSummary initialDiagnosticSummary = runResult.DiagnosticSummary;
-            string initialStandardError = runResult.StandardError;
             bool strongInitialSourceCorruption =
                 FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
                     initialSourceCorruption, runResult.DiagnosticSummary, runResult.StandardError);
@@ -1314,6 +1315,7 @@ namespace MediaFlux.Services
                         using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FinalEncode))
                         {
                             runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                            RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Source container recovery retry", ffArgs, runResult);
                             scope.Complete();
                         }
                     }
@@ -1369,6 +1371,7 @@ namespace MediaFlux.Services
                                     using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                                     {
                                         runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                                        RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Tolerant source salvage", ffArgs, runResult);
                                         scope.Complete();
                                     }
                                     RecordRecovery(EncodingRecoveryKind.TolerantDecodeReencode,
@@ -1476,6 +1479,7 @@ namespace MediaFlux.Services
                     using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
                     {
                         runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                        RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "NVDEC/CUDA software-decode retry", ffArgs, runResult);
                         retryScope.Complete();
                     }
                     _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery retry result: exit={runResult.ExitCode}.");
@@ -1526,6 +1530,7 @@ namespace MediaFlux.Services
                 {
                     runResult = await RunFfmpegAsync(
                         ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                    RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "GPU-frame pipeline software-frame fallback", ffArgs, runResult);
                     retryScope.Complete();
                 }
                 RecordRecovery(EncodingRecoveryKind.GpuFramePipeline, EncodingRecoveryFailureClass.GpuFramePipelineFailure,
@@ -1575,6 +1580,7 @@ namespace MediaFlux.Services
                             using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.AudioIntegrityRecovery))
                             {
                                 runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                                RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Audio recovery", ffArgs, runResult);
                                 retryScope.Complete();
                             }
                             _log?.Invoke(runResult.ExitCode == 0
@@ -1632,6 +1638,7 @@ namespace MediaFlux.Services
                         using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                         {
                             runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                            RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Video decode recovery", ffArgs, runResult);
                             scope.Complete();
                         }
                         if (runResult.ExitCode == 0)
@@ -1659,12 +1666,13 @@ namespace MediaFlux.Services
                 string diagnosticArtifactNote = "";
                 try
                 {
+                    FfmpegAttemptDiagnostic[] reportAttempts = ffmpegAttempts
+                        .Select((attempt, index) => attempt with { IsTerminal = index == ffmpegAttempts.Count - 1 })
+                        .ToArray();
                     FfmpegDiagnosticSummary reportDiagnostics = sourceContainerRecoveryAttempted
                         ? initialDiagnosticSummary
                         : runResult.DiagnosticSummary;
-                    string reportStandardError = sourceContainerRecoveryAttempted
-                        ? initialStandardError + Environment.NewLine + runResult.StandardError
-                        : runResult.StandardError;
+                    string reportStandardError = BuildAttemptRawEvidence(reportAttempts);
                     terminalResult = sourceUnrecoverable
                         ? EncodingTerminalResult.SourceUnrecoverable
                         : recoveryOutcomes.Count > 0
@@ -1678,7 +1686,8 @@ namespace MediaFlux.Services
                         reportDiagnostics, reportStandardError, shadowPlan, failureOutcome,
                         SourceContainer: sourceProbe.FormatName,
                         SourceSizeBytes: inputSource.Kind == EncodingInputKind.File && File.Exists(inputSource.SourcePath)
-                            ? new FileInfo(inputSource.SourcePath).Length : null));
+                            ? new FileInfo(inputSource.SourcePath).Length : null,
+                        Attempts: reportAttempts));
                     diagnosticArtifacts = ErrorLogService.TryWriteFailureDiagnosticArtifacts(
                         _appPath, report, reportStandardError);
                     diagnosticArtifactNote = diagnosticArtifacts is null
@@ -1709,10 +1718,10 @@ namespace MediaFlux.Services
                     $"Arguments  : {ffArgs}{Environment.NewLine}{Environment.NewLine}" +
                     diagnosticArtifactNote + Environment.NewLine + Environment.NewLine +
                     recoveryDiagnostics +
-                    "FFmpeg Output:" + Environment.NewLine +
-                    (sourceContainerRecoveryAttempted
-                        ? initialStandardError + Environment.NewLine + runResult.StandardError
-                        : runResult.StandardError));
+                    "FFmpeg Attempts:" + Environment.NewLine +
+                    BuildAttemptRawEvidence(ffmpegAttempts
+                        .Select((attempt, index) => attempt with { IsTerminal = index == ffmpegAttempts.Count - 1 })
+                        .ToArray()));
 
                 _log?.Invoke($"[EncodingService] ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
                 if (sourceUnrecoverable)
@@ -1880,6 +1889,7 @@ namespace MediaFlux.Services
                                 ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
                                 progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback,
                                 sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                            RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Tolerant video decode recovery", ffArgs, runResult);
                             scope.Complete();
                         }
                         if (runResult.ExitCode == 0)
@@ -2046,6 +2056,7 @@ namespace MediaFlux.Services
                             using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                             {
                                 runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt).ConfigureAwait(false);
+                                RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Timestamp reconstruction recovery", ffArgs, runResult);
                                 scope.Complete();
                             }
                             if (runResult.ExitCode == 0)
@@ -2384,6 +2395,35 @@ namespace MediaFlux.Services
                 _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery could not remove failed staging output '{stagingPath}': {ex.Message}");
                 return false;
             }
+        }
+
+        private static void RecordFfmpegAttempt(
+            ICollection<FfmpegAttemptDiagnostic> attempts,
+            int attempt,
+            string name,
+            string command,
+            FfmpegProcessResult result)
+        {
+            attempts.Add(new FfmpegAttemptDiagnostic(
+                attempt, name, command, result.ExitCode, result.StandardError, result.DiagnosticSummary));
+        }
+
+        private static string BuildAttemptRawEvidence(IReadOnlyList<FfmpegAttemptDiagnostic> attempts)
+        {
+            if (attempts.Count == 0)
+                return string.Empty;
+            if (attempts.Count == 1)
+                return attempts[0].StandardError;
+
+            var evidence = new StringBuilder();
+            foreach (FfmpegAttemptDiagnostic attempt in attempts.OrderBy(x => x.Attempt))
+            {
+                evidence.AppendLine($"===== FFmpeg attempt {attempt.Attempt}: {attempt.Name}; exit={attempt.ExitCode}; terminal={attempt.IsTerminal} =====");
+                evidence.Append(attempt.StandardError);
+                if (!attempt.StandardError.EndsWith(Environment.NewLine, StringComparison.Ordinal))
+                    evidence.AppendLine();
+            }
+            return evidence.ToString();
         }
 
         private sealed record FfmpegProcessResult(int ExitCode, string StandardError, FfmpegDiagnosticSummary DiagnosticSummary);
