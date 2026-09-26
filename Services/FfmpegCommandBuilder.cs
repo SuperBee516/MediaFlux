@@ -109,6 +109,7 @@ namespace MediaFlux.Services
                     (request.NvencCudaFormatConversionSupported || !requiresVideoFilter) &&
                     // Restoration filters remain on the explicit software path.
                     string.IsNullOrEmpty(restorationFilterChain),
+                UseNvencHostFrames = request.UseNvencHostFrames,
                 RequiresVideoFilter = requiresVideoFilter
             };
 

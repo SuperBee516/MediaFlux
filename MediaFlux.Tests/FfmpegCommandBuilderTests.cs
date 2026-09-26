@@ -400,6 +400,24 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void NvencSoftwareFrameFallbackFeedsHostTenBitFramesDirectly()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            tenBit: true,
+            nvencHighBitDepthOutputSupported: true,
+            useNvencHostFrames: true));
+
+        Assert.Contains("-hwaccel cuda -i ", arguments);
+        Assert.Contains("-vf format=p010le ", arguments);
+        Assert.DoesNotContain("hwupload_cuda", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-profile:v main10 ", arguments);
+        Assert.Contains("-pix_fmt p010le", arguments);
+    }
+
+    [Fact]
     public void NvencSupportedCudaConversionKeepsBitDepthConversionOnGpu()
     {
         string arguments = CreateBuilder().Build(CreateRequest(
@@ -1019,6 +1037,7 @@ public sealed class FfmpegCommandBuilderTests
         FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
         VideoOutputGeometryPlan? plannedVideoGeometry = null,
         bool nvencCudaFormatConversionSupported = false,
+        bool useNvencHostFrames = false,
         string? recoveryFrameRateRational = null,
         string? timestampReconstructionFilter = null,
         string inputPath = "C:\\Media\\source.mkv")
@@ -1053,7 +1072,8 @@ public sealed class FfmpegCommandBuilderTests
              sourceDecodeMode,
             plannedVideoGeometry,
             nvencCudaFormatConversionSupported,
-             recoveryFrameRateRational,
+            useNvencHostFrames,
+            recoveryFrameRateRational,
              timestampReconstructionFilter,
              inputPath);
     }
@@ -1086,6 +1106,7 @@ public sealed class FfmpegCommandBuilderTests
         FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
         VideoOutputGeometryPlan? plannedVideoGeometry = null,
         bool nvencCudaFormatConversionSupported = false,
+        bool useNvencHostFrames = false,
         string? recoveryFrameRateRational = null,
         string? timestampReconstructionFilter = null,
         string inputPath = "C:\\Media\\source.mkv")
@@ -1136,6 +1157,7 @@ public sealed class FfmpegCommandBuilderTests
                 nvencHighBitDepthOutputSupported,
             NvencCudaFormatConversionSupported =
                 nvencCudaFormatConversionSupported,
+            UseNvencHostFrames = useNvencHostFrames,
             DisableHardwareDecode = disableHardwareDecode,
             SourceDecodeMode = sourceDecodeMode,
             RecoveryFrameRateRational = recoveryFrameRateRational,

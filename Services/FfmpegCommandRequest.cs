@@ -45,6 +45,10 @@ namespace MediaFlux.Services
         // separate from NVENC availability because some FFmpeg builds expose
         // both features but cannot negotiate CUDA frames with a given format.
         public bool PreferNvencGpuResidentFrames { get; init; } = true;
+        // The bounded GPU-frame-pipeline fallback can feed host p010le frames
+        // directly to NVENC after a CUDA-assisted decode. Other upload-based
+        // workflows retain their existing hwupload_cuda boundary.
+        public bool UseNvencHostFrames { get; init; }
         public bool NvencCudaFormatConversionSupported { get; init; }
         // Keeps NVENC active while deliberately removing NVDEC/CUDA input
         // acceleration for a single device-recovery retry.

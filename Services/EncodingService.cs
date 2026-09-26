@@ -2754,6 +2754,8 @@ namespace MediaFlux.Services
                     supportsGpuResidentHighBitDepthOutput,
                 PreferNvencGpuResidentFrames =
                     preferNvencGpuResidentFrames,
+                UseNvencHostFrames =
+                    useGpu && isNvenc && !preferNvencGpuResidentFrames,
                 NvencCudaFormatConversionSupported =
                     supportsNvencCudaFormatConversion,
                 DisableHardwareDecode = disableHardwareDecode,

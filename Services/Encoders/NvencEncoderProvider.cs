@@ -102,7 +102,9 @@ namespace MediaFlux.Services.Encoders
             EncoderProviderUtilities.AppendSoftwareVideoFilters(
                 builder,
                 context,
-                uploadToCuda: context.UseGpu && !context.UseGpuResidentFrames);
+                uploadToCuda: context.UseGpu &&
+                    !context.UseGpuResidentFrames &&
+                    !context.UseNvencHostFrames);
         }
 
         public void AppendTargetSizeArguments(

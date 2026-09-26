@@ -57,7 +57,8 @@ namespace MediaFlux.Services.Encoders
                 context.Selection.EncoderId.Equals(
                     VideoEncoderIds.Nvenc,
                     StringComparison.OrdinalIgnoreCase);
-            if (!nvencReceivesCudaFrames && !context.UseGpuResidentFrames)
+            if ((!nvencReceivesCudaFrames || context.UseNvencHostFrames) &&
+                !context.UseGpuResidentFrames)
                 builder.Append($"-pix_fmt {context.OutputPixelFormat} ");
             if (context.WantsTenBit && context.UseGpuResidentHighBitDepthOutput)
                 builder.Append("-highbitdepth 1 ");
