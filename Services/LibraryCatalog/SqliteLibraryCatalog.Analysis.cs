@@ -706,13 +706,21 @@ namespace MediaFlux.Services.LibraryCatalog
                 reader.GetInt64(5));
         }
 
-        public LibraryFilePage QueryFiles(LibraryFileQuery query)
+        public LibraryFilePage QueryFiles(LibraryFileQuery query, CancellationToken cancellationToken = default) =>
+            QueryFilesCore(query, cancellationToken, afterCount: null);
+
+        private LibraryFilePage QueryFilesCore(
+            LibraryFileQuery query, CancellationToken cancellationToken, Action? afterCount)
         {
             ArgumentNullException.ThrowIfNull(query);
             ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            CompiledCatalogSearch? advanced = query.AdvancedSearch == null
+                ? null
+                : CatalogSearchSqlCompiler.Compile(query.AdvancedSearch);
             int limit = Math.Clamp(query.Limit, 1, 1_000);
             int offset = Math.Max(0, query.Offset);
-            string orderColumn = query.SortColumn.ToLowerInvariant() switch
+            string ordinaryOrderColumn = (query.SortColumn ?? "").ToLowerInvariant() switch
             {
                 "name" => "file.file_name",
                 "size" => "file.size_bytes",
@@ -726,26 +734,62 @@ namespace MediaFlux.Services.LibraryCatalog
                 "bitrate" => "metadata.total_bitrate",
                 _ => "file.path_key"
             };
-            string direction = query.Descending ? "DESC" : "ASC";
+            string orderColumn = advanced?.OrderExpression ?? ordinaryOrderColumn;
+            string direction = (advanced?.OrderExpression != null ? advanced.Descending : query.Descending) ? "DESC" : "ASC";
             string search = (query.Search ?? "").Trim();
 
             using SqliteConnection connection = _database.OpenConnection(readOnly: true);
-            IReadOnlyList<string> excludedStatisticLabels =
-                ResolveExcludedStatisticLabels(connection, query.Statistic);
-            string filters =
-                " WHERE ($search = '' OR file.file_name LIKE $search_pattern OR file.full_path LIKE $search_pattern)" +
-                " AND ($location_id IS NULL OR EXISTS (SELECT 1 FROM file_location_memberships selected_membership WHERE selected_membership.file_id = file.id AND selected_membership.location_id = $location_id))" +
-                " AND ($availability IS NULL OR file.availability_state = $availability)" +
-                " AND ($probe_status IS NULL OR COALESCE(metadata.probe_status, $pending) = $probe_status)" +
-                BuildStatisticFilter(query.Statistic, excludedStatisticLabels);
+            using var cancellation = new CatalogSearchReadCancellation(connection, cancellationToken);
+            using SqliteTransaction? transaction = advanced == null
+                ? null
+                : cancellation.Run(() => connection.BeginTransaction(deferred: true));
+            IReadOnlyList<string> excludedStatisticLabels = cancellation.Run(() =>
+                ResolveExcludedStatisticLabels(connection, query.Statistic, transaction));
+            string filters;
+            if (advanced == null)
+            {
+                filters =
+                    " WHERE ($search = '' OR file.file_name LIKE $search_pattern OR file.full_path LIKE $search_pattern)" +
+                    " AND ($location_id IS NULL OR EXISTS (SELECT 1 FROM file_location_memberships selected_membership WHERE selected_membership.file_id = file.id AND selected_membership.location_id = $location_id))" +
+                    " AND ($availability IS NULL OR file.availability_state = $availability)" +
+                    " AND ($probe_status IS NULL OR COALESCE(metadata.probe_status, $pending) = $probe_status)";
+            }
+            else
+            {
+                filters = " WHERE 1=1";
+                if (search.Length > 0)
+                    filters += " AND (file.file_name LIKE $search_pattern ESCAPE '\\' OR file.full_path LIKE $search_pattern ESCAPE '\\')";
+                if (query.LocationId.HasValue)
+                    filters += " AND EXISTS (SELECT 1 FROM file_location_memberships selected_membership WHERE selected_membership.file_id=file.id AND selected_membership.location_id=$location_id)";
+                if (query.Availability.HasValue)
+                    filters += " AND file.availability_state=$availability";
+                if (query.ProbeStatus.HasValue)
+                    filters += " AND COALESCE(metadata.probe_status,$pending)=$probe_status";
+            }
+            filters += BuildStatisticFilter(query.Statistic, excludedStatisticLabels) + (advanced?.PredicateSql ?? "");
 
             using SqliteCommand countCommand = connection.CreateCommand();
+            countCommand.Transaction = transaction;
             countCommand.CommandText =
                 "SELECT COUNT(*) FROM indexed_files file LEFT JOIN media_metadata metadata ON metadata.file_id = file.id" + filters + ";";
-            AddFileQueryParameters(countCommand, query, search, excludedStatisticLabels);
-            long total = Convert.ToInt64(countCommand.ExecuteScalar());
+            AddFileQueryParameters(countCommand, query, search, excludedStatisticLabels, advanced != null);
+            advanced?.Bind(countCommand);
+            long total = cancellation.Run(() => Convert.ToInt64(countCommand.ExecuteScalar()));
+            afterCount?.Invoke();
+            cancellation.Check();
+
+            bool advancedProjection = advanced != null;
+            string formatExpression = advancedProjection ? Fresh("COALESCE(metadata.format_name,'')", "''") : "COALESCE(metadata.format_name, '')";
+            string codecExpression = advancedProjection ? Fresh("COALESCE(metadata.video_codec,'')", "''") : "COALESCE(metadata.video_codec, '')";
+            string widthExpression = advancedProjection ? Fresh("metadata.width", "NULL") : "metadata.width";
+            string heightExpression = advancedProjection ? Fresh("metadata.height", "NULL") : "metadata.height";
+            string totalBitrateExpression = advancedProjection ? Fresh("metadata.total_bitrate", "NULL") : "metadata.total_bitrate";
+            string durationExpression = advancedProjection ? Fresh("metadata.duration_seconds", "NULL") : "metadata.duration_seconds";
+            string dynamicRangeExpression = advancedProjection ? Fresh(DynamicRangeSql("metadata"), "'Unknown'") : DynamicRangeSql("metadata");
+            string projection = advancedProjection ? SearchProjectionSql() : "";
 
             using SqliteCommand pageCommand = connection.CreateCommand();
+            pageCommand.Transaction = transaction;
             pageCommand.CommandText =
                 $"""
                 SELECT file.id, file.file_name, file.full_path,
@@ -753,25 +797,26 @@ namespace MediaFlux.Services.LibraryCatalog
                                  JOIN library_locations location ON location.id = membership.location_id
                                  WHERE membership.file_id = file.id), ''),
                        file.size_bytes, file.last_write_utc_ticks, file.availability_state,
-                       COALESCE(metadata.format_name, ''), COALESCE(metadata.video_codec, ''),
-                       metadata.width, metadata.height, metadata.total_bitrate,
-                       metadata.duration_seconds, COALESCE(metadata.probe_status, $pending),
+                       {formatExpression}, {codecExpression},
+                       {widthExpression}, {heightExpression}, {totalBitrateExpression},
+                       {durationExpression}, COALESCE(metadata.probe_status, $pending),
                        COALESCE(metadata.error_message, ''),
                        EXISTS(SELECT 1 FROM duplicate_file_protections protection WHERE protection.path_key=file.path_key),
                        file.creation_utc_ticks,
-                       {DynamicRangeSql("metadata")}
+                       {dynamicRangeExpression}{projection}
                 FROM indexed_files file
                 LEFT JOIN media_metadata metadata ON metadata.file_id = file.id
                 {filters}
                 ORDER BY {orderColumn} {direction}, file.id {direction}
                 LIMIT $limit OFFSET $offset;
                 """;
-            AddFileQueryParameters(pageCommand, query, search, excludedStatisticLabels);
+            AddFileQueryParameters(pageCommand, query, search, excludedStatisticLabels, advancedProjection);
+            advanced?.Bind(pageCommand);
             pageCommand.Parameters.AddWithValue("$limit", limit);
             pageCommand.Parameters.AddWithValue("$offset", offset);
-            using SqliteDataReader reader = pageCommand.ExecuteReader();
+            using SqliteDataReader reader = cancellation.Run(() => pageCommand.ExecuteReader());
             var files = new List<LibraryFileViewRecord>(limit);
-            while (reader.Read())
+            while (cancellation.Run(reader.Read))
             {
                 files.Add(new LibraryFileViewRecord(
                     reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
@@ -782,9 +827,15 @@ namespace MediaFlux.Services.LibraryCatalog
                     reader.IsDBNull(11) ? null : reader.GetInt64(11),
                     reader.IsDBNull(12) ? null : reader.GetDouble(12),
                     (LibraryProbeStatus)reader.GetInt32(13), reader.GetString(14), reader.GetBoolean(15),
-                    reader.IsDBNull(16) ? null : FromUtcTicks(reader.GetInt64(16)), reader.GetString(17)));
+                    reader.IsDBNull(16) ? null : FromUtcTicks(reader.GetInt64(16)), reader.GetString(17),
+                    advancedProjection ? ReadSearchProjection(reader) : null));
             }
+            if (transaction != null)
+                cancellation.Run(() => { transaction.Commit(); return 0; });
             return new LibraryFilePage(total, files);
+
+            static string Fresh(string expression, string fallback) =>
+                $"CASE WHEN {LibraryCatalogSqlExpressions.Current(1)} THEN ({expression}) ELSE {fallback} END";
         }
 
         private static SqliteCommand CreateInventoryLookupCommand(SqliteConnection connection, SqliteTransaction transaction)
@@ -914,13 +965,32 @@ namespace MediaFlux.Services.LibraryCatalog
             SqliteCommand command,
             LibraryFileQuery query,
             string search,
-            IReadOnlyList<string> excludedStatisticLabels)
+            IReadOnlyList<string> excludedStatisticLabels,
+            bool advanced = false)
         {
-            command.Parameters.AddWithValue("$search", search);
-            command.Parameters.AddWithValue("$search_pattern", $"%{search}%");
-            command.Parameters.AddWithValue("$location_id", query.LocationId.HasValue ? query.LocationId.Value : DBNull.Value);
-            command.Parameters.AddWithValue("$availability", query.Availability.HasValue ? (int)query.Availability.Value : DBNull.Value);
-            command.Parameters.AddWithValue("$probe_status", query.ProbeStatus.HasValue ? (int)query.ProbeStatus.Value : DBNull.Value);
+            if (!advanced)
+            {
+                command.Parameters.AddWithValue("$search", search);
+                command.Parameters.AddWithValue("$search_pattern", $"%{search}%");
+                command.Parameters.AddWithValue("$location_id", query.LocationId.HasValue ? query.LocationId.Value : DBNull.Value);
+                command.Parameters.AddWithValue("$availability", query.Availability.HasValue ? (int)query.Availability.Value : DBNull.Value);
+                command.Parameters.AddWithValue("$probe_status", query.ProbeStatus.HasValue ? (int)query.ProbeStatus.Value : DBNull.Value);
+            }
+            else
+            {
+                if (search.Length > 0)
+                {
+                    if (search.Length > CatalogSearchDefinitionValidator.MaximumTextLength)
+                        throw new ArgumentException("Search text is too long.", nameof(query));
+                    command.Parameters.AddWithValue("$search_pattern", $"%{CatalogSearchSqlCompiler.EscapeLike(search)}%");
+                }
+                if (query.LocationId.HasValue)
+                    command.Parameters.AddWithValue("$location_id", query.LocationId.Value);
+                if (query.Availability.HasValue)
+                    command.Parameters.AddWithValue("$availability", (int)query.Availability.Value);
+                if (query.ProbeStatus.HasValue)
+                    command.Parameters.AddWithValue("$probe_status", (int)query.ProbeStatus.Value);
+            }
             command.Parameters.AddWithValue("$pending", (int)LibraryProbeStatus.Pending);
             if (query.Statistic != null)
             {

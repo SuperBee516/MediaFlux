@@ -272,7 +272,8 @@ namespace MediaFlux.Services.LibraryCatalog
         bool Descending = false,
         int Offset = 0,
         int Limit = 200,
-        LibraryStatisticDrillDown? Statistic = null);
+        LibraryStatisticDrillDown? Statistic = null,
+        CatalogSearchDefinition? AdvancedSearch = null);
 
     public enum LibraryStatisticCategory
     {
@@ -307,7 +308,8 @@ namespace MediaFlux.Services.LibraryCatalog
         string ProbeError,
         bool IsProtected,
         DateTime? CreationUtc = null,
-        string DynamicRange = "");
+        string DynamicRange = "",
+        CatalogSearchProjection? SearchFacts = null);
 
     public sealed record LibraryFilePage(
         long TotalCount,
@@ -386,7 +388,7 @@ namespace MediaFlux.Services.LibraryCatalog
         void SaveMediaMetadata(LibraryMediaMetadata metadata);
         LibraryMediaMetadata? GetMediaMetadata(long fileId);
         LibraryOverview GetOverview(int metadataVersion);
-        LibraryFilePage QueryFiles(LibraryFileQuery query);
+        LibraryFilePage QueryFiles(LibraryFileQuery query, CancellationToken cancellationToken = default);
 
         IndexedFileRecord? GetFileByPath(string path);
         IReadOnlyList<IndexedFileRecord> GetFilesByIdentity(string volumeId, string fileIdentity);

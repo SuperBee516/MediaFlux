@@ -389,7 +389,8 @@ namespace MediaFlux.Services.LibraryCatalog
 
         private static IReadOnlyList<string> ResolveExcludedStatisticLabels(
             SqliteConnection connection,
-            LibraryStatisticDrillDown? statistic)
+            LibraryStatisticDrillDown? statistic,
+            SqliteTransaction? transaction = null)
         {
             if (statistic?.IsRemainder != true) return Array.Empty<string>();
             if (statistic.ExcludedLabels is { Count: > 0 })
@@ -398,6 +399,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     .ToArray();
             string value = StatisticValueSql(statistic.Category, "metadata");
             using SqliteCommand command = connection.CreateCommand();
+            command.Transaction = transaction;
             command.CommandText =
                 $"SELECT {value} AS bucket_label " +
                 "FROM indexed_files file LEFT JOIN media_metadata metadata ON metadata.file_id=file.id " +
@@ -419,14 +421,9 @@ namespace MediaFlux.Services.LibraryCatalog
             _ => throw new ArgumentOutOfRangeException(nameof(category))
         };
 
-        private static string DynamicRangeSql(string alias) =>
-            $"CASE WHEN {alias}.file_id IS NULL THEN 'Unknown' " +
-            $"WHEN lower({alias}.color_transfer) IN ('smpte2084','arib-std-b67') THEN 'HDR' " +
-            $"WHEN lower({alias}.color_transfer) IN ('bt709','smpte170m','bt470bg','gamma22','gamma28','iec61966-2-1','bt2020-10','bt2020-12') THEN 'SDR' " +
-            "ELSE 'Unknown' END";
+        private static string DynamicRangeSql(string alias) => LibraryCatalogSqlExpressions.DynamicRange(alias);
 
-        private static string ResolutionTierSql(string alias) =>
-            $"CASE WHEN {alias}.width IS NULL OR {alias}.height IS NULL THEN 'Unknown' WHEN {alias}.width>=7680 OR {alias}.height>=4320 THEN '8K+' WHEN {alias}.width>=3840 OR {alias}.height>=2160 THEN '4K' WHEN {alias}.width>=2560 OR {alias}.height>=1440 THEN '1440p' WHEN {alias}.width>=1920 OR {alias}.height>=1080 THEN '1080p' WHEN {alias}.width>=1280 OR {alias}.height>=720 THEN '720p' ELSE 'SD' END";
+        private static string ResolutionTierSql(string alias) => LibraryCatalogSqlExpressions.ResolutionTier(alias);
 
         private static void AddDuplicateQueryParameters(SqliteCommand command, DuplicateGroupQuery query)
         {
