@@ -84,7 +84,7 @@ namespace MediaFlux
         private readonly System.Windows.Forms.Timer _activityTimer = new() { Interval = 250 };
         private int _page;
         private long _totalFiles;
-        private bool _loadingFiles;
+        private bool _renderingFiles;
         private bool _scanning;
         private bool _loadingLocations;
         private long? _preferredLocationSelectionId;
@@ -338,6 +338,7 @@ namespace MediaFlux
             _maintenanceToolTip = null;
             _overviewRefreshCancellation.Cancel();
             _overviewRefreshCancellation.Dispose();
+            CleanupAdvancedSearchUi();
             if (_visualPreviewFocus) RestoreVisualWorkspace();
             _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
@@ -455,8 +456,10 @@ namespace MediaFlux
             _availability.SelectedIndex = 0;
             _probeStatus.Items.AddRange(new object[] { "All", "Pending", "In progress", "Succeeded", "Failed" });
             _probeStatus.SelectedIndex = 0;
-            _sort.Items.AddRange(new object[] { "Path", "Name", "Size", "Modified", "Codec", "Duration", "Bitrate" });
+            _sort.Items.AddRange(new object[] { "Path", "Name", "Size", "Modified", "Codec", "Duration", "Total bitrate" });
             _sort.SelectedIndex = 0;
+            _sort.AccessibleDescription = "Total bitrate is the container bitrate, separate from video-stream bitrate.";
+            _advancedSearchToolTip.SetToolTip(_sort, "Total bitrate sorts the container/format bitrate, not the video stream bitrate.");
 
             AddFileColumn("Name", "Filename", 180);
             AddFileColumn("Path", "Path", 360);
@@ -467,10 +470,19 @@ namespace MediaFlux
             AddFileColumn("Container", "Container", 100);
             AddFileColumn("Codec", "Video codec", 90);
             AddFileColumn("Resolution", "Resolution", 90);
-            AddFileColumn("Bitrate", "Bitrate", 90);
+            AddFileColumn("EffectiveFps", "FPS", 80);
+            AddFileColumn("VideoBitrate", "Video bitrate", 110);
+            AddFileColumn("BitDepth", "Bit depth", 80);
+            AddFileColumn("DynamicRange", "HDR/SDR", 85);
+            AddFileColumn("Bitrate", "Total bitrate", 110);
             AddFileColumn("Duration", "Duration", 90);
             AddFileColumn("Probe", "Probe status", 110);
-            _filesGrid.SelectionChanged += (_, _) => UpdateAnalyzerActionState();
+            _filesGrid.Columns["Resolution"].ToolTipText = "Coded width × height; display rotation is not applied.";
+            _filesGrid.Columns["EffectiveFps"].ToolTipText = "Effective frame rate from current catalog metadata.";
+            _filesGrid.Columns["VideoBitrate"].ToolTipText = "Selected video stream bitrate from FFprobe; never total bitrate. Decimal Mbps (1,000,000 bps).";
+            _filesGrid.Columns["BitDepth"].ToolTipText = "Reliable selected-video-stream bit depth when available.";
+            _filesGrid.Columns["Bitrate"].ToolTipText = "Container/format total bitrate. This is separate from video bitrate.";
+            _filesGrid.SelectionChanged += (_, _) => { if (!_renderingFiles) UpdateAnalyzerActionState(); };
 
             var pager = new FlowLayoutPanel
             {
@@ -490,6 +502,7 @@ namespace MediaFlux
             var fileSummaryPanel = new Panel { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(0, 2, 0, 0) };
             fileSummaryPanel.Controls.Add(_filesSummary);
             tab.Controls.Add(fileSummaryPanel);
+            tab.Controls.Add(BuildAdvancedSearchPanel());
             tab.Controls.Add(filters);
             _tabs.TabPages.Add(tab);
         }
@@ -734,19 +747,60 @@ namespace MediaFlux
 
         private async Task RefreshFilesAsync()
         {
-            if (_loadingFiles || _lifecycleCleanupCompleted || IsDisposed || Disposing)
+            if (!CanUseFormUi)
                 return;
-            _loadingFiles = true;
+            _advancedSearchDebounceTimer.Stop();
+            LibraryFileQuery query;
             try
             {
-                LibraryFileQuery query = BuildFileQuery();
-                LibraryFilePage result = await Task.Run(() => _runtime.Catalog.QueryFiles(query));
-                if (_lifecycleCleanupCompleted || IsDisposed || Disposing)
+                query = BuildFileQuery();
+                SetAdvancedSearchValidation("");
+            }
+            catch (ArgumentException exception)
+            {
+                _fileRequests.Invalidate();
+                SetAdvancedSearchValidation(exception.Message);
+                _filesSummary.Text = "Fix the Advanced Search input to run this search.";
+                return;
+            }
+
+            long[] selectedIds = _filesGrid.SelectedRows.Cast<DataGridViewRow>()
+                .Select(row => row.Tag).OfType<LibraryFileViewRecord>()
+                .Select(file => file.FileId).Distinct().ToArray();
+            LibraryFilesRequestCoordinator.Request request = _fileRequests.Start();
+            _filesSummary.Text = query.AdvancedSearch == null ? "Loading files…" : "Searching…";
+            try
+            {
+                LibraryFilePage result = await Task.Run(
+                    () => _runtime.Catalog.QueryFiles(query, request.Token), request.Token);
+                if (!_fileRequests.IsCurrent(request) || !CanUseFormUi)
                     return;
-                _totalFiles = result.TotalCount;
+                RenderFilesPage(result, selectedIds);
+            }
+            catch (OperationCanceledException) when (request.Token.IsCancellationRequested) { }
+            catch (Exception exception)
+            {
+                if (_fileRequests.IsCurrent(request) && CanUseFormUi)
+                {
+                    _filesSummary.Text = "The Files search could not complete. See the error log.";
+                    ErrorLogService.Append(AppPaths.UserDataDirectory, "Library Analyzer Files search failed.", exception: exception);
+                }
+            }
+            finally { _fileRequests.Complete(request); }
+        }
+
+        private void RenderFilesPage(LibraryFilePage result, IReadOnlyCollection<long> selectedIds)
+        {
+            _totalFiles = result.TotalCount;
+            var selected = new HashSet<long>(selectedIds);
+            _renderingFiles = true;
+            _filesGrid.SuspendLayout();
+            try
+            {
                 _filesGrid.Rows.Clear();
                 foreach (LibraryFileViewRecord file in result.Files)
                 {
+                    CatalogSearchProjection? facts = file.SearchFacts;
                     int row = _filesGrid.Rows.Add(
                         file.FileName,
                         file.FullPath,
@@ -754,30 +808,46 @@ namespace MediaFlux
                         FormatBytes(file.SizeBytes),
                         file.LastWriteUtc.ToLocalTime().ToString("g"),
                         file.Availability,
-                        file.FormatName,
-                        file.VideoCodec,
-                        file.Width.HasValue && file.Height.HasValue ? $"{file.Width}×{file.Height}" : "",
-                        file.TotalBitRate.HasValue ? $"{file.TotalBitRate.Value / 1_000_000d:0.##} Mbps" : "",
-                        file.DurationSeconds.HasValue ? FormatDuration(file.DurationSeconds.Value) : "",
+                        string.IsNullOrWhiteSpace(file.FormatName) ? "--" : file.FormatName,
+                        string.IsNullOrWhiteSpace(file.VideoCodec) ? "--" : file.VideoCodec,
+                        file.Width is > 0 && file.Height is > 0 ? $"{file.Width}×{file.Height}" : "--",
+                        facts?.EffectiveFps is double fps && double.IsFinite(fps) && fps > 0 ? $"{fps:0.###}" : "--",
+                        facts?.VideoBitRateBps is > 0 ? $"{facts.VideoBitRateBps.Value / 1_000_000d:0.###} Mbps" : "--",
+                        facts?.BitDepth is > 0 ? $"{facts.BitDepth} bit" : "--",
+                        file.DynamicRange is "HDR" or "SDR" ? file.DynamicRange : "--",
+                        file.TotalBitRate is > 0 ? $"{file.TotalBitRate.Value / 1_000_000d:0.##} Mbps" : "--",
+                        file.DurationSeconds is double seconds && double.IsFinite(seconds) && seconds > 0 ? FormatDuration(seconds) : "--",
                         file.ProbeStatus == LibraryProbeStatus.Failed && !string.IsNullOrWhiteSpace(file.ProbeError)
                             ? $"Failed: {file.ProbeError}"
                             : file.ProbeStatus.ToString());
                     _filesGrid.Rows[row].Tag = file;
                 }
-                long first = _totalFiles == 0 ? 0 : (long)_page * PageSize + 1;
-                long last = Math.Min(_totalFiles, ((long)_page + 1) * PageSize);
-                _pageLabel.Text = $"{first:N0}–{last:N0} of {_totalFiles:N0}";
-                _filesSummary.Text = _totalFiles == 0
-                    ? "No indexed files match the current filters."
-                    : $"Showing {result.Files.Count:N0} on this page · {_totalFiles:N0} total indexed files";
-                _previous.Enabled = _page > 0;
-                _next.Enabled = last < _totalFiles;
-                UpdateAnalyzerActionState();
+                _filesGrid.ClearSelection();
+                DataGridViewRow[] matching = _filesGrid.Rows.Cast<DataGridViewRow>()
+                    .Where(row => row.Tag is LibraryFileViewRecord file && selected.Contains(file.FileId)).ToArray();
+                if (matching.Length > 0)
+                {
+                    _filesGrid.CurrentCell = matching[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                    foreach (DataGridViewRow row in matching)
+                        row.Selected = true;
+                }
+                else
+                    _filesGrid.CurrentCell = null;
             }
             finally
             {
-                _loadingFiles = false;
+                _filesGrid.ResumeLayout();
+                _renderingFiles = false;
             }
+            long first = _totalFiles == 0 ? 0 : (long)_page * PageSize + 1;
+            long last = Math.Min(_totalFiles, ((long)_page + 1) * PageSize);
+            _pageLabel.Text = $"{first:N0}–{last:N0} of {_totalFiles:N0}";
+            _filesSummary.Text = _totalFiles == 0
+                ? "No indexed files match the current filters."
+                : $"Showing {result.Files.Count:N0} on this page · {_totalFiles:N0} total indexed files";
+            _previous.Enabled = _page > 0;
+            _next.Enabled = last < _totalFiles;
+            UpdateAnalyzerActionState();
         }
 
         private LibraryFileQuery BuildFileQuery()
@@ -803,10 +873,11 @@ namespace MediaFlux
                 locationId,
                 availability,
                 probeStatus,
-                _sort.Text.ToLowerInvariant(),
+                _sort.Text == "Total bitrate" ? "bitrate" : _sort.Text.ToLowerInvariant(),
                 _descending.Checked,
                 _page * PageSize,
-                PageSize);
+                PageSize,
+                AdvancedSearch: BuildAdvancedSearchDefinition());
         }
 
         private void RefreshLocationFilter(IReadOnlyList<LibraryLocationRecord> locations)
