@@ -171,4 +171,61 @@ public sealed class FfmpegDiagnosticsTests
         Assert.Equal(FfmpegDiagnosticConfidence.High, classification.Confidence);
         Assert.Contains("faststart", classification.ProbableCause, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void IncompatibleFormatAndReinitializationFailureHaveStructuredClassification()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Reconfiguring filter graph because video input parameters changed", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Impossible to convert between the formats supported by the filter 'Parsed_scale_cuda_0' and the filter 'auto_scale_0'", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error reinitializing filters!", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Conversion failed!", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.Contains(summary.Families, family =>
+            family.Family == "Incompatible filter graph formats" &&
+            family.Category == FfmpegDiagnosticCategory.FilterGraphNegotiation &&
+            family.Severity == FfmpegDiagnosticSeverity.Error);
+        Assert.Equal(FfmpegDiagnosticCategory.FilterGraphNegotiation, summary.Classification.PrimaryCategory);
+        Assert.Contains("filter graph formats", summary.Classification.ProbableCause, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("Reconfiguring filter graph")]
+    [InlineData("[Parsed_scale_0 @ 000001d6df9649c0] Error applying option 'flags' to filter 'scale': Invalid argument")]
+    [InlineData("Error reinitializing filters!")]
+    public void InformationalOrGenericFilterMessagesDoNotBecomeNegotiationFailures(string message)
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe(message, FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.DoesNotContain(summary.Families, family => family.Category == FfmpegDiagnosticCategory.FilterGraphNegotiation);
+        Assert.NotEqual(FfmpegDiagnosticCategory.FilterGraphNegotiation, summary.Classification.PrimaryCategory);
+    }
+
+    [Fact]
+    public void CorroboratedSourceCorruptionRetainsPrecedenceOverFilterGraphFailure()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Impossible to convert between the formats supported by the filter 'scale' and the filter 'auto_scale'", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Invalid NAL unit size (0 > 26098).", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error splitting the input into NAL units", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error submitting packet to decoder: Invalid data found when processing input", FfmpegDiagnosticComponent.Ffmpeg);
+
+        Assert.Equal(FfmpegDiagnosticCategory.SourceIntegrity, collector.Complete().Classification.PrimaryCategory);
+    }
+
+    [Theory]
+    [InlineData("[hevc_nvenc @ 000001d6df9649c0] No NVENC capable devices found", FfmpegDiagnosticCategory.HardwareAcceleration)]
+    [InlineData("Error initializing output stream 0:0 -- Error while opening encoder for output stream", FfmpegDiagnosticCategory.EncoderInitialization)]
+    [InlineData("Error writing trailer: Invalid argument", FfmpegDiagnosticCategory.Muxing)]
+    public void ExistingSpecificFailuresRetainPrecedenceOverFilterGraphFailure(string strongerEvidence, FfmpegDiagnosticCategory expected)
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Impossible to convert between the formats supported by the filter 'scale' and the filter 'auto_scale'", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe(strongerEvidence, FfmpegDiagnosticComponent.Ffmpeg);
+
+        Assert.Equal(expected, collector.Complete().Classification.PrimaryCategory);
+    }
 }

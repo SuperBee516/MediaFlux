@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 namespace MediaFlux.Services;
 
 public enum FfmpegDiagnosticComponent { Ffmpeg, Ffprobe, Other }
-public enum FfmpegDiagnosticCategory { SourceDecode, SourceIntegrity, TimestampTimeline, AudioDecode, Subtitle, Muxing, EncoderInitialization, HardwareAcceleration, DiskIo, PermissionAccess, OutputValidation, Unknown }
+public enum FfmpegDiagnosticCategory { SourceDecode, SourceIntegrity, TimestampTimeline, AudioDecode, Subtitle, Muxing, EncoderInitialization, HardwareAcceleration, DiskIo, PermissionAccess, OutputValidation, Unknown, FilterGraphNegotiation }
 public enum FfmpegDiagnosticSeverity { Info, Warning, Error }
 public enum FfmpegDiagnosticConfidence { Unknown, Low, Moderate, High }
 
@@ -72,6 +72,7 @@ public sealed partial class FfmpegDiagnosticNormalizer
             var x when x.Contains("Error submitting packet to decoder", StringComparison.OrdinalIgnoreCase) => ("Decoder packet submission failure", FfmpegDiagnosticCategory.SourceDecode, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("Error processing packet in decoder", StringComparison.OrdinalIgnoreCase) => ("Decoder packet processing failure", FfmpegDiagnosticCategory.SourceDecode, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("Invalid data found when processing input", StringComparison.OrdinalIgnoreCase) => ("Invalid input data", FfmpegDiagnosticCategory.SourceDecode, FfmpegDiagnosticSeverity.Error),
+            var x when x.Contains("Impossible to convert between the formats supported by the filter", StringComparison.OrdinalIgnoreCase) => ("Incompatible filter graph formats", FfmpegDiagnosticCategory.FilterGraphNegotiation, FfmpegDiagnosticSeverity.Error),
             var x when x.Contains("corrupt", StringComparison.OrdinalIgnoreCase) && x.Contains("packet", StringComparison.OrdinalIgnoreCase) => ("Corrupt packet", FfmpegDiagnosticCategory.SourceIntegrity, FfmpegDiagnosticSeverity.Warning),
             var x when x.Contains("Non-monotonous DTS", StringComparison.OrdinalIgnoreCase) => ("Non-monotonic DTS", FfmpegDiagnosticCategory.TimestampTimeline, FfmpegDiagnosticSeverity.Warning),
             var x when x.Contains("timestamp", StringComparison.OrdinalIgnoreCase) || x.Contains(" DTS", StringComparison.OrdinalIgnoreCase) || x.Contains(" PTS", StringComparison.OrdinalIgnoreCase) => ("Timestamp/timeline failure", FfmpegDiagnosticCategory.TimestampTimeline, FfmpegDiagnosticSeverity.Warning),
@@ -209,7 +210,17 @@ public static class FfmpegDiagnosticClassifier
             (firstSource is null || firstSource.FirstOrder > firstMuxFailure.FirstOrder))
             return new(FfmpegDiagnosticCategory.Muxing, "MP4 faststart relocation or trailer finalization failed after media processing.", FfmpegDiagnosticConfidence.High,
                 [faststart.Family, firstMuxFailure.Family]);
-        FfmpegDiagnosticFamilySummary? primary = families.Where(x => x.Severity == FfmpegDiagnosticSeverity.Error).OrderByDescending(x => x.Occurrences).FirstOrDefault(x => x.Category != FfmpegDiagnosticCategory.Unknown);
+        FfmpegDiagnosticFamilySummary? filterGraph = families.FirstOrDefault(x =>
+            x.Category == FfmpegDiagnosticCategory.FilterGraphNegotiation &&
+            x.Severity == FfmpegDiagnosticSeverity.Error);
+        bool hasCompetingSpecificFailure = families.Any(x =>
+            x.Severity == FfmpegDiagnosticSeverity.Error &&
+            x.Category is not (FfmpegDiagnosticCategory.Unknown or FfmpegDiagnosticCategory.FilterGraphNegotiation));
+        if (filterGraph is not null && !hasCompetingSpecificFailure)
+            return new(FfmpegDiagnosticCategory.FilterGraphNegotiation,
+                "FFmpeg could not negotiate compatible filter graph formats during construction or reconfiguration.",
+                FfmpegDiagnosticConfidence.Moderate, new[] { filterGraph.Family });
+        FfmpegDiagnosticFamilySummary? primary = families.Where(x => x.Severity == FfmpegDiagnosticSeverity.Error).OrderByDescending(x => x.Occurrences).FirstOrDefault(x => x.Category is not (FfmpegDiagnosticCategory.Unknown or FfmpegDiagnosticCategory.FilterGraphNegotiation));
         return primary == null ? new(FfmpegDiagnosticCategory.Unknown, "No confident diagnostic interpretation is available.", FfmpegDiagnosticConfidence.Unknown, Array.Empty<string>()) : new(primary.Category, "A single diagnostic family was observed; cause remains uncertain.", FfmpegDiagnosticConfidence.Low, new[] { primary.Family });
     }
 }

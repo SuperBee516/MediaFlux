@@ -192,6 +192,65 @@ public sealed class FailureDiagnosticReportBuilderTests
         Assert.Contains("fallback completed", report);
     }
 
+    [Fact]
+    public void FailedPrimaryAndFallbackKeepTheirFilterGraphAndMuxDiagnosticsIsolated()
+    {
+        var primaryCollector = new FfmpegDiagnosticCollector();
+        primaryCollector.Observe("Impossible to convert between the formats supported by the filter 'scale_cuda' and the filter 'auto_scale'", FfmpegDiagnosticComponent.Ffmpeg);
+        primaryCollector.Observe("Error reinitializing filters!", FfmpegDiagnosticComponent.Ffmpeg);
+        FfmpegDiagnosticSummary primaryDiagnostics = primaryCollector.Complete();
+
+        var fallbackCollector = new FfmpegDiagnosticCollector();
+        fallbackCollector.Observe("Error writing trailer: Invalid argument", FfmpegDiagnosticComponent.Ffmpeg);
+        FfmpegDiagnosticSummary fallbackDiagnostics = fallbackCollector.Complete();
+
+        var attempts = new[]
+        {
+            new FfmpegAttemptDiagnostic(1, "Primary encode", "primary-command", 1,
+                "Impossible to convert between the formats supported by the filter 'scale_cuda' and the filter 'auto_scale'\nError reinitializing filters!",
+                primaryDiagnostics),
+            new FfmpegAttemptDiagnostic(2, "Software-frame fallback", "fallback-command", 1,
+                "Error writing trailer: Invalid argument", fallbackDiagnostics, IsTerminal: true)
+        };
+
+        string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+            "Encode", "source.mkv", "output.mkv", 1, "FFmpeg process failure", fallbackDiagnostics,
+            "primary failure\nfallback failure", Attempts: attempts));
+
+        Assert.Equal(FfmpegDiagnosticCategory.FilterGraphNegotiation, attempts[0].Diagnostics!.Classification.PrimaryCategory);
+        Assert.Equal(FfmpegDiagnosticCategory.Muxing, attempts[1].Diagnostics!.Classification.PrimaryCategory);
+        Assert.Contains("Attempt 1: Primary encode", report);
+        Assert.Contains("could not negotiate compatible filter graph formats", report, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Attempt 2: Software-frame fallback [terminal]", report);
+        Assert.Contains("fallback-command", report);
+        Assert.Contains("Exit", report);
+        Assert.Contains("FFmpeg could not negotiate compatible filter graph formats", report);
+        Assert.Contains("Muxing failure", report);
+    }
+
+    [Fact]
+    public void SuccessfulFallbackKeepsPrimaryFailureEvidenceWithoutChangingSuccessfulAttemptResult()
+    {
+        var primaryCollector = new FfmpegDiagnosticCollector();
+        primaryCollector.Observe("Impossible to convert between the formats supported by the filter 'scale_cuda' and the filter 'auto_scale'", FfmpegDiagnosticComponent.Ffmpeg);
+        primaryCollector.Observe("Error reinitializing filters!", FfmpegDiagnosticComponent.Ffmpeg);
+        FfmpegDiagnosticSummary primaryDiagnostics = primaryCollector.Complete();
+
+        var fallbackCollector = new FfmpegDiagnosticCollector();
+        fallbackCollector.Observe("frame=1319 fps=97 time=00:00:55.01", FfmpegDiagnosticComponent.Ffmpeg);
+        FfmpegDiagnosticSummary fallbackDiagnostics = fallbackCollector.Complete();
+        var attempts = new[]
+        {
+            new FfmpegAttemptDiagnostic(1, "Primary encode", "primary-command", 1, "filter graph failure", primaryDiagnostics),
+            new FfmpegAttemptDiagnostic(2, "Software-frame fallback", "fallback-command", 0, "fallback completed", fallbackDiagnostics, IsTerminal: true)
+        };
+
+        Assert.Equal(FfmpegDiagnosticCategory.FilterGraphNegotiation, attempts[0].Diagnostics!.Classification.PrimaryCategory);
+        Assert.Equal(0, attempts[1].ExitCode);
+        Assert.NotEqual(FfmpegDiagnosticCategory.FilterGraphNegotiation, attempts[1].Diagnostics!.Classification.PrimaryCategory);
+        Assert.Equal("fallback completed", attempts[1].StandardError);
+    }
+
     private static EncodingPlan CreatePlan() => new()
     {
         IsAvailable = true,
