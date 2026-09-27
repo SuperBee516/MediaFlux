@@ -401,6 +401,16 @@ public sealed partial class LibraryAnalyzerForm
         _advancedSearchValidation.AccessibleName = string.IsNullOrEmpty(message) ? "" : $"Search validation: {message}";
     }
 
+    private bool HasIncompleteMetadataForSearch(CatalogSearchDefinition? definition)
+    {
+        if (definition?.Conditions == null || !definition.Conditions.Any(condition =>
+                CatalogSearchRegistry.TryGet(condition.PropertyId, out CatalogSearchPropertyInfo? property) &&
+                property?.RequiredMetadataVersion > 1))
+            return false;
+
+        return _runtime.Enrichment.IsRunning || (_overviewSnapshot?.PendingEnrichmentCount ?? 0) > 0;
+    }
+
     private void CleanupAdvancedSearchUi()
     {
         _advancedSearchDebounceTimer.Stop();

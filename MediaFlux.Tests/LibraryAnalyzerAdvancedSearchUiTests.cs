@@ -6,6 +6,7 @@ using MediaFlux.Models;
 using MediaFlux.Services.LibraryCatalog;
 using Microsoft.Data.Sqlite;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace MediaFlux.Tests;
 
@@ -13,9 +14,14 @@ namespace MediaFlux.Tests;
 public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "MediaFlux-AdvancedSearchUi", Guid.NewGuid().ToString("N"));
+    private readonly ITestOutputHelper _output;
     private string _stage = "starting";
 
-    public LibraryAnalyzerAdvancedSearchUiTests() => Directory.CreateDirectory(_root);
+    public LibraryAnalyzerAdvancedSearchUiTests(ITestOutputHelper output)
+    {
+        _output = output;
+        Directory.CreateDirectory(_root);
+    }
 
     [Fact]
     public void RequestCoordinatorCancelsAndRejectsSupersededGenerations()
@@ -266,6 +272,98 @@ public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
             Assert.All(grid.Rows.Cast<DataGridViewRow>(), row => Assert.Equal("--", row.Cells["VideoBitrate"].Value));
             Assert.Equal("19 Mbps", grid.Rows.Cast<DataGridViewRow>().Single(row =>
                 ((LibraryFileViewRecord)row.Tag!).FileName == "unknown.mkv").Cells["Bitrate"].Value);
+        });
+    }
+
+    [Fact]
+    public void TechnicalSearchExplainsEmptyResultsWhileMetadataEnrichmentIsPending()
+    {
+        WithForm((catalog, form, _) =>
+        {
+            LibraryLocationRecord location = catalog.UpsertLocation(new LibraryLocationUpsert(Path.Combine(_root, "library")));
+            LibraryScanHandle scan = catalog.BeginScan(location.Id);
+            string path = Path.Combine(_root, "library", "pending.mkv");
+            DateTime modified = new(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
+            catalog.UpsertInventoryBatchDetailed(scan,
+                new[] { new LibraryInventoryEntry(path, "pending.mkv", 1_000_000, modified) }, 2);
+            SetField(form, "_overviewSnapshot",
+                catalog.GetOverviewSnapshot(LibraryEnrichmentCoordinator.CurrentMetadataVersion));
+
+            TabControl tabs = Field<TabControl>(form, "_tabs");
+            tabs.SelectedIndex = 2;
+            Field<TextBox>(form, "_quickBitrateMin").Text = "13";
+            Pump(InvokeTask(form, "RefreshFilesAsync"));
+
+            Assert.Equal(0, Field<long>(form, "_totalFiles"));
+            string technicalSummary = Field<Label>(form, "_filesSummary").Text;
+            Assert.Contains("no current matches", technicalSummary, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("metadata is still being enriched", technicalSummary, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("More matches may appear", technicalSummary, StringComparison.OrdinalIgnoreCase);
+
+            Field<TextBox>(form, "_quickBitrateMin").Clear();
+            Field<TextBox>(form, "_search").Text = "not-present";
+            Pump(InvokeTask(form, "RefreshFilesAsync"));
+            string ordinarySummary = Field<Label>(form, "_filesSummary").Text;
+            Assert.Contains("No indexed files match", ordinarySummary, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("More matches may appear", ordinarySummary, StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
+    [Fact]
+    [Trait("Category", "Performance")]
+    public void FilesGridNormalPageRenderMeasurement()
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("MEDIAFLUX_RUN_CATALOG_SEARCH_PERFORMANCE"), "1", StringComparison.Ordinal))
+            return;
+
+        WithForm((catalog, form, _) =>
+        {
+            string locationPath = Path.Combine(_root, "grid-library");
+            LibraryLocationRecord location = catalog.UpsertLocation(new LibraryLocationUpsert(locationPath));
+            LibraryScanHandle scan = catalog.BeginScan(location.Id);
+            DateTime modified = new(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
+            LibraryInventoryEntry[] entries = Enumerable.Range(0, 200)
+                .Select(index =>
+                {
+                    string name = $"clip-{index:D4}.mkv";
+                    return new LibraryInventoryEntry(Path.Combine(locationPath, name), name, 1_000_000 + index, modified);
+                })
+                .ToArray();
+            catalog.UpsertInventoryBatchDetailed(scan, entries, 2);
+            LibraryFilePage page = catalog.QueryFiles(new LibraryFileQuery(Limit: 200));
+            Assert.Equal(200, page.TotalCount);
+
+            TabControl tabs = Field<TabControl>(form, "_tabs");
+            tabs.SelectedIndex = 2;
+            Application.DoEvents();
+            long[] selectedIds = { page.Files[0].FileId };
+            Invoke(form, "RenderFilesPage", page, selectedIds, null);
+            Application.DoEvents();
+            var renderSamples = new double[5];
+            var allocationSamples = new long[5];
+            for (int index = 0; index < renderSamples.Length; index++)
+            {
+                var timer = Stopwatch.StartNew();
+                long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                Invoke(form, "RenderFilesPage", page, selectedIds, null);
+                Application.DoEvents();
+                allocationSamples[index] = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                timer.Stop();
+                renderSamples[index] = timer.Elapsed.TotalMilliseconds;
+            }
+
+            DataGridView grid = Field<DataGridView>(form, "_filesGrid");
+            Assert.Equal(200, grid.Rows.Count);
+            Assert.Equal(page.Files[0].FileId,
+                ((LibraryFileViewRecord)Assert.Single(grid.SelectedRows.Cast<DataGridViewRow>()).Tag!).FileId);
+            Assert.Equal(DataGridViewAutoSizeColumnsMode.None, grid.AutoSizeColumnsMode);
+            Assert.All(grid.Columns.Cast<DataGridViewColumn>(), column => Assert.True(column.Width > 0));
+            double renderMedian = renderSamples.OrderBy(value => value).ElementAt(renderSamples.Length / 2);
+            long allocationMedian = allocationSamples.OrderBy(value => value).ElementAt(allocationSamples.Length / 2);
+            _output.WriteLine(
+                $"GRID rows={grid.Rows.Count}; render+selection-restore-median={renderMedian:F1}ms; " +
+                $"samples=[{string.Join(",", renderSamples.Select(value => value.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)))}]ms; " +
+                $"ui-thread-allocated-median={allocationMedian:N0} bytes; autosizing=off; fixed-width-columns={grid.Columns.Count}");
         });
     }
 

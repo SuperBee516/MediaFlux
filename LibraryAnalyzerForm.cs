@@ -799,7 +799,7 @@ namespace MediaFlux
                     () => _runtime.Catalog.QueryFiles(query, request.Token), request.Token);
                 if (!_fileRequests.IsCurrent(request) || !CanUseFormUi)
                     return;
-                RenderFilesPage(result, selectedIds);
+                RenderFilesPage(result, selectedIds, query.AdvancedSearch);
             }
             catch (OperationCanceledException) when (request.Token.IsCancellationRequested) { }
             catch (Exception exception)
@@ -813,7 +813,10 @@ namespace MediaFlux
             finally { _fileRequests.Complete(request); }
         }
 
-        private void RenderFilesPage(LibraryFilePage result, IReadOnlyCollection<long> selectedIds)
+        private void RenderFilesPage(
+            LibraryFilePage result,
+            IReadOnlyCollection<long> selectedIds,
+            CatalogSearchDefinition? advancedSearch)
         {
             _totalFiles = result.TotalCount;
             var selected = new HashSet<long>(selectedIds);
@@ -866,9 +869,12 @@ namespace MediaFlux
             long first = _totalFiles == 0 ? 0 : (long)_page * PageSize + 1;
             long last = Math.Min(_totalFiles, ((long)_page + 1) * PageSize);
             _pageLabel.Text = $"{first:N0}–{last:N0} of {_totalFiles:N0}";
-            _filesSummary.Text = _totalFiles == 0
-                ? "No indexed files match the current filters."
-                : $"Showing {result.Files.Count:N0} on this page · {_totalFiles:N0} total indexed files";
+            bool metadataIncomplete = HasIncompleteMetadataForSearch(advancedSearch);
+            _filesSummary.Text = metadataIncomplete
+                ? $"Technical metadata is still being enriched; {(_totalFiles == 0 ? "no current matches" : $"{_totalFiles:N0} current matches")}. More matches may appear."
+                : _totalFiles == 0
+                    ? "No indexed files match the current filters."
+                    : $"Showing {result.Files.Count:N0} on this page · {_totalFiles:N0} total indexed files";
             _previous.Enabled = _page > 0;
             _next.Enabled = last < _totalFiles;
             UpdateAnalyzerActionState();
