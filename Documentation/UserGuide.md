@@ -46,6 +46,14 @@ Open **Tools > Library Analyzer** to add library locations and scan them into th
 
 Use the Files tab to find cataloged media and the row context menu to play a file, show it in Explorer, view media information, copy paths, protect it, queue it for encoding, or request targeted re-analysis. File actions always use current file availability.
 
+### Advanced Media Search
+
+Expand **Advanced Search** in the Files view to combine Quick Filters with detailed conditions for codec, resolution, effective frame rate, video bitrate, bit depth, scan type, dynamic range, audio and subtitle properties, and file or location facts. Conditions combine to narrow the current Files results. Searches run asynchronously and can be canceled; use Saved Searches to restore a definition later.
+
+The **Video bitrate** property is the positive bitrate FFprobe reports for the selected video stream. It is separate from **Total bitrate**, which describes the container or format. If FFprobe does not report a positive selected-stream bitrate, Video bitrate is Unknown. Select rows on the current Files page and choose **Add Selected to Encode Queue** to hand those available files to the normal queue workflow; this does not start encoding.
+
+After upgrading an existing catalog, MediaFlux can enrich newer technical metadata in the background. More technical matches may appear as enrichment completes, and a full library rebuild is not required just to use Advanced Search.
+
 ## Statistics
 
 The Statistics view records completed encode outcomes over time, including source/output size, savings, duration, and outcomes. It is useful for comparing presets and tracking historical space reduction. Failed or cancelled partial outputs are not counted as completed savings.

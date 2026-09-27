@@ -123,7 +123,7 @@ Diagnostics clipboard action.
   statistics uses append-only JSON Lines and stable logical operation IDs.
 - The Library Analyzer SQLite catalog owns inventory, metadata, derived evidence,
   decisions, cleanup audits, integrity state, and maintenance profiles/history.
-  `PRAGMA user_version` is currently 12; migrations are transactional, sequential,
+  `PRAGMA user_version` is currently 17; migrations are transactional, sequential,
   backup-before-upgrade, and integrity-checked.
 - Whole-application backups include the persistent user-data manifest: configuration,
   catalog, policies, plans, history, statistics, profiles, and user-created assets.

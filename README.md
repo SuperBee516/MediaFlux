@@ -15,7 +15,7 @@ Use it to reduce storage without guessing, find exact or visually similar duplic
 - Batch encoding with an operational queue dashboard, search and operational views, customizable columns, a consolidated Queue Inspector, logical execution ordering, Encode Next and explicit priority management, plus estimates, progress, ETA, retry, pause/resume, scheduling, and queue import/export
 - Encoding Plans that explain output characteristics, stream actions, target-size budgets, quality decisions, and validation/finalization outcomes
 - CPU encoding plus NVIDIA NVENC and Intel Quick Sync (QSV), subject to the selected FFmpeg build and available hardware
-- Library Analyzer with inventory, overview, statistics, health, insights, policies, integrity checks, storage opportunities, and maintenance
+- Library Analyzer with Advanced Media Search, Quick Filters, detailed technical conditions, Saved Searches, and selected-file Encode Queue handoff, alongside inventory, statistics, health, policies, integrity, storage, and maintenance
 - Exact duplicates, visual duplicates, and duplicate families with confidence evidence, keeper decisions, protected files, review states, and guarded cleanup
 - Video restoration with representative previews, Original vs Restored comparison, analysis/recommendations, optional AI configuration comparison, and explicit application to encoding
 - Video Splitter / Trimmer with timeline navigation, IN/OUT points, segment lists, preview, stream-copy mode, and validated exports
@@ -60,6 +60,8 @@ The Library Analyzer maintains an indexed catalog of selected folders and drives
 - storage optimization that distinguishes exact reclaim, reviewed duplicate cleanup, and estimated re-encode savings
 
 Scans preserve catalog evidence when a location is disconnected, incomplete, canceled, or inaccessible. Scheduled maintenance is opt-in and can refresh analysis and run targeted integrity work, but it cannot approve cleanup or start encodes by itself.
+
+**Advanced Media Search** in the Files view combines Quick Filters with detailed conditions for codec, resolution, effective frame rate, selected-video-stream bitrate, bit depth, scan type, dynamic range, audio and subtitle streams, and file and location properties. Save searches for later, review technical video columns, and send selected visible results to the Encode Queue. Searches run asynchronously and can be canceled. Existing catalogs enrich newer technical metadata in the background without a full library rebuild; additional matches can appear as enrichment completes. Video bitrate is distinct from total/container bitrate, and remains Unknown when FFprobe reports no positive bitrate for the selected video stream.
 
 <p align="center">
   <img src="docs/images/library-analyzer-overview.png" alt="MediaFlux Library Analyzer overview showing inventory, storage, duplicates, and library health" width="950">

@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-27
+
+### Advanced Media Search
+
+- Added catalog-backed Advanced Search to Library Analyzer's Files view, combining Quick Filters with detailed conditions for codec, resolution, frame rate, selected-video-stream bitrate, bit depth, scan type, HDR/SDR, audio and subtitle properties, and file and location facts.
+- Added Saved Searches, technical video columns, asynchronous and cancelable searches, and an explicit handoff for selected visible Files-grid rows to the Encode Queue.
+- Improved search responsiveness for large catalogs. Existing libraries can enrich technical metadata in the background without rebuilding the catalog; additional technical matches may appear as enrichment completes.
+- Kept video bitrate distinct from total/container bitrate. Video bitrate uses a positive bitrate reported for the selected video stream by FFprobe; when that value is unavailable, the property remains Unknown.
+- Prevented attached cover-art streams from being treated as the primary video and rejected stale metadata results when the indexed file identity changes.
+
+### Encoding Reliability and Recovery
+
+- Improved source-recovery eligibility, cancellation, and diagnostics, including clearer FFmpeg failure details across recovery attempts.
+- Corrected target-size precedence in automatic encoding and NVENC software-frame fallback reconfiguration.
+- Improved benchmark validation and FFmpeg compatibility diagnostics.
+
 ## [1.6.4] - 2026-09-24
 
 ### Encoding Reliability
@@ -979,7 +995,8 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.4...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.4...v1.7.0
 [1.6.4]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.3...v1.6.4
 [1.6.3]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.2...v1.6.3
 [1.6.2]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.1...v1.6.2
