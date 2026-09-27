@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-09-27
+
+### Fixed
+
+- Corrected FPS, Video bitrate, and Bit depth in the normal Library Analyzer Indexed Files view when that metadata is already in the catalog; no re-analysis is required. Video bitrate remains the selected video stream's bitrate and stays unavailable when that value is unknown, rather than using Total bitrate.
+- Kept queue estimate summaries stable while rows are encoding or analyzing. Available partial estimates remain visible, temporary status labels no longer clear valid estimates, and queues with no eligible estimates now say so.
+- Hardened exact-duplicate member refresh during selection changes and form closure. Refresh failures are handled without escaping the selection event, and the selected group's members update more reliably.
+
 ## [1.7.1] - 2026-09-27
 
 ### Fixed
@@ -1002,7 +1010,8 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.1...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.2...HEAD
+[1.7.2]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.4...v1.7.0
 [1.6.4]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.3...v1.6.4
