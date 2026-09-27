@@ -1,6 +1,9 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text.Json;
+using MediaFlux.Models;
 using MediaFlux.Services;
+using MediaFlux.Services.LibraryCatalog;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -65,6 +68,84 @@ public sealed class FfmpegManagedProvisioningTests : IDisposable
         Assert.Equal(FfmpegToolSource.Configured, tools.Source);
         Assert.Equal(Path.GetFullPath(ffmpeg), tools.FfmpegPath);
         Assert.Equal(Path.GetFullPath(ffprobe), tools.FfprobePath);
+    }
+
+    [Fact]
+    public async Task EncodingServiceStartsAfterUpdateRemovesPreviouslyConfiguredToolPair()
+    {
+        string appDirectory = Path.Combine(_root, "current");
+        string toolDirectory = Path.Combine(
+            appDirectory,
+            "Programs",
+            "FFmpeg",
+            FfmpegManagedComponents.Release.Version,
+            "bin");
+        Directory.CreateDirectory(toolDirectory);
+        string ffmpeg = Path.Combine(toolDirectory, "ffmpeg.exe");
+        string ffprobe = Path.Combine(toolDirectory, "ffprobe.exe");
+        File.WriteAllText(ffmpeg, "v1.6.4 ffmpeg fixture");
+        File.WriteAllText(ffprobe, "v1.6.4 ffprobe fixture");
+
+        string configPath = Path.Combine(_root, "UserData", "config.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        File.WriteAllText(configPath, JsonSerializer.Serialize(new
+        {
+            FfmpegPath = ffmpeg,
+            FfprobePath = ffprobe
+        }));
+
+        Config beforeUpdate = Config.Load(configPath);
+        FfmpegToolPaths installedTools = FfmpegToolResolver.Resolve(
+            appDirectory,
+            beforeUpdate.FfmpegPath,
+            beforeUpdate.FfprobePath);
+        Assert.Equal(FfmpegToolSource.Configured, installedTools.Source);
+        _ = new EncodingService(
+            appDirectory,
+            _ => { },
+            null,
+            beforeUpdate.FfmpegPath,
+            beforeUpdate.FfprobePath);
+
+        // Velopack replaces app content while the user-data configuration survives.
+        Directory.Delete(appDirectory, recursive: true);
+        Directory.CreateDirectory(appDirectory);
+
+        Config afterUpdate = Config.Load(configPath);
+        Assert.Equal(ffmpeg, afterUpdate.FfmpegPath);
+        Assert.Equal(ffprobe, afterUpdate.FfprobePath);
+        FfmpegToolPaths unavailableTools = FfmpegToolResolver.Resolve(
+            appDirectory,
+            afterUpdate.FfmpegPath,
+            afterUpdate.FfprobePath);
+        Assert.Equal(FfmpegToolSource.Unavailable, unavailableTools.Source);
+        Assert.Empty(unavailableTools.FfmpegPath);
+        Assert.Empty(unavailableTools.FfprobePath);
+
+        _ = new EncodingService(
+            appDirectory,
+            _ => { },
+            null,
+            afterUpdate.FfmpegPath,
+            afterUpdate.FfprobePath);
+
+        string mediaPath = Path.Combine(_root, "existing-media.mkv");
+        File.WriteAllText(mediaPath, "media fixture");
+        MediaProbeResult unavailableProbe = await new FfprobeService(
+            unavailableTools,
+            new MediaToolProcessRunner()).ProbeAsync(mediaPath);
+        Assert.False(unavailableProbe.Success);
+        Assert.Contains("FFprobe was not found", unavailableProbe.ErrorMessage);
+        var libraryProbe = new FfprobeLibraryMetadataProbe(
+            appDirectory,
+            afterUpdate.FfprobePath);
+        MediaProbeResult unavailableLibraryProbe = await libraryProbe.ProbeAsync(
+            mediaPath,
+            CancellationToken.None);
+        Assert.False(unavailableLibraryProbe.Success);
+        Assert.Throws<ArgumentException>(() => new FfprobeService(
+            unavailableTools.FfprobePath,
+            new MediaToolProcessRunner()));
     }
 
     [Fact]

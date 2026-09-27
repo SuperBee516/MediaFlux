@@ -24,7 +24,7 @@ namespace MediaFlux.Services.LibraryCatalog
             FfmpegToolPaths paths = FfmpegToolResolver.Resolve(
                 applicationDirectory,
                 configuredFfprobePath: configuredFfprobePath);
-            _service = new FfprobeService(paths.FfprobePath, processRunner ?? new MediaToolProcessRunner(), timeout);
+            _service = new FfprobeService(paths, processRunner ?? new MediaToolProcessRunner(), timeout);
             ToolVersion = ReadToolVersion(paths.FfprobePath);
         }
 

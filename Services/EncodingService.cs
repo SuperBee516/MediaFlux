@@ -21,6 +21,7 @@ namespace MediaFlux.Services
         private readonly string _appPath;
         private readonly string _ffmpegPath;
         private readonly string _ffprobePath;
+        private readonly FfprobeService _ffprobeService;
         private readonly Action<string> _progressCallback;
         private readonly Action<string>? _log;
         private readonly IEncodeOutputFinalizationService _finalizationService;
@@ -167,14 +168,13 @@ namespace MediaFlux.Services
             var tools = FfmpegToolResolver.Resolve(applicationDirectory, ffmpegPath, ffprobePath);
             _ffmpegPath = tools.FfmpegPath;
             _ffprobePath = tools.FfprobePath;
+            _ffprobeService = new FfprobeService(tools, new MediaToolProcessRunner());
             _progressCallback = progressCallback ?? (_ => { });
             _log = logCallback;
             _finalizationService = finalizationService ??
                 new EncodeOutputFinalizationService(
                     new EncodeOutputValidationService(
-                        new FfprobeService(
-                            _ffprobePath,
-                            new MediaToolProcessRunner()),
+                        _ffprobeService,
                         new FfmpegDecodeIntegritySpotCheckService(
                             _ffmpegPath),
                         _log,
@@ -714,9 +714,7 @@ namespace MediaFlux.Services
             MediaProbeResult sourceProbe;
             using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.SourceProbe))
             {
-            sourceProbe = await new FfprobeService(
-                    _ffprobePath,
-                    new MediaToolProcessRunner())
+            sourceProbe = await _ffprobeService
                 .ProbeAsync(sourceProbePath, cancellationToken)
                 .ConfigureAwait(false);
             scope.Complete();

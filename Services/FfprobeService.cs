@@ -44,6 +44,18 @@ namespace MediaFlux.Services
             _timeout = timeout ?? TimeSpan.FromSeconds(45);
         }
 
+        public FfprobeService(
+            FfmpegToolPaths tools,
+            IMediaToolProcessRunner processRunner,
+            TimeSpan? timeout = null)
+        {
+            ArgumentNullException.ThrowIfNull(tools);
+            _ffprobePath = tools.FfprobePath ?? "";
+            _processRunner = processRunner ??
+                throw new ArgumentNullException(nameof(processRunner));
+            _timeout = timeout ?? TimeSpan.FromSeconds(45);
+        }
+
         public async Task<MediaProbeResult> ProbeAsync(
             string path,
             CancellationToken cancellationToken = default)
