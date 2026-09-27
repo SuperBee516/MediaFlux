@@ -441,10 +441,28 @@ namespace MediaFlux
             reanalysis.Dock = DockStyle.None;
             reanalysis.AutoSize = true;
             reanalysis.MinimumSize = new Size(0, 0);
+            _addSelectedToEncodeQueueButton = AddButton(
+                reanalysis,
+                "Add Selected to Encode Queue",
+                AddSelectedFilesToEncodeQueue_Click);
+            _addSelectedToEncodeQueueButton.Name = "AddSelectedToEncodeQueue";
+            _addSelectedToEncodeQueueButton.AccessibleName = "Add selected Files-grid rows to the Encode queue";
+            _addSelectedToEncodeQueueButton.Enabled = false;
+            AnalyzerUi.StylePrimary(_addSelectedToEncodeQueueButton);
             reanalysis.Controls.Add(new Label { Text = "Re-analysis", AutoSize = true, ForeColor = LibraryAnalyzerAccentColor, Margin = new Padding(8, 10, 3, 0) });
             _reanalysisMetadata = AddButton(reanalysis, "Metadata", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.Metadata));
             _reanalysisExact = AddButton(reanalysis, "Exact", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.ExactHash));
             _reanalysisVisual = AddButton(reanalysis, "Visual", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.VisualFingerprint));
+            _queueHandoffStatusLabel = new Label
+            {
+                Name = "QueueHandoffStatus",
+                AutoSize = true,
+                AutoEllipsis = true,
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(8, 10, 3, 0),
+                Visible = false
+            };
+            reanalysis.Controls.Add(_queueHandoffStatusLabel);
             filters.Controls.Add(reanalysis);
             _search.KeyDown += async (_, e) =>
             {
@@ -486,6 +504,8 @@ namespace MediaFlux
             _filesGrid.Columns["VideoBitrate"].ToolTipText = "Selected video stream bitrate from FFprobe; never total bitrate. Decimal Mbps (1,000,000 bps).";
             _filesGrid.Columns["BitDepth"].ToolTipText = "Reliable selected-video-stream bit depth when available.";
             _filesGrid.Columns["Bitrate"].ToolTipText = "Container/format total bitrate. This is separate from video bitrate.";
+            _filesGrid.MultiSelect = true;
+            _filesGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             _filesGrid.SelectionChanged += (_, _) => { if (!_renderingFiles) UpdateAnalyzerActionState(); };
 
             var pager = new FlowLayoutPanel
@@ -926,6 +946,14 @@ namespace MediaFlux
             if (_reanalysisMetadata != null) _reanalysisMetadata.Enabled = hasFiles;
             if (_reanalysisExact != null) _reanalysisExact.Enabled = hasFiles;
             if (_reanalysisVisual != null) _reanalysisVisual.Enabled = hasFiles;
+            if (_addSelectedToEncodeQueueButton != null)
+            {
+                LibraryFileQueueResult queueSelection = LibraryFileQueueSelection.PreparePresentCatalogSelection(SelectedVisibleQueueFiles());
+                _addSelectedToEncodeQueueButton.Enabled =
+                    !_queueHandoffInProgress &&
+                    _reviewOptions.AddToEncodeQueueAsync != null &&
+                    queueSelection.AvailablePaths.Count > 0;
+            }
         }
 
         private void Enrichment_ProgressChanged(object? sender, LibraryEnrichmentProgress e)
@@ -1209,6 +1237,7 @@ namespace MediaFlux
             EncodingRuntimeEstimatorService? RuntimeEstimator = null,
             LibraryAnalyzerUiState? UiState = null,
             Action<LibraryAnalyzerUiState>? UiStateChanged = null,
-            Func<string, IReadOnlyList<string>, Task>? ComparisonLauncher = null);
+            Func<string, IReadOnlyList<string>, Task>? ComparisonLauncher = null,
+            Func<IReadOnlyList<string>, Task>? AddToEncodeQueueAsync = null);
     }
 }

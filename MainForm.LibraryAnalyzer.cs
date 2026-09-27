@@ -75,6 +75,9 @@ namespace MediaFlux
                             AddToEncodeQueue: paths => _ = ImportEncodePathsAsync(
                                 paths, includeSubfolders: false, applyCodecFilters: true,
                                 replaceExisting: false, rememberRoots: false),
+                            AddToEncodeQueueAsync: paths => ImportEncodePathsAsync(
+                                paths, includeSubfolders: false, applyCodecFilters: true,
+                                replaceExisting: false, rememberRoots: false),
                             PolicyStore: policyStore,
                             PolicyCapabilities: policyCapabilities,
                             AddPolicyCandidatesToEncodeQueue: AddLibraryPolicyCandidatesToQueueAsync,
