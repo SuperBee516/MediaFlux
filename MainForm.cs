@@ -163,6 +163,11 @@ namespace MediaFlux
         private bool _estimatesDeferredForLargeQueue;
         private double _queueTotalSourceMb;
         private double _queueTotalEstimatedMb;
+        private double _queueTotalEstimatedSourceMb;
+        private double _queueTotalSavingsEstimateOutputMb;
+        private int _queueEstimatedFileCount;
+        private int _queueSavingsEstimateFileCount;
+        private int _queueEstimateEligibleFileCount;
         private int _queueFileCount;
         private bool _queueTotalsDirty = true;
         private DateTime _lastQueueTotalsRefreshUtc = DateTime.MinValue;
@@ -664,10 +669,9 @@ namespace MediaFlux
             if (_queueCommandSummaryLabel == null)
                 return;
 
-            double savings = Math.Max(0, _queueTotalSourceMb - _queueTotalEstimatedMb);
-            string estimates = _queueTotalEstimatedMb > 0 && _queueTotalSourceMb > 0
-                ? $"Estimated output: {FormatSize(_queueTotalEstimatedMb)}  |  Estimated savings: {FormatSize(savings)} ({(savings / _queueTotalSourceMb) * 100:0}% saved)"
-                : "Estimated output: --  |  Estimated savings: --";
+            string estimates =
+                $"Estimated output: {GetQueueEstimatedOutputSummary()}  |  " +
+                $"Estimated savings: {GetQueueEstimatedSavingsSummary()}";
             _queueCommandSummaryLabel.Text = $"{_queueFileCount} file{(_queueFileCount == 1 ? "" : "s")}  |  {estimates}";
         }
 
@@ -5702,6 +5706,11 @@ namespace MediaFlux
                 _etaSpeedState.Clear();
                 _queueTotalSourceMb = 0;
                 _queueTotalEstimatedMb = 0;
+                _queueTotalEstimatedSourceMb = 0;
+                _queueTotalSavingsEstimateOutputMb = 0;
+                _queueEstimatedFileCount = 0;
+                _queueSavingsEstimateFileCount = 0;
+                _queueEstimateEligibleFileCount = 0;
                 _queueFileCount = 0;
                 _queueTotalsDirty = false;
                 ClearCompletedEncodePaths();

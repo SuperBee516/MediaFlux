@@ -1080,30 +1080,36 @@ namespace MediaFlux
                 return;
             }
 
-            int estimatedCount = dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
-                .Count(row => !row.IsNewRow &&
-                    _estimatedSizeMap.TryGetValue(GetPathFromRow(row) ?? string.Empty, out double value) && value > 0);
-            bool complete = estimatedCount == _queueFileCount;
+            bool complete = _queueEstimateEligibleFileCount > 0 &&
+                            _queueEstimatedFileCount == _queueEstimateEligibleFileCount;
+            string outputSummary = _queueEstimateEligibleFileCount <= 0 || _queueEstimatedFileCount > 0
+                ? GetQueueEstimatedOutputSummary()
+                : "waiting for estimates";
             SetQueueWorkspaceLabel(
                 _queueWorkspaceEstimateOutputValue,
-                complete ? $"Est. output: {FormatSize(_queueTotalEstimatedMb)}" : "Est. output: waiting for estimates");
+                $"Est. output: {outputSummary}");
 
-            if (!complete || _queueTotalSourceMb <= 0)
+            if (!complete)
             {
                 SetQueueWorkspaceLabel(
                     _queueWorkspaceEstimateSavingsValue,
                     "Est. savings: available after all estimates");
-                if (estimatedCount > 0)
-                {
-                    SetQueueWorkspaceLabel(
-                        _queueWorkspaceEstimateOutputValue,
-                        $"Est. output: {FormatSize(_queueTotalEstimatedMb)} partial ({estimatedCount:N0}/{_queueFileCount:N0})");
-                }
                 return;
             }
 
-            double savingsMb = Math.Max(0, _queueTotalSourceMb - _queueTotalEstimatedMb);
-            double savingsPercent = savingsMb / _queueTotalSourceMb * 100;
+            if (_queueSavingsEstimateFileCount != _queueEstimateEligibleFileCount ||
+                _queueTotalEstimatedSourceMb <= 0)
+            {
+                SetQueueWorkspaceLabel(
+                    _queueWorkspaceEstimateSavingsValue,
+                    "Est. savings: source sizes unavailable");
+                return;
+            }
+
+            double savingsMb = Math.Max(
+                0,
+                _queueTotalEstimatedSourceMb - _queueTotalSavingsEstimateOutputMb);
+            double savingsPercent = savingsMb / _queueTotalEstimatedSourceMb * 100;
             SetQueueWorkspaceLabel(
                 _queueWorkspaceEstimateSavingsValue,
                 $"Est. savings: {FormatSize(savingsMb)} ({savingsPercent:0}% saved)");

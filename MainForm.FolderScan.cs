@@ -108,6 +108,11 @@ namespace MediaFlux
                     _etaSpeedState.Clear();
                     _queueTotalSourceMb = 0;
                     _queueTotalEstimatedMb = 0;
+                    _queueTotalEstimatedSourceMb = 0;
+                    _queueTotalSavingsEstimateOutputMb = 0;
+                    _queueEstimatedFileCount = 0;
+                    _queueSavingsEstimateFileCount = 0;
+                    _queueEstimateEligibleFileCount = 0;
                     _queueFileCount = 0;
                     _queueTotalsDirty = false;
 

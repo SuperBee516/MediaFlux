@@ -301,7 +301,7 @@ namespace MediaFlux
                 _queueTotalEstimatedMb += calibratedMb;
 
             _estimatedSizeMap[meta.Path] = calibratedMb;
-            _queueTotalsDirty = false;
+            MarkQueueTotalsDirty();
             double sourceMb = meta.SrcMb > 0
                 ? meta.SrcMb
                 : new FileInfo(meta.Path).Length / (1024d * 1024d);

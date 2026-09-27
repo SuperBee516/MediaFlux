@@ -195,7 +195,8 @@ namespace MediaFlux
             finally
             {
                 dgvEncodeQueue.ResumeLayout();
-                if (applied > 0) dgvEncodeQueue.Invalidate();
+                if (applied > 0)
+                    dgvEncodeQueue.Invalidate();
                 UpdateSizeTotals();
                 UpdateEstimateProgressStatus();
             }
@@ -612,6 +613,11 @@ namespace MediaFlux
             {
                 _queueTotalSourceMb = 0;
                 _queueTotalEstimatedMb = 0;
+                _queueTotalEstimatedSourceMb = 0;
+                _queueTotalSavingsEstimateOutputMb = 0;
+                _queueEstimatedFileCount = 0;
+                _queueSavingsEstimateFileCount = 0;
+                _queueEstimateEligibleFileCount = 0;
                 _queueFileCount = 0;
                 _queueSourceSizeMap.Clear();
                 _estimatedSizeMap.Clear();
@@ -631,14 +637,16 @@ namespace MediaFlux
                 return;
             }
 
-            if (force || _queueTotalsDirty)
-            {
-                RebuildQueueTotalsFromGrid();
-            }
-            else if ((DateTime.UtcNow - _lastQueueTotalsRefreshUtc).TotalMilliseconds < 500)
+            if (!force && !_queueTotalsDirty &&
+                (DateTime.UtcNow - _lastQueueTotalsRefreshUtc).TotalMilliseconds < 500)
             {
                 return;
             }
+
+            // Rebuild from the numeric queue/cache state at each accepted refresh.
+            // Incremental totals remain useful between refreshes, but grid text is
+            // transient presentation and must never replace a completed estimate.
+            RebuildQueueTotalsFromGrid();
 
             _lastQueueTotalsRefreshUtc = DateTime.UtcNow;
 
@@ -648,22 +656,11 @@ namespace MediaFlux
             if (_summaryTotalCurrentValue != null)
                 _summaryTotalCurrentValue.Text = _queueTotalSourceMb > 0 ? FormatSize(_queueTotalSourceMb) : "--";
 
-            double savedForPanel = Math.Max(0, _queueTotalSourceMb - _queueTotalEstimatedMb);
             if (_summaryNewSizeValue != null)
-            {
-                int estimatedFileCount = _queueSourceSizeMap.Keys.Count(path =>
-                    _estimatedSizeMap.TryGetValue(path, out var estimateMb) && estimateMb > 0);
-                _summaryNewSizeValue.Text = _queueFileCount > 0 && estimatedFileCount == _queueFileCount
-                    ? FormatSize(Math.Max(0, _queueTotalSourceMb - savedForPanel))
-                    : "Waiting for estimates";
-            }
+                _summaryNewSizeValue.Text = GetQueueEstimatedOutputSummary();
 
             if (_summaryTotalEstimatedSavedValue != null)
-            {
-                _summaryTotalEstimatedSavedValue.Text = savedForPanel > 0 && _queueTotalSourceMb > 0
-                    ? $"{FormatSize(savedForPanel)} ({(savedForPanel / _queueTotalSourceMb) * 100.0:0}% saved)"
-                    : "--";
-            }
+                _summaryTotalEstimatedSavedValue.Text = GetQueueEstimatedSavingsSummary();
 
             UpdateQueueCommandSummary();
             UpdateRelocatedEncodeStatus(lblEncodeStatus?.Text);
@@ -677,10 +674,19 @@ namespace MediaFlux
 
         private void RebuildQueueTotalsFromGrid()
         {
+            var previousSourceSizes = new Dictionary<string, double>(
+                _queueSourceSizeMap,
+                _queueSourceSizeMap.Comparer);
+            var rebuiltSourceSizes = new Dictionary<string, double>(
+                _queueSourceSizeMap.Comparer);
             _queueTotalSourceMb = 0;
             _queueTotalEstimatedMb = 0;
+            _queueTotalEstimatedSourceMb = 0;
+            _queueTotalSavingsEstimateOutputMb = 0;
+            _queueEstimatedFileCount = 0;
+            _queueSavingsEstimateFileCount = 0;
+            _queueEstimateEligibleFileCount = 0;
             _queueFileCount = 0;
-            _queueSourceSizeMap.Clear();
 
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
             {
@@ -688,20 +694,98 @@ namespace MediaFlux
 
                 _queueFileCount++;
                 string? path = GetPathFromRow(row);
-                double sourceMb = ParseSizeToMb(row.Cells["colSize"].Value?.ToString());
-                double estimatedMb = ParseSizeToMb(row.Cells["colEstimatedSize"].Value?.ToString());
+                RowMeta? meta = row.Tag as RowMeta;
+                bool estimateEligible = meta?.ExcludedFromEncodeAsDuplicate != true;
+                if (estimateEligible)
+                    _queueEstimateEligibleFileCount++;
+                double sourceMb = 0;
+                if (!string.IsNullOrWhiteSpace(path) &&
+                    previousSourceSizes.TryGetValue(path, out double cachedSourceMb) &&
+                    cachedSourceMb > 0)
+                {
+                    sourceMb = cachedSourceMb;
+                }
+                else if (meta?.SourceSizeBytes is > 0)
+                {
+                    sourceMb = meta.SourceSizeBytes.Value / (1024d * 1024d);
+                }
+                else if (meta?.SrcMb > 0)
+                {
+                    sourceMb = meta.SrcMb;
+                }
+                else if (!string.IsNullOrWhiteSpace(path))
+                {
+                    sourceMb = GetMbOnDisk(path);
+                }
+
+                double estimatedMb = estimateEligible && !string.IsNullOrWhiteSpace(path) &&
+                    _estimatedSizeMap.TryGetValue(path, out double mappedEstimateMb) &&
+                    mappedEstimateMb > 0
+                        ? mappedEstimateMb
+                        : 0;
 
                 _queueTotalSourceMb += sourceMb;
-                _queueTotalEstimatedMb += estimatedMb;
 
                 if (!string.IsNullOrWhiteSpace(path) && sourceMb > 0)
-                    _queueSourceSizeMap[path] = sourceMb;
+                    rebuiltSourceSizes[path] = sourceMb;
 
-                if (!string.IsNullOrWhiteSpace(path) && estimatedMb > 0)
-                    _estimatedSizeMap[path] = estimatedMb;
+                if (estimatedMb > 0)
+                {
+                    _queueTotalEstimatedMb += estimatedMb;
+                    _queueEstimatedFileCount++;
+                    if (sourceMb > 0)
+                    {
+                        _queueTotalEstimatedSourceMb += sourceMb;
+                        _queueTotalSavingsEstimateOutputMb += estimatedMb;
+                        _queueSavingsEstimateFileCount++;
+                    }
+                }
             }
 
+            _queueSourceSizeMap.Clear();
+            foreach (var (path, sourceMb) in rebuiltSourceSizes)
+                _queueSourceSizeMap[path] = sourceMb;
+
             _queueTotalsDirty = false;
+        }
+
+        private string GetQueueEstimatedOutputSummary()
+        {
+            if (_queueFileCount <= 0)
+                return "--";
+            if (_queueEstimateEligibleFileCount <= 0)
+                return "No estimates applicable";
+            if (_queueEstimatedFileCount <= 0 || _queueTotalEstimatedMb <= 0)
+                return "Waiting for estimates";
+
+            string estimate = FormatSize(_queueTotalEstimatedMb);
+            return _queueEstimateEligibleFileCount > 0 &&
+                   _queueEstimatedFileCount == _queueEstimateEligibleFileCount
+                ? estimate
+                : $"{estimate} partial ({_queueEstimatedFileCount:N0}/{_queueEstimateEligibleFileCount:N0})";
+        }
+
+        private string GetQueueEstimatedSavingsSummary()
+        {
+            if (_queueEstimatedFileCount <= 0 || _queueSavingsEstimateFileCount <= 0 ||
+                _queueTotalEstimatedSourceMb <= 0)
+            {
+                return "--";
+            }
+
+            double savedMb = Math.Max(
+                0,
+                _queueTotalEstimatedSourceMb - _queueTotalSavingsEstimateOutputMb);
+            if (savedMb <= 0)
+                return "--";
+
+            double savedPercent = savedMb / _queueTotalEstimatedSourceMb * 100d;
+            bool complete = _queueEstimateEligibleFileCount > 0 &&
+                            _queueEstimatedFileCount == _queueEstimateEligibleFileCount &&
+                            _queueSavingsEstimateFileCount == _queueEstimateEligibleFileCount;
+            return complete
+                ? $"{FormatSize(savedMb)} ({savedPercent:0}% saved)"
+                : $"{FormatSize(savedMb)} partial ({_queueSavingsEstimateFileCount:N0}/{_queueEstimateEligibleFileCount:N0}; {savedPercent:0}% saved)";
         }
 
         private static string FormatSize(long bytes)
