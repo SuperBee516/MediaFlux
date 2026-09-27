@@ -84,7 +84,8 @@ namespace MediaFlux.Services.LibraryCatalog
         string VolumeId,
         long SizeBytes,
         DateTime LastWriteUtc,
-        int AttemptCount = 1);
+        int AttemptCount = 1,
+        string FileIdentity = "");
 
     public interface ILibraryEnrichmentSink
     {

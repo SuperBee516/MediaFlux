@@ -132,7 +132,8 @@ namespace MediaFlux.Services.LibraryCatalog
         long SizeBytes,
         long LastWriteUtcTicks,
         LibraryInventoryChangeKind ChangeKind,
-        bool RequiresEnrichment);
+        bool RequiresEnrichment,
+        string FileIdentity = "");
 
     public sealed record LibraryInventoryBatchResult(
         int Written,
@@ -204,7 +205,8 @@ namespace MediaFlux.Services.LibraryCatalog
         string VolumeId,
         long SizeBytes,
         DateTime LastWriteUtc,
-        int AttemptCount);
+        int AttemptCount,
+        string FileIdentity = "");
 
     public sealed record LibraryOverview(
         long IndexedFiles,
@@ -386,6 +388,10 @@ namespace MediaFlux.Services.LibraryCatalog
             string probeToolVersion,
             DateTime utcNow);
         void SaveMediaMetadata(LibraryMediaMetadata metadata);
+        void SaveMediaMetadata(
+            LibraryMediaMetadata metadata,
+            string? expectedVolumeId,
+            string? expectedFileIdentity);
         LibraryMediaMetadata? GetMediaMetadata(long fileId);
         LibraryOverview GetOverview(int metadataVersion);
         LibraryFilePage QueryFiles(LibraryFileQuery query, CancellationToken cancellationToken = default);

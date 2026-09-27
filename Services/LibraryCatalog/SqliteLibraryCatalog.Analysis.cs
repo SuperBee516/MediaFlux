@@ -46,16 +46,20 @@ namespace MediaFlux.Services.LibraryCatalog
                     lookupCommand.Parameters["$metadata_version"].Value = currentMetadataVersion;
                     long existingId = 0;
                     bool factsChanged = false;
+                    bool indexedStampChanged = false;
+                    bool stableIdentityChanged = false;
                     bool metadataFresh = false;
                     using (SqliteDataReader reader = lookupCommand.ExecuteReader())
                     {
                         if (reader.Read())
                         {
                             existingId = reader.GetInt64(0);
-                            factsChanged = reader.GetInt64(1) != entry.SizeBytes ||
-                                           reader.GetInt64(2) != lastWriteTicks ||
-                                           !string.Equals(reader.GetString(3), entry.VolumeId ?? "", StringComparison.Ordinal) ||
-                                           !string.Equals(reader.GetString(4), entry.FileIdentity ?? "", StringComparison.Ordinal);
+                            indexedStampChanged = reader.GetInt64(1) != entry.SizeBytes ||
+                                                  reader.GetInt64(2) != lastWriteTicks;
+                            stableIdentityChanged =
+                                !string.Equals(reader.GetString(3), entry.VolumeId ?? "", StringComparison.Ordinal) ||
+                                !string.Equals(reader.GetString(4), entry.FileIdentity ?? "", StringComparison.Ordinal);
+                            factsChanged = indexedStampChanged || stableIdentityChanged;
                             metadataFresh = !factsChanged && reader.GetInt32(5) != 0;
                         }
                     }
@@ -95,6 +99,19 @@ namespace MediaFlux.Services.LibraryCatalog
                         invalidate.Parameters.AddWithValue("$file_id", fileId);
                         invalidate.ExecuteNonQuery();
                     }
+                    if (existingId != 0 && stableIdentityChanged && !indexedStampChanged)
+                    {
+                        using SqliteCommand invalidateMetadata = connection.CreateCommand();
+                        invalidateMetadata.Transaction = transaction;
+                        invalidateMetadata.CommandText =
+                            "UPDATE media_metadata SET probe_status=$pending,next_retry_utc_ticks=NULL," +
+                            "error_message='Indexed file identity changed; metadata will be refreshed.',updated_utc_ticks=$now " +
+                            "WHERE file_id=$file_id;";
+                        invalidateMetadata.Parameters.AddWithValue("$pending", (int)LibraryProbeStatus.Pending);
+                        invalidateMetadata.Parameters.AddWithValue("$now", DateTime.UtcNow.Ticks);
+                        invalidateMetadata.Parameters.AddWithValue("$file_id", fileId);
+                        invalidateMetadata.ExecuteNonQuery();
+                    }
                     membershipCommand.Parameters["$location_id"].Value = scan.LocationId;
                     membershipCommand.Parameters["$file_id"].Value = fileId;
                     membershipCommand.Parameters["$relative_path"].Value = relativePath;
@@ -116,7 +133,8 @@ namespace MediaFlux.Services.LibraryCatalog
                         entry.SizeBytes,
                         lastWriteTicks,
                         changeKind,
-                        !metadataFresh));
+                        !metadataFresh,
+                        entry.FileIdentity ?? ""));
                 }
 
                 return new LibraryInventoryBatchResult(
@@ -446,7 +464,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 select.CommandText =
                     """
                     SELECT file.id, file.full_path, file.volume_id, file.size_bytes,
-                           file.last_write_utc_ticks,
+                           file.last_write_utc_ticks,file.file_identity,
                            CASE WHEN metadata.file_id IS NULL
                                      OR metadata.metadata_version <> $metadata_version
                                      OR metadata.probe_tool_version <> $tool_version
@@ -497,7 +515,8 @@ namespace MediaFlux.Services.LibraryCatalog
                             reader.GetString(2),
                             reader.GetInt64(3),
                             FromUtcTicks(reader.GetInt64(4)),
-                            reader.GetInt32(5)));
+                            reader.GetInt32(6),
+                            reader.GetString(5)));
                     }
                 }
 
@@ -544,6 +563,12 @@ namespace MediaFlux.Services.LibraryCatalog
         }
 
         public void SaveMediaMetadata(LibraryMediaMetadata metadata)
+            => SaveMediaMetadata(metadata, expectedVolumeId: null, expectedFileIdentity: null);
+
+        public void SaveMediaMetadata(
+            LibraryMediaMetadata metadata,
+            string? expectedVolumeId,
+            string? expectedFileIdentity)
         {
             ArgumentNullException.ThrowIfNull(metadata);
             ThrowIfDisposed();
@@ -580,6 +605,8 @@ namespace MediaFlux.Services.LibraryCatalog
                     WHERE source.id = $file_id
                       AND source.size_bytes = $source_size
                       AND source.last_write_utc_ticks = $source_last_write
+                      AND ($expected_volume_id IS NULL OR source.volume_id = $expected_volume_id)
+                      AND ($expected_file_identity IS NULL OR source.file_identity = $expected_file_identity)
                     ON CONFLICT(file_id) DO UPDATE SET
                         metadata_version=excluded.metadata_version,
                         probe_tool_version=excluded.probe_tool_version,
@@ -622,6 +649,8 @@ namespace MediaFlux.Services.LibraryCatalog
                         display_aspect_ratio=excluded.display_aspect_ratio;
                     """;
                 AddMetadataParameters(command, metadata);
+                command.Parameters.AddWithValue("$expected_volume_id", (object?)expectedVolumeId ?? DBNull.Value);
+                command.Parameters.AddWithValue("$expected_file_identity", (object?)expectedFileIdentity ?? DBNull.Value);
                 if (command.ExecuteNonQuery() == 0)
                 {
                     // A scan changed the indexed source while this probe was in flight.
@@ -642,7 +671,9 @@ namespace MediaFlux.Services.LibraryCatalog
                               SELECT 1 FROM indexed_files AS source
                               WHERE source.id = $file_id
                                 AND (source.size_bytes <> $source_size
-                                  OR source.last_write_utc_ticks <> $source_last_write));
+                                  OR source.last_write_utc_ticks <> $source_last_write
+                                  OR ($expected_volume_id IS NOT NULL AND source.volume_id <> $expected_volume_id)
+                                  OR ($expected_file_identity IS NOT NULL AND source.file_identity <> $expected_file_identity)));
                         """;
                     stale.Parameters.AddWithValue("$pending", (int)LibraryProbeStatus.Pending);
                     stale.Parameters.AddWithValue("$in_progress", (int)LibraryProbeStatus.InProgress);
@@ -650,6 +681,8 @@ namespace MediaFlux.Services.LibraryCatalog
                     stale.Parameters.AddWithValue("$file_id", metadata.FileId);
                     stale.Parameters.AddWithValue("$source_size", metadata.SourceSizeBytes);
                     stale.Parameters.AddWithValue("$source_last_write", metadata.SourceLastWriteUtc.Ticks);
+                    stale.Parameters.AddWithValue("$expected_volume_id", (object?)expectedVolumeId ?? DBNull.Value);
+                    stale.Parameters.AddWithValue("$expected_file_identity", (object?)expectedFileIdentity ?? DBNull.Value);
                     stale.ExecuteNonQuery();
                 }
                 return null;

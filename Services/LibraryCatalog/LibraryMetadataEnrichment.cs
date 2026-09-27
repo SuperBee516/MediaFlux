@@ -211,7 +211,8 @@ namespace MediaFlux.Services.LibraryCatalog
                         candidate.VolumeId,
                         candidate.SizeBytes,
                         candidate.LastWriteUtc,
-                        candidate.AttemptCount),
+                        candidate.AttemptCount,
+                        candidate.FileIdentity),
                     cancellationToken).ConfigureAwait(false);
                 queued++;
             }
@@ -278,7 +279,7 @@ namespace MediaFlux.Services.LibraryCatalog
                         // saving: a stale save can make this file pending again.
                         _queuedFiles.TryRemove(request.FileId, out _);
                         slotReleased = true;
-                        _catalog.SaveMediaMetadata(metadata);
+                        _catalog.SaveMediaMetadata(metadata, request.VolumeId, request.FileIdentity);
                         if (result.Success)
                             Interlocked.Increment(ref _completed);
                         else
@@ -303,7 +304,9 @@ namespace MediaFlux.Services.LibraryCatalog
                         CurrentMetadataVersion,
                         _probe.ToolVersion,
                         now,
-                        request.AttemptCount >= _options.MaxAttempts ? null : now + RetryDelay(request.AttemptCount)));
+                        request.AttemptCount >= _options.MaxAttempts ? null : now + RetryDelay(request.AttemptCount)),
+                        request.VolumeId,
+                        request.FileIdentity);
                     Interlocked.Increment(ref _failed);
                 }
                 finally
@@ -358,6 +361,7 @@ namespace MediaFlux.Services.LibraryCatalog
         {
             MediaProbeStreamInfo? video = probe.Streams
                 .Where(stream => string.Equals(stream.CodecType, "video", StringComparison.OrdinalIgnoreCase))
+                .Where(stream => !stream.Dispositions.TryGetValue("attached_pic", out bool attachedPicture) || !attachedPicture)
                 .OrderByDescending(stream => stream.Dispositions.TryGetValue("default", out bool isDefault) && isDefault)
                 .FirstOrDefault();
             var audio = probe.Streams

@@ -485,6 +485,103 @@ public sealed class LibraryAnalyzerPhase3Tests : IDisposable
     }
 
     [Fact]
+    public void VersionTwoIgnoresDefaultAttachedPictureWhenSelectingPrimaryVideo()
+    {
+        var request = new LibraryEnrichmentRequest(1, "movie.mkv", "", 1_000, DateTime.UtcNow);
+        var cover = new MediaProbeStreamInfo
+        {
+            Index = 0,
+            CodecType = "video",
+            CodecName = "mjpeg",
+            BitRate = 400_000,
+            Width = 600,
+            Height = 600,
+            Dispositions = new Dictionary<string, bool> { ["default"] = true, ["attached_pic"] = true }
+        };
+        var primary = new MediaProbeStreamInfo
+        {
+            Index = 1,
+            CodecType = "video",
+            CodecName = "h264",
+            BitRate = 14_000_000,
+            Width = 1920,
+            Height = 1080
+        };
+
+        LibraryMediaMetadata metadata = LibraryMetadataMapper.Map(request,
+            new MediaProbeResult { Success = true, Streams = new[] { cover, primary } },
+            2, "ffprobe", DateTime.UtcNow, null);
+
+        Assert.Equal("h264", metadata.VideoCodec);
+        Assert.Equal(1, metadata.SelectedVideoStreamIndex);
+        Assert.Equal(14_000_000, metadata.VideoBitRateBps);
+        Assert.Equal(2, metadata.VideoStreamCount);
+
+        LibraryMediaMetadata artworkOnly = LibraryMetadataMapper.Map(request,
+            new MediaProbeResult { Success = true, Streams = new[] { cover } },
+            2, "ffprobe", DateTime.UtcNow, null);
+        Assert.Equal(1, artworkOnly.VideoStreamCount);
+        Assert.Null(artworkOnly.SelectedVideoStreamIndex);
+        Assert.Null(artworkOnly.VideoBitRateBps);
+        Assert.Null(artworkOnly.Width);
+    }
+
+    [Fact]
+    public void SameSizeAndTimestampIdentityChangeInvalidatesMetadataAndRejectsOldProbe()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        LibraryLocationRecord location = catalog.UpsertLocation(new LibraryLocationUpsert(Path.Combine(_root, "library")));
+        LibraryScanHandle scan = catalog.BeginScan(location.Id);
+        LibraryInventoryEntry originalEntry = Inventory(location.Path, "movie.mkv", 1_000) with
+        {
+            VolumeId = "volume-a",
+            FileIdentity = "identity-a"
+        };
+        LibraryInventoryMutation original = Assert.Single(catalog.UpsertInventoryBatchDetailed(
+            scan, new[] { originalEntry }, 2).Mutations);
+        LibraryEnrichmentCandidate oldClaim = Assert.Single(catalog.ClaimEnrichmentBatch(1, 2, "ffprobe", DateTime.UtcNow));
+        var oldRequest = new LibraryEnrichmentRequest(oldClaim.FileId, oldClaim.FullPath, oldClaim.VolumeId,
+            oldClaim.SizeBytes, oldClaim.LastWriteUtc, oldClaim.AttemptCount, oldClaim.FileIdentity);
+
+        LibraryInventoryMutation changed = Assert.Single(catalog.UpsertInventoryBatchDetailed(
+            scan,
+            new[] { originalEntry with { FileIdentity = "identity-b" } },
+            2).Mutations);
+        Assert.Equal(LibraryInventoryChangeKind.Changed, changed.ChangeKind);
+        Assert.True(changed.RequiresEnrichment);
+        Assert.Equal(LibraryProbeStatus.Pending, catalog.GetMediaMetadata(original.FileId)?.ProbeStatus);
+
+        LibraryMediaMetadata stale = LibraryMetadataMapper.Map(oldRequest,
+            new MediaProbeResult
+            {
+                Success = true,
+                Streams = new[] { new MediaProbeStreamInfo { CodecType = "video", CodecName = "old", BitRate = 12_000_000 } }
+            },
+            2, "ffprobe", DateTime.UtcNow, null);
+        catalog.SaveMediaMetadata(stale, oldRequest.VolumeId, oldRequest.FileIdentity);
+        Assert.Equal(LibraryProbeStatus.Pending, catalog.GetMediaMetadata(original.FileId)?.ProbeStatus);
+
+        LibraryEnrichmentCandidate currentClaim = Assert.Single(catalog.ClaimEnrichmentBatch(1, 2, "ffprobe", DateTime.UtcNow));
+        Assert.Equal("identity-b", currentClaim.FileIdentity);
+        var currentRequest = new LibraryEnrichmentRequest(currentClaim.FileId, currentClaim.FullPath,
+            currentClaim.VolumeId, currentClaim.SizeBytes, currentClaim.LastWriteUtc,
+            currentClaim.AttemptCount, currentClaim.FileIdentity);
+        LibraryMediaMetadata current = LibraryMetadataMapper.Map(currentRequest,
+            new MediaProbeResult
+            {
+                Success = true,
+                Streams = new[] { new MediaProbeStreamInfo { CodecType = "video", CodecName = "new", BitRate = 14_000_000 } }
+            },
+            2, "ffprobe", DateTime.UtcNow, null);
+        catalog.SaveMediaMetadata(current, currentRequest.VolumeId, currentRequest.FileIdentity);
+
+        LibraryMediaMetadata saved = Assert.IsType<LibraryMediaMetadata>(catalog.GetMediaMetadata(original.FileId));
+        Assert.Equal(LibraryProbeStatus.Succeeded, saved.ProbeStatus);
+        Assert.Equal("new", saved.VideoCodec);
+        Assert.Equal(14_000_000, saved.VideoBitRateBps);
+    }
+
+    [Fact]
     public void VersionTwoUsesNominalFpsFallbackAndRejectsInvalidAspectRatios()
     {
         var request = new LibraryEnrichmentRequest(1, "movie.mkv", "", 1_000, DateTime.UtcNow);
