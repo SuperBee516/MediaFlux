@@ -35,6 +35,7 @@ namespace MediaFlux
         private CancellationTokenSource? _exactCleanupCancellation;
         private int _duplicateMemberLoadVersion;
         private readonly SemaphoreSlim _duplicateMemberRefreshLock = new(1, 1);
+        private readonly CancellationTokenSource _duplicateMemberRefreshCancellation = new();
 
         private void BuildDuplicatesTab()
         {
@@ -116,7 +117,7 @@ namespace MediaFlux
             AddDuplicateGroupColumn("Protected", "Protected", 75);
             AddDuplicateGroupColumn("Hash", "SHA-256 evidence", 190);
             _duplicateGroupsGrid.MultiSelect = true;
-            _duplicateGroupsGrid.SelectionChanged += async (_, _) => await RefreshDuplicateMembersAsync();
+            _duplicateGroupsGrid.SelectionChanged += DuplicateGroupsGrid_SelectionChanged;
 
             AddDuplicateMemberColumn("Keeper", "Keeper", 85);
             AddDuplicateMemberColumn("Protected", "Protected", 70);
@@ -275,17 +276,45 @@ namespace MediaFlux
             return string.IsNullOrWhiteSpace(root) ? path : root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         }
 
+        private async void DuplicateGroupsGrid_SelectionChanged(object? sender, EventArgs e)
+        {
+            if (!CanUseFormUi || _duplicateGroupsGrid.IsDisposed)
+                return;
+
+            try
+            {
+                await RefreshDuplicateMembersAsync();
+            }
+            catch (OperationCanceledException) when (_duplicateMemberRefreshCancellation.IsCancellationRequested) { }
+            catch (ObjectDisposedException) when (!CanUseFormUi) { }
+            catch (Exception ex)
+            {
+                ErrorLogService.Append(AppPaths.UserDataDirectory,
+                    "Exact duplicate member refresh failed", exception: ex);
+            }
+        }
+
         private async Task RefreshDuplicateMembersAsync()
         {
             int version = Interlocked.Increment(ref _duplicateMemberLoadVersion);
-            await _duplicateMemberRefreshLock.WaitAsync();
+            CancellationToken cancellationToken = _duplicateMemberRefreshCancellation.Token;
+            long? groupId = CanUseFormUi && !_duplicateGroupsGrid.IsDisposed
+                ? SelectedGroups().FirstOrDefault()?.GroupId
+                : null;
+            bool entered = false;
             try
             {
-                if (version != Volatile.Read(ref _duplicateMemberLoadVersion) || IsDisposed) return;
-                if (_duplicateGroupsGrid.SelectedRows.Count == 0) { _duplicateMembersGrid.Rows.Clear(); return; }
-                long groupId = Convert.ToInt64(_duplicateGroupsGrid.SelectedRows[0].Cells[0].Value);
-                LibraryMatchEligibility eligibility = await Task.Run(() => _runtime.MatchEligibility.EvaluateExactGroup(groupId));
-                if (version != Volatile.Read(ref _duplicateMemberLoadVersion) || IsDisposed) return;
+                await _duplicateMemberRefreshLock.WaitAsync(cancellationToken);
+                entered = true;
+                if (version != Volatile.Read(ref _duplicateMemberLoadVersion) ||
+                    !CanUseFormUi || cancellationToken.IsCancellationRequested)
+                    return;
+                if (groupId is not long selectedGroupId) { _duplicateMembersGrid.Rows.Clear(); return; }
+                LibraryMatchEligibility eligibility = await Task.Run(
+                    () => _runtime.MatchEligibility.EvaluateExactGroup(selectedGroupId), cancellationToken);
+                if (version != Volatile.Read(ref _duplicateMemberLoadVersion) ||
+                    !CanUseFormUi || cancellationToken.IsCancellationRequested)
+                    return;
                 if (!eligibility.IsActive)
                 {
                     _duplicateMembersGrid.Rows.Clear();
@@ -293,8 +322,11 @@ namespace MediaFlux
                     if (!_loadingDuplicateGroups) await RefreshDuplicateGroupsAsync();
                     return;
                 }
-                IReadOnlyList<ExactDuplicateMemberRecord> members = await Task.Run(() => _runtime.AnalysisCatalog.GetDuplicateGroupMembers(groupId));
-                if (version != Volatile.Read(ref _duplicateMemberLoadVersion) || IsDisposed) return;
+                IReadOnlyList<ExactDuplicateMemberRecord> members = await Task.Run(
+                    () => _runtime.AnalysisCatalog.GetDuplicateGroupMembers(selectedGroupId), cancellationToken);
+                if (version != Volatile.Read(ref _duplicateMemberLoadVersion) ||
+                    !CanUseFormUi || cancellationToken.IsCancellationRequested)
+                    return;
                 _duplicateMembersGrid.Rows.Clear();
                 foreach (ExactDuplicateMemberRecord member in members)
                 {
@@ -306,7 +338,9 @@ namespace MediaFlux
                     _duplicateMembersGrid.Rows[row].Tag = member;
                 }
             }
-            finally { _duplicateMemberRefreshLock.Release(); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            catch (ObjectDisposedException) when (!CanUseFormUi) { }
+            finally { if (entered) _duplicateMemberRefreshLock.Release(); }
         }
 
         private DuplicateReviewSelectionAnchor? CaptureDuplicateReviewSelection(long groupId)

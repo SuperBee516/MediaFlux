@@ -378,8 +378,33 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             groups.ClearSelection();
             groups.Rows[0].Selected = true;
             groups.CurrentCell = groups.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-            PumpTask(InvokePrivateTask(form, "RefreshDuplicateMembersAsync"));
-            Assert.Equal(2, members.Rows.Count);
+            long selectedGroupId = ((ExactDuplicateGroupRecord)groups.Rows[0].Tag!).GroupId;
+            PumpUntil(() => MembersMatchSelectedGroup(groups, members, selectedGroupId, 2));
+
+            // SelectionChanged starts its own refreshes. The newest selection must
+            // win even while earlier member lookups are still pending.
+            groups.ClearSelection();
+            groups.Rows[1].Selected = true;
+            groups.CurrentCell = groups.Rows[1].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            long otherGroupId = ((ExactDuplicateGroupRecord)groups.Rows[1].Tag!).GroupId;
+            PumpUntil(() => MembersMatchSelectedGroup(groups, members, otherGroupId, 2));
+            SemaphoreSlim refreshLock = GetPrivateField<SemaphoreSlim>(form, "_duplicateMemberRefreshLock");
+            PumpUntil(() => refreshLock.CurrentCount == 1);
+            Assert.True(refreshLock.Wait(0));
+            try
+            {
+                groups.ClearSelection();
+                groups.Rows[0].Selected = true;
+                groups.CurrentCell = groups.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                groups.ClearSelection();
+                groups.Rows[1].Selected = true;
+                groups.CurrentCell = groups.Rows[1].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                groups.ClearSelection();
+                groups.Rows[0].Selected = true;
+                groups.CurrentCell = groups.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            }
+            finally { refreshLock.Release(); }
+            PumpUntil(() => MembersMatchSelectedGroup(groups, members, selectedGroupId, 2));
             Assert.Contains("Created", members.Columns.Cast<DataGridViewColumn>().Select(column => column.Name));
             Assert.Contains("Modified", members.Columns.Cast<DataGridViewColumn>().Select(column => column.Name));
             Assert.All(members.Rows.Cast<DataGridViewRow>(), row =>
@@ -426,6 +451,39 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             Assert.Equal(expectedNextGroupId, ((ExactDuplicateGroupRecord)groups.SelectedRows.Cast<DataGridViewRow>().Single().Tag!).GroupId);
             PumpFor(TimeSpan.FromMilliseconds(100));
             form.Close();
+        });
+    }
+
+    [Fact]
+    public void PendingExactMemberRefreshIsCanceledDuringFormClose()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        RunSta(() =>
+        {
+            using SqliteLibraryCatalog catalog = CreateCatalog(Path.Combine(_root, "pending-exact-ui.db"));
+            using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" },
+                new EmptyMetadataProbe(), new EmptyVisualExtractor());
+            using var form = new LibraryAnalyzerForm(runtime);
+            form.Show();
+
+            DataGridView groups = GetPrivateField<DataGridView>(form, "_duplicateGroupsGrid");
+            SemaphoreSlim refreshLock = GetPrivateField<SemaphoreSlim>(form, "_duplicateMemberRefreshLock");
+            PumpUntil(() => refreshLock.CurrentCount == 1);
+            Assert.True(refreshLock.Wait(0));
+            Task pending = Task.CompletedTask;
+            try
+            {
+                DataGridViewRow row = groups.Rows[groups.Rows.Add()];
+                groups.ClearSelection();
+                row.Selected = true;
+                pending = InvokePrivateTask(form, "RefreshDuplicateMembersAsync");
+                Assert.False(pending.IsCompleted);
+                form.Close();
+            }
+            finally { refreshLock.Release(); }
+
+            PumpTask(pending);
+            Application.DoEvents();
         });
     }
 
@@ -741,6 +799,14 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
         while (!condition() && DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(10); }
         Assert.True(condition(), "UI condition did not become true.");
     }
+
+    private static bool MembersMatchSelectedGroup(
+        DataGridView groups, DataGridView members, long groupId, int memberCount) =>
+        groups.SelectedRows.Cast<DataGridViewRow>()
+            .Any(row => row.Tag is ExactDuplicateGroupRecord group && group.GroupId == groupId) &&
+        members.Rows.Count == memberCount &&
+        members.Rows.Cast<DataGridViewRow>()
+            .All(row => row.Tag is ExactDuplicateMemberRecord member && member.GroupId == groupId);
 
     private static void PumpFor(TimeSpan duration)
     {

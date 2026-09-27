@@ -324,6 +324,8 @@ namespace MediaFlux
             _lifecycleCleanupCompleted = true;
             Interlocked.Increment(ref _visualMemberLoadVersion);
             Interlocked.Increment(ref _duplicateMemberLoadVersion);
+            _duplicateGroupsGrid.SelectionChanged -= DuplicateGroupsGrid_SelectionChanged;
+            _duplicateMemberRefreshCancellation.Cancel();
             _exactCleanupCancellation?.Cancel();
             _familyCleanupCancellation?.Cancel();
             _visualEmbeddedPreviewCancellation?.Cancel();
