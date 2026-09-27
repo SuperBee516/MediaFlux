@@ -819,7 +819,7 @@ namespace MediaFlux.Services.LibraryCatalog
             string totalBitrateExpression = advancedProjection ? Fresh("metadata.total_bitrate", "NULL") : "metadata.total_bitrate";
             string durationExpression = advancedProjection ? Fresh("metadata.duration_seconds", "NULL") : "metadata.duration_seconds";
             string dynamicRangeExpression = advancedProjection ? Fresh(DynamicRangeSql("metadata"), "'Unknown'") : DynamicRangeSql("metadata");
-            string projection = advancedProjection ? SearchProjectionSql() : "";
+            string projection = advancedProjection ? SearchProjectionSql() : FileTechnicalFactsSql();
 
             using SqliteCommand pageCommand = connection.CreateCommand();
             pageCommand.Transaction = transaction;
@@ -851,6 +851,13 @@ namespace MediaFlux.Services.LibraryCatalog
             var files = new List<LibraryFileViewRecord>(limit);
             while (cancellation.Run(reader.Read))
             {
+                CatalogSearchProjection? searchFacts = advancedProjection ? ReadSearchProjection(reader) : null;
+                LibraryFileTechnicalFacts technicalFacts = advancedProjection
+                    ? new LibraryFileTechnicalFacts(
+                        searchFacts!.EffectiveFps,
+                        searchFacts.VideoBitRateBps,
+                        searchFacts.BitDepth)
+                    : ReadFileTechnicalFacts(reader);
                 files.Add(new LibraryFileViewRecord(
                     reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
                     reader.GetInt64(4), FromUtcTicks(reader.GetInt64(5)),
@@ -861,7 +868,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     reader.IsDBNull(12) ? null : reader.GetDouble(12),
                     (LibraryProbeStatus)reader.GetInt32(13), reader.GetString(14), reader.GetBoolean(15),
                     reader.IsDBNull(16) ? null : FromUtcTicks(reader.GetInt64(16)), reader.GetString(17),
-                    advancedProjection ? ReadSearchProjection(reader) : null));
+                    searchFacts, technicalFacts));
             }
             if (transaction != null)
                 cancellation.Run(() => { transaction.Commit(); return 0; });

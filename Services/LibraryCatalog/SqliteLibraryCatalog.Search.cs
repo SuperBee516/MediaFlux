@@ -55,32 +55,48 @@ namespace MediaFlux.Services.LibraryCatalog
             LibraryFileQuery query, Action afterCount, CancellationToken cancellationToken = default) =>
             QueryFilesCore(query, cancellationToken, afterCount);
 
+        private static string FileTechnicalFactsSql() => ", " + string.Join(", ", new[]
+        {
+            GuardedSearchPropertySql("video.fps"),
+            GuardedSearchPropertySql("video.bitrate"),
+            GuardedSearchPropertySql("video.bit_depth")
+        });
+
+        private static string GuardedSearchPropertySql(string id)
+        {
+            CatalogSearchPropertyDefinition property = CatalogSearchRegistry.Get(id);
+            return LibraryCatalogSqlExpressions.Guard(
+                property.Expression, property.Info.RequiredMetadataVersion);
+        }
+
         private static string SearchProjectionSql()
         {
-            string Project(string id)
-            {
-                CatalogSearchPropertyDefinition property = CatalogSearchRegistry.Get(id);
-                return LibraryCatalogSqlExpressions.Guard(
-                    property.Expression, property.Info.RequiredMetadataVersion);
-            }
-
             return ", " + string.Join(", ", new[]
             {
                 LibraryCatalogSqlExpressions.MetadataState,
-                Project("video.bitrate"),
-                Project("video.fps"),
-                Project("video.average_fps"),
-                Project("video.nominal_fps"),
-                Project("video.frame_rate_basis"),
-                Project("video.bit_depth"),
-                Project("video.stream_count"),
-                Project("stream.audio_count"),
-                Project("stream.subtitle_count"),
-                Project("video.pixels_per_second"),
-                Project("video.source_bpp"),
-                Project("video.coded_orientation"),
-                Project("video.resolution_class")
+                GuardedSearchPropertySql("video.bitrate"),
+                GuardedSearchPropertySql("video.fps"),
+                GuardedSearchPropertySql("video.average_fps"),
+                GuardedSearchPropertySql("video.nominal_fps"),
+                GuardedSearchPropertySql("video.frame_rate_basis"),
+                GuardedSearchPropertySql("video.bit_depth"),
+                GuardedSearchPropertySql("video.stream_count"),
+                GuardedSearchPropertySql("stream.audio_count"),
+                GuardedSearchPropertySql("stream.subtitle_count"),
+                GuardedSearchPropertySql("video.pixels_per_second"),
+                GuardedSearchPropertySql("video.source_bpp"),
+                GuardedSearchPropertySql("video.coded_orientation"),
+                GuardedSearchPropertySql("video.resolution_class")
             });
+        }
+
+        private static LibraryFileTechnicalFacts ReadFileTechnicalFacts(SqliteDataReader reader)
+        {
+            const int start = 18;
+            return new LibraryFileTechnicalFacts(
+                reader.IsDBNull(start) ? null : reader.GetDouble(start),
+                reader.IsDBNull(start + 1) ? null : reader.GetInt64(start + 1),
+                reader.IsDBNull(start + 2) ? null : reader.GetInt32(start + 2));
         }
 
         private static CatalogSearchProjection ReadSearchProjection(SqliteDataReader reader)

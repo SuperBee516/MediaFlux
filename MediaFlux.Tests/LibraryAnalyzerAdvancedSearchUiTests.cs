@@ -220,13 +220,27 @@ public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
             TabControl tabs = Field<TabControl>(form, "_tabs");
             tabs.SelectedIndex = 2;
             Application.DoEvents();
+            Mark("default Files refresh");
+            Pump(InvokeTask(form, "RefreshFilesAsync"));
+            DataGridView grid = Field<DataGridView>(form, "_filesGrid");
+            Assert.Equal(3, grid.Rows.Count);
+            DataGridViewRow defaultSecond = grid.Rows.Cast<DataGridViewRow>().Single(row =>
+                row.Tag is LibraryFileViewRecord file && file.FileId == secondId);
+            Assert.Equal("29.97", defaultSecond.Cells["EffectiveFps"].Value);
+            Assert.Equal("15 Mbps", defaultSecond.Cells["VideoBitrate"].Value);
+            Assert.Equal("8 bit", defaultSecond.Cells["BitDepth"].Value);
+            DataGridViewRow defaultUnknown = grid.Rows.Cast<DataGridViewRow>().Single(row =>
+                ((LibraryFileViewRecord)row.Tag!).FileName == "unknown.mkv");
+            Assert.Equal("--", defaultUnknown.Cells["VideoBitrate"].Value);
+            Assert.Equal("19 Mbps", defaultUnknown.Cells["Bitrate"].Value);
+            Assert.Equal(0, probe.Calls);
+
             SetChoice(Field<ComboBox>(form, "_quickCodec"), "H.264");
             Field<TextBox>(form, "_quickBitrateMin").Text = "13";
             Field<TextBox>(form, "_quickBitrateMax").Text = "15";
             Mark("initial Files refresh");
             Pump(InvokeTask(form, "RefreshFilesAsync"));
 
-            DataGridView grid = Field<DataGridView>(form, "_filesGrid");
             Assert.Equal(2, grid.Rows.Count);
             Assert.Equal(2, Field<long>(form, "_totalFiles"));
             Assert.DoesNotContain("could not complete", Field<Label>(form, "_filesSummary").Text,
@@ -269,9 +283,18 @@ public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
             Mark("ordinary refresh");
             Pump(InvokeTask(form, "RefreshFilesAsync"));
             Assert.Equal(3, grid.Rows.Count);
-            Assert.All(grid.Rows.Cast<DataGridViewRow>(), row => Assert.Equal("--", row.Cells["VideoBitrate"].Value));
-            Assert.Equal("19 Mbps", grid.Rows.Cast<DataGridViewRow>().Single(row =>
-                ((LibraryFileViewRecord)row.Tag!).FileName == "unknown.mkv").Cells["Bitrate"].Value);
+            DataGridViewRow ordinarySecond = grid.Rows.Cast<DataGridViewRow>().Single(row =>
+                row.Tag is LibraryFileViewRecord file && file.FileId == secondId);
+            Assert.Equal("29.97", ordinarySecond.Cells["EffectiveFps"].Value);
+            Assert.Equal("15 Mbps", ordinarySecond.Cells["VideoBitrate"].Value);
+            Assert.Equal("8 bit", ordinarySecond.Cells["BitDepth"].Value);
+            DataGridViewRow ordinaryUnknown = grid.Rows.Cast<DataGridViewRow>().Single(row =>
+                ((LibraryFileViewRecord)row.Tag!).FileName == "unknown.mkv");
+            Assert.Equal("29.97", ordinaryUnknown.Cells["EffectiveFps"].Value);
+            Assert.Equal("--", ordinaryUnknown.Cells["VideoBitrate"].Value);
+            Assert.Equal("8 bit", ordinaryUnknown.Cells["BitDepth"].Value);
+            Assert.Equal("19 Mbps", ordinaryUnknown.Cells["Bitrate"].Value);
+            Assert.Equal(0, probe.Calls);
         });
     }
 

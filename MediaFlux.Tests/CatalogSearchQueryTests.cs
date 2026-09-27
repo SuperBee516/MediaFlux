@@ -364,6 +364,31 @@ public sealed class CatalogSearchQueryTests : IDisposable
         LibraryFilePage ordinary = _catalog.QueryFiles(new LibraryFileQuery(SortColumn: "name", Limit: 10));
         Assert.Equal(new[] { "a.mkv", "b.mkv", "c.mkv" }, ordinary.Files.Select(file => file.FileName));
         Assert.All(ordinary.Files, file => Assert.Null(file.SearchFacts));
+        Assert.All(ordinary.Files, file => Assert.Equal(
+            new LibraryFileTechnicalFacts(30000d / 1001, 14_000_000, 8), file.TechnicalFacts));
+    }
+
+    [Fact]
+    public void OrdinaryQueryProjectsOnlyCurrentValidTechnicalFacts()
+    {
+        Add("known.mkv", fps: 25, videoBitrate: 12_000_000, totalBitrate: 18_000_000, bitDepth: 10);
+        Add("missing-video-bitrate.mkv", fps: 25, videoBitrate: null, totalBitrate: 20_000_000);
+        Add("missing-fps.mkv", fps: null, videoBitrate: 12_000_000);
+        Add("stale.mkv", stale: true);
+        Add("failed.mkv", status: LibraryProbeStatus.Failed);
+        Add("legacy.mkv", version: 1);
+
+        IReadOnlyDictionary<string, LibraryFileViewRecord> files =
+            _catalog.QueryFiles(new LibraryFileQuery(Limit: 20)).Files.ToDictionary(file => file.FileName);
+
+        Assert.Equal(new LibraryFileTechnicalFacts(25, 12_000_000, 10), files["known.mkv"].TechnicalFacts);
+        Assert.Equal(18_000_000, files["known.mkv"].TotalBitRate);
+        Assert.Equal(new LibraryFileTechnicalFacts(25, null, 8), files["missing-video-bitrate.mkv"].TechnicalFacts);
+        Assert.Equal(20_000_000, files["missing-video-bitrate.mkv"].TotalBitRate);
+        Assert.Equal(new LibraryFileTechnicalFacts(null, 12_000_000, 8), files["missing-fps.mkv"].TechnicalFacts);
+        Assert.Equal(new LibraryFileTechnicalFacts(null, null, null), files["stale.mkv"].TechnicalFacts);
+        Assert.Equal(new LibraryFileTechnicalFacts(null, null, null), files["failed.mkv"].TechnicalFacts);
+        Assert.Equal(new LibraryFileTechnicalFacts(30000d / 1001, null, null), files["legacy.mkv"].TechnicalFacts);
     }
 
     [Fact]

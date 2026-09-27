@@ -292,6 +292,11 @@ namespace MediaFlux.Services.LibraryCatalog
         int TopCount = 10,
         IReadOnlyList<string>? ExcludedLabels = null);
 
+    public sealed record LibraryFileTechnicalFacts(
+        double? EffectiveFps,
+        long? VideoBitRateBps,
+        int? BitDepth);
+
     public sealed record LibraryFileViewRecord(
         long FileId,
         string FileName,
@@ -311,7 +316,8 @@ namespace MediaFlux.Services.LibraryCatalog
         bool IsProtected,
         DateTime? CreationUtc = null,
         string DynamicRange = "",
-        CatalogSearchProjection? SearchFacts = null);
+        CatalogSearchProjection? SearchFacts = null,
+        LibraryFileTechnicalFacts? TechnicalFacts = null);
 
     public sealed record LibraryFilePage(
         long TotalCount,

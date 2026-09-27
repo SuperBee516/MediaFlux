@@ -827,7 +827,7 @@ namespace MediaFlux
                 _filesGrid.Rows.Clear();
                 foreach (LibraryFileViewRecord file in result.Files)
                 {
-                    CatalogSearchProjection? facts = file.SearchFacts;
+                    LibraryFileTechnicalFacts? facts = file.TechnicalFacts;
                     int row = _filesGrid.Rows.Add(
                         file.FileName,
                         file.FullPath,
