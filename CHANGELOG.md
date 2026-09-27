@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-09-27
+
+### Fixed
+
+- Fixed an upgrade-related startup failure when previously configured FFmpeg and FFprobe executables could no longer be resolved. MediaFlux now starts normally and keeps media operations unavailable until the tools are restored through the existing Install, Locate, or Settings workflow.
+- Made Library Analyzer metadata probing handle unavailable FFprobe safely, reporting probe failures without terminating application startup or analyzer construction.
+
 ## [1.7.0] - 2026-09-27
 
 ### Advanced Media Search
@@ -995,7 +1002,8 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.4...v1.7.0
 [1.6.4]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.3...v1.6.4
 [1.6.3]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.2...v1.6.3
