@@ -10,6 +10,7 @@ namespace MediaFlux
         private static readonly Color LibraryAnalyzerAccentColor = Color.FromArgb(0, 92, 160);
         private const int PageSize = 200;
         private readonly LibraryAnalyzerRuntime _runtime;
+        private readonly LibraryAdvancedSearchStore _advancedSearchStore;
         private readonly LibraryAnalyzerCleanupOptions _cleanupOptions;
         private readonly LibraryAnalyzerReviewOptions _reviewOptions;
         private readonly LibraryAnalyzerLayoutController _layoutController;
@@ -102,9 +103,11 @@ namespace MediaFlux
         public LibraryAnalyzerForm(
             LibraryAnalyzerRuntime runtime,
             LibraryAnalyzerCleanupOptions? cleanupOptions = null,
-            LibraryAnalyzerReviewOptions? reviewOptions = null)
+            LibraryAnalyzerReviewOptions? reviewOptions = null,
+            LibraryAdvancedSearchStore? advancedSearchStore = null)
         {
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+            _advancedSearchStore = advancedSearchStore ?? new LibraryAdvancedSearchStore();
             _cleanupOptions = cleanupOptions ?? new LibraryAnalyzerCleanupOptions();
             _reviewOptions = reviewOptions ?? new LibraryAnalyzerReviewOptions();
             _reviewOptions = _reviewOptions with { UiState = _reviewOptions.UiState ?? new LibraryAnalyzerUiState() };
@@ -339,6 +342,7 @@ namespace MediaFlux
             _overviewRefreshCancellation.Cancel();
             _overviewRefreshCancellation.Dispose();
             CleanupAdvancedSearchUi();
+            CleanupSavedSearchUi();
             if (_visualPreviewFocus) RestoreVisualWorkspace();
             _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;

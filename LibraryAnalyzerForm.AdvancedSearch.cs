@@ -123,6 +123,7 @@ public sealed partial class LibraryAnalyzerForm
         FillQuickChoice(_quickScanType, RegistryChoices("video.scan_type"));
         FillQuickChoice(_quickDynamicRange, RegistryChoices("video.dynamic_range"));
         _suppressAdvancedSearchEvents = false;
+        InitializeSavedSearchUi();
 
         var header = new FlowLayoutPanel
         {
@@ -136,7 +137,8 @@ public sealed partial class LibraryAnalyzerForm
         AnalyzerUi.StyleSecondary(_advancedSearchClear);
         header.Controls.AddRange(new Control[]
         {
-            _advancedSearchToggle, _advancedSearchCount, _advancedSearchClear,
+            _advancedSearchToggle, _advancedSearchCount, _savedSearchPicker,
+            _saveSavedSearchButton, _manageSavedSearchesButton, _advancedSearchClear,
             _advancedSearchValidation
         });
         _advancedSearchToggle.Click += (_, _) => SetAdvancedSearchExpanded(!_advancedSearchExpanded);
@@ -255,17 +257,29 @@ public sealed partial class LibraryAnalyzerForm
 
     private void AddAdvancedCondition(string? propertyId = null)
     {
+        LibraryAnalyzerSearchConditionRow row = CreateAdvancedConditionRow(propertyId);
+        ScheduleAdvancedSearchRefresh(immediate: true);
+        row.Property.Focus();
+    }
+
+    private LibraryAnalyzerSearchConditionRow CreateAdvancedConditionRow(string? propertyId)
+    {
         var row = new LibraryAnalyzerSearchConditionRow(propertyId)
         {
             Width = Math.Max(650, _advancedConditionRows.ClientSize.Width - 20)
         };
+        AttachAdvancedConditionRow(row);
+        return row;
+    }
+
+    private void AttachAdvancedConditionRow(LibraryAnalyzerSearchConditionRow row)
+    {
+        row.Width = Math.Max(650, _advancedConditionRows.ClientSize.Width - 20);
         row.Changed += immediate => ScheduleAdvancedSearchRefresh(immediate);
         row.SubmitRequested += () => ScheduleAdvancedSearchRefresh(immediate: true);
         row.RemoveRequested += () => RemoveAdvancedCondition(row);
         _advancedRows.Add(row);
         _advancedConditionRows.Controls.Add(row);
-        ScheduleAdvancedSearchRefresh(immediate: true);
-        row.Property.Focus();
     }
 
     private void RemoveAdvancedCondition(LibraryAnalyzerSearchConditionRow row)
@@ -293,6 +307,8 @@ public sealed partial class LibraryAnalyzerForm
             _advancedRows.Clear();
         }
         finally { _suppressAdvancedSearchEvents = false; }
+        _activeSavedSearchTemplate = null;
+        ClearSavedSearchAssociation(selectPlaceholder: true);
         SetAdvancedSearchValidation("");
         ScheduleAdvancedSearchRefresh(immediate: true);
     }
@@ -318,9 +334,11 @@ public sealed partial class LibraryAnalyzerForm
             new[] { _quickCodec, _quickResolution, _quickBitDepth, _quickScanType, _quickDynamicRange }
                 .Count(choice => choice.SelectedItem is QuickChoice { Value: not null }) +
             (string.IsNullOrWhiteSpace(_quickFpsMin.Text) && string.IsNullOrWhiteSpace(_quickFpsMax.Text) ? 0 : 1) +
-            (string.IsNullOrWhiteSpace(_quickBitrateMin.Text) && string.IsNullOrWhiteSpace(_quickBitrateMax.Text) ? 0 : 1);
+            (string.IsNullOrWhiteSpace(_quickBitrateMin.Text) && string.IsNullOrWhiteSpace(_quickBitrateMax.Text) ? 0 : 1) +
+            SavedSearchTemplateFilterCount();
         _advancedSearchCount.Text = $"{count} advanced filter{(count == 1 ? "" : "s")}";
         _advancedSearchClear.Enabled = count > 0;
+        RefreshSavedSearchDirtyState();
     }
 
     private CatalogSearchDefinition? BuildAdvancedSearchDefinition()
@@ -343,8 +361,16 @@ public sealed partial class LibraryAnalyzerForm
                 throw new ArgumentException($"Condition {i + 1}: {exception.Message}", exception);
             }
         }
-        if (conditions.Count == 0) return null;
-        var definition = new CatalogSearchDefinition(CatalogSearchDefinition.CurrentVersion, conditions);
+        CatalogSearchDefinition? template = _activeSavedSearchTemplate;
+        bool hasTemplateFilters = template != null && SavedSearchTemplateFilterCount() > 0;
+        if (conditions.Count == 0 && !hasTemplateFilters) return null;
+        var definition = new CatalogSearchDefinition(template?.Version ?? CatalogSearchDefinition.CurrentVersion,
+            conditions,
+            template?.Search ?? "",
+            template?.LocationId,
+            template?.Availability,
+            template?.ProbeStatus,
+            template?.Sort);
         CatalogSearchDefinitionValidator.Validate(definition);
         return definition;
 
