@@ -955,13 +955,7 @@ namespace MediaFlux
             if (_reanalysisExact != null) _reanalysisExact.Enabled = hasFiles;
             if (_reanalysisVisual != null) _reanalysisVisual.Enabled = hasFiles;
             if (_addSelectedToEncodeQueueButton != null)
-            {
-                LibraryFileQueueResult queueSelection = LibraryFileQueueSelection.PreparePresentCatalogSelection(SelectedVisibleQueueFiles());
-                _addSelectedToEncodeQueueButton.Enabled =
-                    !_queueHandoffInProgress &&
-                    _reviewOptions.AddToEncodeQueueAsync != null &&
-                    queueSelection.AvailablePaths.Count > 0;
-            }
+                _addSelectedToEncodeQueueButton.Enabled = CanAddSelectedFilesToEncodeQueue();
         }
 
         private void Enrichment_ProgressChanged(object? sender, LibraryEnrichmentProgress e)

@@ -48,6 +48,12 @@ public sealed partial class LibraryAnalyzerForm
             return Task.CompletedTask;
         });
         _filesMenu.Items.Add(new ToolStripSeparator());
+        LibraryAnalyzerGridInteraction.AddMenuItem(
+            _filesMenu,
+            "Add Selected to Encode Queue",
+            "Encode",
+            AddSelectedFilesToEncodeQueueAsync);
+        _filesMenu.Items.Add(new ToolStripSeparator());
         LibraryAnalyzerGridInteraction.AddMenuItem(_filesMenu, "Protect", "Protect", ToggleSelectedFileProtectionAsync);
         _filesMenu.Items.Add(new ToolStripSeparator());
         AddReanalysisMenuItems(_filesMenu, () => SelectedFiles().Select(file => file.FileId));
@@ -109,6 +115,10 @@ public sealed partial class LibraryAnalyzerForm
             files.Length > 1 ? "Copy File Paths" : "Copy File Path");
         LibraryAnalyzerGridInteraction.SetMenuState(_filesMenu, "Protect", state.HasSelection,
             state.AllProtected ? "Unprotect" : "Protect");
+        LibraryAnalyzerGridInteraction.SetMenuState(
+            _filesMenu,
+            "Encode",
+            CanAddSelectedFilesToEncodeQueue());
         foreach (string name in new[] { "Metadata", "Exact", "Visual", "All" })
             LibraryAnalyzerGridInteraction.SetMenuState(_filesMenu, name, state.HasSelection);
     }

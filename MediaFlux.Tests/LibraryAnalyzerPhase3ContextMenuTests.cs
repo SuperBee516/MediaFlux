@@ -31,7 +31,7 @@ public sealed class LibraryAnalyzerPhase3ContextMenuTests : IDisposable
             AssertNames(form, "_reclamationMenu", "Protect", "LocateFiles", "LocateExact", "LocateVisual", "LocateFamily");
             AssertNames(form, "_integrityMenu", "Quick", "Full", "Retry", "RemoveRecycle", "RemoveQuarantine", "RemovePermanent");
             AssertNames(form, "_maintenanceMenu", "Run", "Toggle", "Edit", "Refresh");
-            AssertNames(form, "_filesMenu", "CopyFilename", "CopyFullPath", "CopyFolderPath", "CopyDetails", "MediaDetails", "RemoveRecycle");
+            AssertNames(form, "_filesMenu", "CopyFilename", "CopyFullPath", "CopyFolderPath", "CopyDetails", "MediaDetails", "Encode", "RemoveRecycle");
             AssertNames(form, "_largestFilesMenu", "Play", "Folder", "MediaDetails", "CopyPath", "Encode", "Locate");
             AssertNames(form, "_duplicateGroupsMenu", "Reviewed", "Ignore", "Reanalyze", "Delete", "DeleteAll", "ProtectKeeper", "OpenKeeper");
             AssertNames(form, "_familyMenu", "Review", "Reviewed", "MarkUnreviewed", "Ignore", "Reanalyze", "Rebuild", "Cleanup", "CleanupAllReviewed");

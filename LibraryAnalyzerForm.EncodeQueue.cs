@@ -9,7 +9,10 @@ public sealed partial class LibraryAnalyzerForm
     private Label? _queueHandoffStatusLabel;
     private bool _queueHandoffInProgress;
 
-    private async void AddSelectedFilesToEncodeQueue_Click(object? sender, EventArgs e)
+    private async void AddSelectedFilesToEncodeQueue_Click(object? sender, EventArgs e) =>
+        await AddSelectedFilesToEncodeQueueAsync();
+
+    private async Task AddSelectedFilesToEncodeQueueAsync()
     {
         if (!CanUseFormUi || _queueHandoffInProgress)
             return;
@@ -59,6 +62,15 @@ public sealed partial class LibraryAnalyzerForm
             if (CanUseFormUi)
                 UpdateAnalyzerActionState();
         }
+    }
+
+    private bool CanAddSelectedFilesToEncodeQueue()
+    {
+        if (_queueHandoffInProgress || _reviewOptions.AddToEncodeQueueAsync == null)
+            return false;
+
+        return LibraryFileQueueSelection.PreparePresentCatalogSelection(SelectedVisibleQueueFiles())
+            .AvailablePaths.Count > 0;
     }
 
     private void SetQueueHandoffStatus(string status)

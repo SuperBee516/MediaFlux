@@ -47,6 +47,7 @@ public sealed class LibraryAnalyzerQueueIntegrationUiTests : IDisposable
             Assert.Equal(DataGridViewSelectionMode.FullRowSelect, grid.SelectionMode);
             Assert.False(queueButton.Enabled);
             Assert.Equal(4, grid.Rows.Count);
+            AssertEncodeMenuEnabled(form, grid, expected: false);
 
             DataGridViewRow present = RowNamed(grid, "ordinary-present.mkv");
             DataGridViewRow unavailable = RowNamed(grid, "ordinary-missing.mkv");
@@ -58,15 +59,30 @@ public sealed class LibraryAnalyzerQueueIntegrationUiTests : IDisposable
 
             SelectRows(grid, unavailable);
             Assert.False(queueButton.Enabled);
+            AssertEncodeMenuEnabled(form, grid, expected: false);
             SelectRows(grid, present);
             Assert.True(queueButton.Enabled);
+            AssertEncodeMenuEnabled(form, grid, expected: true);
             SelectRows(grid, present, secondEligible);
             Assert.Equal(2, grid.SelectedRows.Count);
             Assert.True(queueButton.Enabled);
             SelectRows(grid, present, secondEligible, unavailable);
             Assert.Equal(3, grid.SelectedRows.Count);
             Assert.True(queueButton.Enabled);
-            queueButton.PerformClick();
+            LibraryAnalyzerGridInteraction.UpdateRightClickSelection(grid, unselectedMatch.Index, 0);
+            Assert.Single(grid.SelectedRows);
+            AssertEncodeMenuEnabled(form, grid, expected: true);
+            SelectRows(grid, present, secondEligible, unavailable);
+            LibraryAnalyzerGridInteraction.UpdateRightClickSelection(grid, secondEligible.Index, 0);
+            Assert.Equal(3, grid.SelectedRows.Count);
+            ContextMenuStrip menu = Field<ContextMenuStrip>(form, "_filesMenu");
+            ToolStripMenuItem encode = menu.Items.Find("Encode", true).OfType<ToolStripMenuItem>().Single();
+            menu.Show(grid, 0, 0);
+            Application.DoEvents();
+            Assert.Equal("Add Selected to Encode Queue", encode.Text);
+            Assert.True(encode.Enabled);
+            menu.Close();
+            encode.PerformClick();
             Assert.Equal(1, callbackCount);
             Assert.False(queueButton.Enabled);
             Assert.Equal(new[]
@@ -213,6 +229,16 @@ public sealed class LibraryAnalyzerQueueIntegrationUiTests : IDisposable
 
     private static DataGridViewRow RowNamed(DataGridView grid, string fileName) => grid.Rows.Cast<DataGridViewRow>()
         .Single(row => row.Tag is LibraryFileViewRecord file && file.FileName == fileName);
+
+    private static void AssertEncodeMenuEnabled(LibraryAnalyzerForm form, DataGridView grid, bool expected)
+    {
+        ContextMenuStrip menu = Field<ContextMenuStrip>(form, "_filesMenu");
+        ToolStripMenuItem encode = menu.Items.Find("Encode", true).OfType<ToolStripMenuItem>().Single();
+        menu.Show(grid, 0, 0);
+        Application.DoEvents();
+        try { Assert.Equal(expected, encode.Enabled); }
+        finally { menu.Close(); }
+    }
 
     private static void SelectRows(DataGridView grid, params DataGridViewRow[] rows)
     {

@@ -25,7 +25,10 @@ public sealed partial class LibraryAnalyzerForm
         ConfigureMaintenanceContextMenu();
         AddGeneralRemovalMenu(_filesMenu, () => SelectedFiles().Select(file => (file.FileId, file.FullPath)), RefreshFilesAsync);
         AddCopySubmenu(_filesMenu, () => SelectedFiles().Select(file => (file.FileId, file.FullPath)));
-        _filesMenu.Opening += (_, _) => UpdateFileBackedMenu(_filesMenu, SelectedFiles().Select(file => (file.FileId, file.FullPath)).ToArray());
+        _filesMenu.Opening += (_, _) => UpdateFileBackedMenu(
+            _filesMenu,
+            SelectedFiles().Select(file => (file.FileId, file.FullPath)).ToArray(),
+            CanAddSelectedFilesToEncodeQueue());
     }
 
     private void ConfigureHealthContextMenus()
