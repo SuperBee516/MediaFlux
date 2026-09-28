@@ -44,6 +44,8 @@ namespace MediaFlux.Services
         public Action<OutputContainerDecision>? ContainerDecisionCallback { get; init; }
         /// <summary>Shadow-only diagnostic hooks; they never influence execution.</summary>
         public Action<EncodingPlanSnapshot>? EncodingPlanSnapshotCallback { get; init; }
+        /// <summary>Optional pre-encode research capture; failures are isolated from encoding.</summary>
+        public Func<EncodingPlanSnapshot, CancellationToken, Task>? PreEncodeResearchCallback { get; init; }
         public Action<EncodingPlanDivergence>? EncodingPlanDivergenceCallback { get; init; }
         /// <summary>Observational execution facts; this never changes recovery behavior.</summary>
         public Action<EncodingExecutionOutcome>? EncodingExecutionOutcomeCallback { get; init; }

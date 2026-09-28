@@ -260,6 +260,10 @@ namespace MediaFlux
             _supportedVideoExtsPath = AppPaths.SupportedVideoExtensionsFile;
             _encodingStatisticsService = new EncodingStatisticsService(
                 AppPaths.EncodingStatisticsFile);
+            _predictionShadowService = new NvencQualityModePredictionShadowService(
+                new PredictionShadowObservationJournal(AppPaths.PredictionShadowObservationsFile),
+                new PredictionShadowComplexitySamplingService(AppPaths.InstallDirectory, _config.FfmpegPath),
+                message => Debug.WriteLine(message));
             _encodingDiagnosticsService = new EncodingDiagnosticsService();
             RepairConfiguredExplorerIntegration();
 

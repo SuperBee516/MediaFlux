@@ -214,19 +214,29 @@ public static class NvencQualityModeVideoBitratePredictionService
         return new(predicted.Value, signedKbps, Math.Abs(signedKbps), signedPercent, Math.Abs(signedPercent));
     }
 
-    private static string FamilyKey(EncodingStatisticsRecord record)
+    /// <summary>
+    /// Returns the same source-family identity used by prediction admission and
+    /// holdout evaluation. Research capture must call this rather than inventing
+    /// a parallel family-key rule.
+    /// </summary>
+    public static string GetSourceFamilyKey(
+        SourceAdaptiveShadowCalibration? decision,
+        double? mediaDurationSeconds,
+        string? sourcePath)
     {
-        SourceAdaptiveShadowCalibration? decision = record.SourceAdaptiveShadow?.Decision;
         // A media fingerprint groups aliases of the same complete source file.
         // If source measurements are missing, fall back to the path without inventing identity.
-        if (decision?.SourceTotalBytes is > 0 && record.MediaDurationSeconds is > 0 &&
+        if (decision?.SourceTotalBytes is > 0 && mediaDurationSeconds is > 0 &&
             decision.SourceVideoBitrateKbps is > 0 && decision.PlannedWidth is > 0 &&
             decision.PlannedHeight is > 0 && decision.PlannedFps is > 0)
-            return $"media:{decision.SourceTotalBytes}:{Math.Round(record.MediaDurationSeconds.Value, 2)}:" +
+            return $"media:{decision.SourceTotalBytes}:{Math.Round(mediaDurationSeconds.Value, 2)}:" +
                 $"{Math.Round(decision.SourceVideoBitrateKbps.Value, 1)}:{decision.PlannedWidth}x{decision.PlannedHeight}:" +
                 $"{Math.Round(decision.PlannedFps.Value, 3)}";
-        return record.SourcePath.Trim();
+        return (sourcePath ?? string.Empty).Trim();
     }
+
+    private static string FamilyKey(EncodingStatisticsRecord record) =>
+        GetSourceFamilyKey(record.SourceAdaptiveShadow?.Decision, record.MediaDurationSeconds, record.SourcePath);
 
     private static bool Positive(double value) => value > 0 && double.IsFinite(value);
     private static bool WithinFactor(double value, double reference, double factor) =>

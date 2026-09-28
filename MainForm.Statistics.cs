@@ -7,6 +7,7 @@ namespace MediaFlux
     public partial class MainForm
     {
         private EncodingStatisticsService _encodingStatisticsService = null!;
+        private NvencQualityModePredictionShadowService _predictionShadowService = null!;
         private readonly Dictionary<string, Label> _selectedStatisticsLabels =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Label> _lifetimeStatisticsLabels =
@@ -581,6 +582,52 @@ namespace MediaFlux
             catch (Exception ex)
             {
                 Debug.WriteLine($"Statistics append failed: {ex}");
+            }
+
+            RecordPredictionShadowOutcome(
+                predictionPlan,
+                outcome,
+                endUtc,
+                outputSizeBytes,
+                executionOutcome,
+                finalOutputProbe,
+                recoveredSuccessful);
+        }
+
+        private void RecordPredictionShadowOutcome(
+            EncodingPlan? predictionPlan,
+            EncodingStatisticsOutcome outcome,
+            DateTime recordedUtc,
+            long? outputSizeBytes,
+            EncodingExecutionOutcome? executionOutcome,
+            MediaProbeResult? finalOutputProbe,
+            bool recoveredSuccessful)
+        {
+            if (predictionPlan == null)
+                return;
+            try
+            {
+                MediaProbeStreamInfo? outputVideo = finalOutputProbe?.Streams.FirstOrDefault(stream =>
+                    stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+                double? actualVideoKbps = outputVideo?.BitRate is > 0
+                    ? outputVideo.BitRate.Value / 1000d
+                    : null;
+                bool appended = _predictionShadowService.RecordOutcome(
+                    predictionPlan.PlanId.ToString("N"),
+                    outcome == EncodingStatisticsOutcome.Success ? "Completed" : outcome.ToString(),
+                    executionOutcome?.TerminalResult.ToString() ?? outcome.ToString(),
+                    executionOutcome?.Validation?.Status.ToString() ?? "NotRecorded",
+                    executionOutcome?.Finalization?.Status.ToString() ?? "NotRecorded",
+                    recoveredSuccessful,
+                    actualVideoKbps,
+                    outputSizeBytes,
+                    recordedUtc);
+                if (appended)
+                    Debug.WriteLine($"[PredictionShadow] Outcome appended for plan {predictionPlan.PlanId:N}.");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[PredictionShadow] Outcome capture failed; encode result is unchanged: {ex.Message}");
             }
         }
 

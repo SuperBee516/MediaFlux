@@ -372,7 +372,8 @@ namespace MediaFlux.Services
                  request.QualityIntent,
                 request.QualityResolutionCallback,
                 request.FailureDiagnosticReportCallback,
-                request.SizePredictionCalibration).ConfigureAwait(false);
+                request.SizePredictionCalibration,
+                request.PreEncodeResearchCallback).ConfigureAwait(false);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -636,7 +637,8 @@ namespace MediaFlux.Services
              EncodingQualityIntent? qualityIntent = null,
             Action<EncodingQualityResolution>? qualityResolutionCallback = null,
             Action<string>? failureDiagnosticReportCallback = null,
-            EncodingSizePredictionCalibration? sizePredictionCalibration = null)
+            EncodingSizePredictionCalibration? sizePredictionCalibration = null,
+            Func<EncodingPlanSnapshot, CancellationToken, Task>? preEncodeResearchCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -929,6 +931,23 @@ namespace MediaFlux.Services
                 : null;
             _log?.Invoke(EncodingPlanService.DescribeSummary(shadowPlan));
             encodingPlanSnapshotCallback?.Invoke(planSnapshot);
+            if (preEncodeResearchCallback is not null)
+            {
+                try
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await preEncodeResearchCallback(planSnapshot, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    try { _log?.Invoke($"[PredictionShadow] Pre-encode capture failed; continuing encode: {ex.Message}"); }
+                    catch { /* Research diagnostics cannot become an encode dependency. */ }
+                }
+            }
             PublishExecutionOutcome();
             if (plannedOutputGeometry is not null)
             {

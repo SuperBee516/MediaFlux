@@ -869,6 +869,24 @@ namespace MediaFlux
                             RefreshCurrentEncodingIntelligence(row, meta);
                         });
                     },
+                    PreEncodeResearchCallback = async (snapshot, token) =>
+                    {
+                        string settingsSignature = NvencQualityModeVideoBitratePredictionService.EffectiveSettingsSignature(
+                            encoderSnapshot.Validated.Resolved.Selection.EncoderId,
+                            videoCodec,
+                            encoderPreset,
+                            tenBit ? 10 : 8,
+                            concurrentEncoderSessions);
+                        PredictionShadowFrozenObservation? captured = await _predictionShadowService.CaptureAsync(
+                            snapshot,
+                            inputSource.SourcePath,
+                            settingsSignature,
+                            _encodingStatisticsService.GetAll(),
+                            Application.ProductVersion,
+                            token).ConfigureAwait(false);
+                        if (captured != null)
+                            Debug.WriteLine($"[PredictionShadow] Observation {captured.ObservationId} frozen before FFmpeg launch.");
+                    },
                     EncodingPlanDivergenceCallback = divergence =>
                         AppendJobLog($"[EncodingPlan] Shadow divergence: {divergence}"),
                      EncodingExecutionOutcomeCallback = outcome =>
@@ -1264,6 +1282,20 @@ namespace MediaFlux
                         diagnosticSummary: diagnosticSummary,
                         predictionPlan: meta.IntelligencePlan,
                         executionOutcome: meta.IntelligenceOutcome);
+                }
+                else if (retryQueued)
+                {
+                    // Failed attempts are still outcomes for their already-frozen
+                    // research observation even when production statistics defer
+                    // recording until the automatic retry terminates.
+                    RecordPredictionShadowOutcome(
+                        meta.IntelligencePlan,
+                        EncodingStatisticsOutcome.Failed,
+                        DateTime.UtcNow,
+                        outputSizeBytes: null,
+                        executionOutcome: meta.IntelligenceOutcome,
+                        finalOutputProbe: null,
+                        recoveredSuccessful: false);
                 }
 
                 Ui(() =>

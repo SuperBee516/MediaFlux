@@ -43,6 +43,7 @@ namespace MediaFlux.Services
         public static string LogsDirectory => Storage.Logs;
         public static string SupportedVideoExtensionsFile => Path.Combine(DataDirectory, "supported_video_extensions.json");
         public static string EncodingStatisticsFile => Path.Combine(DataDirectory, "encoding-statistics.jsonl");
+        public static string PredictionShadowObservationsFile => Path.Combine(DataDirectory, "prediction-shadow-observations.jsonl");
         public static string HistoryFile => Path.Combine(DataDirectory, "history.json");
         public static string EncodingPresetsFile => Path.Combine(DataDirectory, "encoding_presets.json");
         public static string LibraryFileRemovalAuditFile => Path.Combine(DataDirectory, "library-file-removal-audit.jsonl");
