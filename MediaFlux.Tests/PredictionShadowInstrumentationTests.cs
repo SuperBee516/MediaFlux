@@ -147,6 +147,7 @@ public sealed class PredictionShadowInstrumentationTests : IDisposable
             snapshot, source, signature, history, "1.7.3", CancellationToken.None))!;
 
         Assert.Equal(snapshot.PlanId.ToString("N"), observation.ObservationId);
+        Assert.Equal(2, observation.SchemaVersion);
         Assert.Equal(Cutoff, observation.PredictionEvidenceCutoffUtc);
         Assert.Equal(Cutoff, observation.FrozenUtc);
         Assert.Equal(2, observation.AdmittedPeerSourceFamilyKeys.Count);
@@ -167,11 +168,15 @@ public sealed class PredictionShadowInstrumentationTests : IDisposable
         Assert.NotNull(observation.Ratio.PredictedVideoBitrateKbps);
         Assert.NotNull(observation.Direct.PredictedVideoBitrateKbps);
         Assert.Equal("OmittedNotValidated", observation.Complexity.NoiseGrainProxyStatus);
+        Assert.Equal("temporal-neighbor-k2-v1", observation.TemporalNeighbor!.ComparatorVersion);
+        Assert.Equal(2, observation.TemporalNeighbor.K);
+        Assert.Equal("HistoricalJournalUnavailableOrCorrupt", observation.TemporalNeighbor.AbstentionReason);
 
         var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "prediction-shadow-observations.jsonl"));
         Assert.Single(journal.ReadEvents());
         PredictionShadowJournalEvent frozenEvent = Assert.Single(journal.ReadEvents());
         Assert.Equal("Frozen", frozenEvent.EventType);
+        Assert.Equal(2, frozenEvent.SchemaVersion);
         Assert.Null(frozenEvent.Outcome);
         Assert.Equal(observation.Direct.PredictedVideoBitrateKbps, frozenEvent.Frozen!.Direct.PredictedVideoBitrateKbps);
 

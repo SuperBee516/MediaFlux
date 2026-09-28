@@ -86,7 +86,9 @@ public sealed class NvencQualityModePredictionShadowService
                 Status = PredictionShadowSamplingStatus.Unavailable,
                 FailureReason = OneLine(ex.Message)
             };
+            Diagnose($"[PredictionShadow] Complexity sampling unavailable: {OneLine(ex.Message)}");
         }
+        cancellationToken.ThrowIfCancellationRequested();
 
         double? sourcePps = plan.Source.Width is > 0 && plan.Source.Height is > 0 && plan.Source.FrameRate is > 0
             ? (double)plan.Source.Width.Value * plan.Source.Height.Value * plan.Source.FrameRate.Value
@@ -95,6 +97,7 @@ public sealed class NvencQualityModePredictionShadowService
         string observationId = snapshot.PlanId.ToString("N");
         var observation = new PredictionShadowFrozenObservation
         {
+            SchemaVersion = 2,
             ObservationId = observationId,
             PlanId = snapshot.PlanId,
             SourceFamilyKey = familyKey,
@@ -128,17 +131,41 @@ public sealed class NvencQualityModePredictionShadowService
 
         try
         {
+            bool journalIsComplete = _journal.TryReadEventsForTemporalComparison(
+                out IReadOnlyList<PredictionShadowJournalEvent> journalEvents);
+            observation = observation with
+            {
+                TemporalNeighbor = new PredictionShadowTemporalNeighborComparator()
+                    .Compare(observation, journalIsComplete, journalEvents)
+            };
+        }
+        catch (Exception ex)
+        {
+            Diagnose($"[PredictionShadow] Temporal comparator abstained: {OneLine(ex.Message)}");
+            observation = observation with
+            {
+                TemporalNeighbor = PredictionShadowTemporalNeighborComparator.CreateAbstention(
+                    "TemporalComparatorFailure", complexity.TemporalFrameDifference)
+            };
+        }
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!_journal.AppendFrozen(observation))
-                _diagnostic?.Invoke($"[PredictionShadow] Frozen observation {observationId} was already present.");
+                Diagnose($"[PredictionShadow] Frozen observation {observationId} was already present.");
             else
-                _diagnostic?.Invoke(
+                Diagnose(
                     $"[PredictionShadow] Frozen observation {observationId}; peers={pair.AdmittedPeerSourceFamilyKeys.Count}; " +
-                    $"sampling={complexity.Status}; elapsed={complexity.WallClockMilliseconds:0}ms.");
+                    $"sampling={complexity.Status}; elapsed={complexity.WallClockMilliseconds:0}ms; " +
+                    $"temporal={observation.TemporalNeighbor?.Ratio.Reason ?? "unavailable"}.");
             return observation;
         }
         catch (Exception ex)
         {
-            _diagnostic?.Invoke($"[PredictionShadow] Research persistence unavailable: {OneLine(ex.Message)}");
+            if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+                throw;
+            Diagnose($"[PredictionShadow] Research persistence unavailable: {OneLine(ex.Message)}");
             return null;
         }
     }
@@ -164,6 +191,13 @@ public sealed class NvencQualityModePredictionShadowService
         double? sizeChangePercent = frozen.SourceBytes is > 0 && outputBytes is >= 0
             ? (outputBytes.Value - frozen.SourceBytes.Value) * 100d / frozen.SourceBytes.Value
             : null;
+        double? validTemporalActual = !recoveredSuccessful &&
+            string.Equals(state, "Completed", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(terminalResult, "Completed", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(validationState, "Passed", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(finalizationState, "Passed", StringComparison.OrdinalIgnoreCase)
+                ? actualOutputVideoBitrateKbps
+                : null;
         var outcome = new PredictionShadowOutcome
         {
             State = state,
@@ -182,7 +216,19 @@ public sealed class NvencQualityModePredictionShadowService
             RatioAbsoluteErrorPercent = AbsoluteErrorPercent(frozen.Ratio.PredictedVideoBitrateKbps, actualOutputVideoBitrateKbps),
             DirectSignedErrorKbps = SignedErrorKbps(frozen.Direct.PredictedVideoBitrateKbps, actualOutputVideoBitrateKbps),
             DirectSignedErrorPercent = SignedErrorPercent(frozen.Direct.PredictedVideoBitrateKbps, actualOutputVideoBitrateKbps),
-            DirectAbsoluteErrorPercent = AbsoluteErrorPercent(frozen.Direct.PredictedVideoBitrateKbps, actualOutputVideoBitrateKbps)
+            DirectAbsoluteErrorPercent = AbsoluteErrorPercent(frozen.Direct.PredictedVideoBitrateKbps, actualOutputVideoBitrateKbps),
+            TemporalNeighborRatioSignedErrorKbps = SignedErrorKbps(
+                frozen.TemporalNeighbor?.Ratio.PredictedVideoBitrateKbps, validTemporalActual),
+            TemporalNeighborRatioSignedErrorPercent = SignedErrorPercent(
+                frozen.TemporalNeighbor?.Ratio.PredictedVideoBitrateKbps, validTemporalActual),
+            TemporalNeighborRatioAbsoluteErrorPercent = AbsoluteErrorPercent(
+                frozen.TemporalNeighbor?.Ratio.PredictedVideoBitrateKbps, validTemporalActual),
+            TemporalNeighborDirectSignedErrorKbps = SignedErrorKbps(
+                frozen.TemporalNeighbor?.Direct.PredictedVideoBitrateKbps, validTemporalActual),
+            TemporalNeighborDirectSignedErrorPercent = SignedErrorPercent(
+                frozen.TemporalNeighbor?.Direct.PredictedVideoBitrateKbps, validTemporalActual),
+            TemporalNeighborDirectAbsoluteErrorPercent = AbsoluteErrorPercent(
+                frozen.TemporalNeighbor?.Direct.PredictedVideoBitrateKbps, validTemporalActual)
         };
 
         try
@@ -191,7 +237,7 @@ public sealed class NvencQualityModePredictionShadowService
         }
         catch (Exception ex)
         {
-            _diagnostic?.Invoke($"[PredictionShadow] Outcome persistence unavailable: {OneLine(ex.Message)}");
+            Diagnose($"[PredictionShadow] Outcome persistence unavailable: {OneLine(ex.Message)}");
             return false;
         }
     }
@@ -251,6 +297,12 @@ public sealed class NvencQualityModePredictionShadowService
 
     private static double? AbsoluteErrorPercent(double? predicted, double? actual) =>
         SignedErrorPercent(predicted, actual) is double error ? Math.Abs(error) : null;
+
+    private void Diagnose(string message)
+    {
+        try { _diagnostic?.Invoke(message); }
+        catch { /* Optional research diagnostics cannot become an encode dependency. */ }
+    }
 
     private static string OneLine(string value)
     {

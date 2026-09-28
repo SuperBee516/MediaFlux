@@ -45,12 +45,45 @@ public sealed record PredictionShadowForecast
     public double? ObservedHighVideoBitrateKbps { get; init; }
 }
 
+public static class PredictionShadowTemporalNeighborVersions
+{
+    public const string K2 = "temporal-neighbor-k2-v1";
+}
+
+public sealed record PredictionShadowTemporalNeighbor
+{
+    public required string SourceFamilyKey { get; init; }
+    public double TemporalFrameDifference { get; init; }
+    public double TemporalDistance { get; init; }
+    public double SourceVideoBitrateKbps { get; init; }
+    public double ActualOutputVideoBitrateKbps { get; init; }
+    public double ActualOutputToSourceVideoBitrateRatio { get; init; }
+}
+
+/// <summary>Frozen, research-only nearest-neighbor evidence; k is fixed at two.</summary>
+public sealed record PredictionShadowTemporalNeighborComparison
+{
+    public string ComparatorVersion { get; init; } = PredictionShadowTemporalNeighborVersions.K2;
+    public int K { get; init; } = 2;
+    public double? TargetTemporalFrameDifference { get; init; }
+    public int EligiblePeerCount { get; init; }
+    public double? EligiblePeerTemporalMinimum { get; init; }
+    public double? EligiblePeerTemporalMaximum { get; init; }
+    public double? MeanNeighborOutputToSourceVideoBitrateRatio { get; init; }
+    public IReadOnlyList<PredictionShadowTemporalNeighbor> SelectedNeighbors { get; init; } =
+        Array.Empty<PredictionShadowTemporalNeighbor>();
+    public PredictionShadowForecast Ratio { get; init; } = new();
+    public PredictionShadowForecast Direct { get; init; } = new();
+    public string AbstentionReason { get; init; } = "";
+}
+
 /// <summary>
 /// Immutable facts captured after plan creation and before FFmpeg execution.
 /// Outcome data intentionally lives in a later journal event.
 /// </summary>
 public sealed record PredictionShadowFrozenObservation
 {
+    /// <summary>Version 2 adds optional temporal-neighbor data; version 1 remains readable as-is.</summary>
     public int SchemaVersion { get; init; } = 1;
     public required string ObservationId { get; init; }
     public Guid PlanId { get; init; }
@@ -83,6 +116,7 @@ public sealed record PredictionShadowFrozenObservation
     public IReadOnlyList<string> AdmittedPeerSourceFamilyKeys { get; init; } = Array.Empty<string>();
     public bool RatioAndDirectSharePeers { get; init; }
     public PredictionShadowSamplingObservation Complexity { get; init; } = new();
+    public PredictionShadowTemporalNeighborComparison? TemporalNeighbor { get; init; }
 }
 
 /// <summary>Later finalization facts; never used to recompute a frozen forecast.</summary>
@@ -105,11 +139,18 @@ public sealed record PredictionShadowOutcome
     public double? DirectSignedErrorKbps { get; init; }
     public double? DirectSignedErrorPercent { get; init; }
     public double? DirectAbsoluteErrorPercent { get; init; }
+    public double? TemporalNeighborRatioSignedErrorKbps { get; init; }
+    public double? TemporalNeighborRatioSignedErrorPercent { get; init; }
+    public double? TemporalNeighborRatioAbsoluteErrorPercent { get; init; }
+    public double? TemporalNeighborDirectSignedErrorKbps { get; init; }
+    public double? TemporalNeighborDirectSignedErrorPercent { get; init; }
+    public double? TemporalNeighborDirectAbsoluteErrorPercent { get; init; }
 }
 
 /// <summary>Append-only lifecycle event in the separate research JSONL journal.</summary>
 public sealed record PredictionShadowJournalEvent
 {
+    /// <summary>New temporal-comparator events use version 2; existing version 1 pairs are not migrated.</summary>
     public int SchemaVersion { get; init; } = 1;
     public required string EventId { get; init; }
     public required string ObservationId { get; init; }

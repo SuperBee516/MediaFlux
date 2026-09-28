@@ -33,6 +33,7 @@ public sealed class PredictionShadowObservationJournal
         ArgumentNullException.ThrowIfNull(observation);
         var entry = new PredictionShadowJournalEvent
         {
+            SchemaVersion = observation.SchemaVersion,
             EventId = $"{observation.ObservationId}:frozen",
             ObservationId = observation.ObservationId,
             EventType = "Frozen",
@@ -60,18 +61,20 @@ public sealed class PredictionShadowObservationJournal
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(observationId);
         ArgumentNullException.ThrowIfNull(outcome);
-        var entry = new PredictionShadowJournalEvent
-        {
-            EventId = $"{observationId}:outcome",
-            ObservationId = observationId,
-            EventType = "Outcome",
-            RecordedUtc = recordedUtc,
-            Outcome = outcome
-        };
         lock (_sync)
         {
-            if (!_frozen.ContainsKey(observationId) || _eventIds.Contains(entry.EventId))
+            if (!_frozen.TryGetValue(observationId, out PredictionShadowFrozenObservation? frozen) ||
+                _eventIds.Contains($"{observationId}:outcome"))
                 return false;
+            var entry = new PredictionShadowJournalEvent
+            {
+                SchemaVersion = frozen.SchemaVersion,
+                EventId = $"{observationId}:outcome",
+                ObservationId = observationId,
+                EventType = "Outcome",
+                RecordedUtc = recordedUtc,
+                Outcome = outcome
+            };
             AppendLine(entry);
             _eventIds.Add(entry.EventId);
             return true;
@@ -95,6 +98,60 @@ public sealed class PredictionShadowObservationJournal
                 catch (JsonException) { /* An incomplete/torn line is non-authoritative. */ }
             }
             return result;
+        }
+    }
+
+    /// <summary>
+    /// Reads a complete, structurally valid journal snapshot for strict temporal
+    /// chronology checks. Unlike <see cref="ReadEvents"/>, this does not silently
+    /// skip damaged lines because doing so could hide an earlier outcome.
+    /// </summary>
+    public bool TryReadEventsForTemporalComparison(out IReadOnlyList<PredictionShadowJournalEvent> events)
+    {
+        lock (_sync)
+        {
+            events = Array.Empty<PredictionShadowJournalEvent>();
+            if (!File.Exists(_path))
+                return false;
+
+            try
+            {
+                var result = new List<PredictionShadowJournalEvent>();
+                var eventIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (string line in File.ReadLines(_path))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                        return false;
+                    PredictionShadowJournalEvent? entry = JsonSerializer.Deserialize<PredictionShadowJournalEvent>(line, _json);
+                    if (entry is null || entry.SchemaVersion is not (1 or 2) ||
+                        string.IsNullOrWhiteSpace(entry.EventId) || string.IsNullOrWhiteSpace(entry.ObservationId) ||
+                        entry.RecordedUtc == default || entry.RecordedUtc.Kind != DateTimeKind.Utc ||
+                        !eventIds.Add(entry.EventId))
+                        return false;
+
+                    bool validPayload = entry.EventType switch
+                    {
+                        "Frozen" => entry.Frozen is { } frozen && entry.Outcome is null &&
+                            frozen.SchemaVersion == entry.SchemaVersion &&
+                            string.Equals(frozen.ObservationId, entry.ObservationId, StringComparison.Ordinal) &&
+                            string.Equals(entry.EventId, $"{entry.ObservationId}:frozen", StringComparison.Ordinal),
+                        "Outcome" => entry.Outcome is not null && entry.Frozen is null &&
+                            string.Equals(entry.EventId, $"{entry.ObservationId}:outcome", StringComparison.Ordinal),
+                        _ => false
+                    };
+                    if (!validPayload)
+                        return false;
+                    result.Add(entry);
+                }
+
+                events = result;
+                return true;
+            }
+            catch
+            {
+                // Strict comparator admission treats unreadable evidence as an abstention.
+                return false;
+            }
         }
     }
 
