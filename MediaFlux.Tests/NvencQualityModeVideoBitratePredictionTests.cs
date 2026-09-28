@@ -36,10 +36,122 @@ public sealed class NvencQualityModeVideoBitratePredictionTests
     [Fact]
     public void ComparableSameCqSourcesPredictVideoRatioWithoutTotalSize()
     {
-        NvencQualityModePredictionResult result = Predict([Record("a", 3000), Record("b", 6000)]);
-        Assert.Equal(QualityModePredictionConfidence.Low, result.Confidence);
-        Assert.Equal(2, result.IndependentSourceCount);
-        Assert.Equal(4500, result.PredictedVideoBitrateKbps);
+        QualityModePairedPrediction pair = PredictBoth([Record("a", 3000), Record("b", 6000)]);
+        Assert.Equal(QualityModePredictionConfidence.Low, pair.Ratio.Confidence);
+        Assert.Equal(2, pair.Ratio.IndependentSourceCount);
+        Assert.Equal(4500, pair.Ratio.PredictedVideoBitrateKbps);
+        Assert.Equal(4500, pair.Direct.PredictedVideoBitrateKbps);
+        Assert.Equal(pair.Ratio.IndependentSourceCount, pair.Direct.IndependentSourceCount);
+        Assert.Equal(pair.AdmittedPeerSourceFamilyKeys, new[] { "a", "b" });
+    }
+
+    [Fact]
+    public void DirectUsesOddAndEvenMediansAndRequiresTwoIndependentPeers()
+    {
+        QualityModePairedPrediction odd = PredictBoth([Record("a", 1000), Record("b", 5000), Record("c", 9000)]);
+        Assert.Equal(5000, odd.Direct.PredictedVideoBitrateKbps);
+
+        QualityModePairedPrediction even = PredictBoth([Record("a", 1000), Record("b", 8000)]);
+        Assert.Equal(4500, even.Direct.PredictedVideoBitrateKbps);
+
+        QualityModePairedPrediction none = PredictBoth([]);
+        Assert.Equal(QualityModePredictionReason.NoComparableHistory, none.Direct.Reason);
+        Assert.Null(none.Direct.PredictedVideoBitrateKbps);
+
+        QualityModePairedPrediction one = PredictBoth([Record("a", 1000)]);
+        Assert.Equal(QualityModePredictionReason.InsufficientIndependentSources, one.Direct.Reason);
+        Assert.Null(one.Ratio.PredictedVideoBitrateKbps);
+        Assert.Null(one.Direct.PredictedVideoBitrateKbps);
+    }
+
+    [Fact]
+    public void DuplicateFamilyCollapsesToLatestBeforeMinimumPeerCheck()
+    {
+        EncodingStatisticsRecord first = Record("repeat", 1000) with { EndUtc = DateTime.UnixEpoch };
+        EncodingStatisticsRecord latest = Record("repeat", 9000) with { EndUtc = DateTime.UnixEpoch.AddDays(1) };
+        EncodingStatisticsRecord independent = Record("independent", 7000);
+        QualityModePairedPrediction pair = PredictBoth([first, latest, independent]);
+        Assert.Equal(2, pair.Direct.IndependentSourceCount);
+        Assert.Equal(8000, pair.Direct.PredictedVideoBitrateKbps);
+
+        QualityModePairedPrediction onlyDuplicateFamily = PredictBoth([first, latest]);
+        Assert.Equal(1, onlyDuplicateFamily.Direct.IndependentSourceCount);
+        Assert.Equal(QualityModePredictionReason.InsufficientIndependentSources, onlyDuplicateFamily.Direct.Reason);
+        Assert.Null(onlyDuplicateFamily.Direct.PredictedVideoBitrateKbps);
+    }
+
+    [Fact]
+    public void RatioAndDirectShareAllAdmissionGatesAndExcludeTargetFamily()
+    {
+        EncodingStatisticsRecord targetFamily = Record("heldout", 100_000);
+        EncodingStatisticsRecord[] history =
+        [
+            Record("a", 3000), Record("b", 6000), targetFamily,
+            Record("old-settings", 10000) with { QualityModeSettingsSignature = "old" },
+            Record("other-cq", 10000, cq: 20),
+            Record("far-bpp", 10000, sourceKbps: 7000),
+            Record("far-pixels", 10000, width: 4000),
+            Record("failed", 10000) with { Outcome = EncodingStatisticsOutcome.Failed },
+            Record("recovered", 10000) with { RecoveredSuccessful = true },
+            Record("no-output-rate", 10000) with { SourceAdaptiveShadow = Record("tmp", 1).SourceAdaptiveShadow! with { ActualOutputVideoBitrateKbps = null } }
+        ];
+        QualityModePairedPrediction pair = PredictBoth(history);
+        Assert.Equal(new[] { "a", "b" }, pair.AdmittedPeerSourceFamilyKeys);
+        Assert.Equal(pair.Ratio.IndependentSourceCount, pair.Direct.IndependentSourceCount);
+        Assert.Equal(pair.Ratio.Reason, pair.Direct.Reason);
+        Assert.Equal(4500, pair.Direct.PredictedVideoBitrateKbps);
+    }
+
+    [Fact]
+    public void StrictFiveFamilyHoldoutReproducesOfflineRatioDirectAndExploratoryH50Results()
+    {
+        EncodingStatisticsRecord[] records =
+        [
+            ExperimentRecord("A", 10000.097, 9435.927),
+            ExperimentRecord("B", 9998.658, 9494.684),
+            ExperimentRecord("C", 14753.081, 9478.285),
+            ExperimentRecord("D", 14724.512, 9487.395),
+            ExperimentRecord("E", 8159.936, 9304.079)
+        ];
+        QualityModeHoldoutEvaluation evaluation =
+            NvencQualityModeVideoBitratePredictionService.EvaluateSourceHoldoutComparison(records);
+        Assert.Equal(5, evaluation.EligibleTargetCount);
+        Assert.Equal(5, evaluation.CoveredTargetCount);
+        Assert.Equal(100, evaluation.CoveragePercent);
+        Assert.All(evaluation.Targets, target =>
+        {
+            Assert.Equal(4, target.IndependentPeerCount);
+            Assert.DoesNotContain(target.SourceFamilyKey, target.AdmittedPeerSourceFamilyKeys,
+                StringComparer.OrdinalIgnoreCase);
+            Assert.Equal(4, target.AdmittedPeerSourceFamilyKeys.Count);
+            Assert.NotNull(target.RatioError);
+            Assert.NotNull(target.DirectError);
+            Assert.NotNull(target.ExploratoryH50Error);
+        });
+        double ratioMae = evaluation.Targets.Average(target => target.RatioError!.AbsoluteErrorPercent);
+        double directMae = evaluation.Targets.Average(target => target.DirectError!.AbsoluteErrorPercent);
+        double directWorst = evaluation.Targets.Max(target => target.DirectError!.AbsoluteErrorPercent);
+        double h50Mae = evaluation.Targets.Average(target => target.ExploratoryH50Error!.AbsoluteErrorPercent);
+        Assert.InRange(ratioMae, 30.5, 32.2);
+        Assert.InRange(directMae, 0.60, 0.75);
+        Assert.InRange(directWorst, 1.80, 2.00);
+        Assert.InRange(h50Mae, 14.5, 16.3);
+    }
+
+    [Fact]
+    public void SingleRecordHoldoutHasZeroCoverageForBothComparators()
+    {
+        QualityModeHoldoutEvaluation evaluation =
+            NvencQualityModeVideoBitratePredictionService.EvaluateSourceHoldoutComparison(
+                [ExperimentRecord("only", 8159.936, 9304.079)]);
+        QualityModeHeldOutComparison result = Assert.Single(evaluation.Targets);
+        Assert.Equal(1, evaluation.EligibleTargetCount);
+        Assert.Equal(0, evaluation.CoveredTargetCount);
+        Assert.Equal(0, evaluation.CoveragePercent);
+        Assert.Equal(QualityModePredictionReason.NoComparableHistory, result.Reason);
+        Assert.Null(result.RatioError);
+        Assert.Null(result.DirectError);
+        Assert.Null(result.ExploratoryH50Error);
     }
 
     [Fact]
@@ -124,8 +236,28 @@ public sealed class NvencQualityModeVideoBitratePredictionTests
             new("heldout", "h264", "hevc_nvenc", Signature, 19, 3000, 1920, 1080, 30, transformed),
             history);
 
+    private static QualityModePairedPrediction PredictBoth(IEnumerable<EncodingStatisticsRecord> history) =>
+        NvencQualityModeVideoBitratePredictionService.PredictBoth(
+            new("heldout", "h264", "hevc_nvenc", Signature, 19, 3000, 1920, 1080, 30, false), history);
+
+    private static EncodingStatisticsRecord ExperimentRecord(string family, double sourceKbps, double actualKbps)
+    {
+        EncodingStatisticsRecord record = Record(family, actualKbps, cq: 22, sourceKbps: sourceKbps, fps: 29.97002997002997);
+        record.EndUtc = DateTime.UnixEpoch.AddDays(family[0]);
+        record.SourceAdaptiveShadow = record.SourceAdaptiveShadow! with
+        {
+            Decision = record.SourceAdaptiveShadow.Decision with
+            {
+                SourceTotalBytes = 100_000_000 + family[0],
+                Preset = "p5"
+            }
+        };
+        return record;
+    }
+
     private static EncodingStatisticsRecord Record(string source, double actualKbps,
-        int cq = 19, bool transformed = false, int width = 1920) => new()
+        int cq = 19, bool transformed = false, int width = 1920,
+        double sourceKbps = 3000, double fps = 30) => new()
     {
         Id = source,
         SourcePath = source,
@@ -142,10 +274,10 @@ public sealed class NvencQualityModeVideoBitratePredictionTests
                 OutputCodec = "hevc_nvenc",
                 EncoderId = VideoEncoderIds.Nvenc,
                 FinalExecutionCq = cq,
-                SourceVideoBitrateKbps = 3000,
+                SourceVideoBitrateKbps = sourceKbps,
                 PlannedWidth = width,
                 PlannedHeight = 1080,
-                PlannedFps = 30,
+                PlannedFps = fps,
                 MaterialTransformationActive = transformed
             },
             ActualOutputCodec = "hevc",

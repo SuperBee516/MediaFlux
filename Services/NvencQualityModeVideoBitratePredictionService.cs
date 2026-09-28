@@ -24,6 +24,10 @@ public static class NvencQualityModeVideoBitratePredictionService
     }
 
     public static NvencQualityModePredictionResult Predict(
+        NvencQualityModePredictionRequest request, IEnumerable<EncodingStatisticsRecord> history) =>
+        PredictBoth(request, history).Ratio;
+
+    public static QualityModePairedPrediction PredictBoth(
         NvencQualityModePredictionRequest request, IEnumerable<EncodingStatisticsRecord> history)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -31,12 +35,12 @@ public static class NvencQualityModeVideoBitratePredictionService
         if (request.MaterialTransformationActive ||
             !request.SourceCodec.Equals("h264", StringComparison.OrdinalIgnoreCase) ||
             !request.OutputCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase))
-            return Unavailable(QualityModePredictionReason.Ineligible);
+            return UnavailablePair(QualityModePredictionReason.Ineligible);
         if (string.IsNullOrWhiteSpace(request.SourceFamilyKey) ||
             string.IsNullOrWhiteSpace(request.SettingsSignature) || request.Cq is < 0 or > 51 ||
             !Positive(request.SourceVideoBitrateKbps) || request.Width <= 0 || request.Height <= 0 ||
             !Positive(request.Fps))
-            return Unavailable(QualityModePredictionReason.MissingEvidence);
+            return UnavailablePair(QualityModePredictionReason.MissingEvidence);
 
         double sourcePixelsPerSecond = (double)request.Width * request.Height * request.Fps;
         double sourceBpp = request.SourceVideoBitrateKbps * 1000 / sourcePixelsPerSecond;
@@ -65,24 +69,89 @@ public static class NvencQualityModeVideoBitratePredictionService
             })
             // Repeated encodes of one source contribute only its latest validated result.
             .GroupBy(item => FamilyKey(item.Record), StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.OrderByDescending(item => item.Record.EndUtc).First().Shadow!)
+            .Select(group => group.OrderByDescending(item => item.Record.EndUtc)
+                .ThenBy(item => item.Record.Id, StringComparer.Ordinal)
+                .ThenBy(item => item.Record.SourcePath, StringComparer.Ordinal)
+                .ThenBy(item => item.Shadow!.Decision.SourceVideoBitrateKbps)
+                .ThenBy(item => item.Shadow!.ActualOutputVideoBitrateKbps)
+                .First())
             .ToArray();
 
+        string[] peerFamilies = comparable.Select(item => FamilyKey(item.Record))
+            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase).ThenBy(key => key, StringComparer.Ordinal).ToArray();
+
         if (comparable.Length == 0)
-            return Unavailable(QualityModePredictionReason.NoComparableHistory);
+            return UnavailablePair(QualityModePredictionReason.NoComparableHistory);
         if (comparable.Length < 2)
-            return new(null, QualityModePredictionConfidence.Unavailable,
+        {
+            var insufficient = new NvencQualityModePredictionResult(null,
+                QualityModePredictionConfidence.Unavailable,
                 QualityModePredictionReason.InsufficientIndependentSources, comparable.Length);
+            return new(insufficient, insufficient, peerFamilies);
+        }
 
         double[] ratios = comparable.Select(item =>
-                item.ActualOutputVideoBitrateKbps!.Value / item.Decision.SourceVideoBitrateKbps!.Value)
+                item.Shadow!.ActualOutputVideoBitrateKbps!.Value / item.Shadow.Decision.SourceVideoBitrateKbps!.Value)
             .OrderBy(value => value).ToArray();
         double prediction = Median(ratios) * request.SourceVideoBitrateKbps;
+        double[] outputs = comparable.Select(item => item.Shadow!.ActualOutputVideoBitrateKbps!.Value)
+            .OrderBy(value => value).ToArray();
+        double directPrediction = Median(outputs);
         // Moderate and High require a larger, independently held-out corpus; neither is awarded here.
-        return new(prediction, QualityModePredictionConfidence.Low,
+        var ratioResult = new NvencQualityModePredictionResult(prediction, QualityModePredictionConfidence.Low,
             QualityModePredictionReason.ComparableHistory, comparable.Length,
             ratios[0] * request.SourceVideoBitrateKbps,
             ratios[^1] * request.SourceVideoBitrateKbps);
+        var directResult = new NvencQualityModePredictionResult(directPrediction, QualityModePredictionConfidence.Low,
+            QualityModePredictionReason.ComparableHistory, comparable.Length, outputs[0], outputs[^1]);
+        return new(ratioResult, directResult, peerFamilies);
+    }
+
+    public static QualityModeHoldoutEvaluation EvaluateSourceHoldoutComparison(
+        IEnumerable<EncodingStatisticsRecord> history)
+    {
+        EncodingStatisticsRecord[] records = history.ToArray();
+        var targets = records.Select(record => (Record: record, Outcome: record.SourceAdaptiveShadow,
+                Decision: record.SourceAdaptiveShadow?.Decision))
+            .Where(item => item.Record.Outcome == EncodingStatisticsOutcome.Success && !item.Record.IsSampleJob &&
+                !item.Record.RecoveredSuccessful && item.Decision?.IsPrimaryCalibrationCandidate == true &&
+                item.Decision.MaterialTransformationActive == false &&
+                item.Outcome?.ActualOutputVideoBitrateKbps is > 0 &&
+                item.Decision.SourceVideoBitrateKbps is > 0 && item.Decision.FinalExecutionCq is >= 0 and <= 51 &&
+                item.Decision.PlannedWidth is > 0 && item.Decision.PlannedHeight is > 0 &&
+                item.Decision.PlannedFps is > 0 && !string.IsNullOrWhiteSpace(item.Record.SourcePath) &&
+                !string.IsNullOrWhiteSpace(item.Record.QualityModeSettingsSignature) &&
+                item.Decision.SourceCodec.Equals("h264", StringComparison.OrdinalIgnoreCase) &&
+                item.Decision.OutputCodec.Contains("hevc", StringComparison.OrdinalIgnoreCase) &&
+                item.Outcome.ActualOutputCodec.Equals("hevc", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(item => FamilyKey(item.Record), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(item => item.Record.EndUtc)
+                .ThenBy(item => item.Record.Id, StringComparer.Ordinal)
+                .ThenBy(item => item.Record.SourcePath, StringComparer.Ordinal)
+                .ThenBy(item => item.Decision!.SourceVideoBitrateKbps)
+                .ThenBy(item => item.Outcome!.ActualOutputVideoBitrateKbps).First())
+            .OrderBy(item => FamilyKey(item.Record), StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var comparisons = new List<QualityModeHeldOutComparison>(targets.Length);
+        foreach (var item in targets)
+        {
+            SourceAdaptiveShadowCalibration decision = item.Decision!;
+            double actual = item.Outcome!.ActualOutputVideoBitrateKbps!.Value;
+            var request = new NvencQualityModePredictionRequest(FamilyKey(item.Record), decision.SourceCodec,
+                decision.OutputCodec, item.Record.QualityModeSettingsSignature, decision.FinalExecutionCq!.Value,
+                decision.SourceVideoBitrateKbps!.Value, decision.PlannedWidth!.Value, decision.PlannedHeight!.Value,
+                decision.PlannedFps!.Value, decision.MaterialTransformationActive);
+            QualityModePairedPrediction pair = PredictBoth(request, records);
+            QualityModePredictionError? ratio = MakeError(pair.Ratio.PredictedVideoBitrateKbps, actual);
+            QualityModePredictionError? direct = MakeError(pair.Direct.PredictedVideoBitrateKbps, actual);
+            QualityModePredictionError? h50 = ratio is not null && direct is not null
+                ? MakeError((ratio.PredictedVideoBitrateKbps + direct.PredictedVideoBitrateKbps) / 2, actual)
+                : null;
+            comparisons.Add(new(FamilyKey(item.Record), actual, pair.Ratio.Reason,
+                pair.Ratio.IndependentSourceCount, pair.AdmittedPeerSourceFamilyKeys, ratio, direct, h50));
+        }
+        return new(targets.Length, comparisons);
     }
 
     public static IReadOnlyList<QualityModeHeldOutError> EvaluateSourceHoldout(
@@ -130,6 +199,20 @@ public static class NvencQualityModeVideoBitratePredictionService
 
     private static NvencQualityModePredictionResult Unavailable(QualityModePredictionReason reason) =>
         new(null, QualityModePredictionConfidence.Unavailable, reason, 0);
+
+    private static QualityModePairedPrediction UnavailablePair(QualityModePredictionReason reason)
+    {
+        var unavailable = Unavailable(reason);
+        return new(unavailable, unavailable, Array.Empty<string>());
+    }
+
+    private static QualityModePredictionError? MakeError(double? predicted, double actual)
+    {
+        if (predicted is not > 0 || !double.IsFinite(predicted.Value) || !Positive(actual)) return null;
+        double signedKbps = predicted.Value - actual;
+        double signedPercent = signedKbps / actual * 100;
+        return new(predicted.Value, signedKbps, Math.Abs(signedKbps), signedPercent, Math.Abs(signedPercent));
+    }
 
     private static string FamilyKey(EncodingStatisticsRecord record)
     {
