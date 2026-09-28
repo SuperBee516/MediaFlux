@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-09-27
+
+### Added
+
+- Added **Add Selected to Encode Queue** to the Library Analyzer Files context menu for sending eligible indexed files to the encode queue.
+
+### Fixed
+
+- Kept the Library Analyzer toolbar and Files context-menu queue commands synchronized for the same effective selection, including right-click selection behavior.
+
 ## [1.7.2] - 2026-09-27
 
 ### Fixed
@@ -1010,7 +1020,8 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.2...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.3...HEAD
+[1.7.3]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.2...v1.7.3
 [1.7.2]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.4...v1.7.0
