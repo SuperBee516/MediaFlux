@@ -17,6 +17,18 @@ public sealed class EncodingDiagnosticsTests
         Assert.Equal(42,value.Gpu);Assert.Equal(71,value.Encode);Assert.Equal(18,value.Decode);Assert.Equal(2048L*1048576,value.Vram);
     }
 
+    [Fact]
+    public void NvidiaTelemetryRetainsDeviceIdentityAndUnavailableValues()
+    {
+        var measured = NvidiaSmiTelemetryReader.ParseLine("1, RTX 4090, GPU-abc, 0, 0, N/A, 2048");
+        Assert.Equal(1, measured.Index);
+        Assert.Equal("RTX 4090", measured.Name);
+        Assert.Equal("GPU-abc", measured.Uuid);
+        Assert.Equal(0, measured.Encode);
+        Assert.Null(measured.Decode);
+        Assert.Equal(2048L * 1048576, measured.Vram);
+    }
+
     [Theory]
     [InlineData("frame= 100 fps= 58 q=22.0 size=1234KiB time=00:00:10.00 bitrate=1000.0kbits/s speed=2.50x",2.5,58,10)]
     [InlineData("size= 10kB time=00:00:05.50 bitrate=128.0kbits/s speed=1.25x",1.25,0,5.5)]
@@ -135,7 +147,7 @@ public sealed class EncodingDiagnosticsTests
     [Fact]
     public void CompletedSummaryRoundTripsThroughStatisticsAndHistory()
     {
-        string root=Path.Combine(Path.GetTempPath(),"MediaFlux-DiagnosticPersistence",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);try{var summary=new EncodingDiagnosticSummary{AverageSpeed=2.5,MedianSpeed=2.4,Samples=10,Observation="No obvious bottleneck detected."};string statsPath=Path.Combine(root,"statistics.jsonl");var statistics=new EncodingStatisticsService(statsPath);Assert.True(statistics.AppendFinalized(new EncodingStatisticsRecord{Id="job",StartUtc=DateTime.UtcNow.AddMinutes(-1),EndUtc=DateTime.UtcNow,Outcome=EncodingStatisticsOutcome.Success,Codec="hevc",Encoder="nvenc",ProcessingSeconds=60,DiagnosticSummary=summary}));Assert.Equal(2.5,new EncodingStatisticsService(statsPath).GetAll().Single().DiagnosticSummary!.AverageSpeed);var history=new HistoryService(Path.Combine(root,"history.json"));history.Append(new JobHistoryRecord{Id="job",Type=JobType.Encode,Status=JobStatus.Success,StartUtc=DateTime.UtcNow.AddMinutes(-1),EndUtc=DateTime.UtcNow,DiagnosticSummary=summary});Assert.Equal(10,new HistoryService(Path.Combine(root,"history.json")).LoadAll().Single().DiagnosticSummary!.Samples);}finally{if(Directory.Exists(root))Directory.Delete(root,true);}
+        string root=Path.Combine(Path.GetTempPath(),"MediaFlux-DiagnosticPersistence",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);try{var summary=new EncodingDiagnosticSummary{AverageSpeed=2.5,MedianSpeed=2.4,Samples=10,Observation="No obvious bottleneck detected.",GpuEncodeValidSamples=12,Lifecycle=new EncodeLifecycleTiming{ContainerFinalizeSeconds=42,DestinationStorage=new EncodeStorageLocation(@"Z:\",true,@"\\nas\media")}};string statsPath=Path.Combine(root,"statistics.jsonl");var statistics=new EncodingStatisticsService(statsPath);Assert.True(statistics.AppendFinalized(new EncodingStatisticsRecord{Id="job",StartUtc=DateTime.UtcNow.AddMinutes(-1),EndUtc=DateTime.UtcNow,Outcome=EncodingStatisticsOutcome.Success,Codec="hevc",Encoder="nvenc",ProcessingSeconds=60,DiagnosticSummary=summary}));var loadedStats=new EncodingStatisticsService(statsPath).GetAll().Single().DiagnosticSummary!;Assert.Equal(2.5,loadedStats.AverageSpeed);Assert.Equal(42,loadedStats.Lifecycle?.ContainerFinalizeSeconds);Assert.Equal(12,loadedStats.GpuEncodeValidSamples);var history=new HistoryService(Path.Combine(root,"history.json"));history.Append(new JobHistoryRecord{Id="job",Type=JobType.Encode,Status=JobStatus.Success,StartUtc=DateTime.UtcNow.AddMinutes(-1),EndUtc=DateTime.UtcNow,DiagnosticSummary=summary});var loadedHistory=new HistoryService(Path.Combine(root,"history.json")).LoadAll().Single().DiagnosticSummary!;Assert.Equal(10,loadedHistory.Samples);Assert.Equal(@"\\nas\media",loadedHistory.Lifecycle?.DestinationStorage?.SharePath);}finally{if(Directory.Exists(root))Directory.Delete(root,true);}
     }
 
     [Fact]

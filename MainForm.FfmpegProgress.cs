@@ -257,7 +257,19 @@ namespace MediaFlux
             if (!_activeEncodeRows.Contains(row))
                 _activeEncodeRows.Add(row);
 
-            _activeEncodeMetrics[row] = metrics;
+            // Raw FFmpeg telemetry and structured progress share this row state.
+            // Preserve the attempt tracker so a late callback from a prior
+            // recovery attempt cannot reopen an already advanced phase.
+            if (_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? current))
+            {
+                current.Fps = metrics.Fps;
+                current.Speed = metrics.Speed;
+                current.TimeStr = metrics.TimeStr;
+            }
+            else
+            {
+                _activeEncodeMetrics[row] = metrics;
+            }
 
             UpdateOperationProgressPresentation();
         }
@@ -268,12 +280,19 @@ namespace MediaFlux
         {
             if (row == null || row.DataGridView != dgvEncodeQueue)
                 return;
-
             if (!_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? attemptMetrics))
                 attemptMetrics = new EncodeMetrics();
             EncodeProgressAttemptDisposition attemptDisposition =
                 attemptMetrics.AttemptTracker.Observe(progress.Attempt);
             if (attemptDisposition == EncodeProgressAttemptDisposition.IgnoreStale)
+                return;
+            // Recovery starts a new FFmpeg attempt after a prior faststart or
+            // verification phase. Only that new attempt may reopen frame progress.
+            if (attemptDisposition == EncodeProgressAttemptDisposition.AcceptAndReset && progress.Attempt > 1)
+                row.Cells["colStatus"].Value = "Encoding";
+            // Already-posted progress from the same attempt cannot erase a
+            // container-finalization or verification stage.
+            if (!EncodeLifecycleDiagnostics.ShouldApplyFrameProgress(row.Cells["colStatus"].Value?.ToString()))
                 return;
             if (attemptDisposition == EncodeProgressAttemptDisposition.AcceptAndReset)
             {
@@ -337,6 +356,8 @@ namespace MediaFlux
         private void ApplyAuthoritativeEncodeProgress(DataGridViewRow row, string timeText, double ffmpegSpeed)
         {
             if (row == null || row.DataGridView != dgvEncodeQueue)
+                return;
+            if (!EncodeLifecycleDiagnostics.ShouldApplyFrameProgress(row.Cells["colStatus"].Value?.ToString()))
                 return;
             if (!TryGetRowPathAndDuration(row, out _, out double durationSec) || durationSec <= 0)
                 return;

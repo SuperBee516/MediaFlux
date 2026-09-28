@@ -31,7 +31,8 @@ namespace MediaFlux.Services
             object? syncRoot = null,
             Func<bool>? hasPendingItems = null,
             Action<int>? dispatchedCountUpdated = null,
-            Func<bool>? tryCompleteWhenDrained = null)
+            Func<bool>? tryCompleteWhenDrained = null,
+            Action<T, DateTime>? itemDispatched = null)
         {
             if (items == null) throw new ArgumentNullException(nameof(items));
             if (worker == null) throw new ArgumentNullException(nameof(worker));
@@ -83,6 +84,7 @@ namespace MediaFlux.Services
                     {
                         break;
                     }
+                    itemDispatched?.Invoke(item, DateTime.UtcNow);
 
                     // Start worker WITHOUT awaiting it → this is where we get parallelism.
                     // Guard against synchronous exceptions so they are treated like faulted tasks.

@@ -36,6 +36,15 @@ public sealed class FfmpegEncodeFailureClassifierTests
             FfmpegStorageFailureClassifier.Classify("source.mkv: Input/output error", "C:\\output.mp4").Kind);
     }
 
+    [Fact]
+    public void NonMonotonicAudioDtsMuxFailureIsNotLabeledAsDestinationIo()
+    {
+        string stderr = "[aost#0:1/copy] Non-monotonic DTS; previous: 38225920, current: 38225920; Error submitting a packet to the muxer: Invalid argument\n" +
+            "[out#0/mp4] Error muxing a packet\n[out#0/mp4] Task finished with error code: -22 (Invalid argument)";
+        Assert.Equal(FfmpegStorageFailureKind.None,
+            FfmpegStorageFailureClassifier.Classify(stderr, @"Z:\output.mp4").Kind);
+    }
+
     [Theory]
     [InlineData("Unknown encoder 'hevc_nvenc'", "Unavailable")]
     [InlineData("Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0", "DriverIncompatible")]

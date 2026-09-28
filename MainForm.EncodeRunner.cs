@@ -14,6 +14,9 @@ namespace MediaFlux
 {
     public partial class MainForm : MediaFluxForm
     {
+        private long _lastQueueCompletedTicks;
+        private bool _sequentialQueueTiming;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<DataGridViewRow, DateTime> _queueDispatchTimes = new();
         private async void btnStartEncode_Click(object? sender, EventArgs e)
         {
             await StartEncodeAsync();
@@ -148,6 +151,8 @@ namespace MediaFlux
             int maxParallel = requestedRows.Any(row => row.Tag is RowMeta { LibraryPolicyIntent: not null })
                 ? 1
                 : GetMaxConcurrentEncodes(); // Policy rows use conservative isolated scheduling.
+            _sequentialQueueTiming = maxParallel == 1;
+            Interlocked.Exchange(ref _lastQueueCompletedTicks, 0);
 
             // Gather rows to process in stable logical queue order. Presentation
             // sorting is intentionally not consulted here.
@@ -213,7 +218,8 @@ namespace MediaFlux
                         _activeEncodeQueueLock,
                         () => Volatile.Read(ref _pendingEncodeImports) > 0,
                         dispatchedCount => _activeEncodeQueueDispatchedCount = dispatchedCount,
-                        TryCompleteActiveEncodeQueueWhenDrained);
+                        TryCompleteActiveEncodeQueueWhenDrained,
+                        (row, utc) => _queueDispatchTimes[row] = utc);
                 }
 
                 if (_cancelEncode)
@@ -374,6 +380,7 @@ namespace MediaFlux
                 row == null || row.IsNewRow || row.DataGridView == null ||
                 !TryGetRowPathAndDuration(row, out string sourcePath, out _))
             {
+                if (row != null) _queueDispatchTimes.TryRemove(row, out _);
                 return;
             }
 
@@ -385,9 +392,11 @@ namespace MediaFlux
                 ? meta.DvdEncodeOptions.OutputPath
                 : sourcePath;
             _runningEncodeJobs[row] = activeJobPath;
+            DateTime dispatchUtc = _queueDispatchTimes.TryRemove(row, out DateTime recordedDispatchUtc)
+                ? recordedDispatchUtc : DateTime.UtcNow;
             try
             {
-                await EncodeSingleRowCore(row, cancellationToken, runOutputContainer);
+                await EncodeSingleRowCore(row, cancellationToken, runOutputContainer, dispatchUtc);
             }
             finally
             {
@@ -399,7 +408,8 @@ namespace MediaFlux
         private async Task EncodeSingleRowCore(
             DataGridViewRow row,
             CancellationToken cancellationToken,
-            OutputContainerSelection runOutputContainer)
+            OutputContainerSelection runOutputContainer,
+            DateTime dispatchUtc)
         {
             if (_cancelEncode || cancellationToken.IsCancellationRequested)
                 return;
@@ -496,6 +506,11 @@ namespace MediaFlux
                 meta.AppendInspectorLogLine(line);
             }
             var jobStartUtc = DateTime.UtcNow;
+            var lifecycle = new EncodeLifecycleDiagnostics();
+            lifecycle.Record(EncodeLifecycleEvent.QueueDispatch, dispatchUtc);
+            long previousCompletionTicks = Interlocked.Read(ref _lastQueueCompletedTicks);
+            if (_sequentialQueueTiming && previousCompletionTicks > 0)
+                lifecycle.RecordPreviousQueueCompletion(new DateTime(previousCompletionTicks, DateTimeKind.Utc));
             if (meta.StatisticsStartUtc == default)
                 meta.StatisticsStartUtc = jobStartUtc;
             long? sourceSizeBytes = isDvdEncode
@@ -798,6 +813,7 @@ namespace MediaFlux
                     encoderSnapshot.Validated.Resolved.Selection.EncoderId, videoCodec, encoderPreset,
                     sourceResolution, diagnosticOutputHeight is > 0 ? $"{diagnosticOutputHeight}p" : sourceResolution,
                     tenBit ? 10 : 8, durationSec > 0 ? durationSec : null, logicalSourcePath), jobStartUtc);
+                _encodingDiagnosticsService.AttachLifecycle(meta.StatisticsOperationId, lifecycle);
                 diagnosticStarted = true;
 
                 // Per-job ffmpeg output callback
@@ -852,9 +868,21 @@ namespace MediaFlux
                                     "99%",
                                     "00:00:00",
                                     $"{status}. The original source is retained until final verification completes.");
+                                UpdateOperationProgressPresentation();
                             }
                         });
                     },
+                    LifecycleDiagnostics = lifecycle,
+                    FaststartStartedCallback = () => Ui(() =>
+                    {
+                        if (row.DataGridView == dgvEncodeQueue)
+                        {
+                            SetEncodeRowState(row, EncodeLifecycleDiagnostics.FaststartStatus,
+                                EncodeLifecycleDiagnostics.FaststartProgress, "--:--:--",
+                                "FFmpeg is relocating MP4 metadata; output verification follows.");
+                            UpdateOperationProgressPresentation();
+                        }
+                    }),
                     OutputContainer = requestedOutputContainer,
                     ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
                     CompatibilityPolicy = GetContainerCompatibilityPolicy(),
@@ -952,9 +980,14 @@ namespace MediaFlux
                         result);
                 jobLog.AppendLine($"[MediaFlux] {sourceDeletion.Message}");
 
-                // On success, mark 100% and clear ETA
+                DateTime jobEndUtc = DateTime.UtcNow;
+                long? outputSizeBytes =
+                    result.FinalOutputSizeBytes ??
+                    TryGetFileSizeBytes(result.OutputPath);
+
+                // On success, mark 100% and clear ETA after validated finalization.
                 System.Threading.Interlocked.Increment(ref _encodeSucceededCount);
-                Ui(() =>
+                UiInvoke(() =>
                 {
                     if (row.DataGridView != dgvEncodeQueue)
                         return;
@@ -966,17 +999,17 @@ namespace MediaFlux
                         "100%",
                         "00:00:00",
                         JobHistoryPresentation.SummaryFor(completedTerminal, $"Output validated and finalized. {sourceDeletion.Message}"));
+                    lifecycle.Record(EncodeLifecycleEvent.QueueCompleted);
+                    if (_sequentialQueueTiming)
+                        Interlocked.Exchange(ref _lastQueueCompletedTicks, DateTime.UtcNow.Ticks);
                 });
 
-                DateTime jobEndUtc = DateTime.UtcNow;
                 diagnosticSummary = _encodingDiagnosticsService.Complete(
                     meta.StatisticsOperationId,
-                    finalizationStartedUtc.HasValue ? Math.Max(0, (jobEndUtc - finalizationStartedUtc.Value).TotalSeconds) : 0);
+                    finalizationStartedUtc.HasValue ? Math.Max(0, (jobEndUtc - finalizationStartedUtc.Value).TotalSeconds) : 0,
+                    lifecycle.Snapshot(inputSource.SourcePath, result.OutputPath, outputSizeBytes));
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (jobEndUtc - jobStartUtc).TotalSeconds);
-                long? outputSizeBytes =
-                    result.FinalOutputSizeBytes ??
-                    TryGetFileSizeBytes(result.OutputPath);
 
                 // append success to history – never let this kill the job
                 try

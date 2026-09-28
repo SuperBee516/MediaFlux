@@ -7,6 +7,26 @@ namespace MediaFlux.Tests;
 public sealed class EncodeQueueRunnerTests
 {
     [Fact]
+    public async Task DispatchCallbackPrecedesWorkerAndRecordsEachClaimOnce()
+    {
+        var dispatched = new ConcurrentDictionary<int, DateTime>();
+        await new EncodeQueueRunner().RunAsync(
+            new[] { 1, 2 },
+            item =>
+            {
+                Assert.True(dispatched.TryGetValue(item, out DateTime utc));
+                Assert.Equal(DateTimeKind.Utc, utc.Kind);
+                return Task.CompletedTask;
+            },
+            maxParallel: 1,
+            isPaused: () => false,
+            isCancelled: () => false,
+            itemDispatched: (item, utc) => Assert.True(dispatched.TryAdd(item, utc)));
+
+        Assert.Equal(new[] { 1, 2 }, dispatched.Keys.OrderBy(item => item));
+    }
+
+    [Fact]
     public async Task AppendedItemsAreDispatchedAfterTheInitialOrderedList()
     {
         var items = new List<int> { 1, 2 };
@@ -217,7 +237,7 @@ public sealed class EncodeQueueRunnerTests
         int pendingImport = 1;
         bool accepting = true;
 
-        Task run = new EncodeQueueRunner().RunAsync(
+        Task run = Task.Run(() => new EncodeQueueRunner().RunAsync(
             items,
             item =>
             {
@@ -245,7 +265,7 @@ public sealed class EncodeQueueRunnerTests
                     return false;
                 accepting = false;
                 return true;
-            });
+            }));
 
         Assert.True(appendWindow.Wait(TimeSpan.FromSeconds(10)));
         lock (sync)

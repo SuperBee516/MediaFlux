@@ -41,8 +41,13 @@ internal static class FfmpegStorageFailureClassifier
 
         if (referencesOutput && TryFind(lines, "No such file or directory", "The system cannot find the path specified", out string[] unavailable))
             return new(FfmpegStorageFailureKind.DestinationUnavailable, unavailable);
-        if (TryFind(lines, "Error writing trailer", "Error muxing a packet", "av_interleaved_write_frame", out string[] io) ||
-            (referencesOutput && TryFind(lines, "Input/output error", "ERROR_IO_DEVICE", out io)))
+        // Generic mux errors (including non-monotonic DTS / invalid argument)
+        // do not establish a destination write failure on their own.
+        if (TryFind(lines, "Input/output error", "ERROR_IO_DEVICE", out string[] io) &&
+            (referencesOutput || lines.Any(line =>
+                line.Contains("Error writing trailer", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("Error muxing a packet", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("av_interleaved_write_frame", StringComparison.OrdinalIgnoreCase))))
             return new(FfmpegStorageFailureKind.WriteIoFailure, io);
 
         return new(FfmpegStorageFailureKind.None, Array.Empty<string>());

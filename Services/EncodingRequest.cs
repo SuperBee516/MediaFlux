@@ -55,6 +55,9 @@ namespace MediaFlux.Services
         public Action<string>? OutputPathCallback { get; init; }
         public Action<string>? StagingPathCallback { get; init; }
         public Action<string>? FinalizationStatusCallback { get; init; }
+        /// <summary>Optional observational lifecycle capture for queue diagnostics.</summary>
+        public EncodeLifecycleDiagnostics? LifecycleDiagnostics { get; init; }
+        public Action? FaststartStartedCallback { get; init; }
         public TimeSpan? SampleStart { get; init; }
         public TimeSpan? SampleDuration { get; init; }
         // Benchmark orchestration owns its deliberately bounded decode retries.
