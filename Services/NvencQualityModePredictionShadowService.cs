@@ -33,10 +33,13 @@ public sealed class NvencQualityModePredictionShadowService
         string settingsSignature,
         IEnumerable<EncodingStatisticsRecord> finalizedHistory,
         string mediaFluxVersion,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        PredictionShadowExperimentAssignment? experimentAssignment = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(finalizedHistory);
+        if (experimentAssignment is not null && !experimentAssignment.IsValid())
+            throw new ArgumentException("A research experiment assignment must have a non-empty ID, positive slot and attempt, and defined stratum and role.", nameof(experimentAssignment));
         cancellationToken.ThrowIfCancellationRequested();
         EncodingPlan plan = snapshot.Plan;
         SourceAdaptiveShadowCalibration? decision = plan.SourceAdaptiveShadow;
@@ -97,7 +100,7 @@ public sealed class NvencQualityModePredictionShadowService
         string observationId = snapshot.PlanId.ToString("N");
         var observation = new PredictionShadowFrozenObservation
         {
-            SchemaVersion = 2,
+            SchemaVersion = 3,
             ObservationId = observationId,
             PlanId = snapshot.PlanId,
             SourceFamilyKey = familyKey,
@@ -126,7 +129,8 @@ public sealed class NvencQualityModePredictionShadowService
             AdmittedPeerSourceFamilyKeys = pair.AdmittedPeerSourceFamilyKeys.ToArray(),
             RatioAndDirectSharePeers = pair.AdmittedPeerSourceFamilyKeys.Count == pair.Ratio.IndependentSourceCount &&
                 pair.Ratio.IndependentSourceCount == pair.Direct.IndependentSourceCount,
-            Complexity = complexity
+            Complexity = complexity,
+            ExperimentAssignment = experimentAssignment
         };
 
         try

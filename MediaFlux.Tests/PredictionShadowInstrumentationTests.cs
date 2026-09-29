@@ -147,7 +147,8 @@ public sealed class PredictionShadowInstrumentationTests : IDisposable
             snapshot, source, signature, history, "1.7.3", CancellationToken.None))!;
 
         Assert.Equal(snapshot.PlanId.ToString("N"), observation.ObservationId);
-        Assert.Equal(2, observation.SchemaVersion);
+        Assert.Equal(3, observation.SchemaVersion);
+        Assert.Null(observation.ExperimentAssignment);
         Assert.Equal(Cutoff, observation.PredictionEvidenceCutoffUtc);
         Assert.Equal(Cutoff, observation.FrozenUtc);
         Assert.Equal(2, observation.AdmittedPeerSourceFamilyKeys.Count);
@@ -176,7 +177,8 @@ public sealed class PredictionShadowInstrumentationTests : IDisposable
         Assert.Single(journal.ReadEvents());
         PredictionShadowJournalEvent frozenEvent = Assert.Single(journal.ReadEvents());
         Assert.Equal("Frozen", frozenEvent.EventType);
-        Assert.Equal(2, frozenEvent.SchemaVersion);
+        Assert.Equal(3, frozenEvent.SchemaVersion);
+        Assert.Null(frozenEvent.Frozen!.ExperimentAssignment);
         Assert.Null(frozenEvent.Outcome);
         Assert.Equal(observation.Direct.PredictedVideoBitrateKbps, frozenEvent.Frozen!.Direct.PredictedVideoBitrateKbps);
 
@@ -197,6 +199,63 @@ public sealed class PredictionShadowInstrumentationTests : IDisposable
         Assert.Equal(100_000_000L, finalOutcome.SizeChangeBytes);
         Assert.Equal(12.5, finalOutcome.SizeChangePercent!.Value, 6);
         Assert.Equal(3, runner.Calls);
+    }
+
+    [Fact]
+    public async Task ExperimentAssignmentRoundTripsToOutcomeAndKeepsAttemptsDistinctWithoutChangingPredictions()
+    {
+        string ffmpeg = CreateFile("ffmpeg-experiment.exe");
+        string source = CreateFile("experiment-target.mp4");
+        string signature = Signature;
+        var runner = new PgmWritingRunner();
+        var ordinaryJournal = new PredictionShadowObservationJournal(Path.Combine(_root, "ordinary-v3.jsonl"));
+        var experimentJournal = new PredictionShadowObservationJournal(Path.Combine(_root, "experiment-v3.jsonl"));
+        var ordinaryService = new NvencQualityModePredictionShadowService(
+            ordinaryJournal, new PredictionShadowComplexitySamplingService(ffmpeg, runner), utcNow: () => Cutoff);
+        var experimentService = new NvencQualityModePredictionShadowService(
+            experimentJournal, new PredictionShadowComplexitySamplingService(ffmpeg, runner), utcNow: () => Cutoff);
+        EncodingStatisticsRecord[] history =
+        [
+            MakeRecord("baseline-a", "family-a", 5000, 8000, 400_000_000, Cutoff.AddMinutes(-2)),
+            MakeRecord("baseline-b", "family-b", 8000, 6000, 700_000_000, Cutoff.AddMinutes(-1))
+        ];
+
+        PredictionShadowFrozenObservation ordinary = (await ordinaryService.CaptureAsync(
+            MakeSnapshot(), source, signature, history, "1.7.3"))!;
+        var attemptOne = new PredictionShadowExperimentAssignment(
+            "MF-3C3-G3-R1", 4, 1, PredictionShadowExperimentStratum.Control, PredictionShadowExperimentRole.Target);
+        PredictionShadowFrozenObservation first = (await experimentService.CaptureAsync(
+            MakeSnapshot(), source, signature, history, "1.7.3", experimentAssignment: attemptOne))!;
+
+        Assert.True(experimentJournal.TryReadEventsForTemporalComparison(out IReadOnlyList<PredictionShadowJournalEvent> firstRead));
+        Assert.Equal(attemptOne, Assert.Single(firstRead).Frozen!.ExperimentAssignment);
+        Assert.Equal(ordinary.Ratio, first.Ratio);
+        Assert.Equal(ordinary.Direct, first.Direct);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(ordinary.TemporalNeighbor),
+            System.Text.Json.JsonSerializer.Serialize(first.TemporalNeighbor));
+        Assert.Null(Assert.Single(ordinaryJournal.ReadEvents()).Frozen!.ExperimentAssignment);
+
+        var attemptTwo = attemptOne with { Attempt = 2, Role = PredictionShadowExperimentRole.Replacement };
+        PredictionShadowFrozenObservation second = (await experimentService.CaptureAsync(
+            MakeSnapshot(), CreateFile("experiment-replacement.mp4"), signature, history, "1.7.3",
+            experimentAssignment: attemptTwo))!;
+        Assert.NotEqual(first.ObservationId, second.ObservationId);
+
+        Assert.True(experimentService.RecordOutcome(first.ObservationId, "Canceled", "Canceled", "NotRun", "NotRun",
+            false, null, null, Cutoff.AddSeconds(5)));
+        Assert.True(experimentService.RecordOutcome(second.ObservationId, "Failed", "EncodeFailed", "Failed", "NotRun",
+            false, null, null, Cutoff.AddSeconds(10)));
+        PredictionShadowJournalEvent[] allEvents = experimentJournal.ReadEvents().ToArray();
+        Assert.Equal(new[] { 3, 3, 3, 3 }, allEvents.Select(entry => entry.SchemaVersion));
+        Assert.Equal(new[] { attemptOne, attemptTwo }, allEvents.Where(entry => entry.Frozen is not null)
+            .Select(entry => entry.Frozen!.ExperimentAssignment));
+        Assert.Equal(new[] { attemptOne, attemptTwo }, allEvents.Where(entry => entry.Outcome is not null)
+            .Select(entry => entry.Outcome!.ExperimentAssignment));
+        Assert.Equal(attemptOne, allEvents.Single(entry => entry.ObservationId == first.ObservationId && entry.Outcome is not null)
+            .Outcome!.ExperimentAssignment);
+        Assert.Equal(attemptTwo, allEvents.Single(entry => entry.ObservationId == second.ObservationId && entry.Outcome is not null)
+            .Outcome!.ExperimentAssignment);
+        Assert.True(experimentJournal.TryReadEventsForTemporalComparison(out _));
     }
 
     [Theory]

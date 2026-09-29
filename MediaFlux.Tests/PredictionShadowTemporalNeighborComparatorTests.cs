@@ -336,9 +336,46 @@ public sealed class PredictionShadowTemporalNeighborComparatorTests : IDisposabl
         Assert.True(journal.TryReadEventsForTemporalComparison(out IReadOnlyList<PredictionShadowJournalEvent> events));
         Assert.All(events, entry => Assert.Equal(1, entry.SchemaVersion));
         Assert.All(events.Where(entry => entry.Frozen is not null), entry => Assert.Null(entry.Frozen!.TemporalNeighbor));
+        Assert.All(events.Where(entry => entry.Frozen is not null), entry => Assert.Null(entry.Frozen!.ExperimentAssignment));
+        Assert.All(events.Where(entry => entry.Outcome is not null), entry => Assert.Null(entry.Outcome!.ExperimentAssignment));
         PredictionShadowTemporalNeighborComparison result = _comparator.Compare(
             MakeTarget(0.3, ["a", "b"]), true, events);
         Assert.Equal("", result.AbstentionReason);
+    }
+
+    [Fact]
+    public void V3ExperimentAssignmentsDoNotChangeTemporalEvidenceOrNeighborSelection()
+    {
+        PredictionShadowExperimentAssignment assignment = new(
+            "MF-3C3-G3-R1", 1, 1, PredictionShadowExperimentStratum.Low, PredictionShadowExperimentRole.Target);
+        PredictionShadowJournalEvent[][] peers =
+        [
+            Peer("v3-a", "a", 0.2, 4000, 5000, schemaVersion: 3),
+            Peer("v3-b", "b", 0.4, 8000, 6000, schemaVersion: 3)
+        ];
+        PredictionShadowJournalEvent[] untaggedEvents = peers.SelectMany(peer => peer).ToArray();
+        PredictionShadowJournalEvent[] taggedEvents = untaggedEvents
+            .Select(entry => WithExperimentAssignment(entry, assignment)).ToArray();
+        PredictionShadowFrozenObservation untaggedTarget = MakeTarget(0.3, ["a", "b"]) with { SchemaVersion = 3 };
+        PredictionShadowFrozenObservation taggedTarget = untaggedTarget with { ExperimentAssignment = assignment };
+
+        PredictionShadowTemporalNeighborComparison untagged =
+            _comparator.Compare(untaggedTarget, true, untaggedEvents);
+        PredictionShadowTemporalNeighborComparison tagged =
+            _comparator.Compare(taggedTarget, true, taggedEvents);
+
+        AssertTemporalResultsEqual(untagged, tagged);
+        Assert.Equal(2, tagged.EligiblePeerCount);
+        Assert.Equal(new[] { "a", "b" }, tagged.SelectedNeighbors.Select(neighbor => neighbor.SourceFamilyKey));
+
+        PredictionShadowTemporalNeighborComparison untaggedAbstention = _comparator.Compare(
+            untaggedTarget with { Complexity = Sampling(PredictionShadowSamplingStatus.Succeeded, 0.9) },
+            true, untaggedEvents);
+        PredictionShadowTemporalNeighborComparison taggedAbstention = _comparator.Compare(
+            taggedTarget with { Complexity = Sampling(PredictionShadowSamplingStatus.Succeeded, 0.9) },
+            true, taggedEvents);
+        AssertTemporalResultsEqual(untaggedAbstention, taggedAbstention);
+        Assert.Equal("TargetTemporalValueOutsideEligiblePeerRange", taggedAbstention.AbstentionReason);
     }
 
     [Fact]
@@ -387,12 +424,16 @@ public sealed class PredictionShadowTemporalNeighborComparatorTests : IDisposabl
         PredictionShadowJournalEvent[] roundTrip = journal.ReadEvents().ToArray();
 
         Assert.Equal(new[] { 2, 2 }, roundTrip.Select(entry => entry.SchemaVersion));
+        Assert.Null(roundTrip[0].Frozen!.ExperimentAssignment);
+        Assert.Null(roundTrip[1].Outcome!.ExperimentAssignment);
         Assert.Equal(new[] { "a", "b" }, roundTrip[0].Frozen!.TemporalNeighbor!.SelectedNeighbors
             .Select(peer => peer.SourceFamilyKey));
         Assert.Equal(8000, roundTrip[0].Frozen!.TemporalNeighbor!.Ratio.PredictedVideoBitrateKbps);
         Assert.Equal(1.0, roundTrip[0].Frozen!.TemporalNeighbor!.MeanNeighborOutputToSourceVideoBitrateRatio);
         Assert.Equal(1000, roundTrip[1].Outcome!.TemporalNeighborRatioSignedErrorKbps);
         Assert.Equal(-1500, roundTrip[1].Outcome!.TemporalNeighborDirectSignedErrorKbps);
+        Assert.True(journal.TryReadEventsForTemporalComparison(out IReadOnlyList<PredictionShadowJournalEvent> strictRoundTrip));
+        Assert.Equal(new[] { 2, 2 }, strictRoundTrip.Select(entry => entry.SchemaVersion));
     }
 
     [Fact]
@@ -476,6 +517,31 @@ public sealed class PredictionShadowTemporalNeighborComparatorTests : IDisposabl
         PredictionShadowFrozenObservation target,
         params PredictionShadowJournalEvent[][] peers) =>
         _comparator.Compare(target, true, peers.SelectMany(peer => peer).ToArray());
+
+    private static PredictionShadowJournalEvent WithExperimentAssignment(
+        PredictionShadowJournalEvent entry,
+        PredictionShadowExperimentAssignment assignment) => entry with
+        {
+            Frozen = entry.Frozen is { } frozen ? frozen with { ExperimentAssignment = assignment } : null,
+            Outcome = entry.Outcome is { } outcome ? outcome with { ExperimentAssignment = assignment } : null
+        };
+
+    private static void AssertTemporalResultsEqual(
+        PredictionShadowTemporalNeighborComparison expected,
+        PredictionShadowTemporalNeighborComparison actual)
+    {
+        Assert.Equal(expected.ComparatorVersion, actual.ComparatorVersion);
+        Assert.Equal(expected.K, actual.K);
+        Assert.Equal(expected.TargetTemporalFrameDifference, actual.TargetTemporalFrameDifference);
+        Assert.Equal(expected.EligiblePeerCount, actual.EligiblePeerCount);
+        Assert.Equal(expected.EligiblePeerTemporalMinimum, actual.EligiblePeerTemporalMinimum);
+        Assert.Equal(expected.EligiblePeerTemporalMaximum, actual.EligiblePeerTemporalMaximum);
+        Assert.Equal(expected.MeanNeighborOutputToSourceVideoBitrateRatio, actual.MeanNeighborOutputToSourceVideoBitrateRatio);
+        Assert.Equal(expected.Ratio, actual.Ratio);
+        Assert.Equal(expected.Direct, actual.Direct);
+        Assert.Equal(expected.AbstentionReason, actual.AbstentionReason);
+        Assert.Equal(expected.SelectedNeighbors.ToArray(), actual.SelectedNeighbors.ToArray());
+    }
 
     private static PredictionShadowFrozenObservation MakeTarget(double temporal, IReadOnlyList<string> admitted) => new()
     {

@@ -50,6 +50,33 @@ public static class PredictionShadowTemporalNeighborVersions
     public const string K2 = "temporal-neighbor-k2-v1";
 }
 
+public enum PredictionShadowExperimentStratum
+{
+    Low,
+    Control,
+    High
+}
+
+public enum PredictionShadowExperimentRole
+{
+    Target,
+    Replacement
+}
+
+/// <summary>Explicit research-only identity for one assigned experiment attempt.</summary>
+public sealed record PredictionShadowExperimentAssignment(
+    string ExperimentId,
+    int Slot,
+    int Attempt,
+    PredictionShadowExperimentStratum Stratum,
+    PredictionShadowExperimentRole Role)
+{
+    public bool IsValid() =>
+        !string.IsNullOrWhiteSpace(ExperimentId) &&
+        Slot > 0 && Attempt > 0 &&
+        Enum.IsDefined(Stratum) && Enum.IsDefined(Role);
+}
+
 public sealed record PredictionShadowTemporalNeighbor
 {
     public required string SourceFamilyKey { get; init; }
@@ -83,7 +110,7 @@ public sealed record PredictionShadowTemporalNeighborComparison
 /// </summary>
 public sealed record PredictionShadowFrozenObservation
 {
-    /// <summary>Version 2 adds optional temporal-neighbor data; version 1 remains readable as-is.</summary>
+    /// <summary>Defaults to legacy v1 when a historical JSON line omits this field; capture writes v3.</summary>
     public int SchemaVersion { get; init; } = 1;
     public required string ObservationId { get; init; }
     public Guid PlanId { get; init; }
@@ -117,11 +144,13 @@ public sealed record PredictionShadowFrozenObservation
     public bool RatioAndDirectSharePeers { get; init; }
     public PredictionShadowSamplingObservation Complexity { get; init; } = new();
     public PredictionShadowTemporalNeighborComparison? TemporalNeighbor { get; init; }
+    public PredictionShadowExperimentAssignment? ExperimentAssignment { get; init; }
 }
 
 /// <summary>Later finalization facts; never used to recompute a frozen forecast.</summary>
 public sealed record PredictionShadowOutcome
 {
+    public PredictionShadowExperimentAssignment? ExperimentAssignment { get; init; }
     public string State { get; init; } = "";
     public string TerminalResult { get; init; } = "";
     public string ValidationState { get; init; } = "";
@@ -150,7 +179,7 @@ public sealed record PredictionShadowOutcome
 /// <summary>Append-only lifecycle event in the separate research JSONL journal.</summary>
 public sealed record PredictionShadowJournalEvent
 {
-    /// <summary>New temporal-comparator events use version 2; existing version 1 pairs are not migrated.</summary>
+    /// <summary>Defaults to legacy v1 when a historical JSON line omits this field; journal appends use the Frozen version.</summary>
     public int SchemaVersion { get; init; } = 1;
     public required string EventId { get; init; }
     public required string ObservationId { get; init; }

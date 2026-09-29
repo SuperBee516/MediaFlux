@@ -42,6 +42,36 @@ namespace MediaFlux
             ToolStripMenuItem queuePriority = CreateQueuePriorityMenu();
             menu.Items.Add(queuePriority);
 
+            var researchExperiment = new ToolStripMenuItem("Research Experiment");
+            var researchAssignmentStatus = new ToolStripMenuItem("No experiment assignment") { Enabled = false };
+            var assignResearchExperiment = new ToolStripMenuItem("Assign or Edit Assignment…", null,
+                AssignResearchExperimentToSelectedRow_Click);
+            var clearResearchExperiment = new ToolStripMenuItem("Clear Assignment", null,
+                ClearResearchExperimentFromSelectedRow_Click);
+            researchExperiment.DropDownItems.Add(researchAssignmentStatus);
+            researchExperiment.DropDownItems.Add(new ToolStripSeparator());
+            researchExperiment.DropDownItems.Add(assignResearchExperiment);
+            researchExperiment.DropDownItems.Add(clearResearchExperiment);
+            researchExperiment.DropDownOpening += (_, __) =>
+            {
+                DataGridViewRow[] selectedRows = dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>()
+                    .Where(row => !row.IsNewRow).ToArray();
+                PredictionShadowExperimentAssignment? assignment = selectedRows.Length == 1
+                    ? (selectedRows[0].Tag as RowMeta)?.PredictionShadowExperimentAssignment
+                    : null;
+                researchAssignmentStatus.Text = selectedRows.Length switch
+                {
+                    0 => "Select one queue row",
+                    > 1 => "Select one row to view its assignment",
+                    _ => assignment is null
+                        ? "No experiment assignment"
+                        : FormatResearchExperimentAssignment(assignment)
+                };
+                assignResearchExperiment.Enabled = selectedRows.Length == 1 && !_encodingActive;
+                clearResearchExperiment.Enabled = selectedRows.Length == 1 && assignment is not null && !_encodingActive;
+            };
+            menu.Items.Add(researchExperiment);
+
             var customSettings = new ToolStripMenuItem("Encode Settings");
             var customProfileMenu = new ToolStripMenuItem("Quality / File Size");
 

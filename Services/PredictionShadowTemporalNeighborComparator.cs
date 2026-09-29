@@ -148,7 +148,7 @@ public sealed class PredictionShadowTemporalNeighborComparator
 
         foreach (PredictionShadowJournalEvent? entry in events)
         {
-            if (entry is null || entry.SchemaVersion is not (1 or 2) ||
+            if (entry is null || entry.SchemaVersion is not (1 or 2 or 3) ||
                 string.IsNullOrWhiteSpace(entry.ObservationId) || entry.RecordedUtc == default ||
                 entry.RecordedUtc.Kind != DateTimeKind.Utc || string.IsNullOrWhiteSpace(entry.EventId) ||
                 !eventIds.Add(entry.EventId))

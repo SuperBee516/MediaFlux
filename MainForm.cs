@@ -2653,6 +2653,7 @@ namespace MediaFlux
             public string? CuratedFailureDiagnosticReport;
             public EncodingPlan? IntelligencePlan;
             public EncodingExecutionOutcome? IntelligenceOutcome;
+            public PredictionShadowExperimentAssignment? PredictionShadowExperimentAssignment;
             public EncodingQualityResolution? QualityPreview;
             public int QualityPreviewRequestGeneration = int.MinValue;
             public EncodingSizePredictionCalibration? SizePredictionCalibration;

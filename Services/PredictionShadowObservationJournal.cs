@@ -66,6 +66,10 @@ public sealed class PredictionShadowObservationJournal
             if (!_frozen.TryGetValue(observationId, out PredictionShadowFrozenObservation? frozen) ||
                 _eventIds.Contains($"{observationId}:outcome"))
                 return false;
+            PredictionShadowOutcome outcomeWithFrozenAssignment = outcome with
+            {
+                ExperimentAssignment = frozen.ExperimentAssignment
+            };
             var entry = new PredictionShadowJournalEvent
             {
                 SchemaVersion = frozen.SchemaVersion,
@@ -73,7 +77,7 @@ public sealed class PredictionShadowObservationJournal
                 ObservationId = observationId,
                 EventType = "Outcome",
                 RecordedUtc = recordedUtc,
-                Outcome = outcome
+                Outcome = outcomeWithFrozenAssignment
             };
             AppendLine(entry);
             _eventIds.Add(entry.EventId);
@@ -123,7 +127,7 @@ public sealed class PredictionShadowObservationJournal
                     if (string.IsNullOrWhiteSpace(line))
                         return false;
                     PredictionShadowJournalEvent? entry = JsonSerializer.Deserialize<PredictionShadowJournalEvent>(line, _json);
-                    if (entry is null || entry.SchemaVersion is not (1 or 2) ||
+                    if (entry is null || entry.SchemaVersion is not (1 or 2 or 3) ||
                         string.IsNullOrWhiteSpace(entry.EventId) || string.IsNullOrWhiteSpace(entry.ObservationId) ||
                         entry.RecordedUtc == default || entry.RecordedUtc.Kind != DateTimeKind.Utc ||
                         !eventIds.Add(entry.EventId))

@@ -911,7 +911,8 @@ namespace MediaFlux
                             settingsSignature,
                             _encodingStatisticsService.GetAll(),
                             Application.ProductVersion,
-                            token).ConfigureAwait(false);
+                            token,
+                            meta.PredictionShadowExperimentAssignment).ConfigureAwait(false);
                         if (captured != null)
                             Debug.WriteLine($"[PredictionShadow] Observation {captured.ObservationId} frozen before FFmpeg launch.");
                     },
@@ -1277,7 +1278,8 @@ namespace MediaFlux
                 bool retryQueued = false;
                 if (!isCanceled)
                 {
-                    retryQueued = EncodingRetryPolicy.AllowsAutomaticRetry(terminalResult) &&
+                    retryQueued = EncodingRetryPolicy.AllowsAutomaticRetry(
+                            terminalResult, meta.PredictionShadowExperimentAssignment is not null) &&
                         TryQueueFailedRowForAutoRetry(row);
                     if (!retryQueued)
                         System.Threading.Interlocked.Increment(ref _encodeFailedCount);

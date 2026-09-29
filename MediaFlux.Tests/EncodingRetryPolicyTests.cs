@@ -20,5 +20,7 @@ public sealed class EncodingRetryPolicyTests
     public void OtherTerminalFailuresKeepExistingRetryEligibility(EncodingTerminalResult terminalResult)
     {
         Assert.True(EncodingRetryPolicy.AllowsAutomaticRetry(terminalResult));
+        Assert.True(EncodingRetryPolicy.AllowsAutomaticRetry(terminalResult, hasResearchExperimentAssignment: false));
+        Assert.False(EncodingRetryPolicy.AllowsAutomaticRetry(terminalResult, hasResearchExperimentAssignment: true));
     }
 }
