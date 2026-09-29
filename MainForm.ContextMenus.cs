@@ -57,7 +57,7 @@ namespace MediaFlux
                 DataGridViewRow[] selectedRows = dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>()
                     .Where(row => !row.IsNewRow).ToArray();
                 PredictionShadowExperimentAssignment? assignment = selectedRows.Length == 1
-                    ? (selectedRows[0].Tag as RowMeta)?.PredictionShadowExperimentAssignment
+                    ? (selectedRows[0].Tag as RowMeta)?.PredictionShadowExperimentAssignment?.Assignment
                     : null;
                 researchAssignmentStatus.Text = selectedRows.Length switch
                 {

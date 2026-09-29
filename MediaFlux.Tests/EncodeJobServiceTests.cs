@@ -20,6 +20,48 @@ public sealed class EncodeJobServiceTests : IDisposable
     }
 
     [Fact]
+    public void SavedJobReloadAndExecutionSnapshotPreserveResearchAssignment()
+    {
+        Directory.CreateDirectory(_root);
+        string source = Path.Combine(_root, "assigned.mp4");
+        File.WriteAllText(source, "source");
+        PredictionShadowExperimentAssignment assignment = new(
+            "MF-3C3-G3-R1", 4, 2, PredictionShadowExperimentStratum.High,
+            PredictionShadowExperimentRole.Replacement);
+        PredictionShadowExperimentAssignmentBinding binding = Assert.IsType<PredictionShadowExperimentAssignmentBinding>(
+            PredictionShadowExperimentAssignmentPersistence.Capture(source, assignment));
+        var service = new EncodeJobService(Path.Combine(_root, "jobs.json"));
+        var savedJob = new EncodeJob
+        {
+            Name = "Research job",
+            Files = new() { new EncodeJobFile
+            {
+                SourcePath = source,
+                PredictionShadowExperimentAssignment = binding
+            } }
+        };
+
+        service.Save([savedJob]);
+        EncodeJob loaded = Assert.Single(service.Load());
+        EncodeJob execution = EncodeJobService.CreateExecutionSnapshot(loaded);
+
+        Assert.Equal(binding, Assert.Single(loaded.Files).PredictionShadowExperimentAssignment);
+        Assert.Equal(binding, Assert.Single(execution.Files).PredictionShadowExperimentAssignment);
+        Assert.NotSame(binding, Assert.Single(execution.Files).PredictionShadowExperimentAssignment);
+    }
+
+    [Fact]
+    public void LegacySavedJobsWithoutResearchAssignmentRemainReadable()
+    {
+        Directory.CreateDirectory(_root);
+        string jobs = Path.Combine(_root, "legacy-jobs.json");
+        File.WriteAllText(jobs, "[{\"Name\":\"legacy\",\"Files\":[{\"SourcePath\":\"legacy.mp4\"}]}]");
+
+        EncodeJob loaded = Assert.Single(new EncodeJobService(jobs).Load());
+        Assert.Null(Assert.Single(loaded.Files).PredictionShadowExperimentAssignment);
+    }
+
+    [Fact]
     public void ScopeAndManualVsOnceSchedulingAreExplicit()
     {
         string[] all = ["first", "second", "third"];

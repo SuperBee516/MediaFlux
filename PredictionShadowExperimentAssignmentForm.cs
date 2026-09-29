@@ -1,9 +1,11 @@
 using MediaFlux.Models;
+using MediaFlux.Services;
 
 namespace MediaFlux;
 
 internal sealed class PredictionShadowExperimentAssignmentForm : Form
 {
+    private readonly PredictionShadowExperimentAssignment? _currentAssignment;
     private readonly TextBox _experimentId = new() { Dock = DockStyle.Fill };
     private readonly NumericUpDown _slot = new() { Minimum = 1, Maximum = int.MaxValue, Value = 1, Dock = DockStyle.Left, Width = 150 };
     private readonly NumericUpDown _attempt = new() { Minimum = 1, Maximum = int.MaxValue, Value = 1, Dock = DockStyle.Left, Width = 150 };
@@ -14,6 +16,7 @@ internal sealed class PredictionShadowExperimentAssignmentForm : Form
 
     public PredictionShadowExperimentAssignmentForm(PredictionShadowExperimentAssignment? current)
     {
+        _currentAssignment = current;
         Text = "Research Experiment Assignment";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;
@@ -90,6 +93,15 @@ internal sealed class PredictionShadowExperimentAssignmentForm : Form
         if (!assignment.IsValid())
         {
             MessageBox.Show(this, "The experiment assignment is invalid.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (_currentAssignment is { } previous && assignment != previous &&
+            !PredictionShadowExperimentAssignmentPersistence.IsExplicitReplacement(previous, assignment))
+        {
+            MessageBox.Show(this,
+                "An assigned attempt can only be retained or replaced explicitly with the same experiment and slot, the next attempt number, the same stratum, and Role = Replacement.",
                 Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }

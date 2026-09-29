@@ -27,6 +27,26 @@ public sealed class EncodeJobFile
     public string SourcePath { get; set; } = "";
     public string? CustomCompressionProfile { get; set; }
     public double? CustomTargetMb { get; set; }
+    public PredictionShadowExperimentAssignmentBinding? PredictionShadowExperimentAssignment { get; set; }
+}
+
+/// <summary>Backward-compatible item shape used by .cequeue/.json queue exports.</summary>
+public sealed class EncodeQueueItemState
+{
+    public string Path { get; set; } = "";
+    public string? ContentHint { get; set; }
+    public LibraryPolicyQueueItem? LibraryPolicyIntent { get; set; }
+    public PredictionShadowExperimentAssignmentBinding? PredictionShadowExperimentAssignment { get; set; }
+    public EncodeQueueDvdItemState? Dvd { get; set; }
+}
+
+public sealed class EncodeQueueDvdItemState
+{
+    public string VideoTsFolder { get; set; } = "";
+    public string TitleSetId { get; set; } = "";
+    public string OutputPath { get; set; } = "";
+    public List<int> SelectedAudioStreamIndexes { get; set; } = new();
+    public List<int> SelectedSubtitleStreamIndexes { get; set; } = new();
 }
 
 /// <summary>Only persisted primitive values: changing main-window controls cannot change a saved job.</summary>

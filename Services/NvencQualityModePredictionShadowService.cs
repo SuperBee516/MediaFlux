@@ -40,6 +40,11 @@ public sealed class NvencQualityModePredictionShadowService
         ArgumentNullException.ThrowIfNull(finalizedHistory);
         if (experimentAssignment is not null && !experimentAssignment.IsValid())
             throw new ArgumentException("A research experiment assignment must have a non-empty ID, positive slot and attempt, and defined stratum and role.", nameof(experimentAssignment));
+        if (experimentAssignment is not null && !_journal.CanRegisterExperimentAssignment(experimentAssignment))
+        {
+            Diagnose($"[PredictionShadow] Assignment {experimentAssignment.ExperimentId} slot {experimentAssignment.Slot} attempt {experimentAssignment.Attempt} is not the next valid target or replacement attempt; capture was skipped.");
+            return null;
+        }
         cancellationToken.ThrowIfCancellationRequested();
         EncodingPlan plan = snapshot.Plan;
         SourceAdaptiveShadowCalibration? decision = plan.SourceAdaptiveShadow;
@@ -51,6 +56,12 @@ public sealed class NvencQualityModePredictionShadowService
         double sourceVideoKbps = decision!.SourceVideoBitrateKbps!.Value;
         string familyKey = NvencQualityModeVideoBitratePredictionService.GetSourceFamilyKey(
             decision, durationSeconds, sourcePath);
+        if (experimentAssignment?.Role == PredictionShadowExperimentRole.Target &&
+            _journal.HasFrozenSourceFamily(familyKey))
+        {
+            Diagnose($"[PredictionShadow] Assignment {experimentAssignment.ExperimentId} slot {experimentAssignment.Slot} was rejected because source family {familyKey} already has a Frozen observation.");
+            return null;
+        }
         var request = new NvencQualityModePredictionRequest(
             familyKey,
             decision.SourceCodec,
@@ -68,6 +79,17 @@ public sealed class NvencQualityModePredictionShadowService
         EncodingStatisticsRecord[] priorHistory = finalizedHistory
             .Where(record => record.EndUtc != default && record.EndUtc.ToUniversalTime() < evidenceCutoffUtc)
             .ToArray();
+        if (experimentAssignment?.Role == PredictionShadowExperimentRole.Target && priorHistory.Any(record =>
+                record.Outcome == EncodingStatisticsOutcome.Success &&
+                (string.Equals(record.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(
+                    NvencQualityModeVideoBitratePredictionService.GetSourceFamilyKey(
+                        record.SourceAdaptiveShadow?.Decision, record.MediaDurationSeconds, record.SourcePath),
+                    familyKey, StringComparison.OrdinalIgnoreCase))))
+        {
+            Diagnose($"[PredictionShadow] Assignment {experimentAssignment.ExperimentId} slot {experimentAssignment.Slot} was rejected because source family {familyKey} already has a completed non-sample outcome.");
+            return null;
+        }
         QualityModePairedPrediction pair =
             NvencQualityModeVideoBitratePredictionService.PredictBoth(request, priorHistory);
 
@@ -245,6 +267,20 @@ public sealed class NvencQualityModePredictionShadowService
             return false;
         }
     }
+
+    public bool HasFrozenExperimentAttempt(string experimentId, int slot, int attempt) =>
+        _journal.HasFrozenExperimentAttempt(experimentId, slot, attempt);
+
+    public bool CanRegisterExperimentAssignment(PredictionShadowExperimentAssignment assignment) =>
+        _journal.CanRegisterExperimentAssignment(assignment);
+
+    public bool HasAnyFrozenExperimentAttempt(string experimentId, int slot) =>
+        _journal.HasAnyFrozenExperimentAttempt(experimentId, slot);
+
+    public bool TryGetFrozenExperimentAssignment(
+        string experimentId, int slot, int attempt,
+        out PredictionShadowExperimentAssignment? assignment) =>
+        _journal.TryGetFrozenExperimentAssignment(experimentId, slot, attempt, out assignment);
 
     private static bool IsEligible(
         EncodingPlan plan,

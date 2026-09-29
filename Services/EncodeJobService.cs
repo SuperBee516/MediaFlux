@@ -79,7 +79,8 @@ public sealed class EncodeJobService
         {
             SourcePath = file.SourcePath,
             CustomCompressionProfile = file.CustomCompressionProfile,
-            CustomTargetMb = file.CustomTargetMb
+            CustomTargetMb = file.CustomTargetMb,
+            PredictionShadowExperimentAssignment = file.PredictionShadowExperimentAssignment
         }).ToList(),
         Settings = job.Settings.Clone(),
         ScheduleType = job.ScheduleType,

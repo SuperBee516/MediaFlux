@@ -2653,7 +2653,7 @@ namespace MediaFlux
             public string? CuratedFailureDiagnosticReport;
             public EncodingPlan? IntelligencePlan;
             public EncodingExecutionOutcome? IntelligenceOutcome;
-            public PredictionShadowExperimentAssignment? PredictionShadowExperimentAssignment;
+            public PredictionShadowExperimentAssignmentBinding? PredictionShadowExperimentAssignment;
             public EncodingQualityResolution? QualityPreview;
             public int QualityPreviewRequestGeneration = int.MinValue;
             public EncodingSizePredictionCalibration? SizePredictionCalibration;
@@ -5762,12 +5762,23 @@ namespace MediaFlux
             {
                 if (!string.Equals(fullPath, newPath, StringComparison.OrdinalIgnoreCase))
                 {
+                    PredictionShadowExperimentAssignment? assignmentToPreserve =
+                        row.Tag is RowMeta currentMeta &&
+                        PredictionShadowExperimentAssignmentPersistence.MatchesSource(
+                            currentMeta.PredictionShadowExperimentAssignment, fullPath)
+                                ? currentMeta.PredictionShadowExperimentAssignment!.Assignment
+                                : null;
                     // Move/rename on disk
                     File.Move(fullPath, newPath, overwrite: true);
 
                     // Update row display while preserving the logical queue metadata.
                     if (row.Tag is RowMeta renamedMeta)
+                    {
                         renamedMeta.Path = newPath;
+                        renamedMeta.PredictionShadowExperimentAssignment =
+                            PredictionShadowExperimentAssignmentPersistence.Capture(newPath, assignmentToPreserve);
+                        UpdateResearchExperimentAssignmentPresentation(row);
+                    }
                     else
                         row.Tag = newPath;
                     row.Cells["colName"].Value = Path.GetFileName(newPath);

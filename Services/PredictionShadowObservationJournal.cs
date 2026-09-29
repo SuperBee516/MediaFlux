@@ -7,8 +7,8 @@ namespace MediaFlux.Services;
 
 /// <summary>
 /// Separate append-only JSONL storage for research forecasts and later outcomes.
-/// A torn/invalid line is ignored when loading; the production statistics journal
-/// is never read-modified-written by this service.
+/// Numeric .oldN generations are read as immutable history; new events append only
+/// to the active path. The production statistics journal is never read-modified-written.
 /// </summary>
 public sealed class PredictionShadowObservationJournal
 {
@@ -17,6 +17,8 @@ public sealed class PredictionShadowObservationJournal
     private readonly HashSet<string> _eventIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PredictionShadowFrozenObservation> _frozen =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<PredictionShadowJournalEvent> _events = new();
+    private bool _historyComplete = true;
     private readonly JsonSerializerOptions _json = CreateJsonOptions();
 
     public PredictionShadowObservationJournal(string path)
@@ -42,11 +44,13 @@ public sealed class PredictionShadowObservationJournal
         };
         lock (_sync)
         {
+            RefreshExisting();
             if (_eventIds.Contains(entry.EventId))
                 return false;
             AppendLine(entry);
             _eventIds.Add(entry.EventId);
             _frozen[observation.ObservationId] = observation;
+            _events.Add(entry);
             return true;
         }
     }
@@ -54,7 +58,101 @@ public sealed class PredictionShadowObservationJournal
     public bool TryGetFrozen(string observationId, out PredictionShadowFrozenObservation? observation)
     {
         lock (_sync)
+        {
+            RefreshExisting();
             return _frozen.TryGetValue(observationId, out observation);
+        }
+    }
+
+    public bool HasFrozenExperimentAttempt(string experimentId, int slot, int attempt)
+    {
+        if (string.IsNullOrWhiteSpace(experimentId) || slot <= 0 || attempt <= 0)
+            return false;
+        lock (_sync)
+        {
+            RefreshExisting();
+            return _frozen.Values.Any(frozen => frozen.ExperimentAssignment is { } assignment &&
+                string.Equals(assignment.ExperimentId, experimentId, StringComparison.Ordinal) &&
+                assignment.Slot == slot && assignment.Attempt == attempt);
+        }
+    }
+
+    public bool CanRegisterExperimentAssignment(PredictionShadowExperimentAssignment assignment)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+        if (!assignment.IsValid())
+            return false;
+
+        lock (_sync)
+        {
+            RefreshExisting();
+            if (!_historyComplete)
+                return false;
+            PredictionShadowExperimentAssignment[] attempts = _frozen.Values
+                .Select(frozen => frozen.ExperimentAssignment)
+                .Where(value => value is not null &&
+                    string.Equals(value.ExperimentId, assignment.ExperimentId, StringComparison.Ordinal) &&
+                    value.Slot == assignment.Slot)
+                .Select(value => value!)
+                .OrderBy(value => value.Attempt)
+                .ToArray();
+
+            if (attempts.Length == 0)
+                return assignment.Attempt == 1 && assignment.Role == PredictionShadowExperimentRole.Target;
+
+            PredictionShadowExperimentAssignment initial = attempts[0];
+            if (initial.Attempt != 1 || initial.Role != PredictionShadowExperimentRole.Target ||
+                attempts.Where((value, index) => value.Attempt != index + 1 ||
+                    value.Stratum != initial.Stratum ||
+                    value.Role != (index == 0
+                        ? PredictionShadowExperimentRole.Target
+                        : PredictionShadowExperimentRole.Replacement)).Any())
+                return false;
+
+            return PredictionShadowExperimentAssignmentPersistence.IsExplicitReplacement(
+                attempts[^1], assignment);
+        }
+    }
+
+    public bool HasAnyFrozenExperimentAttempt(string experimentId, int slot)
+    {
+        if (string.IsNullOrWhiteSpace(experimentId) || slot <= 0)
+            return false;
+        lock (_sync)
+        {
+            RefreshExisting();
+            return _frozen.Values.Any(frozen => frozen.ExperimentAssignment is { } assignment &&
+                string.Equals(assignment.ExperimentId, experimentId, StringComparison.Ordinal) &&
+                assignment.Slot == slot);
+        }
+    }
+
+    public bool HasFrozenSourceFamily(string sourceFamilyKey)
+    {
+        if (string.IsNullOrWhiteSpace(sourceFamilyKey))
+            return false;
+        lock (_sync)
+        {
+            RefreshExisting();
+            return _frozen.Values.Any(frozen => string.Equals(
+                frozen.SourceFamilyKey, sourceFamilyKey, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    public bool TryGetFrozenExperimentAssignment(
+        string experimentId, int slot, int attempt,
+        out PredictionShadowExperimentAssignment? assignment)
+    {
+        lock (_sync)
+        {
+            RefreshExisting();
+            assignment = _frozen.Values
+                .Select(frozen => frozen.ExperimentAssignment)
+                .FirstOrDefault(value => value is not null &&
+                    string.Equals(value.ExperimentId, experimentId, StringComparison.Ordinal) &&
+                    value.Slot == slot && value.Attempt == attempt);
+            return assignment is not null;
+        }
     }
 
     public bool AppendOutcome(string observationId, PredictionShadowOutcome outcome, DateTime recordedUtc)
@@ -63,6 +161,7 @@ public sealed class PredictionShadowObservationJournal
         ArgumentNullException.ThrowIfNull(outcome);
         lock (_sync)
         {
+            RefreshExisting();
             if (!_frozen.TryGetValue(observationId, out PredictionShadowFrozenObservation? frozen) ||
                 _eventIds.Contains($"{observationId}:outcome"))
                 return false;
@@ -81,6 +180,7 @@ public sealed class PredictionShadowObservationJournal
             };
             AppendLine(entry);
             _eventIds.Add(entry.EventId);
+            _events.Add(entry);
             return true;
         }
     }
@@ -89,19 +189,8 @@ public sealed class PredictionShadowObservationJournal
     {
         lock (_sync)
         {
-            if (!File.Exists(_path))
-                return Array.Empty<PredictionShadowJournalEvent>();
-            var result = new List<PredictionShadowJournalEvent>();
-            foreach (string line in File.ReadLines(_path))
-            {
-                try
-                {
-                    if (JsonSerializer.Deserialize<PredictionShadowJournalEvent>(line, _json) is { } entry)
-                        result.Add(entry);
-                }
-                catch (JsonException) { /* An incomplete/torn line is non-authoritative. */ }
-            }
-            return result;
+            RefreshExisting();
+            return OrderedEvents();
         }
     }
 
@@ -114,19 +203,17 @@ public sealed class PredictionShadowObservationJournal
     {
         lock (_sync)
         {
+            RefreshExisting();
             events = Array.Empty<PredictionShadowJournalEvent>();
-            if (!File.Exists(_path))
+            if (!_historyComplete || JournalGenerationFileDiscovery.Discover(_path).Count == 0)
                 return false;
 
             try
             {
-                var result = new List<PredictionShadowJournalEvent>();
+                IReadOnlyList<PredictionShadowJournalEvent> result = OrderedEvents();
                 var eventIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (string line in File.ReadLines(_path))
+                foreach (PredictionShadowJournalEvent? entry in result)
                 {
-                    if (string.IsNullOrWhiteSpace(line))
-                        return false;
-                    PredictionShadowJournalEvent? entry = JsonSerializer.Deserialize<PredictionShadowJournalEvent>(line, _json);
                     if (entry is null || entry.SchemaVersion is not (1 or 2 or 3) ||
                         string.IsNullOrWhiteSpace(entry.EventId) || string.IsNullOrWhiteSpace(entry.ObservationId) ||
                         entry.RecordedUtc == default || entry.RecordedUtc.Kind != DateTimeKind.Utc ||
@@ -145,7 +232,6 @@ public sealed class PredictionShadowObservationJournal
                     };
                     if (!validPayload)
                         return false;
-                    result.Add(entry);
                 }
 
                 events = result;
@@ -161,26 +247,76 @@ public sealed class PredictionShadowObservationJournal
 
     private void LoadExisting()
     {
-        if (!File.Exists(_path))
-            return;
+        _eventIds.Clear();
+        _frozen.Clear();
+        _events.Clear();
+        _historyComplete = true;
+        var eventsById = new Dictionary<string, (PredictionShadowJournalEvent Event, string Canonical)>(
+            StringComparer.OrdinalIgnoreCase);
+        var conflictingIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            foreach (string line in File.ReadLines(_path))
+            foreach (string path in JournalGenerationFileDiscovery.Discover(_path))
             {
-                try
+                foreach (string line in File.ReadLines(path))
                 {
-                    if (JsonSerializer.Deserialize<PredictionShadowJournalEvent>(line, _json) is not { } entry ||
-                        string.IsNullOrWhiteSpace(entry.EventId) || string.IsNullOrWhiteSpace(entry.ObservationId))
+                    PredictionShadowJournalEvent? entry;
+                    try
+                    {
+                        if (string.IsNullOrWhiteSpace(line))
+                            throw new JsonException("Blank journal line.");
+                        entry = JsonSerializer.Deserialize<PredictionShadowJournalEvent>(line, _json);
+                    }
+                    catch (JsonException)
+                    {
+                        _historyComplete = false;
                         continue;
+                    }
+
+                    if (entry is null || string.IsNullOrWhiteSpace(entry.EventId) ||
+                        string.IsNullOrWhiteSpace(entry.ObservationId))
+                    {
+                        _historyComplete = false;
+                        continue;
+                    }
+
                     _eventIds.Add(entry.EventId);
-                    if (entry.EventType == "Frozen" && entry.Frozen is { } frozen)
-                        _frozen[frozen.ObservationId] = frozen;
+                    string canonical = JsonSerializer.Serialize(entry, _json);
+                    if (!eventsById.TryGetValue(entry.EventId, out var current))
+                    {
+                        if (!conflictingIds.Contains(entry.EventId))
+                            eventsById.Add(entry.EventId, (entry, canonical));
+                    }
+                    else if (!string.Equals(current.Canonical, canonical, StringComparison.Ordinal))
+                    {
+                        eventsById.Remove(entry.EventId);
+                        conflictingIds.Add(entry.EventId);
+                        _historyComplete = false;
+                    }
                 }
-                catch (JsonException) { /* Preserve valid entries after a damaged line. */ }
             }
         }
-        catch { /* An unavailable research journal must not affect application startup or encoding. */ }
+        catch
+        {
+            // An unavailable research journal must not affect application startup or encoding.
+            _historyComplete = false;
+        }
+
+        _events.AddRange(eventsById.Values.Select(item => item.Event));
+        foreach (PredictionShadowJournalEvent entry in _events)
+        {
+            if (entry.EventType == "Frozen" && entry.Frozen is { } frozen &&
+                !conflictingIds.Contains($"{frozen.ObservationId}:frozen"))
+                _frozen[frozen.ObservationId] = frozen;
+        }
     }
+
+    private IReadOnlyList<PredictionShadowJournalEvent> OrderedEvents() => _events
+        .OrderBy(entry => entry.RecordedUtc)
+        .ThenBy(entry => entry.EventId, StringComparer.Ordinal)
+        .ToArray();
+
+    private void RefreshExisting() => LoadExisting();
 
     private void AppendLine(PredictionShadowJournalEvent entry)
     {

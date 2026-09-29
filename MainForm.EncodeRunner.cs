@@ -905,16 +905,26 @@ namespace MediaFlux
                             encoderPreset,
                             tenBit ? 10 : 8,
                             concurrentEncoderSessions);
+                        bool assignmentMatchesSource =
+                            PredictionShadowExperimentAssignmentPersistence.MatchesSource(
+                                meta.PredictionShadowExperimentAssignment, inputSource.SourcePath);
                         PredictionShadowFrozenObservation? captured = await _predictionShadowService.CaptureAsync(
                             snapshot,
                             inputSource.SourcePath,
                             settingsSignature,
-                            _encodingStatisticsService.GetAll(),
+                            new PredictionShadowResearchHistoryReader(AppPaths.EncodingStatisticsFile)
+                                .ReadFinalizedStatistics(),
                             Application.ProductVersion,
                             token,
-                            meta.PredictionShadowExperimentAssignment).ConfigureAwait(false);
+                            assignmentMatchesSource
+                                ? meta.PredictionShadowExperimentAssignment!.Assignment
+                                : null).ConfigureAwait(false);
                         if (captured != null)
                             Debug.WriteLine($"[PredictionShadow] Observation {captured.ObservationId} frozen before FFmpeg launch.");
+                        else if (assignmentMatchesSource)
+                            AppendJobLog("[PredictionShadow] Assigned attempt did not produce a Frozen event. Do not count this encode as an experiment target; see diagnostics and assign a valid replacement if needed.");
+                        else if (meta.PredictionShadowExperimentAssignment is not null)
+                            AppendJobLog("[PredictionShadow] Stored experiment assignment no longer matches this source. The encode proceeded without experiment membership.");
                     },
                     EncodingPlanDivergenceCallback = divergence =>
                         AppendJobLog($"[EncodingPlan] Shadow divergence: {divergence}"),

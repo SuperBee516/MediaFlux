@@ -1,5 +1,6 @@
 ﻿using MediaFlux.Services;
 using System;
+using MediaFlux.Models;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
@@ -40,11 +41,27 @@ namespace MediaFlux
             bool applyCodecFilters,
             bool replaceExisting = false,
             bool rememberRoots = true,
-            bool forceDuplicateScan = false)
+            bool forceDuplicateScan = false,
+            bool preserveResearchAssignmentBySource = true)
         {
             var roots = paths.Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             if (roots.Length == 0)
                 return;
+
+            Dictionary<string, PredictionShadowExperimentAssignmentBinding> preservedResearchAssignments = new(
+                StringComparer.OrdinalIgnoreCase);
+            if (replaceExisting && preserveResearchAssignmentBySource)
+            {
+                preservedResearchAssignments =
+                    PredictionShadowExperimentAssignmentPersistence.CaptureForQueueReconstruction(
+                        GetEncodeRowsInExecutionOrder()
+                            .Where(existingRow => existingRow.Tag is RowMeta)
+                            .Select(existingRow =>
+                            {
+                                RowMeta existingMeta = (RowMeta)existingRow.Tag!;
+                                return (existingMeta.Path, existingMeta.PredictionShadowExperimentAssignment);
+                            }));
+            }
 
             if (!EnsureFfmpegToolsAvailable())
                 return;
@@ -276,6 +293,17 @@ namespace MediaFlux
                         {
                             added++;
                             importedPaths.Add(file.Key);
+                            PredictionShadowExperimentAssignmentBinding? assignment =
+                                PredictionShadowExperimentAssignmentPersistence.RestoreForQueueReconstruction(
+                                    preservedResearchAssignments, file.Key);
+                            if (assignment != null &&
+                                _rowsByPath.TryGetValue(file.Key, out DataGridViewRow? recreatedRow) &&
+                                recreatedRow != null && recreatedRow.Tag is RowMeta recreatedMeta &&
+                                PredictionShadowExperimentAssignmentPersistence.MatchesSource(assignment, file.Key))
+                            {
+                                recreatedMeta.PredictionShadowExperimentAssignment = assignment;
+                                UpdateResearchExperimentAssignmentPresentation(recreatedRow);
+                            }
                             _lastImportAddedCount = added;
                             if (requestedCodecFilter && !progressiveCodecFilter)
                                 TrackCodecFilterCount(file.Key, file.Value);

@@ -20,7 +20,7 @@ namespace MediaFlux
             public string Version { get; set; } = "1.5";
             public DateTime SavedUtc { get; set; } = DateTime.UtcNow;
             public QueueSettings Settings { get; set; } = new QueueSettings();
-            public List<QueueItem> Items { get; set; } = new List<QueueItem>();
+            public List<EncodeQueueItemState> Items { get; set; } = new List<EncodeQueueItemState>();
         }
 
         private sealed class QueueSettings
@@ -40,23 +40,6 @@ namespace MediaFlux
             public string AudioChannels { get; set; } = "";
             public string OutputFolder { get; set; } = "";       // cmbEncodeOutput.Text
             public string OutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
-        }
-
-        private sealed class QueueItem
-        {
-            public string Path { get; set; } = "";
-            public string? ContentHint { get; set; }
-            public LibraryPolicyQueueItem? LibraryPolicyIntent { get; set; }
-            public DvdQueueItem? Dvd { get; set; }
-        }
-
-        private sealed class DvdQueueItem
-        {
-            public string VideoTsFolder { get; set; } = "";
-            public string TitleSetId { get; set; } = "";
-            public string OutputPath { get; set; } = "";
-            public List<int> SelectedAudioStreamIndexes { get; set; } = new();
-            public List<int> SelectedSubtitleStreamIndexes { get; set; } = new();
         }
 
         // Centralized JSON options (pretty for readability)
@@ -170,7 +153,7 @@ namespace MediaFlux
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-                snapshot.Items ??= new List<QueueItem>();
+                snapshot.Items ??= new List<EncodeQueueItemState>();
                 if (snapshot.Items.Any(item => item.Dvd != null) &&
                     !EnsureFfmpegToolsAvailable())
                 {
@@ -255,6 +238,17 @@ namespace MediaFlux
                         if (AddEncodeItemIfNotPresent(qi.Path))
                             added++;
 
+                        if (_rowsByPath.TryGetValue(qi.Path, out DataGridViewRow? assignmentRow) &&
+                            assignmentRow != null && qi.PredictionShadowExperimentAssignment is { } savedAssignment)
+                        {
+                            RowMeta assignmentMeta = EnsureRowMeta(assignmentRow);
+                            assignmentMeta.PredictionShadowExperimentAssignment =
+                                PredictionShadowExperimentAssignmentPersistence.MatchesSource(savedAssignment, qi.Path)
+                                    ? savedAssignment
+                                    : null;
+                            UpdateResearchExperimentAssignmentPresentation(assignmentRow);
+                        }
+
                         if (Enum.TryParse(
                                 qi.ContentHint,
                                 ignoreCase: true,
@@ -299,9 +293,9 @@ namespace MediaFlux
             }
         }
 
-        private List<QueueItem> CaptureQueueItemsInExecutionOrder()
+        private List<EncodeQueueItemState> CaptureQueueItemsInExecutionOrder()
         {
-            var items = new List<QueueItem>();
+            var items = new List<EncodeQueueItemState>();
             foreach (DataGridViewRow row in GetEncodeRowsInExecutionOrder())
             {
                 string? path = GetPathFromRow(row);
@@ -309,7 +303,7 @@ namespace MediaFlux
                     continue;
 
                 DvdImportOptions? dvdOptions = (row.Tag as RowMeta)?.DvdEncodeOptions;
-                items.Add(new QueueItem
+                items.Add(new EncodeQueueItemState
                 {
                     Path = path,
                     ContentHint = (row.Tag as RowMeta)?.ContentHint is
@@ -318,9 +312,14 @@ namespace MediaFlux
                             ? hint.ToString()
                             : null,
                     LibraryPolicyIntent = (row.Tag as RowMeta)?.LibraryPolicyIntent,
+                    PredictionShadowExperimentAssignment =
+                        (row.Tag as RowMeta)?.PredictionShadowExperimentAssignment is { } assignment &&
+                        PredictionShadowExperimentAssignmentPersistence.MatchesSource(assignment, path)
+                            ? assignment
+                            : null,
                     Dvd = dvdOptions == null
                         ? null
-                        : new DvdQueueItem
+                        : new EncodeQueueDvdItemState
                         {
                             VideoTsFolder = Path.GetDirectoryName(
                                 dvdOptions.Candidate.Segments[0].Path) ?? "",
@@ -338,7 +337,7 @@ namespace MediaFlux
         }
 
         private async Task<DvdImportOptions?> RestoreDvdQueueItemAsync(
-            DvdQueueItem saved)
+            EncodeQueueDvdItemState saved)
         {
             if (string.IsNullOrWhiteSpace(saved.VideoTsFolder) ||
                 !Directory.Exists(saved.VideoTsFolder) ||

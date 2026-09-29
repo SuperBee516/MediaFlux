@@ -77,6 +77,16 @@ public sealed record PredictionShadowExperimentAssignment(
         Enum.IsDefined(Stratum) && Enum.IsDefined(Role);
 }
 
+/// <summary>
+/// Durable queue/job binding for a research assignment. The file identity prevents
+/// an assignment from following an unrelated item after a queue is reconstructed.
+/// </summary>
+public sealed record PredictionShadowExperimentAssignmentBinding(
+    PredictionShadowExperimentAssignment Assignment,
+    string SourcePath,
+    long SourceLengthBytes,
+    long SourceLastWriteTimeUtcTicks);
+
 public sealed record PredictionShadowTemporalNeighbor
 {
     public required string SourceFamilyKey { get; init; }

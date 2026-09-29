@@ -84,7 +84,17 @@ public partial class MainForm
         foreach (var row in rows)
         {
             var meta = EnsureRowMeta(row);
-            if (!string.IsNullOrWhiteSpace(meta.Path)) job.Files.Add(new EncodeJobFile { SourcePath = meta.Path, CustomCompressionProfile = meta.CustomCompressionProfile, CustomTargetMb = meta.CustomTargetMb });
+            if (!string.IsNullOrWhiteSpace(meta.Path)) job.Files.Add(new EncodeJobFile
+            {
+                SourcePath = meta.Path,
+                CustomCompressionProfile = meta.CustomCompressionProfile,
+                CustomTargetMb = meta.CustomTargetMb,
+                PredictionShadowExperimentAssignment =
+                    meta.PredictionShadowExperimentAssignment is { } assignment &&
+                    PredictionShadowExperimentAssignmentPersistence.MatchesSource(assignment, meta.Path)
+                        ? assignment
+                        : null
+            });
         }
         using var editor = new JobEditorForm(job);
         if (editor.ShowDialog(this) != DialogResult.OK) return;
@@ -144,12 +154,22 @@ public partial class MainForm
         var existing = job.Files.Where(file => File.Exists(file.SourcePath)).ToArray();
         if (existing.Length != job.Files.Count) ShowStatusInfo($"{job.Files.Count - existing.Length} saved source file(s) are unavailable and were not loaded.");
         if (existing.Length == 0) return;
-        await ImportEncodePathsAsync(existing.Select(file => file.SourcePath), false, false, replaceExisting: true, rememberRoots: false);
+        await ImportEncodePathsAsync(existing.Select(file => file.SourcePath), false, false,
+            replaceExisting: true, rememberRoots: false, preserveResearchAssignmentBySource: false);
         foreach (DataGridViewRow row in GetEncodeRowsInExecutionOrder())
         {
             var file = existing.FirstOrDefault(item => string.Equals(item.SourcePath, GetPathFromRow(row), StringComparison.OrdinalIgnoreCase));
             if (file == null) continue;
-            var meta = EnsureRowMeta(row); meta.CustomCompressionProfile = file.CustomCompressionProfile; meta.CustomTargetMb = file.CustomTargetMb; UpdateRowCustomFlag(row);
+            var meta = EnsureRowMeta(row);
+            meta.CustomCompressionProfile = file.CustomCompressionProfile;
+            meta.CustomTargetMb = file.CustomTargetMb;
+            meta.PredictionShadowExperimentAssignment =
+                PredictionShadowExperimentAssignmentPersistence.MatchesSource(
+                    file.PredictionShadowExperimentAssignment, file.SourcePath)
+                    ? file.PredictionShadowExperimentAssignment
+                    : null;
+            UpdateResearchExperimentAssignmentPresentation(row);
+            UpdateRowCustomFlag(row);
         }
         ShowStatusInfo($"Loaded '{job.Name}' into the main queue. Saved job unchanged.");
     }

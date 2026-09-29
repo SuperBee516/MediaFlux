@@ -245,17 +245,51 @@ public sealed class PredictionShadowInstrumentationTests : IDisposable
             false, null, null, Cutoff.AddSeconds(5)));
         Assert.True(experimentService.RecordOutcome(second.ObservationId, "Failed", "EncodeFailed", "Failed", "NotRun",
             false, null, null, Cutoff.AddSeconds(10)));
+        Assert.True(experimentJournal.HasFrozenExperimentAttempt("MF-3C3-G3-R1", 4, 2));
+        Assert.Null(await experimentService.CaptureAsync(
+            MakeSnapshot(), source, signature, history, "1.7.3", experimentAssignment: attemptOne));
+        Assert.Null(await experimentService.CaptureAsync(
+            MakeSnapshot(), source, signature, history, "1.7.3", experimentAssignment: attemptTwo));
         PredictionShadowJournalEvent[] allEvents = experimentJournal.ReadEvents().ToArray();
         Assert.Equal(new[] { 3, 3, 3, 3 }, allEvents.Select(entry => entry.SchemaVersion));
         Assert.Equal(new[] { attemptOne, attemptTwo }, allEvents.Where(entry => entry.Frozen is not null)
-            .Select(entry => entry.Frozen!.ExperimentAssignment));
+            .Select(entry => entry.Frozen!.ExperimentAssignment).OrderBy(assignment => assignment!.Attempt));
         Assert.Equal(new[] { attemptOne, attemptTwo }, allEvents.Where(entry => entry.Outcome is not null)
-            .Select(entry => entry.Outcome!.ExperimentAssignment));
+            .Select(entry => entry.Outcome!.ExperimentAssignment).OrderBy(assignment => assignment!.Attempt));
         Assert.Equal(attemptOne, allEvents.Single(entry => entry.ObservationId == first.ObservationId && entry.Outcome is not null)
             .Outcome!.ExperimentAssignment);
         Assert.Equal(attemptTwo, allEvents.Single(entry => entry.ObservationId == second.ObservationId && entry.Outcome is not null)
             .Outcome!.ExperimentAssignment);
         Assert.True(experimentJournal.TryReadEventsForTemporalComparison(out _));
+    }
+
+    [Fact]
+    public async Task AssignedTargetCannotReuseKnownOutcomeFamilyWhileUnassignedCaptureRemainsAvailable()
+    {
+        string ffmpeg = CreateFile("ffmpeg-known-family.exe");
+        string source = CreateFile("known-family-target.mp4");
+        EncodingPlanSnapshot snapshot = MakeSnapshot();
+        string family = NvencQualityModeVideoBitratePredictionService.GetSourceFamilyKey(
+            snapshot.Plan.SourceAdaptiveShadow, snapshot.Plan.Source!.DurationSeconds, source);
+        EncodingStatisticsRecord[] history =
+        [
+            MakeRecord("known-family-outcome", family, 8000, 7000, 800_000_000, Cutoff.AddMinutes(-1))
+        ];
+        string journalPath = Path.Combine(_root, "known-family-journal.jsonl");
+        var journal = new PredictionShadowObservationJournal(journalPath);
+        var service = new NvencQualityModePredictionShadowService(
+            journal, new PredictionShadowComplexitySamplingService(ffmpeg, new PgmWritingRunner()), utcNow: () => Cutoff);
+        PredictionShadowExperimentAssignment assignment = new(
+            "MF-3C3-G3-R1", 1, 1, PredictionShadowExperimentStratum.Low, PredictionShadowExperimentRole.Target);
+
+        Assert.Null(await service.CaptureAsync(snapshot, source, Signature, history, "1.7.3",
+            experimentAssignment: assignment));
+        Assert.Empty(journal.ReadEvents());
+
+        PredictionShadowFrozenObservation ordinary = Assert.IsType<PredictionShadowFrozenObservation>(
+            await service.CaptureAsync(MakeSnapshot(), source, Signature, history, "1.7.3"));
+        Assert.Null(ordinary.ExperimentAssignment);
+        Assert.Equal("Frozen", Assert.Single(journal.ReadEvents()).EventType);
     }
 
     [Theory]
