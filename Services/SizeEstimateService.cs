@@ -458,6 +458,36 @@ namespace MediaFlux.Services
                 : subtotal + 16;
         }
 
+        /// <summary>
+        /// Replaces only the video component. The existing mapped-stream and container
+        /// allowances remain authoritative; kb/s and seconds produce binary MiB here.
+        /// </summary>
+        internal static SizeEstimateBreakdown WithTargetVideoBitrate(
+            SizeEstimateBreakdown baseline, double durationSeconds, double videoKbps)
+        {
+            ArgumentNullException.ThrowIfNull(baseline);
+            if (!double.IsFinite(videoKbps) || videoKbps <= 0 ||
+                !double.IsFinite(durationSeconds) || durationSeconds <= 0 ||
+                baseline.EstimatedOutputMb <= 0)
+                return SizeEstimateBreakdown.Unavailable;
+            double mappedKbps = baseline.PlannedAudioBitrateKbps +
+                baseline.PlannedMappedAncillaryBitrateKbps;
+            double totalKbps = CalculateTargetTotalBitrateKbps(videoKbps, mappedKbps);
+            return new SizeEstimateBreakdown
+            {
+                EstimatedOutputMb = Math.Max(0.1, totalKbps * durationSeconds / 8192d),
+                SourceTotalBitrateKbps = baseline.SourceTotalBitrateKbps,
+                SourceVideoBitrateKbps = baseline.SourceVideoBitrateKbps,
+                PlannedAudioBitrateKbps = baseline.PlannedAudioBitrateKbps,
+                PlannedMappedAncillaryBitrateKbps = baseline.PlannedMappedAncillaryBitrateKbps,
+                TargetVideoBitrateKbps = videoKbps,
+                TargetTotalBitrateKbps = totalKbps,
+                UsedMeasuredVideoBitrate = baseline.UsedMeasuredVideoBitrate,
+                Diagnostic = $"Historical Direct video={videoKbps:0} kbps; mapped={mappedKbps:0} kbps; " +
+                    $"container included; output={totalKbps * durationSeconds / 8192d:0.##} MiB."
+            };
+        }
+
         // ─────────────────────────────────────────────
         // INTERNAL HELPERS
         // ─────────────────────────────────────────────

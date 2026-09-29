@@ -235,10 +235,16 @@ public partial class MainForm
         return QueueAnalysisPresentation.Create(meta.EncodeRecommendation, sourceMb, estimatedOutputMb, meta.IntelligencePlan?.Quality ?? meta.QualityPreview);
     }
 
-    private static string? GetQueueAnalysisCalibration(EncodingSizePredictionCalibration? calibration)
+    internal static string? GetQueueAnalysisCalibration(EncodingSizePredictionCalibration? calibration)
     {
         if (calibration == null)
             return null;
+
+        if (calibration.EstimateModelId == ProductionDirectOutputResult.ModelId)
+            return $"Estimate: Historical Direct; {calibration.EstimateIndependentFamilyCount} independent sources; " +
+                $"forward-held-out {calibration.EstimateHeldOutCount}/{calibration.EstimateHeldOutEligibleCount}; " +
+                $"median error {calibration.EstimateMedianAbsoluteErrorPercent:0.#}%; " +
+                $"{calibration.CalibratedPredictionMb:0.##} MB.";
 
         string prediction = calibration.Applied
             ? $"{calibration.CalibratedPredictionMb:0.##} MB (base {calibration.BasePredictionMb:0.##} MB)"
@@ -251,7 +257,14 @@ public partial class MainForm
         string learning = calibration.LearningStrength > 0
             ? $"; learning strength {calibration.LearningStrength:0.##}"
             : string.Empty;
-        return $"{prediction}; {policyId}; {calibration.EffectivenessState}{learning}";
+        string origin = calibration.EstimateModelId == "GenericBppV1"
+            ? calibration.Applied
+                ? "Estimate: historically calibrated Generic BPP; "
+                : SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(calibration) == SmartEncodeConfidence.Low
+                    ? "Estimate: Generic BPP (low confidence fallback); "
+                    : "Estimate: Generic BPP; "
+            : string.Empty;
+        return $"{origin}{prediction}; {policyId}; {calibration.EffectivenessState}{learning}";
     }
 
     private void InvalidateEncodingPlansForConfigurationChange()

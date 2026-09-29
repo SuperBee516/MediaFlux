@@ -7,6 +7,97 @@ namespace MediaFlux.Tests;
 public sealed class SampleComparisonServiceTests
 {
     [Fact]
+    public void CqComparisonDefaultsTo22Through25AndForcesConstantQualitySettings()
+    {
+        Assert.Equal(new[] { 22, 23, 24, 25 }, SampleComparisonService.DefaultCqComparisonValues);
+        var original = new SampleComparisonSettings
+        {
+            ProjectedTargetMb = 900,
+            EncoderPreset = "p5",
+            QualityValue = 18,
+            TenBit = true,
+            ScaleMode = EncodingService.ScaleMode.None,
+            ClipSeconds = 90,
+            AdditionalMappedBitrateKbps = 160
+        };
+
+        SampleComparisonSettings[] qualities = SampleComparisonService.DefaultCqComparisonValues
+            .Select(value => SampleComparisonService.CreateCqComparisonSettings(original, value))
+            .ToArray();
+
+        Assert.Equal(new[] { 22, 23, 24, 25 }, qualities.Select(settings => settings.QualityValue));
+        Assert.All(qualities, settings =>
+        {
+            Assert.Null(settings.ProjectedTargetMb);
+            Assert.Equal("p5", settings.EncoderPreset);
+            Assert.True(settings.TenBit);
+            Assert.Equal(EncodingService.ScaleMode.None, settings.ScaleMode);
+            Assert.Equal(25, settings.ClipSeconds);
+            Assert.Equal(160, settings.AdditionalMappedBitrateKbps);
+        });
+        Assert.Equal(900, original.ProjectedTargetMb);
+        Assert.Equal(18, original.QualityValue);
+    }
+
+    [Fact]
+    public void CqComparisonUsesTheSameThree25SecondSectionsForEveryQuality()
+    {
+        var positions = SampleComparisonService.BuildCqComparisonSamplePositions(
+            TimeSpan.FromMinutes(12));
+        Assert.Equal(new[] { "Beginning", "Middle", "End" }, positions.Select(position => position.Label));
+        Assert.All(positions, position => Assert.Equal(TimeSpan.FromSeconds(25), position.Duration));
+        Assert.Equal(TimeSpan.Zero, positions[0].Start);
+        Assert.Equal(TimeSpan.FromMinutes(12) - TimeSpan.FromSeconds(25), positions[2].Start);
+        Assert.Equal(positions, SampleComparisonService.BuildCqComparisonSamplePositions(TimeSpan.FromMinutes(12)));
+    }
+
+    [Fact]
+    public void CqComparisonRejectsSourcesTooShortForThreeMatchingSamples()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            SampleComparisonService.BuildCqComparisonSamplePositions(TimeSpan.FromSeconds(74.99)));
+    }
+
+    [Fact]
+    public void CqComparisonRequiresNvencHevcP5TenBitAndOriginalGeometry()
+    {
+        var settings = new SampleComparisonSettings
+        {
+            Encoder = new VideoEncoderSelection("nvenc", VideoCodecFamily.Hevc, "hevc_nvenc"),
+            UseGpu = true,
+            EncoderPreset = "p5",
+            TenBit = true,
+            ScaleMode = EncodingService.ScaleMode.None
+        };
+        SampleComparisonService.ValidateCqComparisonSettings(settings);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            SampleComparisonService.ValidateCqComparisonSettings(new SampleComparisonSettings
+            {
+                Encoder = new VideoEncoderSelection("libx265", VideoCodecFamily.Hevc, "libx265"),
+                EncoderPreset = "p5", TenBit = true, ScaleMode = EncodingService.ScaleMode.None
+            }));
+        Assert.Throws<InvalidOperationException>(() =>
+            SampleComparisonService.ValidateCqComparisonSettings(new SampleComparisonSettings
+            {
+                Encoder = settings.Encoder, UseGpu = true, EncoderPreset = "p6",
+                TenBit = true, ScaleMode = EncodingService.ScaleMode.None
+            }));
+        Assert.Throws<InvalidOperationException>(() =>
+            SampleComparisonService.ValidateCqComparisonSettings(new SampleComparisonSettings
+            {
+                Encoder = settings.Encoder, UseGpu = true, EncoderPreset = "p5",
+                TenBit = false, ScaleMode = EncodingService.ScaleMode.None
+            }));
+        Assert.Throws<InvalidOperationException>(() =>
+            SampleComparisonService.ValidateCqComparisonSettings(new SampleComparisonSettings
+            {
+                Encoder = settings.Encoder, UseGpu = true, EncoderPreset = "p5",
+                TenBit = true, ScaleMode = EncodingService.ScaleMode.To720p
+            }));
+    }
+
+    [Fact]
     public void ProjectionUsesMeasuredDurationsInsteadOfRequestedClipLengths()
     {
         long tenMiB = 10L * 1024 * 1024;

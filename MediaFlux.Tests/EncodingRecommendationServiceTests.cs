@@ -46,6 +46,30 @@ public sealed class EncodingRecommendationServiceTests
         Assert.Equal(a.ExpectedSavingsPercent, b.ExpectedSavingsPercent);
     }
 
+    [Fact]
+    public void SupportedProductionDirectEstimateTakesPrecedenceOverBroadHistory()
+    {
+        EncodingPlan baseline = Plan(100, 40, EncodingHistoricalConfidence.High);
+        EncodingPlan plan = new()
+        {
+            IsAvailable = true,
+            Source = baseline.Source,
+            Video = baseline.Video,
+            Estimates = baseline.Estimates with { ProductionPredictedOutputSizeMb = 120 },
+            SizePredictionCalibration = EncodingSizePredictionCalibration.Unavailable(
+                120, "Direct model", "policy", new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc)) with
+            {
+                EstimateModelId = ProductionDirectOutputResult.ModelId,
+                EstimateStatus = "Supported", EstimateIndependentFamilyCount = 12
+            }
+        };
+        EncodingRecommendation result = EncodingRecommendationService.Evaluate(plan);
+        Assert.Equal(120, result.EstimatedOutputSizeMb);
+        Assert.Equal(EncodingHistoricalConfidence.Medium, result.Confidence);
+        Assert.Equal(EncodingRecommendationKind.Review, result.Recommendation);
+        Assert.Contains(result.SupportingReasons, reason => reason.Contains("12 independent comparable sources"));
+    }
+
     private static EncodingPlan Plan(double sourceMb, double? outputMb, EncodingHistoricalConfidence confidence, double bitrate = 8_000, int width = 1920, int height = 1080, string targetCodec = "hevc")
     {
         var plan = new EncodingPlan

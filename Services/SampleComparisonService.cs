@@ -31,6 +31,38 @@ namespace MediaFlux.Services
         public string ComparisonPath { get; init; } = string.Empty;
     }
 
+    public sealed class SampleComparisonCqRun
+    {
+        internal SampleComparisonCqRun(int qualityValue, SampleComparisonResult result)
+        {
+            QualityValue = qualityValue;
+            Result = result;
+        }
+
+        public int QualityValue { get; }
+        public SampleComparisonResult Result { get; }
+    }
+
+    public sealed class SampleComparisonCqSetResult : IDisposable
+    {
+        private bool _disposed;
+
+        internal SampleComparisonCqSetResult(IReadOnlyList<SampleComparisonCqRun> runs)
+        {
+            Runs = runs;
+        }
+
+        public IReadOnlyList<SampleComparisonCqRun> Runs { get; }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            foreach (SampleComparisonCqRun run in Runs)
+                run.Result.Dispose();
+        }
+    }
+
     public sealed class SampleComparisonResult : IDisposable
     {
         private readonly string _workingFolder;
@@ -160,6 +192,9 @@ namespace MediaFlux.Services
     /// </summary>
     public sealed class SampleComparisonService
     {
+        public static IReadOnlyList<int> DefaultCqComparisonValues { get; } =
+            Array.AsReadOnly(new[] { 22, 23, 24, 25 });
+
         private const int MaxCapturedFfmpegCharacters = 256 * 1024;
         private readonly string _appPath;
         private readonly string _ffmpegPath;
@@ -214,7 +249,96 @@ namespace MediaFlux.Services
                 settings,
                 progress,
                 buildComparisonVideos: true,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                samplePositions: null).ConfigureAwait(false);
+        }
+
+        public async Task<SampleComparisonCqSetResult> GenerateCqComparisonAsync(
+            string sourcePath,
+            TimeSpan sourceDuration,
+            SampleComparisonSettings settings,
+            IProgress<string>? progress,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(settings);
+            ValidateCqComparisonSettings(settings);
+            IReadOnlyList<(string Label, TimeSpan Start, TimeSpan Duration)> positions =
+                BuildCqComparisonSamplePositions(sourceDuration);
+            SampleComparisonSettings[] runSettings = DefaultCqComparisonValues
+                .Select(quality => CreateCqComparisonSettings(settings, quality))
+                .ToArray();
+            var runs = new List<SampleComparisonCqRun>(runSettings.Length);
+            try
+            {
+                foreach (SampleComparisonSettings current in runSettings)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    progress?.Report($"Encoding genuine CQ{current.QualityValue} samples…");
+                    SampleComparisonResult result = await GenerateCoreAsync(
+                        sourcePath, sourceDuration, current, progress,
+                        buildComparisonVideos: true, cancellationToken, positions)
+                        .ConfigureAwait(false);
+                    runs.Add(new SampleComparisonCqRun(current.QualityValue, result));
+                }
+                return new SampleComparisonCqSetResult(runs);
+            }
+            catch
+            {
+                foreach (SampleComparisonCqRun run in runs)
+                    run.Result.Dispose();
+                throw;
+            }
+        }
+
+        internal static SampleComparisonSettings CreateCqComparisonSettings(
+            SampleComparisonSettings settings, int qualityValue)
+        {
+            ArgumentNullException.ThrowIfNull(settings);
+            if (qualityValue is < 0 or > 51)
+                throw new ArgumentOutOfRangeException(nameof(qualityValue));
+            return new SampleComparisonSettings
+            {
+                Encoder = settings.Encoder,
+                VideoCodec = settings.VideoCodec,
+                UseGpu = settings.UseGpu,
+                ProjectedTargetMb = null,
+                ScaleMode = settings.ScaleMode,
+                EncoderPreset = settings.EncoderPreset,
+                QualityValue = qualityValue,
+                TenBit = settings.TenBit,
+                AudioChannels = settings.AudioChannels,
+                AdditionalMappedBitrateKbps = settings.AdditionalMappedBitrateKbps,
+                ClipSeconds = 25,
+                Restoration = settings.Restoration.Clone()
+            };
+        }
+
+        internal static void ValidateCqComparisonSettings(SampleComparisonSettings settings)
+        {
+            ArgumentNullException.ThrowIfNull(settings);
+            if (settings.Encoder is not { } encoder ||
+                !encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase) ||
+                encoder.CodecFamily != VideoCodecFamily.Hevc ||
+                !encoder.FfmpegCodec.Equals("hevc_nvenc", StringComparison.OrdinalIgnoreCase) ||
+                !settings.UseGpu ||
+                !settings.EncoderPreset.Equals("p5", StringComparison.OrdinalIgnoreCase) ||
+                !settings.TenBit || settings.ScaleMode != EncodingService.ScaleMode.None)
+                throw new InvalidOperationException(
+                    "CQ comparison requires NVENC HEVC, p5, 10-bit, and unchanged source geometry.");
+        }
+
+        internal static IReadOnlyList<(string Label, TimeSpan Start, TimeSpan Duration)>
+            BuildCqComparisonSamplePositions(TimeSpan sourceDuration)
+        {
+            if (sourceDuration < TimeSpan.FromSeconds(75))
+                throw new InvalidOperationException(
+                    "CQ comparison requires a source at least 75 seconds long for matching 25-second beginning, middle, and end samples.");
+            IReadOnlyList<(string Label, TimeSpan Start, TimeSpan Duration)> positions =
+                BuildSamplePositions(sourceDuration, 25);
+            if (positions.Count != 3 || positions.Any(position => position.Duration != TimeSpan.FromSeconds(25)))
+                throw new InvalidOperationException(
+                    "CQ comparison could not create three matching 25-second samples.");
+            return positions;
         }
 
         public async Task<SampleProjectionResult> GenerateProjectionAsync(
@@ -230,7 +354,8 @@ namespace MediaFlux.Services
                 settings,
                 progress,
                 buildComparisonVideos: false,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                samplePositions: null).ConfigureAwait(false);
 
             return new SampleProjectionResult(
                 result.ProjectedFinalMb,
@@ -251,7 +376,8 @@ namespace MediaFlux.Services
             SampleComparisonSettings settings,
             IProgress<string>? progress,
             bool buildComparisonVideos,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            IReadOnlyList<(string Label, TimeSpan Start, TimeSpan Duration)>? samplePositions)
         {
             if (!File.Exists(sourcePath))
                 throw new FileNotFoundException("The selected source video no longer exists.", sourcePath);
@@ -273,7 +399,8 @@ namespace MediaFlux.Services
 
             try
             {
-                var positions = BuildSamplePositions(sourceDuration, settings.ClipSeconds);
+                IReadOnlyList<(string Label, TimeSpan Start, TimeSpan Duration)> positions =
+                    samplePositions ?? BuildSamplePositions(sourceDuration, settings.ClipSeconds);
                 for (int i = 0; i < positions.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();

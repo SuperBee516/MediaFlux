@@ -1,4 +1,5 @@
 using MediaFlux.Models;
+using MediaFlux;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -60,6 +61,62 @@ public sealed class QueueAnalysisPresentationTests
         Assert.Equal("35% (680 MB)", positive.SavingsValue);
         Assert.Equal("Estimated savings", zero.SavingsLabel);
         Assert.Equal("0% (0 MB)", zero.SavingsValue);
+    }
+
+    [Fact]
+    public void LowConfidenceFallbackKeepsNumericalEstimateSavingsAndProvenanceVisible()
+    {
+        var recommendation = new SmartEncodeRecommendation
+        {
+            Kind = SmartEncodeRecommendationKind.Review,
+            Confidence = SmartEncodeConfidence.Low,
+            EstimatedSavingsPercent = 34.4,
+            EstimatedSavingsMb = 587.3,
+            PrimaryReason = "Potential savings are shown, but the low-confidence Generic BPP fallback is insufficient to recommend encoding.",
+            Reasons = [
+                "Size and savings use a low-confidence Generic BPP fallback estimate."
+            ]
+        };
+
+        QueueAnalysisPresentation presentation = QueueAnalysisPresentation.Create(
+            recommendation, sourceMb: 1_707.3, estimatedOutputMb: 1_120);
+
+        Assert.Equal("Review", presentation.Recommendation);
+        Assert.Equal("Low", presentation.Confidence);
+        Assert.Equal("1.67 GB → 1.09 GB", presentation.EstimatedResult);
+        Assert.Equal("34.4% (587.3 MB)", presentation.SavingsValue);
+        Assert.Contains("low-confidence Generic BPP fallback estimate", presentation.BuildTooltip());
+    }
+
+    [Fact]
+    public void EstimateProvenanceDistinguishesFallbackFromAppliedGenericCalibration()
+    {
+        EncodingSizePredictionCalibration fallback = EncodingSizePredictionCalibration.Unavailable(
+            655.9, "No supported direct evidence.", "PredictionCalibrationPolicyV1", DateTime.UnixEpoch) with
+        {
+            EstimateModelId = "GenericBppV1",
+            EstimateStatus = "LowConfidenceGenericFallback:InsufficientIndependentFamilies"
+        };
+        EncodingSizePredictionCalibration applied = fallback with
+        {
+            Applied = true,
+            CalibratedPredictionMb = 700
+        };
+        EncodingSizePredictionCalibration manualTarget = fallback with
+        {
+            EstimateModelId = "ManualTarget",
+            EstimateStatus = "ManualTarget"
+        };
+
+        string fallbackText = MainForm.GetQueueAnalysisCalibration(fallback)!;
+        string appliedText = MainForm.GetQueueAnalysisCalibration(applied)!;
+        string manualTargetText = MainForm.GetQueueAnalysisCalibration(manualTarget)!;
+
+        Assert.Contains("Generic BPP (low confidence fallback)", fallbackText);
+        Assert.Contains("historically calibrated Generic BPP", appliedText);
+        Assert.DoesNotContain("low confidence fallback", appliedText,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Generic BPP", manualTargetText);
     }
 
     [Fact]

@@ -253,7 +253,9 @@ namespace MediaFlux
                     TargetCodec = settings.Encoder?.FfmpegCodec ?? settings.VideoCodec,
                     TargetHeight = GetEstimateTargetHeight(),
                     EstimatedOutputMb = estimatedMb,
-                    MinimumSavingsPercent = _config.MinimumExpectedSavingsPercent
+                    MinimumSavingsPercent = _config.MinimumExpectedSavingsPercent,
+                    EstimateConfidenceCeiling =
+                        SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(meta.SizePredictionCalibration)
                 });
         }
 

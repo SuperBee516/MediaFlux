@@ -62,6 +62,33 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
     }
 
     [Fact]
+    public void ProductionDirectEstimateProvenancePersistsAcrossReload()
+    {
+        EncodingStatisticsRecord record = CreateRecord("direct", EncodingStatisticsOutcome.Success,
+            DateTime.UtcNow, 4_000, 2_500, 120, 60) with
+        {
+            EstimateModelId = ProductionDirectOutputResult.ModelId,
+            EstimateStatus = ProductionDirectOutputStatus.Supported.ToString(),
+            EstimateIndependentFamilyCount = 12,
+            EstimateHeldOutCount = 7,
+            EstimateHeldOutEligibleCount = 12,
+            EstimateMedianAbsoluteErrorPercent = 2.7,
+            EstimatePredictedVideoBitrateKbps = 9340,
+            PredictedOutputSizeBytes = 2_700
+        };
+        Assert.True(new EncodingStatisticsService(_statisticsPath).AppendFinalized(record));
+        EncodingStatisticsRecord loaded = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+        Assert.Equal(ProductionDirectOutputResult.ModelId, loaded.EstimateModelId);
+        Assert.Equal("Supported", loaded.EstimateStatus);
+        Assert.Equal(12, loaded.EstimateIndependentFamilyCount);
+        Assert.Equal(7, loaded.EstimateHeldOutCount);
+        Assert.Equal(12, loaded.EstimateHeldOutEligibleCount);
+        Assert.Equal(2.7, loaded.EstimateMedianAbsoluteErrorPercent);
+        Assert.Equal(9340, loaded.EstimatePredictedVideoBitrateKbps);
+        Assert.Equal(2_700, loaded.PredictedOutputSizeBytes);
+    }
+
+    [Fact]
     public void AdaptivePolicyProvenancePersistsAcrossStatisticsReload()
     {
         var service = new EncodingStatisticsService(_statisticsPath);
@@ -137,6 +164,10 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
         Assert.Equal("", record.CalibrationPolicyId);
         Assert.Null(record.OutputBitDepth);
         Assert.Null(record.ConcurrentEncoderSessions);
+        Assert.Equal("", record.EstimateModelId);
+        Assert.Equal("", record.EstimateStatus);
+        Assert.Null(record.EstimateIndependentFamilyCount);
+        Assert.Null(record.EstimatePredictedVideoBitrateKbps);
     }
 
     [Fact]

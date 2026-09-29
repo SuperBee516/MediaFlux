@@ -551,6 +551,13 @@ namespace MediaFlux
                         CalibrationLearningStrength = predictionPlan?.SizePredictionCalibration?.LearningStrength,
                         CalibrationRawHistoricalCorrectionPercent = predictionPlan?.SizePredictionCalibration?.RawHistoricalCorrectionPercent,
                         CalibrationAppliedCorrectionPercent = predictionPlan?.SizePredictionCalibration?.AppliedCorrectionPercent,
+                        EstimateModelId = predictionPlan?.SizePredictionCalibration?.EstimateModelId ?? "",
+                        EstimateStatus = predictionPlan?.SizePredictionCalibration?.EstimateStatus ?? "",
+                        EstimateIndependentFamilyCount = predictionPlan?.SizePredictionCalibration?.EstimateIndependentFamilyCount,
+                        EstimateHeldOutCount = predictionPlan?.SizePredictionCalibration?.EstimateHeldOutCount,
+                        EstimateHeldOutEligibleCount = predictionPlan?.SizePredictionCalibration?.EstimateHeldOutEligibleCount,
+                        EstimateMedianAbsoluteErrorPercent = predictionPlan?.SizePredictionCalibration?.EstimateMedianAbsoluteErrorPercent,
+                        EstimatePredictedVideoBitrateKbps = predictionPlan?.SizePredictionCalibration?.EstimatePredictedVideoBitrateKbps,
                         PredictedCompressionRatio = predictionPlan?.Estimates.HistoricalPrediction?.PredictedCompressionRatio ??
                             predictionPlan?.Estimates.EstimatedCompressionRatio,
                         PredictedProcessingSeconds = predictionPlan?.Estimates.HistoricalPrediction?.PredictedDuration?.TotalSeconds,

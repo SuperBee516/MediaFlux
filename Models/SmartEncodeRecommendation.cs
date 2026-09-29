@@ -21,6 +21,7 @@ namespace MediaFlux.Models
     {
         public SmartEncodeRecommendationKind Kind { get; init; }
         public SmartEncodeConfidence Confidence { get; init; }
+        public SmartEncodeConfidence? ConfidenceCeiling { get; init; }
         public double? EstimatedSavingsPercent { get; init; }
         public double? EstimatedSavingsMb { get; init; }
         public string PrimaryReason { get; init; } = "";
@@ -72,5 +73,6 @@ namespace MediaFlux.Models
         public int? TargetHeight { get; init; }
         public double EstimatedOutputMb { get; init; }
         public double MinimumSavingsPercent { get; init; } = 15;
+        public SmartEncodeConfidence? EstimateConfidenceCeiling { get; init; }
     }
 }

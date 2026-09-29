@@ -96,6 +96,48 @@ public sealed class EncodingQualityPolicyServiceTests
     }
 
     [Theory]
+    [InlineData(7_700_000)]
+    [InlineData(8_250_000)]
+    [InlineData(11_000_000)]
+    public void BalancedNvencHevcHighQualitySourcesResolveToCq25(long sourceBitrate)
+    {
+        VideoEncoderSelection encoder = new(VideoEncoderIds.Nvenc,
+            VideoCodecFamily.Hevc, "hevc_nvenc");
+
+        EncodingQualityResolution resolution = Resolve(QualityTarget.Balanced,
+            Source(1920, 1080, 30, sourceBitrate), encoder);
+
+        Assert.Equal(EncodingQualityAssessment.HighQualitySource, resolution.Assessment);
+        Assert.Equal(25, resolution.EffectiveQuality);
+        Assert.Contains(resolution.Reasons, reason =>
+            reason.Code == EncodingQualityReasonCode.HighQualitySource &&
+            reason.Description.Contains("uses CQ25", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(QualityTarget.HighQuality, 19)]
+    [InlineData(QualityTarget.MaximumQuality, 17)]
+    public void HighAndMaximumQualityNvencHevcPoliciesRemainUnchanged(
+        QualityTarget target, int expectedQuality)
+    {
+        EncodingQualityResolution resolution = Resolve(target,
+            Source(1920, 1080, 30, 8_250_000),
+            new(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"));
+
+        Assert.Equal(expectedQuality, resolution.EffectiveQuality);
+    }
+
+    [Fact]
+    public void BalancedNvencH264HighQualityPolicyRemainsUnchanged()
+    {
+        EncodingQualityResolution resolution = Resolve(QualityTarget.Balanced,
+            Source(1920, 1080, 30, 8_250_000),
+            new(VideoEncoderIds.Nvenc, VideoCodecFamily.H264, "h264_nvenc"));
+
+        Assert.Equal(20, resolution.EffectiveQuality);
+    }
+
+    [Theory]
     [InlineData(VideoEncoderIds.Libx265, "libx265", 24)]
     [InlineData(VideoEncoderIds.Nvenc, "hevc_nvenc", 24)]
     [InlineData(VideoEncoderIds.Qsv, "hevc_qsv", 19)]
@@ -124,11 +166,14 @@ public sealed class EncodingQualityPolicyServiceTests
             Assert.NotEqual(EncodingQualityAssessment.Unknown, result.Assessment);
         });
         Assert.Equal(expectedTypicalBaseline + 1, results[0].EffectiveQuality);
-        Assert.Equal(expectedTypicalBaseline - 2, results[1].EffectiveQuality);
+        int expectedHighQuality = encoderId == VideoEncoderIds.Nvenc
+            ? expectedTypicalBaseline + 1
+            : expectedTypicalBaseline - 2;
+        Assert.Equal(expectedHighQuality, results[1].EffectiveQuality);
         Assert.Equal(expectedTypicalBaseline + 1, results[2].EffectiveQuality);
         Assert.Equal(expectedTypicalBaseline, results[3].EffectiveQuality);
         Assert.Equal(expectedTypicalBaseline - 1, results[4].EffectiveQuality);
-        Assert.Equal(expectedTypicalBaseline - 2, results[5].EffectiveQuality);
+        Assert.Equal(expectedHighQuality, results[5].EffectiveQuality);
         Assert.Equal(expectedTypicalBaseline + 1, results[6].EffectiveQuality);
     }
 

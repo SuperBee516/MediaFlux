@@ -49,6 +49,9 @@ public sealed class EncodingQualityPolicyService
 
         int baseline = provider.NormalizeQuality(request.Encoder.CodecFamily, null);
         int requested = baseline + TargetOffset(target);
+        bool balancedNvencHevc = target == QualityTarget.Balanced &&
+            request.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase) &&
+            request.Encoder.CodecFamily == VideoCodecFamily.Hevc;
         reasons.Add(new(EncodingQualityReasonCode.QualityTargetSelected,
             $"Quality target {target} was selected."));
         reasons.Add(new(EncodingQualityReasonCode.ProviderDefaultBaseline,
@@ -65,9 +68,11 @@ public sealed class EncodingQualityPolicyService
                     "Low measured bits-per-pixel indicates an already compressed source."));
                 break;
             case EncodingQualityAssessment.HighQualitySource:
-                requested -= 2;
+                requested += balancedNvencHevc ? 1 : -2;
                 reasons.Add(new(EncodingQualityReasonCode.HighQualitySource,
-                    "High measured bits-per-pixel indicates a source worth preserving more closely."));
+                    balancedNvencHevc
+                        ? "High measured bits-per-pixel identifies a high-quality source; Balanced NVENC HEVC uses CQ25."
+                        : "High measured bits-per-pixel indicates a source worth preserving more closely."));
                 break;
         }
 

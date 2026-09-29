@@ -36,6 +36,101 @@ public sealed class SmartEncodeDecisionServiceTests
     }
 
     [Fact]
+    public void LowConfidenceGenericFallbackShowsPotentialSavingsAsReview()
+    {
+        EncodingSizePredictionCalibration calibration = GenericFallbackCalibration();
+        SmartEncodeConfidence? ceiling =
+            SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(calibration);
+        SmartEncodeRecommendation result = Evaluate(
+            DefaultSource(),
+            DefaultIntent(estimatedOutputMb: 350, estimateConfidenceCeiling: ceiling));
+
+        Assert.Equal(SmartEncodeRecommendationKind.Review, result.Kind);
+        Assert.Equal(SmartEncodeConfidence.Low, result.Confidence);
+        Assert.Equal(SmartEncodeConfidence.Low, result.ConfidenceCeiling);
+        Assert.Equal(65, result.EstimatedSavingsPercent);
+        Assert.Equal(650, result.EstimatedSavingsMb);
+        Assert.Contains("low-confidence Generic BPP fallback", result.PrimaryReason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Contains("low-confidence Generic BPP fallback estimate", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void LowConfidenceCeilingSurvivesAgreeingDeepAnalysis()
+    {
+        SmartEncodeRecommendation baseline = Evaluate(
+            DefaultSource(),
+            DefaultIntent(estimatedOutputMb: 350,
+                estimateConfidenceCeiling: SmartEncodeConfidence.Low));
+
+        SmartEncodeRecommendation refined = _service.RefineWithDeepAnalysis(
+            baseline,
+            new DeepMediaAnalysisResult
+            {
+                ProjectedOutputMb = 350,
+                ProjectionConfidence = SmartEncodeConfidence.High,
+                ProjectionSampleCount = 3,
+                InterlaceStatus = SampledInterlaceStatus.Progressive
+            },
+            SmartEncodeContentHint.Auto,
+            intendedOutputMb: 350);
+
+        Assert.Equal(SmartEncodeRecommendationKind.Review, refined.Kind);
+        Assert.Equal(SmartEncodeConfidence.Low, refined.Confidence);
+        Assert.Equal(SmartEncodeConfidence.Low, refined.ConfidenceCeiling);
+    }
+
+    [Fact]
+    public void SupportedEstimatorProvenanceDoesNotApplyGenericFallbackCeiling()
+    {
+        EncodingSizePredictionCalibration appliedGeneric = GenericFallbackCalibration() with
+        {
+            EstimateStatus = "CalibratedGenericBpp",
+            Applied = true,
+            Confidence = EncodingPredictionConfidence.High
+        };
+        EncodingSizePredictionCalibration direct = GenericFallbackCalibration() with
+        {
+            EstimateModelId = ProductionDirectOutputResult.ModelId,
+            EstimateStatus = "InsufficientIndependentFamilies"
+        };
+        EncodingSizePredictionCalibration manual = GenericFallbackCalibration() with
+        {
+            EstimateModelId = "ManualTarget",
+            EstimateStatus = "ManualTarget"
+        };
+
+        Assert.Null(SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(appliedGeneric));
+        Assert.Null(SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(direct));
+        Assert.Null(SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(manual));
+        Assert.Null(SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(null));
+
+        SmartEncodeRecommendation supported = Evaluate(
+            DefaultSource(), DefaultIntent(estimatedOutputMb: 350));
+        Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate, supported.Kind);
+        Assert.Equal(SmartEncodeConfidence.High, supported.Confidence);
+    }
+
+    [Fact]
+    public void FallbackConfidenceComesFromEstimateProvenanceNotQualityValue()
+    {
+        EncodingSizePredictionCalibration cq22 = GenericFallbackCalibration() with
+        {
+            CohortKey = "NVENC-HEVC-CQ22"
+        };
+        EncodingSizePredictionCalibration cq25 = GenericFallbackCalibration() with
+        {
+            CohortKey = "NVENC-HEVC-CQ25"
+        };
+
+        Assert.Equal(SmartEncodeConfidence.Low,
+            SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(cq22));
+        Assert.Equal(SmartEncodeConfidence.Low,
+            SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(cq25));
+    }
+
+    [Fact]
     public void MissingH264StreamBitrateStillProducesUsefulHevcCandidate()
     {
         const double durationSeconds = 3_600;
@@ -341,14 +436,24 @@ public sealed class SmartEncodeDecisionServiceTests
         double estimatedOutputMb,
         string targetCodec = "hevc_nvenc",
         int? targetHeight = null,
-        double minimumSavingsPercent = 15)
+        double minimumSavingsPercent = 15,
+        SmartEncodeConfidence? estimateConfidenceCeiling = null)
     {
         return new SmartEncodeIntent
         {
             TargetCodec = targetCodec,
             TargetHeight = targetHeight,
             EstimatedOutputMb = estimatedOutputMb,
-            MinimumSavingsPercent = minimumSavingsPercent
+            MinimumSavingsPercent = minimumSavingsPercent,
+            EstimateConfidenceCeiling = estimateConfidenceCeiling
         };
     }
+
+    private static EncodingSizePredictionCalibration GenericFallbackCalibration() =>
+        EncodingSizePredictionCalibration.Unavailable(
+            350, "Generic fallback.", "PredictionCalibrationPolicyV1", DateTime.UnixEpoch) with
+        {
+            EstimateModelId = "GenericBppV1",
+            EstimateStatus = "LowConfidenceGenericFallback:InsufficientIndependentFamilies"
+        };
 }

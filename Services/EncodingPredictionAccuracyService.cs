@@ -159,6 +159,8 @@ public sealed class EncodingPredictionAccuracyService
         EncodingStatisticsRecord[] historySnapshot = history.ToArray();
         string cohortKey = CalibrationCohortKey(context);
         EncodingStatisticsRecord[] matching = historySnapshot.Where(record =>
+                (string.IsNullOrWhiteSpace(record.EstimateModelId) ||
+                 record.EstimateModelId == "GenericBppV1") &&
                 record.Outcome == EncodingStatisticsOutcome.Success && !record.IsSampleJob && !record.RecoveredSuccessful &&
                 record.SourceSizeBytes is > 0 && record.OutputSizeBytes is > 0 &&
                 (record.BasePredictedOutputSizeBytes ?? record.PredictedOutputSizeBytes) is > 0 &&

@@ -397,6 +397,29 @@ public sealed class EncodingSizePredictionCalibrationTests
         Assert.False(result.Applied);
     }
 
+    [Fact]
+    public void GenericCalibrationExcludesDirectModelResiduals()
+    {
+        EncodingStatisticsRecord[] direct = History(20, 1_100, 1_000)
+            .Select(record => record with
+            {
+                EstimateModelId = ProductionDirectOutputResult.ModelId
+            }).ToArray();
+        EncodingSizePredictionCalibration excluded = new EncodingPredictionAccuracyService()
+            .CalibrateSizePrediction(100, Context, direct, enabled: true);
+        Assert.False(excluded.Applied);
+        Assert.Equal(0, excluded.SampleCount);
+
+        EncodingStatisticsRecord[] generic = History(20, 1_100, 1_000)
+            .Select((record, index) => record with
+            {
+                Id = $"generic-{index}", EstimateModelId = "GenericBppV1"
+            }).ToArray();
+        EncodingSizePredictionCalibration mixed = new EncodingPredictionAccuracyService()
+            .CalibrateSizePrediction(100, Context, direct.Concat(generic), enabled: true);
+        Assert.Equal(20, mixed.SampleCount);
+    }
+
     private static EncodingStatisticsRecord[] History(int count, long actualBytes, long predictedBytes) =>
         Enumerable.Range(0, count).Select(index => new EncodingStatisticsRecord
         {

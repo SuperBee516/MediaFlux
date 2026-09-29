@@ -92,6 +92,14 @@ namespace MediaFlux.Services
         public SourceAdaptiveShadowOutcome? SourceAdaptiveShadow { get; set; }
         // Versioned effective NVENC quality-mode settings; absent on legacy records.
         public string QualityModeSettingsSignature { get; set; } = "";
+        // Additive production estimate provenance; absent on historical JSONL records.
+        public string EstimateModelId { get; set; } = "";
+        public string EstimateStatus { get; set; } = "";
+        public int? EstimateIndependentFamilyCount { get; set; }
+        public int? EstimateHeldOutCount { get; set; }
+        public int? EstimateHeldOutEligibleCount { get; set; }
+        public double? EstimateMedianAbsoluteErrorPercent { get; set; }
+        public double? EstimatePredictedVideoBitrateKbps { get; set; }
     }
 
     public readonly record struct EncodingStatisticsUtcRange(
@@ -261,6 +269,17 @@ namespace MediaFlux.Services
             record.CalibrationPolicyId = record.CalibrationPolicyId?.Trim() ?? "";
             record.TerminalResult = record.TerminalResult?.Trim() ?? "";
             record.QualityModeSettingsSignature = record.QualityModeSettingsSignature?.Trim() ?? "";
+            record.EstimateModelId = record.EstimateModelId?.Trim() ?? "";
+            record.EstimateStatus = record.EstimateStatus?.Trim() ?? "";
+            if (record.EstimateIndependentFamilyCount is < 0) record.EstimateIndependentFamilyCount = null;
+            if (record.EstimateHeldOutCount is < 0) record.EstimateHeldOutCount = null;
+            if (record.EstimateHeldOutEligibleCount is < 0) record.EstimateHeldOutEligibleCount = null;
+            if (record.EstimateMedianAbsoluteErrorPercent is { } estimateError &&
+                (!double.IsFinite(estimateError) || estimateError < 0))
+                record.EstimateMedianAbsoluteErrorPercent = null;
+            if (record.EstimatePredictedVideoBitrateKbps is { } estimateVideo &&
+                (!double.IsFinite(estimateVideo) || estimateVideo <= 0))
+                record.EstimatePredictedVideoBitrateKbps = null;
             if (record.DiagnosticSummary is { } diagnostic)
             {
                 record.DiagnosticSummary = diagnostic with

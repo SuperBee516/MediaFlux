@@ -98,7 +98,15 @@ namespace MediaFlux
                                 ? new Tuple<double, double>(srcMb, estMb)
                                 : null;
                             row.Cells["colEstimatedSize"].ToolTipText = hasEstimate
-                                ? "Calculated independently from this file's size, duration, resolution, frame rate, bitrate, codec, and the current encoding settings."
+                                ? item.SizeCalibration?.EstimateModelId == ProductionDirectOutputResult.ModelId
+                                    ? $"Historical Direct estimate from {item.SizeCalibration.EstimateIndependentFamilyCount} independent comparable sources."
+                                    : item.SizeCalibration?.EstimateModelId == "ManualTarget"
+                                        ? "Manual target size selected; the requested output size is configured by the user."
+                                    : item.SizeCalibration is { EstimateModelId: "GenericBppV1", Applied: true }
+                                        ? "Historically calibrated Generic BPP size estimate."
+                                    : SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(item.SizeCalibration) == SmartEncodeConfidence.Low
+                                        ? "Generic BPP size estimate; low-confidence fallback when comparable Direct evidence is unavailable."
+                                        : "Calculated independently from this file's size, duration, resolution, frame rate, bitrate, codec, and current encoding settings."
                                 : "Required media metadata could not be determined. MediaFlux will not substitute a shared or fixed estimate.";
                             if (_queueSourceSizeMap.TryGetValue(item.Path, out var previousSrc))
                                 _queueTotalSourceMb += srcMb - previousSrc;
@@ -288,7 +296,7 @@ namespace MediaFlux
                 : "Medium Quality (Default)";
             ValidatedEncoderSettings encoderSettings =
                 GetValidatedEncoderSettingsFromUi(
-                    includeConcurrentSessions: false);
+                    includeConcurrentSessions: true);
             VideoEncoderSelection targetEncoder =
                 encoderSettings.Resolved.Selection;
             int quality = encoderSettings.QualityValue;
@@ -438,7 +446,10 @@ namespace MediaFlux
                     rowStorageSavings,
                     isCustom ? null : automaticQualityIntent,
                     sourceAdaptiveCeilingEligible,
-                    estimateMeta.QueueItemId);
+                    estimateMeta.QueueItemId,
+                    encoderSettings.Preset,
+                    encoderSettings.TenBit ? 10 : 8,
+                    encoderSettings.ConcurrentEncoderSessions);
                 queued++;
             }
 
@@ -516,7 +527,10 @@ namespace MediaFlux
             StorageSavingsOptions storageSavings,
             EncodingQualityIntent? qualityIntent,
             bool sourceAdaptiveCeilingEligible,
-            Guid queueItemId)
+            Guid queueItemId,
+            string encoderPreset,
+            int outputBitDepth,
+            bool concurrentEncoderSessions)
         {
             _estimateService.QueueSmartEstimate(
                 path,
@@ -534,7 +548,10 @@ namespace MediaFlux
                 qualityIntent,
                 sourceAdaptiveCeilingEligible,
                 _config.UseHistoricalSizePredictionCalibration,
-                queueItemId);
+                queueItemId,
+                encoderPreset,
+                outputBitDepth,
+                concurrentEncoderSessions);
         }
 
         private bool IsEstimateSourceOwnedByActiveEncode(string path)

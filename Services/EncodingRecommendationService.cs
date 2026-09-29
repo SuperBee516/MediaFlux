@@ -13,7 +13,13 @@ public static class EncodingRecommendationService
 
         double? sourceMb = plan.Source?.SizeBytes is > 0 ? plan.Source.SizeBytes.Value / 1048576d : null;
         EncodingHistoricalPrediction? history = plan.Estimates.HistoricalPrediction;
-        double? outputMb = history?.PredictedOutputSizeMb is > 0 ? history.PredictedOutputSizeMb : plan.Estimates.EstimatedOutputSizeMb is > 0 ? plan.Estimates.EstimatedOutputSizeMb : null;
+        bool directEstimate = plan.SizePredictionCalibration?.EstimateModelId ==
+            ProductionDirectOutputResult.ModelId;
+        double? outputMb = directEstimate && plan.Estimates.ProductionPredictedOutputSizeMb is > 0
+            ? plan.Estimates.ProductionPredictedOutputSizeMb
+            : history?.PredictedOutputSizeMb is > 0 ? history.PredictedOutputSizeMb
+            : plan.Estimates.EstimatedOutputSizeMb is > 0 ? plan.Estimates.EstimatedOutputSizeMb
+            : null;
         double? savingsMb = sourceMb is > 0 && outputMb is > 0 ? sourceMb - outputMb : null;
         double? savingsPercent = savingsMb.HasValue && sourceMb is > 0 ? savingsMb.Value / sourceMb.Value * 100d : null;
         bool explicitIntent = plan.Estimates.EstimatedOutputSizeMb is > 0 ||
@@ -28,7 +34,9 @@ public static class EncodingRecommendationService
             reasons.Add($"Source: {plan.Source.Codec} {plan.Source.Width}×{plan.Source.Height} at {plan.Source.BitrateKbps.Value:0} kbps.");
         if (outputMb is > 0)
             reasons.Add($"Estimated output: {outputMb.Value:0.#} MB.");
-        if (history?.IsAvailable == true)
+        if (directEstimate)
+            reasons.Add($"Production Historical Direct uses {plan.SizePredictionCalibration!.EstimateIndependentFamilyCount} independent comparable sources.");
+        else if (history?.IsAvailable == true)
             reasons.Add($"Historical estimate uses {history.SampleCount} comparable job(s) at {history.Confidence} confidence.");
         if (risk == EncodingRecommendationRisk.High)
             reasons.Insert(0, "Source bitrate is unusually low for the planned source resolution; further compression may reduce visible quality.");
@@ -47,7 +55,12 @@ public static class EncodingRecommendationService
     }
 
     private static EncodingRecommendation Result(EncodingRecommendationKind kind, string primary, IReadOnlyList<string> reasons, EncodingHistoricalConfidence confidence, double? output, double? mb, double? percent, EncodingRecommendationRisk risk, IReadOnlyList<EncodingPlanItem> facts) => new(kind, primary, reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), confidence, output, mb, percent, risk, facts);
-    private static EncodingHistoricalConfidence Confidence(EncodingPlan plan) => plan.Estimates.HistoricalPrediction?.Confidence is { } c && c != EncodingHistoricalConfidence.None ? c : plan.Estimates.EstimatedOutputSizeMb is > 0 ? EncodingHistoricalConfidence.Medium : EncodingHistoricalConfidence.Low;
+    private static EncodingHistoricalConfidence Confidence(EncodingPlan plan) =>
+        plan.SizePredictionCalibration?.EstimateModelId == ProductionDirectOutputResult.ModelId
+            ? EncodingHistoricalConfidence.Medium
+            : plan.Estimates.HistoricalPrediction?.Confidence is { } c && c != EncodingHistoricalConfidence.None
+                ? c : plan.Estimates.EstimatedOutputSizeMb is > 0
+                    ? EncodingHistoricalConfidence.Medium : EncodingHistoricalConfidence.Low;
     private static EncodingRecommendationRisk ResolveRisk(EncodingPlan plan)
     {
         if (plan.Source?.BitrateKbps is not > 0 || plan.Source.Width is not > 0 || plan.Source.Height is not > 0 || plan.Source.FrameRate is not > 0) return EncodingRecommendationRisk.Unknown;

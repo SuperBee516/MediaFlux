@@ -83,7 +83,14 @@ public sealed record EncodingSizePredictionCalibration(
     DateTime? EffectivenessSinceUtc = null,
     string PolicyId = "",
     double LearningStrength = 0,
-    double? AppliedCorrectionPercent = null)
+    double? AppliedCorrectionPercent = null,
+    string EstimateModelId = "",
+    string EstimateStatus = "",
+    int EstimateIndependentFamilyCount = 0,
+    int EstimateHeldOutCount = 0,
+    int EstimateHeldOutEligibleCount = 0,
+    double? EstimateMedianAbsoluteErrorPercent = null,
+    double? EstimatePredictedVideoBitrateKbps = null)
 {
     public double? RawHistoricalCorrectionPercent => MedianSignedErrorPercent;
 
@@ -97,7 +104,7 @@ public sealed record EncodingSizePredictionCalibration(
             baseMb, EncodingCalibrationDecision.NotEligible, PolicyId: policyId, DecisionUtc: decisionUtc,
             AppliedCorrectionPercent: 0);
 }
-public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio, EncodingHistoricalPrediction? HistoricalPrediction = null);
+public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio, EncodingHistoricalPrediction? HistoricalPrediction = null, double? ProductionPredictedOutputSizeMb = null);
 
 public sealed record EncodingPlanItem(string Label, string Value, string? Reason = null);
 public sealed record EncodingPlanSection(string Title, IReadOnlyList<EncodingPlanItem> Items);

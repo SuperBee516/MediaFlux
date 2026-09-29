@@ -79,6 +79,7 @@ namespace MediaFlux
             CancellationToken token = _mediaRemuxCts.Token;
             btnStartEncode.Enabled = false;
             btnSampleComparison.Enabled = false;
+            btnCqSampleComparison.Enabled = false;
             if (_analyzeQueueButton != null)
                 _analyzeQueueButton.Enabled = false;
             SetQueueWorkCancelVisible(true);
@@ -256,6 +257,7 @@ namespace MediaFlux
                 SetQueueWorkCancelVisible(false);
                 btnStartEncode.Enabled = !_encodingActive;
                 btnSampleComparison.Enabled = !_encodingActive;
+                btnCqSampleComparison.Enabled = !_encodingActive;
                 UpdateAnalyzeQueueButtonState();
                 if (!_encodingActive)
                     lblEncodeStatus.Text = string.Empty;
