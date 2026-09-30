@@ -49,10 +49,15 @@ public sealed record EncodeExecutionSnapshotSettings
     {
         ArgumentNullException.ThrowIfNull(job);
         ArgumentNullException.ThrowIfNull(config);
-        if (string.IsNullOrWhiteSpace(job.EncoderId) ||
+        if (string.IsNullOrWhiteSpace(job.OutputFolder) ||
+            string.IsNullOrWhiteSpace(job.EncoderId) ||
             string.IsNullOrWhiteSpace(job.CompressionProfile) ||
+            string.IsNullOrWhiteSpace(job.VideoCodec) ||
+            string.IsNullOrWhiteSpace(job.EncoderPreset) ||
+            string.IsNullOrWhiteSpace(job.OutputContainer) ||
             string.IsNullOrWhiteSpace(job.VideoFormat) ||
-            string.IsNullOrWhiteSpace(job.Resolution))
+            string.IsNullOrWhiteSpace(job.Resolution) ||
+            string.IsNullOrWhiteSpace(job.AudioChannels))
         {
             throw new InvalidDataException(
                 "This saved job lacks settings which MainForm currently inherits from effective controls. " +
@@ -64,11 +69,11 @@ public sealed record EncodeExecutionSnapshotSettings
             Enum.IsDefined(parsedPolicy)
                 ? parsedPolicy
                 : ContainerCompatibilityPolicy.Intelligent;
-        QualityTarget qualityTarget =
-            Enum.TryParse(job.QualityTarget, true, out QualityTarget parsedTarget) &&
-            Enum.IsDefined(parsedTarget)
-                ? parsedTarget
-                : QualityTarget.Balanced;
+        if (!string.Equals(job.QualityMode, "Automatic", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(job.QualityMode, "Manual", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The saved job has an unsupported or missing quality mode.");
+        if (!Enum.TryParse(job.QualityTarget, true, out QualityTarget qualityTarget) || !Enum.IsDefined(qualityTarget))
+            throw new InvalidDataException("The saved job has an unsupported or missing quality target.");
         return new EncodeExecutionSnapshotSettings
         {
             OutputFolder = job.OutputFolder,

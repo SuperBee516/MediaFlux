@@ -13,23 +13,31 @@ public sealed class EncodeJobService
     {
         try
         {
-            if (!File.Exists(_path)) return new();
-            string json = File.ReadAllText(_path);
-            List<EncodeJob> jobs = JsonSerializer.Deserialize<List<EncodeJob>>(json, _json) ?? new();
-            foreach (EncodeJob job in jobs)
-            {
-                job.Settings.Restoration ??= new VideoRestorationSettings();
-                if (!json.Contains("\"Mode\"", StringComparison.OrdinalIgnoreCase) &&
-                    job.Settings.Restoration.Preset != VideoRestorationPreset.Off)
-                    job.Settings.Restoration.Mode = VideoRestorationMode.Custom;
-            }
-            return jobs;
+            return LoadStrict();
         }
         catch (Exception ex)
         {
             ErrorLogService.Append(AppPaths.UserDataDirectory, "Load encode jobs failed", _path, ex);
             return new();
         }
+    }
+
+    /// <summary>Loads persisted jobs without converting corruption into an empty list or writing an error log.</summary>
+    public List<EncodeJob> LoadStrict()
+    {
+        if (!File.Exists(_path)) return new();
+        string json = File.ReadAllText(_path);
+        List<EncodeJob> jobs = JsonSerializer.Deserialize<List<EncodeJob>>(json, _json) ?? new();
+        foreach (EncodeJob job in jobs)
+        {
+            job.Files ??= new();
+            job.Settings ??= new EncodeJobSettings();
+            job.Settings.Restoration ??= new VideoRestorationSettings();
+            if (!json.Contains("\"Mode\"", StringComparison.OrdinalIgnoreCase) &&
+                job.Settings.Restoration.Preset != VideoRestorationPreset.Off)
+                job.Settings.Restoration.Mode = VideoRestorationMode.Custom;
+        }
+        return jobs;
     }
 
     public void Save(IEnumerable<EncodeJob> jobs)

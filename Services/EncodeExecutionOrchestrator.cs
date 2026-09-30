@@ -208,6 +208,13 @@ public sealed class EncodeExecutionOrchestrator
         return new EncodeExecutionAttempt(snapshot);
     }
 
+    /// <summary>Runs the same immutable assignment/freeze checks used at execution start without capturing Frozen.</summary>
+    public void ValidateForPreflight(EncodeExecutionAttempt attempt)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+        ValidateAssignedExecution(attempt);
+    }
+
     public async Task<EncodeExecutionResult> ExecuteAsync(
         EncodeExecutionAttempt attempt,
         EncodeExecutionCallbacks callbacks,

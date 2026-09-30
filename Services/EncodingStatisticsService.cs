@@ -164,7 +164,6 @@ namespace MediaFlux.Services
                 throw new ArgumentException("A statistics storage path is required.", nameof(storagePath));
 
             _path = Path.GetFullPath(storagePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             LoadExistingRecords();
         }
 
@@ -182,6 +181,7 @@ namespace MediaFlux.Services
                 if (_recordIds.Contains(record.Id))
                     return false;
 
+                Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
                 File.AppendAllText(_path, line + Environment.NewLine);
                 _records.Add(record);
                 _recordIds.Add(record.Id);

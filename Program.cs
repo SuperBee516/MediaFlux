@@ -3,7 +3,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Runtime.Versioning;
+using System.Runtime.InteropServices;
 using MediaFlux.Services;
+using MediaFlux.Models;
 using Velopack;
 
 [assembly: SupportedOSPlatform("windows")]
@@ -14,8 +16,14 @@ namespace MediaFlux
     static class Program
     {
         [STAThread]
-        static void Main(string[] args)
+        static int Main(string[] args)
         {
+            if (IsHeadlessSavedJobCommand(args))
+            {
+                HeadlessConsole.AttachToParent();
+                return RunHeadlessSavedJobCommand(args);
+            }
+
             VelopackApp.Build().Run();
 
             try
@@ -29,7 +37,7 @@ namespace MediaFlux
                     "MediaFlux startup failed",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
-                return;
+                return 1;
             }
 
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -54,7 +62,7 @@ namespace MediaFlux
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning);
                 }
-                return;
+                return 0;
             }
 
             Application.EnableVisualStyles();
@@ -67,6 +75,57 @@ namespace MediaFlux
             if (startupRequest != null)
                 mainForm.QueueInitialExplorerRequest(startupRequest);
             Application.Run(mainForm);
+            return 0;
+        }
+
+        private static bool IsHeadlessSavedJobCommand(string[] args) =>
+            args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal) &&
+            (args[0].StartsWith("--run-saved-job", StringComparison.Ordinal) ||
+             args[0].StartsWith("--preflight-saved-job", StringComparison.Ordinal));
+
+        private static int RunHeadlessSavedJobCommand(string[] args)
+        {
+            if (!HeadlessSavedJobCommand.TryParse(args, out HeadlessSavedJobCommand? command, out string parseError))
+            {
+                Console.Error.WriteLine("Command rejected: " + parseError);
+                return (int)HeadlessSavedJobExitCode.CommandOrSelectorError;
+            }
+
+            try
+            {
+                // Headless mode deliberately avoids AppPaths.Initialize: it must not
+                // create directories, migrate state, start the scheduler, or open WinForms.
+                using var primaryMutex = new Mutex(true, @"Local\Encode.ExplorerQueue.Primary", out bool isPrimary);
+                if (!isPrimary)
+                    throw new InvalidOperationException("MediaFlux is already running. Close the GUI instance before starting a headless saved-job item to prevent overlapping source/output work.");
+                string userData = AppPaths.UserDataDirectory;
+                Config config = Config.Load(AppPaths.ConfigFile);
+                var jobs = new EncodeJobService(AppPaths.EncodeJobsFile).LoadStrict();
+                var pipeline = new HeadlessSavedJobItemPipeline(config, userData, AppPaths.InstallDirectory);
+                using var cancellation = new CancellationTokenSource();
+                ConsoleCancelEventHandler cancel = (_, eventArgs) =>
+                {
+                    eventArgs.Cancel = true;
+                    cancellation.Cancel();
+                    Console.Error.WriteLine("Cancellation requested; waiting for the active operation to stop safely.");
+                };
+                Console.CancelKeyPress += cancel;
+                try
+                {
+                    HeadlessSavedJobReport report = HeadlessSavedJobItemRunner.RunAsync(
+                        command!, jobs, pipeline, Console.WriteLine, cancellation.Token)
+                        .GetAwaiter().GetResult();
+                    if (report.ExitCode == HeadlessSavedJobExitCode.Success)
+                        Console.WriteLine(report.Message);
+                    return (int)report.ExitCode;
+                }
+                finally { Console.CancelKeyPress -= cancel; }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Headless command rejected: " + ex.Message);
+                return (int)HeadlessSavedJobExitCode.PreflightOrValidationRejected;
+            }
         }
 
         private static ExplorerQueueRequest? ParseExplorerRequest(string[] args)
@@ -107,5 +166,24 @@ namespace MediaFlux
             ErrorLogService.Append(AppPaths.UserDataDirectory, "Unobserved task exception", exception: e.Exception);
             e.SetObserved();
         }
+    }
+
+    internal static class HeadlessConsole
+    {
+        private const int AttachParentProcess = -1;
+
+        public static void AttachToParent()
+        {
+            if (!AttachConsole(AttachParentProcess))
+                AllocConsole();
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AttachConsole(int processId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AllocConsole();
     }
 }
