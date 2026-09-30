@@ -15,7 +15,7 @@ namespace MediaFlux.Services
     /// Encapsulates video encoding logic via FFmpeg with GPU or CPU, optional 10-bit,
     /// deterministic stream mapping, and optional target size budgeting.
     /// </summary>
-    public class EncodingService
+    public class EncodingService : IEncodeRequestExecutor
     {
         private const int MaxCapturedFfmpegCharacters = 512 * 1024;
         private readonly string _appPath;
@@ -375,7 +375,8 @@ namespace MediaFlux.Services
                 request.SizePredictionCalibration,
                 request.PreEncodeResearchCallback,
                 request.LifecycleDiagnostics,
-                request.FaststartStartedCallback).ConfigureAwait(false);
+                request.FaststartStartedCallback,
+                request.PreEncodeExecutionValidationCallback).ConfigureAwait(false);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -642,7 +643,8 @@ namespace MediaFlux.Services
             EncodingSizePredictionCalibration? sizePredictionCalibration = null,
             Func<EncodingPlanSnapshot, CancellationToken, Task>? preEncodeResearchCallback = null,
             EncodeLifecycleDiagnostics? lifecycleDiagnostics = null,
-            Action? faststartStartedCallback = null)
+            Action? faststartStartedCallback = null,
+            Action<EncodingPlanSnapshot>? preEncodeExecutionValidationCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -950,6 +952,7 @@ namespace MediaFlux.Services
                 : null;
             _log?.Invoke(EncodingPlanService.DescribeSummary(shadowPlan));
             encodingPlanSnapshotCallback?.Invoke(planSnapshot);
+            preEncodeExecutionValidationCallback?.Invoke(planSnapshot);
             if (preEncodeResearchCallback is not null)
             {
                 try

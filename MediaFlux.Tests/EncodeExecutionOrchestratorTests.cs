@@ -1,0 +1,558 @@
+using System.Globalization;
+using System.Text;
+using MediaFlux.Models;
+using MediaFlux.Services;
+using Xunit;
+
+namespace MediaFlux.Tests;
+
+public sealed class EncodeExecutionOrchestratorTests : IDisposable
+{
+    private static readonly DateTime Now = new(2026, 9, 30, 12, 0, 0, DateTimeKind.Utc);
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "MediaFlux-EncodeExecutionOrchestratorTests", Guid.NewGuid().ToString("N"));
+
+    public EncodeExecutionOrchestratorTests() => Directory.CreateDirectory(_root);
+
+    [Fact]
+    public async Task AssignedSuccessCapturesBeforeExecutionAndPersistsStatisticsAndOutcomeOnce()
+    {
+        string source = CreateFile("assigned-target.mp4");
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "encoding-statistics.jsonl"));
+        var executor = new SyntheticExecutor(MakePlan(), reportRecoveredOutcome: true);
+        PredictionShadowExperimentFreezeStore freezeStore = CreateFreezeStore(source);
+        var orchestrator = CreateOrchestrator(executor, journal, statistics, freezeStore);
+        PredictionShadowExperimentAssignment assignment = Assignment();
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(
+            source,
+            PredictionShadowExperimentAssignmentPersistence.Capture(source, assignment)));
+
+        EncodeExecutionResult result = await orchestrator.ExecuteAsync(
+            attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
+
+        Assert.Equal(new[] { "plan", "capture", "encode" }, executor.Events);
+        Assert.Equal(EncodingQualityIntent.Automatic(QualityTarget.Balanced), executor.Request!.QualityIntent);
+        Assert.Equal(25, executor.Request.QualityValue);
+        Assert.False(result.SourceDeletion.Deleted);
+        PredictionShadowJournalEvent frozen = Assert.Single(journal.ReadEvents());
+        Assert.Equal("Frozen", frozen.EventType);
+        Assert.Equal(assignment, frozen.Frozen!.ExperimentAssignment);
+        Assert.Equal(attempt.Plan!.PlanId, executor.Plan.PlanId);
+
+        Assert.True(orchestrator.RecordSuccessfulExecution(
+            attempt, Now, 123_456_789, 42.5, "synthetic success", null, true, null));
+        Assert.False(orchestrator.RecordSuccessfulExecution(
+            attempt, Now.AddSeconds(1), 123_456_789, 42.5, "duplicate completion", null, true, null));
+
+        EncodingStatisticsRecord record = Assert.Single(statistics.GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.Success, record.Outcome);
+        Assert.True(record.RecoveredSuccessful);
+        Assert.Equal(EncodingTerminalResult.CompletedAfterRecovery.ToString(), record.TerminalResult);
+        Assert.Equal(attempt.Plan!.PlanId.ToString("N"), record.PredictionPlanId);
+        Assert.Equal(source, record.SourcePath);
+        PredictionShadowJournalEvent[] events = journal.ReadEvents().ToArray();
+        Assert.Equal(2, events.Length);
+        Assert.Equal("Outcome", events[1].EventType);
+        Assert.Equal(assignment, events[1].Outcome!.ExperimentAssignment);
+    }
+
+    [Fact]
+    public async Task OrdinarySuccessCompletesTheSameLifecycleWithoutExperimentMembership()
+    {
+        string source = CreateFile("ordinary-target.mp4");
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "ordinary-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "ordinary-statistics.jsonl"));
+        var executor = new SyntheticExecutor(MakePlan());
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(source, null));
+
+        await orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
+        orchestrator.RecordSuccessfulExecution(attempt, Now, 12_345, 1.5, "ordinary success", null, false, null);
+
+        PredictionShadowJournalEvent[] events = journal.ReadEvents().ToArray();
+        Assert.Equal(new[] { "Frozen", "Outcome" }, events.Select(entry => entry.EventType));
+        Assert.All(events, entry => Assert.Null(entry.Frozen?.ExperimentAssignment ?? entry.Outcome?.ExperimentAssignment));
+        Assert.Equal(EncodingStatisticsOutcome.Success, Assert.Single(statistics.GetAll()).Outcome);
+        Assert.Equal(new[] { "plan", "capture", "encode" }, executor.Events);
+    }
+
+    [Fact]
+    public async Task StaleExecutionPathBindingFailsBeforeExecutorAndNeverFallsBackToOrdinary()
+    {
+        string assignedSource = CreateFile("original.mp4");
+        string queuedSource = CreateFile("replacement-path.mp4");
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "stale-binding.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "stale-statistics.jsonl"));
+        var executor = new SyntheticExecutor(MakePlan());
+        PredictionShadowExperimentFreezeStore freezeStore = CreateFreezeStore(assignedSource);
+        var orchestrator = CreateOrchestrator(executor, journal, statistics, freezeStore);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(
+            queuedSource,
+            PredictionShadowExperimentAssignmentPersistence.Capture(assignedSource, Assignment())));
+
+        EncodeExecutionAssignmentValidationException failure = await Assert.ThrowsAsync<EncodeExecutionAssignmentValidationException>(
+            () => orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        orchestrator.RecordFailedExecution(attempt, Now, false, EncodeFinalizationFailureKind.Validation,
+            "", 0, failure.Message, null, retryQueued: false);
+
+        Assert.Equal(0, executor.InvocationCount);
+        Assert.Contains("source path", failure.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(journal.ReadEvents());
+        Assert.Equal(EncodingStatisticsOutcome.ValidationFailed, Assert.Single(statistics.GetAll()).Outcome);
+    }
+
+    [Fact]
+    public async Task StaleLengthBindingFailsBeforeExecutorWithoutFrozenOrOutcome()
+    {
+        string source = CreateFile("stale-length.mp4");
+        PredictionShadowExperimentFreezeStore freezeStore = CreateFreezeStore(source);
+        PredictionShadowExperimentAssignmentBinding binding = PredictionShadowExperimentAssignmentPersistence.Capture(source, Assignment())!;
+        File.AppendAllText(source, "changed length");
+        await AssertAssignedRejected(source, binding, freezeStore, "length changed");
+    }
+
+    [Fact]
+    public async Task StaleLastWriteBindingFailsBeforeExecutorWithoutFrozenOrOutcome()
+    {
+        string source = CreateFile("stale-time.mp4");
+        PredictionShadowExperimentFreezeStore freezeStore = CreateFreezeStore(source);
+        PredictionShadowExperimentAssignmentBinding binding = PredictionShadowExperimentAssignmentPersistence.Capture(source, Assignment())!;
+        File.SetLastWriteTimeUtc(source, new DateTime(binding.SourceLastWriteTimeUtcTicks, DateTimeKind.Utc).AddMinutes(2));
+        await AssertAssignedRejected(source, binding, freezeStore, "last-write time changed");
+    }
+
+    [Fact]
+    public async Task MissingAssignedSourcePreservesMissingSourceFailureAndRejectsBeforeExecutor()
+    {
+        string source = CreateFile("missing-assigned-source.mp4");
+        PredictionShadowExperimentFreezeStore freezeStore = CreateFreezeStore(source);
+        PredictionShadowExperimentAssignmentBinding binding = PredictionShadowExperimentAssignmentPersistence.Capture(source, Assignment())!;
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "missing-assigned-source-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "missing-assigned-source-statistics.jsonl"));
+        var executor = new SyntheticExecutor(MakePlan());
+        var orchestrator = CreateOrchestrator(executor, journal, statistics, freezeStore);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(source, binding));
+        File.Delete(source);
+
+        EncodeExecutionAssignmentValidationException failure = await Assert.ThrowsAsync<EncodeExecutionAssignmentValidationException>(
+            () => orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        orchestrator.RecordFailedExecution(attempt, Now, false, EncodeFinalizationFailureKind.Validation,
+            "", 0, failure.Message, null, retryQueued: false);
+
+        Assert.True(failure.IsMissingSource);
+        Assert.IsType<FileNotFoundException>(failure.InnerException);
+        Assert.Equal(0, executor.InvocationCount);
+        Assert.Empty(journal.ReadEvents());
+        Assert.Equal(EncodingStatisticsOutcome.ValidationFailed, Assert.Single(statistics.GetAll()).Outcome);
+    }
+
+    [Fact]
+    public async Task MissingFreezeAndConflictingAssignmentFailBeforeExecutor()
+    {
+        string source = CreateFile("missing-freeze.mp4");
+        PredictionShadowExperimentFreezeStore freezeStore = CreateFreezeStore(source);
+        PredictionShadowExperimentAssignmentBinding valid = PredictionShadowExperimentAssignmentPersistence.Capture(source, Assignment())!;
+        await AssertAssignedRejected(source,
+            valid with { Assignment = valid.Assignment with { ExperimentId = "missing-freeze" } },
+            freezeStore, "No immutable freeze");
+        await AssertAssignedRejected(source,
+            valid with { Assignment = valid.Assignment with { Slot = 2 } },
+            freezeStore, "slot or stratum");
+        await AssertAssignedRejected(source,
+            valid with { Assignment = null! },
+            freezeStore, "incomplete or invalid");
+    }
+
+    [Fact]
+    public async Task FailedRetryRecordsResearchOutcomeAndDefersProductionStatistics()
+    {
+        string source = CreateFile("retry-target.mp4");
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "retry-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "retry-statistics.jsonl"));
+        var executor = new SyntheticExecutor(MakePlan(), exceptionAfterCapture: new InvalidOperationException("Synthetic encoder failure after Frozen capture."));
+        PredictionShadowExperimentFreezeStore freezeStore = CreateFreezeStore(source);
+        var orchestrator = CreateOrchestrator(executor, journal, statistics, freezeStore);
+        PredictionShadowExperimentAssignment assignment = Assignment();
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(
+            source,
+            PredictionShadowExperimentAssignmentPersistence.Capture(source, assignment)));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => orchestrator.ExecuteAsync(
+            attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+
+        Assert.False(orchestrator.RecordFailedExecution(
+            attempt, Now, isCanceled: false, finalizationFailureKind: null,
+            outputPath: "", processingSeconds: 3, notes: "retry scheduled",
+            diagnosticSummary: null, retryQueued: true));
+        Assert.Empty(statistics.GetAll());
+        PredictionShadowJournalEvent[] events = journal.ReadEvents().ToArray();
+        Assert.Equal(2, events.Length);
+        Assert.Equal("Frozen", events[0].EventType);
+        Assert.Equal("Outcome", events[1].EventType);
+        Assert.Equal("Failed", events[1].Outcome!.State);
+        Assert.Equal(assignment, events[1].Outcome!.ExperimentAssignment);
+    }
+
+    [Fact]
+    public async Task TerminalEncodeFailureRecordsFailedStatisticsAndOutcome()
+    {
+        string source = CreateFile("terminal-failure.mp4");
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "failed-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "failed-statistics.jsonl"));
+        var executor = new SyntheticExecutor(MakePlan(), exceptionAfterCapture: new InvalidOperationException("Synthetic terminal failure."));
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(source, null));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => orchestrator.ExecuteAsync(
+            attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        orchestrator.RecordFailedExecution(
+            attempt, Now, isCanceled: false, finalizationFailureKind: null,
+            outputPath: "", processingSeconds: 5, notes: "terminal failure",
+            diagnosticSummary: null, retryQueued: false);
+
+        Assert.Equal(EncodingStatisticsOutcome.Failed, Assert.Single(statistics.GetAll()).Outcome);
+        PredictionShadowJournalEvent[] events = journal.ReadEvents().ToArray();
+        Assert.Equal(new[] { "Frozen", "Outcome" }, events.Select(entry => entry.EventType));
+        Assert.Equal("Failed", events[1].Outcome!.State);
+    }
+
+    [Fact]
+    public async Task CancellationRecordsCancelledStatisticsAndOutcome()
+    {
+        string source = CreateFile("canceled-target.mp4");
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "canceled-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "canceled-statistics.jsonl"));
+        var executor = new SyntheticExecutor(MakePlan(), exceptionAfterCapture: new OperationCanceledException("Synthetic cancellation."));
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(source, null));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => orchestrator.ExecuteAsync(
+            attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        orchestrator.RecordFailedExecution(
+            attempt, Now, isCanceled: true, finalizationFailureKind: null,
+            outputPath: "", processingSeconds: 2, notes: "canceled",
+            diagnosticSummary: null, retryQueued: false);
+
+        Assert.Equal(EncodingStatisticsOutcome.Cancelled, Assert.Single(statistics.GetAll()).Outcome);
+        Assert.Equal("Cancelled", journal.ReadEvents().Single(entry => entry.Outcome is not null).Outcome!.State);
+    }
+
+    [Fact]
+    public async Task InvalidFinalizationCannotBeRecordedAsSuccess()
+    {
+        string source = CreateFile("invalid-finalization.mp4");
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "invalid-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "invalid-statistics.jsonl"));
+        var executor = new SyntheticExecutor(MakePlan(), finalizationSucceeded: false);
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(source, null));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => orchestrator.ExecuteAsync(
+            attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        Assert.Throws<InvalidOperationException>(() => orchestrator.RecordSuccessfulExecution(
+            attempt, Now, 10, 1, "must not succeed", null, false, null));
+        orchestrator.RecordFailedExecution(
+            attempt, Now, isCanceled: false,
+            finalizationFailureKind: EncodeFinalizationFailureKind.FinalVerification,
+            outputPath: "staged.mp4", processingSeconds: 1, notes: "verification failed",
+            diagnosticSummary: null, retryQueued: false);
+
+        Assert.Equal(EncodingStatisticsOutcome.FinalVerificationFailed, Assert.Single(statistics.GetAll()).Outcome);
+        Assert.Equal("FinalVerificationFailed", journal.ReadEvents().Single(entry => entry.Outcome is not null).Outcome!.State);
+    }
+
+    private EncodeExecutionOrchestrator CreateOrchestrator(
+        IEncodeRequestExecutor executor,
+        PredictionShadowObservationJournal journal,
+        EncodingStatisticsService statistics,
+        PredictionShadowExperimentFreezeStore? freezeStore = null)
+    {
+        string ffmpeg = CreateFile("ffmpeg.exe");
+        var sampler = new PredictionShadowComplexitySamplingService(ffmpeg, new PgmWritingRunner());
+        var shadow = new NvencQualityModePredictionShadowService(journal, sampler, utcNow: () => Now);
+        return new EncodeExecutionOrchestrator(
+            executor, shadow, statistics, hardwareKey: () => "synthetic-gpu",
+            experimentFreezeStore: freezeStore);
+    }
+
+    private async Task AssertAssignedRejected(
+        string currentSource,
+        PredictionShadowExperimentAssignmentBinding binding,
+        PredictionShadowExperimentFreezeStore freezeStore,
+        string reason)
+    {
+        string suffix = Guid.NewGuid().ToString("N");
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, $"rejected-{suffix}.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, $"rejected-statistics-{suffix}.jsonl"));
+        var executor = new SyntheticExecutor(MakePlan());
+        var orchestrator = CreateOrchestrator(executor, journal, statistics, freezeStore);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(currentSource, binding));
+
+        EncodeExecutionAssignmentValidationException failure = await Assert.ThrowsAsync<EncodeExecutionAssignmentValidationException>(
+            () => orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        orchestrator.RecordFailedExecution(attempt, Now, false, EncodeFinalizationFailureKind.Validation,
+            "", 0, failure.Message, null, retryQueued: false);
+
+        Assert.Equal(0, executor.InvocationCount);
+        Assert.Contains(reason, failure.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(journal.ReadEvents());
+        Assert.DoesNotContain(statistics.GetAll(), record => record.Outcome == EncodingStatisticsOutcome.Success);
+        Assert.Single(statistics.GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.ValidationFailed, statistics.GetAll()[0].Outcome);
+    }
+
+    private PredictionShadowExperimentFreezeStore CreateFreezeStore(string targetSourcePath)
+    {
+        const string experimentId = "MF-ORCHESTRATOR-TEST";
+        PredictionShadowFreezeSource Source(int number)
+        {
+            string path = number == 1 ? targetSourcePath : CreateFile($"freeze-source-{number}.mp4");
+            var info = new FileInfo(path);
+            string familyKey = number == 1
+                ? NvencQualityModeVideoBitratePredictionService.GetSourceFamilyKey(
+                    MakePlan().Plan.SourceAdaptiveShadow,
+                    MakePlan().Plan.Source?.DurationSeconds,
+                    path)
+                : $"fixture-family-{number}";
+            return new(number, path, info.Length, info.LastWriteTimeUtc.Ticks, familyKey);
+        }
+
+        var strata = Enum.GetValues<PredictionShadowExperimentStratum>();
+        var ranks = new int[3];
+        var targets = Enumerable.Range(1, 24).Select(slot =>
+        {
+            PredictionShadowExperimentStratum stratum = strata[(slot - 1) % 3];
+            return new PredictionShadowFreezeTarget(
+                slot, stratum, Source(slot), ++ranks[(int)stratum], PredictionShadowExperimentRole.Target);
+        }).ToArray();
+        var reserves = strata.SelectMany((stratum, index) => Enumerable.Range(1, 2).Select(order =>
+            new PredictionShadowFreezeReserve(stratum, order, Source(25 + index * 2 + order - 1), 8 + order))).ToArray();
+        var freeze = new PredictionShadowExperimentFreeze
+        {
+            SchemaVersion = 1,
+            ExperimentId = experimentId,
+            ProtocolRevision = "test-v1",
+            FrozenUtc = Now,
+            MediaFluxVersion = "1.7.3",
+            GitCommit = new string('a', 40),
+            Settings = new PredictionShadowFreezeSettings
+            {
+                SourceCodec = "h264", SourceWidth = 1920, SourceHeight = 1080,
+                MinimumFps = 29.97003, MaximumFps = 30,
+                QualityMode = "Automatic", QualityResolutionPolicy = "Source Adaptive",
+                QualityTarget = "Balanced", ExpectedSourceAssessment = "HighQualitySource", ExpectedCq = 25,
+                Encoder = "NVENC", OutputCodec = "HEVC", Preset = "p5", BitDepth = 10,
+                EncoderSettingsSignature = "test-signature", AutoTargetSize = true,
+                NoPerItemTargetSizeOverride = true, NoExplicitCqOverride = true,
+                ConcurrencyPolicy = "Automatic NVENC; start one selected Target at a time",
+                AutomaticNvencConcurrency = 2, StartOneTargetAtATime = true,
+                AllowScaling = false, AllowRestoration = false,
+                AllowFilteringOrMaterialTransformation = false,
+                TransformationRestrictions = "No material transformations"
+            },
+            Comparators = new PredictionShadowFreezeComparators
+            {
+                K = 2,
+                BaselineRatio = new("ratio-v1", "ratio definition"),
+                BaselineDirect = new("direct-v1", "direct definition"),
+                TemporalRatio = new("temporal-ratio-v1", "temporal ratio definition"),
+                TemporalDirect = new("temporal-direct-v1", "temporal direct definition"),
+                NoExtrapolation = true, NoWeighting = true, NoSpatialCorrection = true,
+                NoFittedCoefficient = true, NoCqMixing = true,
+                ChronologyAndCutoffRule = "Prior finalized observations only",
+                FamilyIndependenceRule = "Independent source families",
+                OtherRestrictions = "No changes to production predictors"
+            },
+            Strata =
+            [
+                new(PredictionShadowExperimentStratum.Low, 7_500_000, 9_000_000),
+                new(PredictionShadowExperimentStratum.Control, 10_000_000, 12_000_000),
+                new(PredictionShadowExperimentStratum.High, 13_000_000, 14_500_000)
+            ],
+            Targets = targets,
+            Reserves = reserves,
+            Exclusions = [new(Source(99), "Synthetic exclusion")],
+            ReplacementPolicy = new PredictionShadowFreezeReplacementPolicy
+            {
+                InitialAttempt = 1, ReplacementAttempt = 2,
+                MaximumReplacementsPerSlot = 1, MaximumReplacementsPerStratum = 2,
+                SameStratumRequired = true, ConsumeReservesInOrder = true,
+                PreserveExperimentSlotAndStratum = true, PreserveInvalidAttemptRecords = true,
+                ReplacementRole = PredictionShadowExperimentRole.Replacement,
+                ValidReasons = ["synthetic validation"],
+                ProhibitedOutcomeBasedReasons = ["outcome preference"]
+            },
+            AcceptanceCriteria = new PredictionShadowFreezeAcceptanceCriteria
+            {
+                RequiredValidIndependentOutcomes = 24, RequiredPostBootstrapBaselineAvailability = 23,
+                MinimumJointlySupportedTemporalTargets = 15, MinimumJointlySupportedTargetsPerStratum = 4,
+                ApeDefinition = "APE", P90Definition = "P90", JointlySupportedSetRule = "Joint set",
+                DirectComparisonAppliesToBaselineAndTemporal = true,
+                NoUnexplainedCompatibilityOrInfrastructureAbstentions = true,
+                MaximumTemporalRatioMedianApePercent = 20, MaximumTemporalRatioP90ApePercent = 30,
+                MaximumTemporalDirectMedianApePercent = 20, MaximumTemporalDirectP90ApePercent = 30,
+                MinimumMeanApeImprovementPercentagePoints = 2, MinimumMeanApeImprovementRelativePercent = 10,
+                TemporalMedianMustNotWorsen = true, DirectMeanMustBeStrictlyLowerThanRatio = true,
+                DirectMedianMustBeNoHigherThanRatio = true, MaximumSupportedTemporalApePercent = 50
+            },
+            JournalSnapshot =
+            [
+                new(PredictionShadowFreezeJournalType.ResearchShadowObservations, 0, Path.Combine(_root, "freeze-research.jsonl"), 0, new string('a', 64)),
+                new(PredictionShadowFreezeJournalType.FinalizedStatistics, 0, Path.Combine(_root, "freeze-statistics.jsonl"), 0, new string('b', 64))
+            ]
+        };
+        var store = new PredictionShadowExperimentFreezeStore(_root);
+        store.Create(freeze);
+        return store;
+    }
+
+    private EncodeExecutionSnapshot Snapshot(
+        string source,
+        PredictionShadowExperimentAssignmentBinding? assignment) => new()
+    {
+        OperationId = Guid.NewGuid().ToString("N"),
+        StatisticsStartUtc = Now.AddMinutes(-1),
+        SourceFilePath = source,
+        LogicalSourcePath = source,
+        Input = EncodingInputSource.FromFile(source, knownAudioStreamCount: 1),
+        OutputFolder = _root,
+        Suffix = "_encoded",
+        Encoder = new VideoEncoderSelection(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"),
+        UseGpu = true,
+        ScaleMode = EncodingService.ScaleMode.None,
+        Restoration = new VideoRestorationSettings(),
+        EncoderPreset = "p5",
+        QualityValue = 25,
+        QualityIntent = EncodingQualityIntent.Automatic(QualityTarget.Balanced),
+        TenBit = true,
+        AudioChannels = 2,
+        ConcurrentEncoderSessions = true,
+        OutputContainer = OutputContainerSelection.Mp4,
+        CompatibilityPolicy = ContainerCompatibilityPolicy.Intelligent,
+        PredictionShadowExperimentAssignment = assignment,
+        SourceSizeBytes = new FileInfo(source).Length,
+        MediaDurationSeconds = 120,
+        SourceHeight = 1080,
+        OutputHeight = 1080,
+        EncoderText = "NVENC HEVC p5",
+        Codec = "hevc_nvenc",
+        MediaFluxVersion = "1.7.3",
+        StatisticsPath = Path.Combine(_root, "encoding-statistics.jsonl")
+    };
+
+    private static EncodingPlanSnapshot MakePlan()
+    {
+        var decision = new SourceAdaptiveShadowCalibration
+        {
+            Status = SourceAdaptiveShadowStatus.CalibrationCandidate,
+            SourceCodec = "h264",
+            OutputCodec = "hevc_nvenc",
+            EncoderId = VideoEncoderIds.Nvenc,
+            Preset = "p5",
+            FinalExecutionCq = 25,
+            SourceVideoBitrateKbps = 8000,
+            SourceTotalBytes = 800_000_000,
+            PlannedWidth = 1920,
+            PlannedHeight = 1080,
+            PlannedFps = 29.97002997002997,
+            MaterialTransformationActive = false
+        };
+        var plan = new EncodingPlan
+        {
+            IsAvailable = true,
+            PlanId = Guid.NewGuid(),
+            Source = new EncodingPlanSource("h264", 1920, 1080, 29.97002997002997, 120)
+            {
+                SizeBytes = 800_000_000,
+                BitrateKbps = 8000
+            },
+            Video = new EncodingPlanVideo("Reencode", "hevc_nvenc", VideoEncoderIds.Nvenc, 1920, 1080, 1920, 1080, "p010le"),
+            Validation = new EncodingPlanValidation("Production", true, false),
+            SourceAdaptiveShadow = decision
+        };
+        return new EncodingPlanSnapshot(plan.PlanId, plan);
+    }
+
+    private static PredictionShadowExperimentAssignment Assignment() => new(
+        "MF-ORCHESTRATOR-TEST", 1, 1,
+        PredictionShadowExperimentStratum.Low,
+        PredictionShadowExperimentRole.Target);
+
+    private string CreateFile(string name)
+    {
+        string path = Path.Combine(_root, name);
+        File.WriteAllText(path, "synthetic fixture");
+        return path;
+    }
+
+    private sealed class SyntheticExecutor(
+        EncodingPlanSnapshot plan,
+        Exception? exceptionAfterCapture = null,
+        bool finalizationSucceeded = true,
+        bool reportRecoveredOutcome = false) : IEncodeRequestExecutor
+    {
+        public List<string> Events { get; } = [];
+        public EncodingRequest? Request { get; private set; }
+        public EncodingPlanSnapshot Plan => plan;
+        public int InvocationCount { get; private set; }
+
+        public async Task<EncodingService.EncodeResult> EncodeWithResultAsync(EncodingRequest request)
+        {
+            InvocationCount++;
+            Request = request;
+            Events.Add("plan");
+            request.EncodingPlanSnapshotCallback?.Invoke(plan);
+            request.PreEncodeExecutionValidationCallback?.Invoke(plan);
+            Events.Add("capture");
+            if (request.PreEncodeResearchCallback is { } capture)
+            {
+                await capture(plan, request.CancellationToken);
+                // A repeated callback must not create a second Frozen event.
+                await capture(plan, request.CancellationToken);
+            }
+            if (reportRecoveredOutcome)
+            {
+                request.EncodingExecutionOutcomeCallback?.Invoke(new EncodingExecutionOutcome(
+                    plan.PlanId, [], [], TerminalResult: EncodingTerminalResult.CompletedAfterRecovery));
+            }
+            Events.Add("encode");
+            if (exceptionAfterCapture is not null)
+                throw exceptionAfterCapture;
+            return new EncodingService.EncodeResult(
+                success: true,
+                outputPath: Path.Combine(Path.GetTempPath(), "synthetic-final.mp4"),
+                finalizationSucceeded: finalizationSucceeded,
+                validationSummary: "Synthetic validated output.",
+                finalOutputSizeBytes: 123_456_789,
+                requestedOutputContainer: OutputContainerSelection.Mp4,
+                resolvedOutputContainer: OutputContainer.Mp4);
+        }
+    }
+
+    private sealed class PgmWritingRunner : IMediaToolProcessRunner
+    {
+        public Task<MediaToolProcessResult> RunAsync(
+            MediaToolProcessRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string pattern = request.Arguments[^1];
+            for (int frame = 1; frame <= 5; frame++)
+            {
+                string path = pattern.Replace("%03d", frame.ToString("D3", CultureInfo.InvariantCulture), StringComparison.Ordinal);
+                byte[] pixels = new byte[16];
+                for (int y = 0; y < 4; y++)
+                for (int x = 0; x < 4; x++)
+                    pixels[y * 4 + x] = (byte)Math.Clamp(x * 55 + frame * 5, 0, 255);
+                File.WriteAllBytes(path, Encoding.ASCII.GetBytes("P5\n4 4\n255\n").Concat(pixels).ToArray());
+            }
+            return Task.FromResult(new MediaToolProcessResult { ExitCode = 0 });
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_root))
+            Directory.Delete(_root, recursive: true);
+    }
+}

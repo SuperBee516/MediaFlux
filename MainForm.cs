@@ -36,6 +36,7 @@ namespace MediaFlux
 
         private readonly Dictionary<string, double> _etaSpeedState = new();
         private EncodingService _encodingService = null!;
+        private EncodeExecutionOrchestrator _encodeExecutionOrchestrator = null!;
         private AudioService _audioService = null!;
         private MediaInfoService _mediaInfoService = null!;
         private DuplicateDetectionService _duplicateDetectionService = null!;
@@ -5452,6 +5453,11 @@ namespace MediaFlux
                 message => _activeJobLog.Value?.AppendLine(message),
                 _config.FfmpegPath,
                 _config.FfprobePath);
+            _encodeExecutionOrchestrator = new EncodeExecutionOrchestrator(
+                _encodingService,
+                _predictionShadowService,
+                _encodingStatisticsService,
+                () => Ui(RefreshEncodingStatistics));
 
             _audioService = new AudioService(
                 AppPaths.InstallDirectory,

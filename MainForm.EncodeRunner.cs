@@ -746,6 +746,7 @@ namespace MediaFlux
             EncodingDiagnosticSummary? diagnosticSummary = null;
             DateTime? finalizationStartedUtc = null;
             bool diagnosticStarted = false;
+            EncodeExecutionAttempt? executionAttempt = null;
             try
             {
                 // ==== CALL THE SERVICE ====
@@ -826,8 +827,14 @@ namespace MediaFlux
 
                 ResolvedVideoEncoder selectedEncoder =
                     encoderSnapshot.Validated.Resolved;
-                var encodeRequest = new EncodingRequest
+                ContainerCompatibilityPolicy compatibilityPolicy = GetContainerCompatibilityPolicy();
+                bool deleteSource = UiGet(() => chkDeleteSource.Checked, false);
+                var executionSnapshot = new EncodeExecutionSnapshot
                 {
+                    OperationId = meta.StatisticsOperationId,
+                    StatisticsStartUtc = meta.StatisticsStartUtc,
+                    SourceFilePath = file,
+                    LogicalSourcePath = logicalSourcePath,
                     Input = inputSource,
                     OutputFolder = outputFolder,
                     Suffix = suffix,
@@ -838,23 +845,35 @@ namespace MediaFlux
                     ScaleMode = scaleMode,
                     Restoration = _config.VideoRestoration!.Clone(),
                     EncoderPreset = encoderPreset,
-                    QualityValue =
-                        estimateQuality,
+                    QualityValue = estimateQuality,
                     QualityIntent = qualityIntent,
                     TenBit = tenBit,
                     AudioChannels = audioChannels,
-                    ProgressCallback = jobCallback,
-                    StructuredProgressCallback = progress =>
+                    ConcurrentEncoderSessions = concurrentEncoderSessions,
+                    OutputContainer = requestedOutputContainer,
+                    ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
+                    CompatibilityPolicy = compatibilityPolicy,
+                    PredictionShadowExperimentAssignment = meta.PredictionShadowExperimentAssignment,
+                    SourceSizeBytes = sourceSizeBytes,
+                    MediaDurationSeconds = durationSec > 0 ? durationSec : null,
+                    SourceHeight = statisticsSourceHeight,
+                    OutputHeight = diagnosticOutputHeight,
+                    EncoderText = encoderText,
+                    Codec = videoCodec,
+                    MediaFluxVersion = Application.ProductVersion,
+                    StatisticsPath = AppPaths.EncodingStatisticsFile,
+                    DeleteSourceAfterCompression = deleteSource
+                };
+                executionAttempt = _encodeExecutionOrchestrator.CreateAttempt(executionSnapshot);
+                var executionCallbacks = new EncodeExecutionCallbacks
+                {
+                    Progress = jobCallback,
+                    StructuredProgress = progress =>
                         Ui(() => ApplyStructuredEncodeProgress(row, progress)),
-                    AiProgressCallback = progress => ApplyAiIntermediateProgress(row, progress),
-                    ConcurrentEncoderSessions =
-                        concurrentEncoderSessions,
-                    CancellationToken = cancellationToken,
-                    OutputPathCallback =
-                        path => attemptedOutputPath = path,
-                    StagingPathCallback =
-                        path => stagedOutputPath = path,
-                    FinalizationStatusCallback = status =>
+                    AiProgress = progress => ApplyAiIntermediateProgress(row, progress),
+                    OutputPathChanged = path => attemptedOutputPath = path,
+                    StagingPathChanged = path => stagedOutputPath = path,
+                    FinalizationStatusChanged = status =>
                     {
                         finalizationStartedUtc ??= DateTime.UtcNow;
                         AppendJobLog($"[MediaFlux] {status}.");
@@ -872,8 +891,7 @@ namespace MediaFlux
                             }
                         });
                     },
-                    LifecycleDiagnostics = lifecycle,
-                    FaststartStartedCallback = () => Ui(() =>
+                    FaststartStarted = () => Ui(() =>
                     {
                         if (row.DataGridView == dgvEncodeQueue)
                         {
@@ -883,11 +901,8 @@ namespace MediaFlux
                             UpdateOperationProgressPresentation();
                         }
                     }),
-                    OutputContainer = requestedOutputContainer,
-                    ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
-                    CompatibilityPolicy = GetContainerCompatibilityPolicy(),
-                    ContainerDecisionCallback = decision => appliedContainerDecision = decision,
-                    EncodingPlanSnapshotCallback = snapshot =>
+                    ContainerDecision = decision => appliedContainerDecision = decision,
+                    PlanSnapshot = snapshot =>
                     {
                         meta.IntelligencePlan = snapshot.Plan;
                         AppendJobLog(EncodingPlanService.DescribeSummary(snapshot.Plan));
@@ -897,59 +912,37 @@ namespace MediaFlux
                             RefreshCurrentEncodingIntelligence(row, meta);
                         });
                     },
-                    PreEncodeResearchCallback = async (snapshot, token) =>
+                    Diagnostic = line =>
                     {
-                        string settingsSignature = NvencQualityModeVideoBitratePredictionService.EffectiveSettingsSignature(
-                            encoderSnapshot.Validated.Resolved.Selection.EncoderId,
-                            videoCodec,
-                            encoderPreset,
-                            tenBit ? 10 : 8,
-                            concurrentEncoderSessions);
-                        bool assignmentMatchesSource =
-                            PredictionShadowExperimentAssignmentPersistence.MatchesSource(
-                                meta.PredictionShadowExperimentAssignment, inputSource.SourcePath);
-                        PredictionShadowFrozenObservation? captured = await _predictionShadowService.CaptureAsync(
-                            snapshot,
-                            inputSource.SourcePath,
-                            settingsSignature,
-                            new PredictionShadowResearchHistoryReader(AppPaths.EncodingStatisticsFile)
-                                .ReadFinalizedStatistics(),
-                            Application.ProductVersion,
-                            token,
-                            assignmentMatchesSource
-                                ? meta.PredictionShadowExperimentAssignment!.Assignment
-                                : null).ConfigureAwait(false);
-                        if (captured != null)
-                            Debug.WriteLine($"[PredictionShadow] Observation {captured.ObservationId} frozen before FFmpeg launch.");
-                        else if (assignmentMatchesSource)
-                            AppendJobLog("[PredictionShadow] Assigned attempt did not produce a Frozen event. Do not count this encode as an experiment target; see diagnostics and assign a valid replacement if needed.");
-                        else if (meta.PredictionShadowExperimentAssignment is not null)
-                            AppendJobLog("[PredictionShadow] Stored experiment assignment no longer matches this source. The encode proceeded without experiment membership.");
+                        Debug.WriteLine(line);
+                        if (line.Contains("Assigned attempt did not produce a Frozen event", StringComparison.Ordinal) ||
+                            line.Contains("Stored experiment assignment no longer matches", StringComparison.Ordinal))
+                            AppendJobLog(line);
                     },
-                    EncodingPlanDivergenceCallback = divergence =>
+                    PlanDiverged = divergence =>
                         AppendJobLog($"[EncodingPlan] Shadow divergence: {divergence}"),
-                     EncodingExecutionOutcomeCallback = outcome =>
+                    ExecutionOutcome = outcome =>
                      {
                          meta.IntelligenceOutcome = outcome;
                          AppendJobLog(EncodingPlanService.DescribeRecovery(outcome));
                          AppendJobLog(EncodingPlanService.DescribeLifecycle(outcome));
                          Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
                      },
-                     RecoveryStatusCallback = update =>
+                    RecoveryStatus = update =>
                          UiInvoke(() =>
                          {
                              string status = JobHistoryPresentation.ActiveRecoveryStatus(update);
                              if (row.DataGridView == dgvEncodeQueue)
                                  SetEncodeRowState(row, status, "", "", string.IsNullOrWhiteSpace(update.Detail) ? status : update.Detail);
                          }),
-                     FailureDiagnosticReportCallback = report =>
+                    FailureDiagnosticReport = report =>
                         meta.CuratedFailureDiagnosticReport = report
                 };
 
                 jobLog.AppendLine(
                     $"[MediaFlux] Encode request: source='{inputSource.SourcePath}'; " +
                     $"configured-container={requestedOutputContainer}; effective-container=authoritative resolution pending; " +
-                    $"compatibility-policy={encodeRequest.CompatibilityPolicy}; " +
+                    $"compatibility-policy={executionSnapshot.CompatibilityPolicy}; " +
                     "ffmpeg-launched=false (pending preflight)." );
 
                 if (!string.IsNullOrWhiteSpace(meta.EstimateDiagnostic))
@@ -965,14 +958,12 @@ namespace MediaFlux
                               "Visual quality may be reduced.");
                 }
 
-                var result = await _encodingService.EncodeWithResultAsync(
-                    encodeRequest);
-
-                if (!result.Success || !result.FinalizationSucceeded)
-                {
-                    throw new InvalidOperationException(
-                        "Encoding did not complete validated output finalization.");
-                }
+                EncodeExecutionResult executionResult = await _encodeExecutionOrchestrator.ExecuteAsync(
+                    executionAttempt,
+                    executionCallbacks,
+                    lifecycle,
+                    cancellationToken);
+                var result = executionResult.EncodedOutput;
 
                 if (!isDvdEncode)
                 {
@@ -982,13 +973,7 @@ namespace MediaFlux
                 jobLog.AppendLine(
                     $"[MediaFlux] Validated and finalized: {result.ValidationSummary}");
 
-                bool deleteSource = UiGet(() => chkDeleteSource.Checked, false);
-                SourceDeletionResult sourceDeletion =
-                    SourceDeletionService.DeleteAfterFinalization(
-                        file,
-                        inputSource,
-                        deleteSource,
-                        result);
+                SourceDeletionResult sourceDeletion = executionResult.SourceDeletion;
                 jobLog.AppendLine($"[MediaFlux] {sourceDeletion.Message}");
 
                 DateTime jobEndUtc = DateTime.UtcNow;
@@ -1086,32 +1071,14 @@ namespace MediaFlux
                         shadowDecision, result.FinalOutputProbe, outputSizeBytes).Describe());
                 }
 
-                RecordEncodingStatistics(
-                    meta.StatisticsOperationId,
-                    meta.StatisticsStartUtc,
+                _encodeExecutionOrchestrator.RecordSuccessfulExecution(
+                    executionAttempt ?? throw new InvalidOperationException("The completed encode has no execution attempt snapshot."),
                     jobEndUtc,
-                    EncodingStatisticsOutcome.Success,
-                    logicalSourcePath,
-                    result.OutputPath,
-                    videoCodec,
-                    encoderText,
-                    sourceSizeBytes,
                     outputSizeBytes,
-                    durationSec > 0 ? durationSec : null,
                     meta.StatisticsProcessingSeconds,
                     $"Validated and finalized. {sourceDeletion.Message}",
-                    encoderId: encoderSnapshot.Validated.Resolved.Selection.EncoderId,
-                    encoderPreset: encoderSnapshot.Validated.Preset,
-                    sourceResolutionTier: EncodingRuntimeEstimatorService.ResolutionTier(statisticsSourceHeight),
-                    outputResolutionTier: EncodingRuntimeEstimatorService.ResolutionTier(RuntimeOutputHeight(statisticsSourceHeight, scaleMode)),
-                    outputBitDepth: encoderSnapshot.Validated.TenBit ? 10 : 8,
-                    scalingApplied: RuntimeOutputHeight(statisticsSourceHeight, scaleMode) is int outputHeight &&
-                        statisticsSourceHeight is int sourceHeight && outputHeight != sourceHeight,
-                    concurrentEncoderSessions: encoderSnapshot.Validated.ConcurrentEncoderSessions,
                     diagnosticSummary: diagnosticSummary,
                     recoveredSuccessful: jobLog.ToString().Contains("Result=Succeeded", StringComparison.Ordinal),
-                    predictionPlan: meta.IntelligencePlan,
-                    executionOutcome: meta.IntelligenceOutcome,
                     finalOutputProbe: result.FinalOutputProbe);
 
                 try
@@ -1181,7 +1148,11 @@ namespace MediaFlux
                 EncodeFinalizationResult? finalizationResult =
                     finalizationFailure?.Result ??
                     (ex as EncodeFinalizationCanceledException)?.Result;
+                EncodeExecutionAssignmentValidationException? assignmentValidationFailure =
+                    ex as EncodeExecutionAssignmentValidationException;
                 EncodingTerminalResult? terminalResult = meta.IntelligenceOutcome?.TerminalResult;
+                if (assignmentValidationFailure != null)
+                    terminalResult = EncodingTerminalResult.ValidationFailed;
                 var notes = isCanceled
                     ? "Cancelled by user."
                     : JobHistoryPresentation.SummaryFor(terminalResult, ex.Message);
@@ -1202,7 +1173,9 @@ namespace MediaFlux
                     cleanupEnabled,
                     isCanceled ? "canceled" : "failed");
                 string sourceRetention =
-                    "Original source retained because validated finalization did not complete.";
+                    assignmentValidationFailure != null
+                        ? "Original source retained because assigned experiment validation failed before encode execution."
+                        : "Original source retained because validated finalization did not complete.";
                 string historyNotes =
                     $"{notes} {sourceRetention} Incomplete output cleanup: {cleanupResult}";
                 if (isDvdEncode)
@@ -1252,7 +1225,9 @@ namespace MediaFlux
                             ErrorSummary = notes,
                             FinalizationOutcome =
                                 finalizationResult?.FailureKind.ToString() ??
-                                (isCanceled ? "Canceled" : "FfmpegFailed"),
+                                (assignmentValidationFailure != null
+                                    ? "ExperimentAssignmentValidationFailed"
+                                    : isCanceled ? "Canceled" : "FfmpegFailed"),
                             StagingPath = stagedOutputPath,
                             SourceDeletionResult = sourceRetention,
                             RequestedOutputContainer = requestedOutputContainer.ToString(),
@@ -1295,26 +1270,34 @@ namespace MediaFlux
                         System.Threading.Interlocked.Increment(ref _encodeFailedCount);
                 }
 
-                if (isCanceled || !retryQueued)
+                DateTime statisticsEndUtc = DateTime.UtcNow;
+                if (executionAttempt is not null)
                 {
-                    EncodingStatisticsOutcome statisticsOutcome =
-                        finalizationFailure?.Result.FailureKind switch
-                        {
-                            EncodeFinalizationFailureKind.Validation =>
-                                EncodingStatisticsOutcome.ValidationFailed,
-                            EncodeFinalizationFailureKind.Promotion =>
-                                EncodingStatisticsOutcome.PromotionFailed,
-                            EncodeFinalizationFailureKind.FinalVerification =>
-                                EncodingStatisticsOutcome.FinalVerificationFailed,
-                            _ => isCanceled
-                                ? EncodingStatisticsOutcome.Cancelled
-                                : EncodingStatisticsOutcome.Failed
-                        };
+                    _encodeExecutionOrchestrator.RecordFailedExecution(
+                        executionAttempt,
+                        statisticsEndUtc,
+                        isCanceled,
+                        finalizationFailure?.Result.FailureKind ??
+                            (assignmentValidationFailure != null ? EncodeFinalizationFailureKind.Validation : null),
+                        attemptedOutputPath,
+                        meta.StatisticsProcessingSeconds,
+                        historyNotes,
+                        diagnosticSummary,
+                        retryQueued);
+                }
+                else if (isCanceled || !retryQueued)
+                {
                     RecordEncodingStatistics(
                         meta.StatisticsOperationId,
                         meta.StatisticsStartUtc,
-                        DateTime.UtcNow,
-                        statisticsOutcome,
+                        statisticsEndUtc,
+                        finalizationFailure?.Result.FailureKind switch
+                        {
+                            EncodeFinalizationFailureKind.Validation => EncodingStatisticsOutcome.ValidationFailed,
+                            EncodeFinalizationFailureKind.Promotion => EncodingStatisticsOutcome.PromotionFailed,
+                            EncodeFinalizationFailureKind.FinalVerification => EncodingStatisticsOutcome.FinalVerificationFailed,
+                            _ => isCanceled ? EncodingStatisticsOutcome.Cancelled : EncodingStatisticsOutcome.Failed
+                        },
                         logicalSourcePath,
                         attemptedOutputPath,
                         videoCodec,
@@ -1328,20 +1311,6 @@ namespace MediaFlux
                         predictionPlan: meta.IntelligencePlan,
                         executionOutcome: meta.IntelligenceOutcome);
                 }
-                else if (retryQueued)
-                {
-                    // Failed attempts are still outcomes for their already-frozen
-                    // research observation even when production statistics defer
-                    // recording until the automatic retry terminates.
-                    RecordPredictionShadowOutcome(
-                        meta.IntelligencePlan,
-                        EncodingStatisticsOutcome.Failed,
-                        DateTime.UtcNow,
-                        outputSizeBytes: null,
-                        executionOutcome: meta.IntelligenceOutcome,
-                        finalOutputProbe: null,
-                        recoveredSuccessful: false);
-                }
 
                 Ui(() =>
                 {
@@ -1353,6 +1322,8 @@ namespace MediaFlux
                                 ? "Canceled"
                                 : retryQueued
                                     ? "Retry Queued"
+                                    : assignmentValidationFailure != null
+                                        ? "Validation Failed"
                                     : finalizationFailure?.Result.FailureKind ==
                                       EncodeFinalizationFailureKind.Validation
                                         ? "Validation Failed"
@@ -1374,6 +1345,8 @@ namespace MediaFlux
                         ? $"Canceled: {displayName}"
                         : retryQueued
                             ? $"Retry queued: {displayName}. Continuing queue."
+                        : assignmentValidationFailure != null
+                            ? $"Experiment assignment validation failed — original retained: {displayName}"
                         : finalizationFailure?.Result.FailureKind ==
                           EncodeFinalizationFailureKind.Validation
                             ? $"Output validation failed — original retained: {displayName}"

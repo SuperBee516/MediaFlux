@@ -109,6 +109,116 @@ public sealed class PredictionShadowExperimentFreezeStore
             throw new InvalidDataException("Assignment source binding/family does not match the frozen Target or current file.");
     }
 
+    /// <summary>
+    /// Validates a durable assignment before execution against its frozen Target or
+    /// explicitly activated same-stratum reserve, including the current source file
+    /// identity. Returns the frozen source-family key for plan-time verification.
+    /// </summary>
+    public string ValidateExecutionAssignment(
+        PredictionShadowExperimentAssignmentBinding? binding,
+        string? executionSourcePath,
+        string? observedSourceFamilyKey = null)
+    {
+        if (binding?.Assignment?.IsValid() != true)
+            throw new InvalidDataException("The persisted experiment assignment is missing or invalid.");
+        if (string.IsNullOrWhiteSpace(executionSourcePath))
+            throw new InvalidDataException("The assigned execution has no current source path.");
+
+        PredictionShadowExperimentAssignment assignment = binding.Assignment;
+        PredictionShadowExperimentFreeze freeze = Load(assignment.ExperimentId) ??
+            throw new InvalidDataException($"No immutable freeze exists for assigned experiment '{assignment.ExperimentId}'.");
+        PredictionShadowFreezeTarget? target = freeze.Targets.SingleOrDefault(item => item.Slot == assignment.Slot);
+        if (target is null || assignment.Stratum != target.Stratum)
+            throw new InvalidDataException("The assignment slot or stratum does not match a frozen Target.");
+
+        PredictionShadowFreezeSource expectedSource;
+        PredictionShadowFreezeReplacementPolicy policy = freeze.ReplacementPolicy;
+        if (assignment.Role == PredictionShadowExperimentRole.Target)
+        {
+            if (assignment.Attempt != policy.InitialAttempt || target.Role != assignment.Role)
+                throw new InvalidDataException("The assigned Target attempt or role does not match the freeze.");
+            expectedSource = target.Source;
+        }
+        else if (assignment.Role == PredictionShadowExperimentRole.Replacement)
+        {
+            if (assignment.Attempt != policy.ReplacementAttempt ||
+                assignment.Role != policy.ReplacementRole || !policy.SameStratumRequired ||
+                !policy.PreserveExperimentSlotAndStratum || policy.MaximumReplacementsPerSlot < 1)
+                throw new InvalidDataException("The replacement attempt or role is not permitted by the freeze.");
+
+            PredictionShadowFreezeSource[] matchingReserves = freeze.Reserves
+                .Where(reserve => reserve.Stratum == assignment.Stratum &&
+                    SamePath(reserve.Source.SourcePath, binding.SourcePath) &&
+                    reserve.Source.SourceLengthBytes == binding.SourceLengthBytes &&
+                    reserve.Source.SourceLastWriteTimeUtcTicks == binding.SourceLastWriteTimeUtcTicks)
+                .Select(reserve => reserve.Source)
+                .ToArray();
+            if (matchingReserves.Length != 1)
+                throw new InvalidDataException("The replacement source is not a unique reserve in the frozen stratum.");
+            expectedSource = matchingReserves[0];
+        }
+        else
+        {
+            throw new InvalidDataException("The assignment role is not supported by the frozen protocol.");
+        }
+
+        if (!SamePath(binding.SourcePath, expectedSource.SourcePath))
+            throw new InvalidDataException("The persisted assignment source path conflicts with its frozen roster member.");
+        if (!SamePath(executionSourcePath, binding.SourcePath))
+            throw new InvalidDataException("The current execution source path no longer matches the persisted assignment binding.");
+        if (binding.SourceLengthBytes != expectedSource.SourceLengthBytes)
+            throw new InvalidDataException("The persisted assignment length conflicts with the frozen roster member.");
+        if (binding.SourceLastWriteTimeUtcTicks != expectedSource.SourceLastWriteTimeUtcTicks)
+            throw new InvalidDataException("The persisted assignment last-write time conflicts with the frozen roster member.");
+
+        FileInfo current;
+        try
+        {
+            current = new FileInfo(Path.GetFullPath(executionSourcePath));
+            if (!current.Exists)
+                throw new FileNotFoundException("The assigned source file is missing.", executionSourcePath);
+            current.Refresh();
+            if (!current.Exists)
+                throw new FileNotFoundException("The assigned source file is missing.", executionSourcePath);
+            if (current.Length != binding.SourceLengthBytes)
+                throw new InvalidDataException("The assigned source length changed after assignment.");
+            if (current.LastWriteTimeUtc.Ticks != binding.SourceLastWriteTimeUtcTicks)
+                throw new InvalidDataException("The assigned source last-write time changed after assignment.");
+        }
+        catch (FileNotFoundException)
+        {
+            throw;
+        }
+          catch (DirectoryNotFoundException)
+          {
+              throw;
+          }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            throw new InvalidDataException($"The assigned source identity could not be verified: {ex.Message}", ex);
+        }
+
+        if (!string.IsNullOrWhiteSpace(observedSourceFamilyKey) &&
+            !string.Equals(observedSourceFamilyKey, expectedSource.FamilyKey, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The execution plan source-family key conflicts with the immutable freeze.");
+
+        return expectedSource.FamilyKey;
+    }
+
+    private static bool SamePath(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return false;
+        try
+        {
+            return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
     private static PredictionShadowExperimentFreeze IdenticalOrConflict(PredictionShadowExperimentFreeze existing, byte[] proposed)
     {
         if (!Serialize(existing).AsSpan().SequenceEqual(proposed))
