@@ -261,6 +261,132 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.Equal("FinalVerificationFailed", journal.ReadEvents().Single(entry => entry.Outcome is not null).Outcome!.State);
     }
 
+    [Fact]
+    public async Task PolicyRejectionPersistsAsSkippedWithoutRetryAndQueueContinues()
+    {
+        string source = CreateFile("policy-target.mp4");
+        var contract = StorageSavingsContractService.Capture(true, EncodingInputSource.FromFile(source));
+        var evidence = StorageSavingsContractService.Evaluate(contract, new FileInfo(source).Length);
+        var rejection = new EncodeFinalizationResult
+        {
+            FailureKind = EncodeFinalizationFailureKind.StoragePolicyRejected,
+            StorageSavings = evidence, ErrorMessage = evidence.Reason
+        };
+        var rejected = new SyntheticExecutor(MakePlan(), new EncodeFinalizationException(rejection));
+        var accepted = new SyntheticExecutor(MakePlan());
+        var executor = new SequentialExecutor(rejected, accepted);
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "policy-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "policy-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        var first = orchestrator.CreateAttempt(Snapshot(source, null) with { StorageSavingsContract = contract });
+        var second = orchestrator.CreateAttempt(Snapshot(source, null) with { OperationId = "next-job" });
+        await new EncodeQueueRunner().RunAsync(new[] { first, second }, async attempt =>
+        {
+            try
+            {
+                await orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
+                orchestrator.RecordSuccessfulExecution(attempt, Now, 123_456_789, 42.5, "accepted", null, false, null);
+            }
+            catch (EncodeFinalizationException ex)
+            {
+                Assert.Equal(EncodeFinalizationFailureKind.StoragePolicyRejected, ex.Result.FailureKind);
+                Assert.False(EncodingRetryPolicy.AllowsAutomaticRetry(EncodingService.ResolveTerminalResult(ex.Result, false)));
+                // A mistaken retry flag cannot suppress the terminal policy observation.
+                Assert.True(orchestrator.RecordFailedExecution(attempt, Now, false, null, "", 42.5,
+                    ex.Message, null, retryQueued: true));
+            }
+        }, maxParallel: 1, () => false, () => false);
+
+        Assert.Equal(contract, rejected.Request!.StorageSavingsContract);
+        Assert.Equal(1, rejected.InvocationCount);
+        Assert.Equal(1, accepted.InvocationCount);
+        Assert.True(File.Exists(source));
+        var records = statistics.GetAll();
+        var skipped = Assert.Single(records, record => record.Outcome == EncodingStatisticsOutcome.StoragePolicyRejected);
+        Assert.Equal(evidence, skipped.StorageSavings);
+        Assert.Null(skipped.OutputSizeBytes);
+        Assert.Equal("StoragePolicyRejected", skipped.TerminalResult);
+        Assert.Single(records, record => record.Outcome == EncodingStatisticsOutcome.Success);
+        Assert.Contains(journal.ReadEvents(), entry => entry.Outcome?.State == "StoragePolicyRejected");
+    }
+
+    [Fact]
+    public async Task ApplicableContractCannotBypassAcceptanceThroughExecutorSuccess()
+    {
+        string source = CreateFile("unaccepted-target.mp4");
+        var executor = new SyntheticExecutor(MakePlan());
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "unaccepted-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "unaccepted-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        var attempt = orchestrator.CreateAttempt(Snapshot(source, null) with
+        {
+            StorageSavingsContract = StorageSavingsContractService.Resolve(true, new FileInfo(source).Length),
+            DeleteSourceAfterCompression = true
+        });
+        await Assert.ThrowsAsync<InvalidOperationException>(() => orchestrator.ExecuteAsync(
+            attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        Assert.Throws<InvalidOperationException>(() => orchestrator.RecordSuccessfulExecution(
+            attempt, Now, 123_456_789, 42.5, "incorrect success", null, false, null));
+        Assert.True(File.Exists(source));
+        Assert.Empty(statistics.GetAll());
+    }
+
+    private sealed class SequentialExecutor(params IEncodeRequestExecutor[] executors) : IEncodeRequestExecutor
+    {
+        private readonly Queue<IEncodeRequestExecutor> _executors = new(executors);
+        public Task<EncodingService.EncodeResult> EncodeWithResultAsync(EncodingRequest request) =>
+            _executors.Dequeue().EncodeWithResultAsync(request);
+    }
+
+    [Fact]
+    public async Task AcceptedContractRecordsOrdinarySuccessWithAcceptanceEvidence()
+    {
+        string source = CreateFile("accepted-contract.mp4");
+        var contract = StorageSavingsContractService.Capture(true, EncodingInputSource.FromFile(source));
+        var evidence = StorageSavingsContractService.Evaluate(contract, new FileInfo(source).Length / 2);
+        var executor = new SyntheticExecutor(MakePlan(), storageSavings: evidence);
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "accepted-contract-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "accepted-contract-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        var attempt = orchestrator.CreateAttempt(Snapshot(source, null) with { StorageSavingsContract = contract });
+        var result = await orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
+        Assert.True(orchestrator.RecordSuccessfulExecution(attempt, Now, result.EncodedOutput.FinalOutputSizeBytes,
+            42.5, "accepted", null, false, null));
+        var record = Assert.Single(statistics.GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.Success, record.Outcome);
+        Assert.Equal(evidence, record.StorageSavings);
+        Assert.Equal(evidence.CandidateOutputBytes, record.OutputSizeBytes);
+    }
+
+    [Fact]
+    public async Task SharedStatisticsWriterCannotEmitSuccessOrLearningBytesForRejectedEvidence()
+    {
+        string source = CreateFile("mislabelled-target.mp4");
+        var contract = StorageSavingsContractService.Capture(true, EncodingInputSource.FromFile(source));
+        var evidence = StorageSavingsContractService.Evaluate(contract, contract.SourceSizeBytes!.Value);
+        var rejection = new EncodeFinalizationResult
+        {
+            FailureKind = EncodeFinalizationFailureKind.StoragePolicyRejected,
+            StorageSavings = evidence, ErrorMessage = evidence.Reason
+        };
+        var executor = new SyntheticExecutor(MakePlan(), new EncodeFinalizationException(rejection));
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "mislabelled-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "mislabelled-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        var attempt = orchestrator.CreateAttempt(Snapshot(source, null) with { StorageSavingsContract = contract });
+        await Assert.ThrowsAsync<EncodeFinalizationException>(() => orchestrator.ExecuteAsync(
+            attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        orchestrator.RecordEncodingStatistics("mislabelled", Now, Now, EncodingStatisticsOutcome.Success,
+            source, "", "hevc_nvenc", "NVENC", contract.SourceSizeBytes, evidence.CandidateOutputBytes, 120, 42.5,
+            predictionPlan: attempt.Plan, storageSavings: evidence);
+        var record = Assert.Single(statistics.GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.StoragePolicyRejected, record.Outcome);
+        Assert.Null(record.OutputSizeBytes);
+        Assert.Null(record.SourceAdaptiveShadow!.ActualOutputBytes);
+        Assert.Contains(journal.ReadEvents(), entry => entry.Outcome?.State == "StoragePolicyRejected");
+        Assert.DoesNotContain(journal.ReadEvents(), entry => entry.Outcome?.State == "Completed");
+    }
+
     private EncodeExecutionOrchestrator CreateOrchestrator(
         IEncodeRequestExecutor executor,
         PredictionShadowObservationJournal journal,
@@ -489,7 +615,8 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         EncodingPlanSnapshot plan,
         Exception? exceptionAfterCapture = null,
         bool finalizationSucceeded = true,
-        bool reportRecoveredOutcome = false) : IEncodeRequestExecutor
+        bool reportRecoveredOutcome = false,
+        StorageSavingsEvaluation? storageSavings = null) : IEncodeRequestExecutor
     {
         public List<string> Events { get; } = [];
         public EncodingRequest? Request { get; private set; }
@@ -523,9 +650,11 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
                 outputPath: Path.Combine(Path.GetTempPath(), "synthetic-final.mp4"),
                 finalizationSucceeded: finalizationSucceeded,
                 validationSummary: "Synthetic validated output.",
-                finalOutputSizeBytes: 123_456_789,
+                finalOutputSizeBytes: storageSavings?.CandidateOutputBytes ?? 123_456_789,
                 requestedOutputContainer: OutputContainerSelection.Mp4,
-                resolvedOutputContainer: OutputContainer.Mp4);
+                resolvedOutputContainer: OutputContainer.Mp4,
+                storageSavingsContract: request.StorageSavingsContract,
+                storageSavings: storageSavings);
         }
     }
 

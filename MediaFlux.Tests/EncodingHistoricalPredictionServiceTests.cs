@@ -25,6 +25,7 @@ public sealed class EncodingHistoricalPredictionServiceTests
         EncodingStatisticsRecord[] history =
         [
             Record(1, 2) with { Outcome = EncodingStatisticsOutcome.Failed },
+            Record(4, 2) with { Outcome = EncodingStatisticsOutcome.StoragePolicyRejected },
             Record(2, 2) with { RecoveredSuccessful = true },
             Record(3, 2) with { HardwareKey = "other gpu" }
         ];

@@ -12,7 +12,8 @@ namespace MediaFlux.Services
         Cancelled = 3,
         ValidationFailed = 4,
         PromotionFailed = 5,
-        FinalVerificationFailed = 6
+        FinalVerificationFailed = 6,
+        StoragePolicyRejected = 7
     }
 
     public enum EncodingStatisticsPeriod
@@ -27,7 +28,7 @@ namespace MediaFlux.Services
 
     public sealed record EncodingStatisticsRecord
     {
-        public int SchemaVersion { get; set; } = 4;
+        public int SchemaVersion { get; set; } = 5;
         public string Id { get; set; } = Guid.NewGuid().ToString("N");
         public DateTime StartUtc { get; set; }
         public DateTime EndUtc { get; set; }
@@ -88,6 +89,7 @@ namespace MediaFlux.Services
         public string PredictionQuality { get; set; } = "";
         public string PredictionAssessment { get; set; } = "";
         public string TerminalResult { get; set; } = "";
+        public StorageSavingsEvaluation? StorageSavings { get; set; }
         // Additive JSONL field; older schema versions deserialize with null.
         public SourceAdaptiveShadowOutcome? SourceAdaptiveShadow { get; set; }
         // Versioned effective NVENC quality-mode settings; absent on legacy records.
@@ -340,6 +342,12 @@ namespace MediaFlux.Services
                 !double.IsFinite(record.PredictedProcessingSeconds.Value))
                 record.PredictedProcessingSeconds = null;
 
+            // A policy-rejected candidate can never be admitted as successful training history.
+            if (record.StorageSavings?.Acceptance == StorageSavingsAcceptance.Rejected)
+            {
+                record.Outcome = EncodingStatisticsOutcome.StoragePolicyRejected;
+                record.TerminalResult = EncodingTerminalResult.StoragePolicyRejected.ToString();
+            }
             // Incomplete failed/cancelled output files are not durable encoded output.
             if (record.Outcome != EncodingStatisticsOutcome.Success)
                 record.OutputSizeBytes = null;
@@ -549,7 +557,7 @@ namespace MediaFlux.Services
                 FilesProcessed = all.Length,
                 Successful = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Success),
                 Failed = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Failed),
-                Skipped = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Skipped),
+                Skipped = all.Count(record => record.Outcome is EncodingStatisticsOutcome.Skipped or EncodingStatisticsOutcome.StoragePolicyRejected),
                 Cancelled = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Cancelled),
                 FinalizationFailed = all.Count(record =>
                     record.Outcome is

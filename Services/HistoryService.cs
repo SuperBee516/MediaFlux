@@ -13,7 +13,7 @@ namespace MediaFlux.Services
         DvdRemux = 4,
         Remux = 5
     }
-    public enum JobStatus { Success, Failed, Canceled }
+    public enum JobStatus { Success, Failed, Canceled, Skipped }
 
     public sealed class JobHistoryRecord
     {
@@ -45,6 +45,7 @@ namespace MediaFlux.Services
         public string? ContainerDecisionReason { get; set; }
         public EncodingDiagnosticSummary? DiagnosticSummary { get; set; }
         public EncodingTerminalResult? TerminalResult { get; set; }
+        public StorageSavingsEvaluation? StorageSavings { get; set; }
     }
 
     public sealed class HistoryService

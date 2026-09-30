@@ -22,6 +22,9 @@ namespace MediaFlux.Services
                 return Retained("Source retained because deletion was not requested.");
             if (!input.AllowSourceDeletion)
                 return Retained("Source retained because this input type disables source deletion.");
+            if (!StorageSavingsContractService.HasAcceptedEvidence(
+                result.StorageSavingsContract, result.StorageSavings, result.FinalOutputSizeBytes))
+                return Retained("Source retained because storage-policy acceptance was not established.");
             if (!result.Success || !result.FinalizationSucceeded)
             {
                 return Retained(

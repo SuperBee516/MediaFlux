@@ -248,8 +248,9 @@ public static class EncodingPlanService
     }
 
     internal static EncodingFinalizationOutcome DescribeFinalizationOutcome(EncodeFinalizationResult result) =>
-        new(result.Success ? EncodingLifecycleStatus.Passed : EncodingLifecycleStatus.Failed,
-            result.StagedValidationResult?.Success,
+        new(result.Success ? EncodingLifecycleStatus.Passed :
+                result.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected ? EncodingLifecycleStatus.Skipped : EncodingLifecycleStatus.Failed,
+            result.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected ? false : result.StagedValidationResult?.Success,
             result.FinalOutputPath,
             result.Success ? EncodingSourceDisposition.DeferredToCaller : EncodingSourceDisposition.Retained,
             result.Success ? "Promoted" : string.IsNullOrWhiteSpace(result.RecoverableOutputPath) ? "RetainedOrUnavailable" : "Recoverable",

@@ -14,7 +14,8 @@ public enum HeadlessSavedJobExitCode
     CommandOrSelectorError = 2,
     PreflightOrValidationRejected = 3,
     EncodeFailure = 4,
-    Cancelled = 5
+    Cancelled = 5,
+    StoragePolicyRejected = 6
 }
 
 public sealed record HeadlessSavedJobCommand(
@@ -188,7 +189,9 @@ public static class HeadlessSavedJobItemRunner
         }
         catch (Exception ex)
         {
-            HeadlessSavedJobExitCode code = ex is HeadlessSavedJobValidationException or EncodeExecutionAssignmentValidationException
+            HeadlessSavedJobExitCode code = ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected }
+                ? HeadlessSavedJobExitCode.StoragePolicyRejected
+                : ex is HeadlessSavedJobValidationException or EncodeExecutionAssignmentValidationException
                 ? HeadlessSavedJobExitCode.PreflightOrValidationRejected
                 : HeadlessSavedJobExitCode.EncodeFailure;
             writeLine($"Terminal encode result: {code}; {ex.Message}");
@@ -537,10 +540,12 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
                 attempt,
                 DateTime.UtcNow,
                 ex is OperationCanceledException,
-                finalizationFailureKind: null,
+                finalizationFailureKind: (ex as EncodeFinalizationException)?.Result.FailureKind,
                 outputPath: attempt.AttemptedOutputPath,
                 processingSeconds: timer.Elapsed.TotalSeconds,
-                notes: "Headless saved-job item execution failed: " + ex.Message,
+                notes: ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected }
+                    ? "Headless saved-job item skipped — insufficient savings: " + ex.Message
+                    : "Headless saved-job item execution failed: " + ex.Message,
                 diagnosticSummary: null,
                 retryQueued: false);
             throw;

@@ -54,6 +54,7 @@ public sealed class EncodingRuntimeEstimatorTests : IDisposable
         EncodingStatisticsRecord[] history =
         {
             Record(1, 2) with { Outcome = EncodingStatisticsOutcome.Failed },
+            Record(6, 2) with { Outcome = EncodingStatisticsOutcome.StoragePolicyRejected },
             Record(2, 2) with { Outcome = EncodingStatisticsOutcome.Cancelled },
             Record(3, 2) with { IsSampleJob = true },
             Record(4, 2) with { MediaDurationSeconds = 20 },

@@ -5,7 +5,7 @@ namespace MediaFlux.Services;
 internal static class EncodingRetryPolicy
 {
     public static bool AllowsAutomaticRetry(EncodingTerminalResult? terminalResult) =>
-        terminalResult != EncodingTerminalResult.SourceUnrecoverable;
+        terminalResult is not (EncodingTerminalResult.SourceUnrecoverable or EncodingTerminalResult.StoragePolicyRejected);
 
     public static bool AllowsAutomaticRetry(
         EncodingTerminalResult? terminalResult,

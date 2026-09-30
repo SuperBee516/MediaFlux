@@ -6,6 +6,15 @@ namespace MediaFlux.Tests;
 public sealed class EncodingPredictionAccuracyServiceTests
 {
     [Fact]
+    public void RejectedCandidatesAreNotCleanCompletedPredictionEvidence()
+    {
+        var record = Record("rejected", 900, 800, 100, 80) with { Outcome = EncodingStatisticsOutcome.StoragePolicyRejected };
+        var service = new EncodingPredictionAccuracyService();
+        var row = Assert.Single(service.CreateRows([record]));
+        Assert.False(row.IsCleanCompleted);
+        Assert.Equal(0, service.Summarize([row]).CompletedCount);
+    }
+    [Fact]
     public void RowUsesActualMinusPredictedPercentages()
     {
         EncodingPredictionAccuracyRow row = new EncodingPredictionAccuracyService().CreateRows(new[] { Record("normal", 1_000, 800, 100, 80) }).Single();

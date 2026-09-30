@@ -233,7 +233,7 @@ public partial class MainForm
         if (dgvEncodeQueue.Rows.Count == 0) { UpdateJobResult(jobId, EncodeJobStatus.Failed, "Could not load any valid source files into the encode queue."); return; }
         await StartEncodeAsync(processAllOverride: true);
         EncodeJobStatus outcome = _cancelEncode ? EncodeJobStatus.Failed : _encodeFailedCount > 0 ? EncodeJobStatus.CompletedWithErrors : EncodeJobStatus.Completed;
-        string result = outcome == EncodeJobStatus.Completed ? "Completed." : outcome == EncodeJobStatus.CompletedWithErrors ? $"Completed with {_encodeFailedCount} failed file(s)." : "Stopped or failed.";
+        string result = outcome == EncodeJobStatus.Completed ? (_encodeStorageRejectedCount > 0 ? $"Completed with {_encodeStorageRejectedCount} file(s) skipped — insufficient savings." : "Completed.") : outcome == EncodeJobStatus.CompletedWithErrors ? $"Completed with {_encodeFailedCount} failed file(s)." : "Stopped or failed.";
         UpdateJobResult(jobId, outcome, result);
         ErrorLogService.Append(AppPaths.UserDataDirectory, "Completed saved job", details: $"Id={job.Id}; Name={job.Name}; Status={outcome}; Result={result}");
         if (scheduled) ShowStatusInfo($"Scheduled job '{job.Name}' {result}");

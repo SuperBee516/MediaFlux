@@ -60,6 +60,7 @@ namespace MediaFlux
 
         private readonly System.Threading.AsyncLocal<JobLogCapture?> _activeJobLog = new();
         private int _encodeFailedCount;
+        private int _encodeStorageRejectedCount;
         private int _encodeSucceededCount;
         private NumericUpDown? nudAutoQuality;
         private Label? lblAutoQuality;

@@ -136,6 +136,7 @@ namespace MediaFlux
             btnStopEncode.Enabled = true;
             _cancelEncode = false;
             _encodeFailedCount = 0;
+            _encodeStorageRejectedCount = 0;
             _encodeSucceededCount = 0;
             _encodeRetryCount = 0;
             _encodeCts?.Dispose();
@@ -229,6 +230,8 @@ namespace MediaFlux
                     ? "Encoding stopped."
                     : _encodeFailedCount > 0
                         ? $"Done. {_encodeFailedCount} job(s) failed; see the failed rows and central error log."
+                        : _encodeStorageRejectedCount > 0
+                            ? $"Done. {_encodeStorageRejectedCount} job(s) skipped — insufficient savings; original sources retained."
                         : _encodeRetryCount > 0
                             ? $"All done! Retried {_encodeRetryCount} failed job(s)."
                         : "All done!";
@@ -863,6 +866,7 @@ namespace MediaFlux
                             ResolvedOutputContainer = result.ResolvedOutputContainer.ToString(),
                             ContainerDecisionReason = result.ContainerDecisionReason,
                             DiagnosticSummary = diagnosticSummary,
+                            StorageSavings = result.StorageSavings,
                             TerminalResult = meta.IntelligenceOutcome?.TerminalResult ?? EncodingTerminalResult.Completed
                         });
                     }
@@ -929,7 +933,8 @@ namespace MediaFlux
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (attemptEndUtc - jobStartUtc).TotalSeconds);
                 bool isCanceled = _cancelEncode || ex is OperationCanceledException;
-                if (!isCanceled)
+                bool storagePolicyRejected = ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected };
+                if (!isCanceled && !storagePolicyRejected)
                 {
                     meta.FailureAnalysis = EncodeFailureAnalysisService.Analyze(
                         new EncodeFailureAnalysisContext(
@@ -959,6 +964,8 @@ namespace MediaFlux
                 EncodeExecutionAssignmentValidationException? assignmentValidationFailure =
                     ex as EncodeExecutionAssignmentValidationException;
                 EncodingTerminalResult? terminalResult = meta.IntelligenceOutcome?.TerminalResult;
+                if (storagePolicyRejected)
+                    terminalResult = EncodingTerminalResult.StoragePolicyRejected;
                 if (assignmentValidationFailure != null)
                     terminalResult = EncodingTerminalResult.ValidationFailed;
                 var notes = isCanceled
@@ -1004,7 +1011,7 @@ namespace MediaFlux
                             Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
                             Status = isCanceled
                                 ? JobStatus.Canceled
-                                : JobStatus.Failed,
+                                : storagePolicyRejected ? JobStatus.Skipped : JobStatus.Failed,
                             StartUtc = jobStartUtc,
                             EndUtc = DateTime.UtcNow,
                             SourcePath = logicalSourcePath,
@@ -1031,6 +1038,7 @@ namespace MediaFlux
                                 ? dvdOptions!.Candidate.IsLikelyMainFeature
                                 : null,
                             ErrorSummary = notes,
+                            StorageSavings = finalizationResult?.StorageSavings,
                             FinalizationOutcome =
                                 finalizationResult?.FailureKind.ToString() ??
                                 (assignmentValidationFailure != null
@@ -1054,7 +1062,7 @@ namespace MediaFlux
 
                 var centralLogPath = ErrorLogService.Append(
                     Application.StartupPath,
-                    isCanceled ? "Encode job cancelled" : "Encode job failed",
+                    isCanceled ? "Encode job cancelled" : storagePolicyRejected ? "Encode skipped — insufficient savings" : "Encode job failed",
                     logicalSourcePath,
                     ex,
                     $"Encoder Mode: {encoderText}{Environment.NewLine}" +
@@ -1074,7 +1082,9 @@ namespace MediaFlux
                     retryQueued = EncodingRetryPolicy.AllowsAutomaticRetry(
                             terminalResult, meta.PredictionShadowExperimentAssignment is not null) &&
                         TryQueueFailedRowForAutoRetry(row);
-                    if (!retryQueued)
+                    if (storagePolicyRejected)
+                        System.Threading.Interlocked.Increment(ref _encodeStorageRejectedCount);
+                    else if (!retryQueued)
                         System.Threading.Interlocked.Increment(ref _encodeFailedCount);
                 }
 
@@ -1101,6 +1111,7 @@ namespace MediaFlux
                         statisticsEndUtc,
                         finalizationFailure?.Result.FailureKind switch
                         {
+                            EncodeFinalizationFailureKind.StoragePolicyRejected => EncodingStatisticsOutcome.StoragePolicyRejected,
                             EncodeFinalizationFailureKind.Validation => EncodingStatisticsOutcome.ValidationFailed,
                             EncodeFinalizationFailureKind.Promotion => EncodingStatisticsOutcome.PromotionFailed,
                             EncodeFinalizationFailureKind.FinalVerification => EncodingStatisticsOutcome.FinalVerificationFailed,
@@ -1135,10 +1146,12 @@ namespace MediaFlux
                                     : finalizationFailure?.Result.FailureKind ==
                                       EncodeFinalizationFailureKind.Validation
                                         ? "Validation Failed"
+                                    : storagePolicyRejected
+                                        ? "Skipped — insufficient savings"
                                          : finalizationFailure != null
                                              ? "Finalization Failed"
                                              : JobHistoryPresentation.TerminalLabel(JobStatus.Failed, terminalResult),
-                            isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : "Failed",
+                            isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : storagePolicyRejected ? "Skipped" : "Failed",
                             "",
                             (isCanceled
                                 ? "Canceled by user."
@@ -1155,6 +1168,8 @@ namespace MediaFlux
                             ? $"Retry queued: {displayName}. Continuing queue."
                         : assignmentValidationFailure != null
                             ? $"Experiment assignment validation failed — original retained: {displayName}"
+                        : storagePolicyRejected
+                            ? $"Skipped — insufficient savings: {displayName}. Original retained. Continuing queue."
                         : finalizationFailure?.Result.FailureKind ==
                           EncodeFinalizationFailureKind.Validation
                             ? $"Output validation failed — original retained: {displayName}"
@@ -1163,7 +1178,7 @@ namespace MediaFlux
                              : terminalResult == EncodingTerminalResult.SourceUnrecoverable
                                  ? $"Failed — Source damaged: {displayName}. Continuing queue."
                              : $"Failed: {displayName}. Continuing queue.";
-                    toolStripStatusLabel1.Text = $"Encode error logged: {centralLogPath}";
+                    toolStripStatusLabel1.Text = storagePolicyRejected ? $"Storage-policy rejection logged: {centralLogPath}" : $"Encode error logged: {centralLogPath}";
                 });
                 // leave the row so user can retry
             }

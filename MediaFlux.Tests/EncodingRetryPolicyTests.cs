@@ -7,6 +7,12 @@ namespace MediaFlux.Tests;
 public sealed class EncodingRetryPolicyTests
 {
     [Fact]
+    public void StoragePolicyRejectionIsTerminalWithoutAutomaticRetry()
+    {
+        Assert.False(EncodingRetryPolicy.AllowsAutomaticRetry(EncodingTerminalResult.StoragePolicyRejected));
+        Assert.False(EncodingRetryPolicy.AllowsAutomaticRetry(EncodingTerminalResult.StoragePolicyRejected, false));
+    }
+    [Fact]
     public void SourceUnrecoverableIsNotAutomaticallyRetried()
     {
         Assert.False(EncodingRetryPolicy.AllowsAutomaticRetry(EncodingTerminalResult.SourceUnrecoverable));

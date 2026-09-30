@@ -18,7 +18,7 @@ public enum EncodingRecoveryProcessResult { NotStarted, Succeeded, Failed }
 public enum EncodingRecoveryDisposition { NotAttempted, Clean, Salvaged, Degraded, Rejected, SourceUnrecoverable }
 public enum EncodingSourceFailureType { TimelineCorruption, VideoBitstreamCorruption, AudioBitstreamCorruption, ContainerPacketCorruption, SourceTruncation, StorageOrIoFailure, UnsupportedCodec, OutputContainerFailure, GpuEncoderFailure, Cancellation, UnknownMediaFailure }
 public enum EncodingLifecycleStatus { NotRequired, NotRun, Passed, Failed, Skipped, Canceled }
-public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, CompletedAfterDegradedSalvage, PreflightRejected, EncodeFailed, RecoveryFailed, SourceUnrecoverable, ValidationFailed, FinalizationFailed, Canceled }
+public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, CompletedAfterDegradedSalvage, PreflightRejected, EncodeFailed, RecoveryFailed, SourceUnrecoverable, ValidationFailed, FinalizationFailed, Canceled, StoragePolicyRejected }
 public enum EncodingRecoveryStatusKind { SourceCorruptionDetected, AttemptingSourceRecovery, ValidatingRecoveredSource, RetryingWithRecoveredSource, AttemptingDegradedSourceSalvage, ValidatingSalvagedMedia, SourceUnrecoverable }
 public enum EncodingSourceDisposition { Retained, DeferredToCaller, NotReached }
 public enum EncodingHistoricalConfidence { None, Low, Medium, High }
@@ -169,7 +169,8 @@ public sealed record EncodingExecutionOutcome(
     IReadOnlyList<EncodingRecoveryOutcome> Recovery,
     EncodingValidationOutcome? Validation = null,
     EncodingFinalizationOutcome? Finalization = null,
-    EncodingTerminalResult TerminalResult = EncodingTerminalResult.NotRun);
+    EncodingTerminalResult TerminalResult = EncodingTerminalResult.NotRun,
+    StorageSavingsEvaluation? StorageSavings = null);
 public sealed record EncodingRecoveryStatusUpdate(EncodingRecoveryStatusKind Kind, string Detail = "");
 public sealed record EncodingValidationOutcome(
     EncodingLifecycleStatus Status, EncodingLifecycleStatus OutputProbe,

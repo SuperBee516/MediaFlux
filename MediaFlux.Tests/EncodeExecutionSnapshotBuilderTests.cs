@@ -401,6 +401,59 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         Assert.Equal(1, EncodeExecutionSnapshotBuilder.GetMaximumConcurrentEncodes(VideoEncoderIds.Libx265, false));
     }
 
+    [Theory]
+    [InlineData("eligible", true)]
+    [InlineData("disabled", false)]
+    [InlineData("custom-target", false)]
+    [InlineData("custom-profile", false)]
+    [InlineData("manual-target", false)]
+    [InlineData("no-compression", false)]
+    [InlineData("h264-output", false)]
+    public void HardContractPreservesExistingPlanningApplicability(string scenario, bool applies)
+    {
+        var settings = Settings() with { StorageSavings = new StorageSavingsOptions { Enabled = scenario != "disabled" } };
+        var item = Item();
+        if (scenario == "custom-target") item = item with { CustomTargetMb = 25 };
+        if (scenario == "custom-profile") item = item with { CustomCompressionProfile = "High Quality" };
+        if (scenario == "manual-target") settings = settings with { AutoTargetSize = false, TargetSizeText = "25" };
+        if (scenario == "no-compression") settings = settings with { CompressionProfile = "No Compression" };
+        if (scenario == "h264-output") settings = settings with { EncoderId = VideoEncoderIds.Libx264, CodecFamily = VideoCodecFamily.H264 };
+        var result = new EncodeExecutionSnapshotBuilder(sourceVideoBitrateKbps: _ => 1000).BuildWithDetails(Identity(), settings, item);
+        Assert.Equal(applies, result.StorageSavingsApplies);
+        Assert.Equal(applies, result.Snapshot.StorageSavingsContract.Applies);
+    }
+
+    [Fact]
+    public void SourceBytesAreCapturedFromPhysicalFilesAndSharedWithSavedJobSnapshots()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-ContractSnapshot", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "source.mkv");
+            File.WriteAllBytes(path, new byte[1001]);
+            var settings = Settings() with { StorageSavings = new StorageSavingsOptions { Enabled = true } };
+            var item = Item() with { SourceFilePath = path, LogicalSourcePath = path, SourceSizeBytes = 9_000_000 };
+            var snapshot = Build(settings, item);
+            Assert.Equal(1001, snapshot.StorageSavingsContract.SourceSizeBytes);
+            Assert.Equal(900, snapshot.StorageSavingsContract.MaximumAcceptedOutputBytes);
+            Assert.Equal(22, snapshot.QualityValue);
+            File.WriteAllBytes(path, new byte[2000]);
+            Assert.Equal(1001, snapshot.StorageSavingsContract.SourceSizeBytes);
+
+            var dvd = new EncodingInputSource
+            {
+                Kind = EncodingInputKind.DvdPhysicalConcat,
+                SourcePath = root,
+                SourceFiles = new[] { path },
+                AllowSourceDeletion = false
+            };
+            Assert.Equal(2000, StorageSavingsContractService.Capture(true, dvd).SourceSizeBytes);
+            Assert.Null(StorageSavingsContractService.Capture(true, EncodingInputSource.FromFile(Path.Combine(root, "missing"))).MaximumAcceptedOutputBytes);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     private static EncodeExecutionSnapshot Build(
         EncodeExecutionSnapshotSettings? settings = null,
         EncodeExecutionSnapshotItem? item = null,
@@ -476,6 +529,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         Assert.Equal(expected.Encoder, actual.Encoder);
         Assert.Equal(expected.UseGpu, actual.UseGpu);
         Assert.Equal(expected.TargetMb, actual.TargetMb);
+        Assert.Equal(expected.StorageSavingsContract, actual.StorageSavingsContract);
         Assert.Equal(expected.ScaleMode, actual.ScaleMode);
         Assert.Equal(expected.Restoration.Mode, actual.Restoration.Mode);
         Assert.Equal(expected.Restoration.Preset, actual.Restoration.Preset);

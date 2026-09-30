@@ -95,6 +95,14 @@ namespace MediaFlux.Services
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            StorageSavingsEvaluation savings = StorageSavingsContractService.Evaluate(
+                request.StorageSavingsContract, staged.Evidence.OutputSizeBytes);
+            if (savings.Acceptance == StorageSavingsAcceptance.Rejected)
+            {
+                return Failed(EncodeFinalizationFailureKind.StoragePolicyRejected,
+                    savings.Reason, request, request.OutputPath, stagedValidation: staged,
+                    storageSavings: savings);
+            }
             statusCallback?.Invoke("Finalizing");
             try
             {
@@ -116,7 +124,7 @@ namespace MediaFlux.Services
                     message,
                     request,
                     File.Exists(request.OutputPath) ? request.OutputPath : "",
-                    stagedValidation: staged);
+                    stagedValidation: staged, storageSavings: savings);
             }
 
             statusCallback?.Invoke("Verifying final output");
@@ -143,7 +151,7 @@ namespace MediaFlux.Services
                         "Final output verification was canceled.",
                         request,
                         recoverablePath,
-                        stagedValidation: staged),
+                        stagedValidation: staged, storageSavings: savings),
                     cancellationToken);
             }
             if (!promoted.Success || promoted.Evidence == null)
@@ -157,12 +165,13 @@ namespace MediaFlux.Services
                     request,
                     recoverablePath,
                     stagedValidation: staged,
-                    promotedValidation: promoted);
+                    promotedValidation: promoted, storageSavings: savings);
             }
 
             return new EncodeFinalizationResult
             {
                 Success = true,
+                StorageSavings = savings,
                 FinalOutputPath = request.FinalOutputPath,
                 StagingPath = request.OutputPath,
                 ValidationSummary =
@@ -181,9 +190,11 @@ namespace MediaFlux.Services
             EncodeOutputValidationRequest request,
             string recoverablePath,
             EncodeOutputValidationResult? stagedValidation = null,
-            EncodeOutputValidationResult? promotedValidation = null) => new()
+            EncodeOutputValidationResult? promotedValidation = null,
+            StorageSavingsEvaluation? storageSavings = null) => new()
         {
             Success = false,
+            StorageSavings = storageSavings,
             FailureKind = kind,
             ErrorMessage = message,
             FinalOutputPath = request.FinalOutputPath,

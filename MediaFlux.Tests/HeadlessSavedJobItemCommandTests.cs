@@ -201,6 +201,25 @@ public sealed class HeadlessSavedJobItemCommandTests
     }
 
     [Fact]
+    public async Task StoragePolicyRejectionHasDedicatedHeadlessExitCode()
+    {
+        var pipeline = new FakePipeline
+        {
+            ExecuteException = new EncodeFinalizationException(new EncodeFinalizationResult
+            {
+                FailureKind = EncodeFinalizationFailureKind.StoragePolicyRejected,
+                StorageSavings = StorageSavingsContractService.Evaluate(StorageSavingsContractService.Resolve(true, 1000), 901),
+                ErrorMessage = "Insufficient savings."
+            })
+        };
+        var report = await HeadlessSavedJobItemRunner.RunAsync(
+            Command("path=C:\\media\\clip.mp4"), [Job()], pipeline, _ => { }, CancellationToken.None);
+        Assert.Equal(HeadlessSavedJobExitCode.StoragePolicyRejected, report.ExitCode);
+        Assert.Equal(1, pipeline.ExecuteCount);
+        Assert.Equal(0, pipeline.OutcomeCount);
+    }
+
+    [Fact]
     public async Task CancellationAndValidationUseStableExitCodes()
     {
         using var cancellation = new CancellationTokenSource();

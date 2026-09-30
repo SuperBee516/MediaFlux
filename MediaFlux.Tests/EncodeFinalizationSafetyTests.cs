@@ -476,14 +476,134 @@ public sealed class EncodeFinalizationSafetyTests : IDisposable
         Assert.Equal(0, statistics.Successful);
     }
 
+    [Theory]
+    [InlineData(900, true)]
+    [InlineData(901, false)]
+    public async Task ActualSavingsGuardRunsBeforePromotion(long candidateBytes, bool accepted)
+    {
+        string source = CreateFile("contract-source.mkv", 1000);
+        string final = Path.Combine(_root, "contract-final.mp4");
+        string stage = OutputPathService.CreateEncodeStagingPath(final);
+        File.WriteAllBytes(stage, new byte[candidateBytes]);
+        var validator = new FakeValidationService();
+        var promoter = new CountingPromoter();
+        var service = new EncodeOutputFinalizationService(validator, promoter);
+        var contract = StorageSavingsContractService.Capture(true, EncodingInputSource.FromFile(source));
+        EncodeFinalizationResult result = await service.FinalizeAsync(Request(source, stage, final, contract));
+        Assert.Equal(accepted, result.Success);
+        Assert.Equal(accepted ? 1 : 0, promoter.Promotions);
+        Assert.Equal(accepted ? 1 : 0, validator.PromotedCalls);
+        Assert.Equal(accepted, File.Exists(final));
+        Assert.Equal(!accepted, File.Exists(stage));
+        Assert.True(File.Exists(source));
+        Assert.Equal(candidateBytes, result.StorageSavings!.CandidateOutputBytes);
+        Assert.Equal(1000 - candidateBytes, result.StorageSavings.ActualSavingsBytes);
+        if (!accepted)
+        {
+            Assert.Equal(EncodeFinalizationFailureKind.StoragePolicyRejected, result.FailureKind);
+            Assert.Equal(stage, result.RecoverableOutputPath);
+            Assert.Equal(EncodingTerminalResult.StoragePolicyRejected,
+                EncodingService.ResolveTerminalResult(result, completedAfterRecovery: true));
+            Assert.Equal(EncodingLifecycleStatus.Passed, EncodingPlanService.DescribeValidationOutcome(result).Status);
+            Assert.Equal(EncodingLifecycleStatus.Skipped, EncodingPlanService.DescribeFinalizationOutcome(result).Status);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SourceDeletionIndependentlyRefusesRejectedOrMissingAcceptanceEvenIfSuccessIsClaimed(bool missingEvidence)
+    {
+        string source = CreateFile("policy-source.mkv", 1000);
+        string final = CreateFile("policy-final.mp4", 901);
+        var contract = StorageSavingsContractService.Resolve(true, 1000);
+        var output = new EncodingService.EncodeResult(true, final, finalizationSucceeded: true,
+            finalOutputSizeBytes: 901, storageSavingsContract: contract,
+            storageSavings: missingEvidence ? null : StorageSavingsContractService.Evaluate(contract, 901));
+        var deletion = SourceDeletionService.DeleteAfterFinalization(source, EncodingInputSource.FromFile(source), true, output);
+        Assert.False(deletion.Deleted);
+        Assert.True(File.Exists(source));
+        Assert.Contains("storage-policy", deletion.Message);
+    }
+
+    [Fact]
+    public void AcceptedContractRetainsSourceDeletionSemantics()
+    {
+        string source = CreateFile("accepted-source.mkv", 1000);
+        string final = CreateFile("accepted-final.mp4", 900);
+        var contract = StorageSavingsContractService.Resolve(true, 1000);
+        var output = new EncodingService.EncodeResult(true, final, finalizationSucceeded: true,
+            finalOutputSizeBytes: 900, storageSavingsContract: contract,
+            storageSavings: StorageSavingsContractService.Evaluate(contract, 900));
+        Assert.True(SourceDeletionService.DeleteAfterFinalization(source, EncodingInputSource.FromFile(source), true, output).Deleted);
+    }
+
+    [Theory]
+    [InlineData("validation")]
+    [InlineData("promotion")]
+    [InlineData("final-verification")]
+    [InlineData("cancellation")]
+    public async Task ApplicableContractRetainsSourceForTechnicalFailuresAndCancellation(string failure)
+    {
+        string source = CreateFile("failure-contract-source.mkv", 1000);
+        string final = Path.Combine(_root, "failure-contract-final.mp4");
+        string stage = OutputPathService.CreateEncodeStagingPath(final);
+        File.WriteAllBytes(stage, new byte[900]);
+        var contract = StorageSavingsContractService.Resolve(true, 1000);
+        var service = new EncodeOutputFinalizationService(new FakeValidationService(
+            stagedSuccess: failure != "validation", promotedSuccess: failure != "final-verification",
+            cancelPromoted: failure == "cancellation"), failure == "promotion" ? new ThrowingPromoter() : null);
+        EncodeFinalizationResult result;
+        if (failure == "cancellation")
+            result = (await Assert.ThrowsAsync<EncodeFinalizationCanceledException>(() =>
+                service.FinalizeAsync(Request(source, stage, final, contract)))).Result;
+        else
+            result = await service.FinalizeAsync(Request(source, stage, final, contract));
+        Assert.False(result.Success);
+        Assert.False(File.Exists(final));
+        Assert.True(File.Exists(source));
+        var encoded = new EncodingService.EncodeResult(false, final, storageSavingsContract: contract, storageSavings: result.StorageSavings);
+        Assert.False(SourceDeletionService.DeleteAfterFinalization(source, EncodingInputSource.FromFile(source), true, encoded).Deleted);
+    }
+
+    [Fact]
+    public async Task UnknownSourceContractFailsClosedBeforePromotion()
+    {
+        string source = CreateFile("unknown-contract-source.mkv", 1000);
+        string final = Path.Combine(_root, "unknown-contract-final.mp4");
+        string stage = OutputPathService.CreateEncodeStagingPath(final);
+        File.WriteAllBytes(stage, new byte[1]);
+        var promoter = new CountingPromoter();
+        var service = new EncodeOutputFinalizationService(new FakeValidationService(), promoter);
+        var result = await service.FinalizeAsync(Request(source, stage, final, StorageSavingsContractService.Resolve(true, null)));
+        Assert.Equal(EncodeFinalizationFailureKind.StoragePolicyRejected, result.FailureKind);
+        Assert.Equal(0, promoter.Promotions);
+        Assert.False(File.Exists(final));
+        Assert.True(File.Exists(source));
+    }
+
+    private sealed class CountingPromoter : IEncodeOutputPromoter
+    {
+        public int Promotions { get; private set; }
+        public void Promote(string stagingPath, string finalOutputPath)
+        {
+            Promotions++;
+            new FileEncodeOutputPromoter().Promote(stagingPath, finalOutputPath);
+        }
+        public string TryRestoreToStaging(string finalOutputPath, string stagingPath) =>
+            new FileEncodeOutputPromoter().TryRestoreToStaging(finalOutputPath, stagingPath);
+    }
+
     private EncodeOutputValidationRequest Request(
         string source,
         string stage,
-        string final) => new()
+        string final,
+        StorageSavingsContract? contract = null) => new()
     {
         Input = EncodingInputSource.FromFile(source),
         OutputPath = stage,
         FinalOutputPath = final,
+        StorageSavingsContract = contract ?? StorageSavingsContract.Disabled,
         Encoder = new VideoEncoderSelection(
             VideoEncoderIds.Libx265,
             VideoCodecFamily.Hevc,

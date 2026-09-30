@@ -7,7 +7,8 @@ namespace MediaFlux.Models
         None = 0,
         Validation = 1,
         Promotion = 2,
-        FinalVerification = 3
+        FinalVerification = 3,
+        StoragePolicyRejected = 4
     }
 
     public enum EncodeOutputValidationProfile
@@ -22,6 +23,7 @@ namespace MediaFlux.Models
         public required EncodingInputSource Input { get; init; }
         public string OutputPath { get; init; } = "";
         public string FinalOutputPath { get; init; } = "";
+        public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
         public required VideoEncoderSelection Encoder { get; init; }
         public EncodingService.ScaleMode ScaleMode { get; init; }
         public bool TenBit { get; init; }
@@ -148,6 +150,7 @@ namespace MediaFlux.Models
 
     public sealed class EncodeFinalizationResult
     {
+        public StorageSavingsEvaluation? StorageSavings { get; init; }
         public bool Success { get; init; }
         public EncodeFinalizationFailureKind FailureKind { get; init; }
         public string ErrorMessage { get; init; } = "";

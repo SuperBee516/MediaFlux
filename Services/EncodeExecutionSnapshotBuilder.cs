@@ -300,6 +300,7 @@ public sealed class EncodeExecutionSnapshotBuilder
             SourceFilePath = item.SourceFilePath,
             LogicalSourcePath = item.LogicalSourcePath,
             Input = input,
+            StorageSavingsContract = StorageSavingsContractService.Capture(storageSavingsApplies, input),
             OutputFolder = outputFolder,
             Suffix = suffix,
             Encoder = validated.Resolved.Selection,

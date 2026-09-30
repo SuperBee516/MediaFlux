@@ -348,6 +348,42 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
         Assert.Equal(expected, EncodingStatisticsCalculator.FormatBytes(bytes));
     }
 
+    [Fact]
+    public void RejectedCandidateEvidencePersistsWithoutEnteringSuccessOrSavingsTotals()
+    {
+        var contract = StorageSavingsContractService.Resolve(true, 1000);
+        var rejection = StorageSavingsContractService.Evaluate(contract, 901);
+        var service = new EncodingStatisticsService(_statisticsPath);
+        // Even a caller incorrectly claiming success cannot admit rejected training evidence.
+        var record = CreateRecord("policy-rejected", EncodingStatisticsOutcome.Success, DateTime.UtcNow, 1000, 901, 60, 12)
+            with { StorageSavings = rejection };
+        service.AppendFinalized(record);
+        EncodingStatisticsRecord loaded = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.StoragePolicyRejected, loaded.Outcome);
+        Assert.Equal(rejection, loaded.StorageSavings);
+        Assert.Null(loaded.OutputSizeBytes);
+        Assert.Equal("StoragePolicyRejected", loaded.TerminalResult);
+        var snapshot = EncodingStatisticsCalculator.Aggregate([loaded]);
+        Assert.Equal(0, snapshot.Successful);
+        Assert.Equal(0, snapshot.Failed);
+        Assert.Equal(0, snapshot.FinalizationFailed);
+        Assert.Equal(1, snapshot.Skipped);
+        Assert.Equal(0, snapshot.SpaceSavedBytes);
+
+        var history = new HistoryService(Path.Combine(_root, "policy-history.json"));
+        history.Append(new JobHistoryRecord
+        {
+            Status = JobStatus.Skipped, TerminalResult = MediaFlux.Models.EncodingTerminalResult.StoragePolicyRejected,
+            StorageSavings = rejection, SourceSizeBytes = 1000, OutputSizeBytes = 901,
+            Notes = rejection.Reason
+        });
+        var job = Assert.Single(history.LoadAll());
+        Assert.Equal(JobStatus.Skipped, job.Status);
+        Assert.Equal(rejection, job.StorageSavings);
+        Assert.Equal("Skipped — insufficient savings", JobHistoryPresentation.OutcomeLabel(job));
+        Assert.Single(JobHistoryPresentation.Filter([job], null, "Skipped", null, JobHistoryDateFilter.All));
+    }
+
     private static EncodingStatisticsRecord CreateRecord(
         string id,
         EncodingStatisticsOutcome outcome,

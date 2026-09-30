@@ -68,6 +68,8 @@ namespace MediaFlux.Services
             public OutputContainer ResolvedOutputContainer { get; }
             public string ContainerDecisionReason { get; }
             public MediaProbeResult? FinalOutputProbe { get; }
+            public StorageSavingsContract StorageSavingsContract { get; }
+            public StorageSavingsEvaluation? StorageSavings { get; }
 
             public EncodeResult(
                 bool success,
@@ -81,7 +83,9 @@ namespace MediaFlux.Services
                 OutputContainer resolvedOutputContainer = OutputContainer.Mp4,
                 string containerDecisionReason = "",
                 long? finalOutputLastWriteUtcTicks = null,
-                MediaProbeResult? finalOutputProbe = null)
+                MediaProbeResult? finalOutputProbe = null,
+                StorageSavingsContract? storageSavingsContract = null,
+                StorageSavingsEvaluation? storageSavings = null)
             {
                 Success = success;
                 OutputPath = outputPath;
@@ -95,6 +99,8 @@ namespace MediaFlux.Services
                 ResolvedOutputContainer = resolvedOutputContainer;
                 ContainerDecisionReason = containerDecisionReason;
                 FinalOutputProbe = finalOutputProbe;
+                StorageSavingsContract = storageSavingsContract ?? Models.StorageSavingsContract.Disabled;
+                StorageSavings = storageSavings;
             }
         }
 
@@ -376,7 +382,8 @@ namespace MediaFlux.Services
                 request.PreEncodeResearchCallback,
                 request.LifecycleDiagnostics,
                 request.FaststartStartedCallback,
-                request.PreEncodeExecutionValidationCallback).ConfigureAwait(false);
+                request.PreEncodeExecutionValidationCallback,
+                request.StorageSavingsContract).ConfigureAwait(false);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -644,7 +651,8 @@ namespace MediaFlux.Services
             Func<EncodingPlanSnapshot, CancellationToken, Task>? preEncodeResearchCallback = null,
             EncodeLifecycleDiagnostics? lifecycleDiagnostics = null,
             Action? faststartStartedCallback = null,
-            Action<EncodingPlanSnapshot>? preEncodeExecutionValidationCallback = null)
+            Action<EncodingPlanSnapshot>? preEncodeExecutionValidationCallback = null,
+            StorageSavingsContract? storageSavingsContract = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -880,7 +888,7 @@ namespace MediaFlux.Services
             {
                 encodingExecutionOutcomeCallback?.Invoke(new EncodingExecutionOutcome(
                     shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(),
-                    validationOutcome, finalizationOutcome, terminalResult));
+                    validationOutcome, finalizationOutcome, terminalResult, finalization.StorageSavings));
             }
             void RecordRecovery(EncodingRecoveryKind kind, EncodingRecoveryFailureClass failureClass,
                 EncodingRecoveryMode recoveryMode, int maximumAttempts, EncodingRecoveryResult result, string detail,
@@ -919,7 +927,7 @@ namespace MediaFlux.Services
                     DurationDeltaSeconds: finalization.StagedValidationResult?.FailureEvidence is { } durationEvidence
                         ? Math.Abs(durationEvidence.SourceDurationSeconds - durationEvidence.OutputDurationSeconds)
                         : null));
-                EncodingExecutionOutcome outcome = new(shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult);
+                EncodingExecutionOutcome outcome = new(shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult, finalization.StorageSavings);
                 _log?.Invoke(EncodingPlanService.DescribeRecovery(outcome));
                 encodingExecutionOutcomeCallback?.Invoke(outcome);
             }
@@ -1828,6 +1836,7 @@ namespace MediaFlux.Services
                         Input = inputSource,
                         OutputPath = output,
                         FinalOutputPath = finalOutput,
+                        StorageSavingsContract = storageSavingsContract ?? StorageSavingsContract.Disabled,
                         Encoder = requestedEncoder,
                         ScaleMode = scaleMode,
                         TenBit = tenBit,
@@ -1866,6 +1875,15 @@ namespace MediaFlux.Services
             lifecycleDiagnostics?.Record(EncodeLifecycleEvent.VerificationEnd);
             validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
             finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+            if (finalization.StorageSavings is { Contract.Applies: true } savingsEvidence)
+                _log?.Invoke(StorageSavingsContractService.Describe(savingsEvidence));
+            if (finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected)
+            {
+                terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                PublishExecutionOutcome();
+                _log?.Invoke("[EncodingService] Storage policy rejected candidate: " + finalization.ErrorMessage);
+                throw new EncodeFinalizationException(finalization);
+            }
             if (preplannedTimelineReconstructionRate is { } reconstructionRate)
                 RecordRecovery(EncodingRecoveryKind.TimelineNormalization,
                     EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
@@ -2172,7 +2190,9 @@ namespace MediaFlux.Services
                         PublishExecutionOutcome();
                     }
                     _log?.Invoke(
-                        $"[EncodingService] Finalization failed: {finalization.ErrorMessage}");
+                        finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected
+                            ? "[EncodingService] " + StorageSavingsContractService.Describe(finalization.StorageSavings!)
+                            : $"[EncodingService] Finalization failed: {finalization.ErrorMessage}");
                     throw new EncodeFinalizationException(finalization);
                 }
             }
@@ -2197,7 +2217,7 @@ namespace MediaFlux.Services
                     recoveryOutcomes.Any(outcome => outcome.MediaDisposition is EncodingRecoveryDisposition.Clean or EncodingRecoveryDisposition.Salvaged));
             PublishExecutionOutcome();
             EncodingExecutionOutcome completedOutcome = new(
-                shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult);
+                shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult, finalization.StorageSavings);
             foreach (EncodingPlanDivergence divergence in EncodingPlanService.CompareLifecycle(shadowPlan, completedOutcome))
             {
                 _log?.Invoke($"[EncodingPlan] Shadow divergence: {divergence}");
@@ -2226,7 +2246,9 @@ namespace MediaFlux.Services
                     finalOutputLastWriteUtcTicks:
                     finalization.FinalOutputLastWriteUtcTicks,
                 finalOutputProbe: finalization.PromotedValidationResult?.Evidence?.OutputProbe ??
-                    finalization.StagedValidationResult?.Evidence?.OutputProbe);
+                    finalization.StagedValidationResult?.Evidence?.OutputProbe,
+                storageSavingsContract: storageSavingsContract,
+                storageSavings: finalization.StorageSavings);
             }
             catch
             {
@@ -2258,7 +2280,9 @@ namespace MediaFlux.Services
         {
             ArgumentNullException.ThrowIfNull(finalization);
             if (!finalization.Success)
-                return finalization.FailureKind == EncodeFinalizationFailureKind.Validation
+                return finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected
+                    ? EncodingTerminalResult.StoragePolicyRejected
+                    : finalization.FailureKind == EncodeFinalizationFailureKind.Validation
                     ? EncodingTerminalResult.ValidationFailed
                     : EncodingTerminalResult.FinalizationFailed;
 
