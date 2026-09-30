@@ -450,20 +450,6 @@ namespace MediaFlux
                 : $"{duration.Minutes}:{duration.Seconds:00}";
         }
 
-        private static int? RuntimeOutputHeight(int? sourceHeight, EncodingService.ScaleMode scaleMode)
-        {
-            if (sourceHeight is not > 0) return null;
-            int requested = scaleMode switch
-            {
-                EncodingService.ScaleMode.To720p => 720,
-                EncodingService.ScaleMode.To1080p => 1080,
-                EncodingService.ScaleMode.To1440p => 1440,
-                EncodingService.ScaleMode.To4K => 2160,
-                _ => sourceHeight.Value
-            };
-            return Math.Min(sourceHeight.Value, requested);
-        }
-
         private void RecordEncodingStatistics(
             string operationId,
             DateTime startUtc,

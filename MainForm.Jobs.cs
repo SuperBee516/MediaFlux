@@ -163,11 +163,10 @@ public partial class MainForm
             var meta = EnsureRowMeta(row);
             meta.CustomCompressionProfile = file.CustomCompressionProfile;
             meta.CustomTargetMb = file.CustomTargetMb;
-            meta.PredictionShadowExperimentAssignment =
-                PredictionShadowExperimentAssignmentPersistence.MatchesSource(
-                    file.PredictionShadowExperimentAssignment, file.SourcePath)
-                    ? file.PredictionShadowExperimentAssignment
-                    : null;
+            // Preserve persisted assignment state verbatim. The execution snapshot
+            // builder carries even stale bindings so the orchestrator can reject
+            // them fail-closed instead of degrading this item into an ordinary job.
+            meta.PredictionShadowExperimentAssignment = file.PredictionShadowExperimentAssignment;
             UpdateResearchExperimentAssignmentPresentation(row);
             UpdateRowCustomFlag(row);
         }

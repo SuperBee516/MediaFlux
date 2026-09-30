@@ -518,45 +518,6 @@ namespace MediaFlux
                 : TryGetFileSizeBytes(file);
             int? statisticsSourceHeight = isDvdEncode ? dvdOptions!.Candidate.VideoHeight : null;
 
-            // Capture encoder + codec as one immutable selection for this job.
-            // This prevents a UI change between reads from producing an invalid
-            // cross-backend combination.
-            ResolvedVideoEncoder fallbackEncoder =
-                EncoderRegistry.Default.Resolve(
-                    VideoEncoderIds.Nvenc,
-                    VideoCodecFamily.Hevc);
-            ValidatedEncoderSettings fallbackSettings =
-                EncodingRequestValidator.ValidateAndNormalize(
-                    EncoderRegistry.Default,
-                    fallbackEncoder.Selection,
-                    useGpu: true,
-                    targetMb: null,
-                    preset: "p5",
-                    qualityValue: 24,
-                    tenBit: false,
-                    audioChannels: null,
-                    concurrentEncoderSessions: false);
-            var encoderSnapshot = UiGet(
-                () =>
-                {
-                    EncoderCapabilities capabilities =
-                        GetSelectedEncoderCapabilities();
-                    int? audioChannels =
-                        GetSelectedAudioChannels();
-                    ValidatedEncoderSettings validated =
-                        GetValidatedEncoderSettingsFromUi(
-                            includeConcurrentSessions: true);
-                    return (
-                        DisplayText: capabilities.DisplayName,
-                        FormatText: comboVideoFormat.Text,
-                        Validated: validated,
-                        AudioChannels: audioChannels);
-                },
-                (
-                    DisplayText: "GPU (NVENC)",
-                    FormatText: "H.265 / HEVC (x265)",
-                    Validated: fallbackSettings,
-                    AudioChannels: (int?)null));
             LibraryPolicyQueueItem? policyIntent = meta.LibraryPolicyIntent;
             EncodingPreset? policyEncodingPreset = null;
             if (policyIntent != null)
@@ -564,176 +525,9 @@ namespace MediaFlux
                 policyEncodingPreset = string.IsNullOrWhiteSpace(policyIntent.EncodingPresetName)
                     ? null
                     : _presetService.LoadAll().FirstOrDefault(preset => preset.Name.Equals(policyIntent.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
-                VideoCodecFamily policyCodec = policyEncodingPreset == null
-                    ? policyIntent.ProposedCodec
-                    : VideoEncoderCompatibility.ParseCodecFamily(string.IsNullOrWhiteSpace(policyEncodingPreset.VideoCodec) ? policyEncodingPreset.VideoFormat : policyEncodingPreset.VideoCodec);
-                string policyEncoderId = policyEncodingPreset == null
-                    ? policyIntent.EncoderId
-                    : VideoEncoderCompatibility.ResolveEncoderId(string.IsNullOrWhiteSpace(policyEncodingPreset.EncoderId) ? policyEncodingPreset.EncoderMode : policyEncodingPreset.EncoderId, policyCodec);
-                ResolvedVideoEncoder resolvedPolicyEncoder = EncoderRegistry.Default.Resolve(policyEncoderId, policyCodec);
-                ValidatedEncoderSettings validatedPolicySettings = EncodingRequestValidator.ValidateAndNormalize(
-                    EncoderRegistry.Default,
-                    resolvedPolicyEncoder.Selection,
-                    useGpu: resolvedPolicyEncoder.Provider.Capabilities.IsHardware,
-                    targetMb: null,
-                    preset: policyEncodingPreset?.EncoderPreset ?? policyIntent.EncoderPreset,
-                    qualityValue: policyEncodingPreset?.QualityValue ?? policyIntent.QualityValue,
-                    tenBit: policyEncodingPreset?.TenBit ?? policyIntent.PreferredBitDepth >= 10,
-                    audioChannels: encoderSnapshot.AudioChannels,
-                    concurrentEncoderSessions: false);
-                encoderSnapshot = (
-                    DisplayText: resolvedPolicyEncoder.Provider.Capabilities.DisplayName,
-                    FormatText: CreateCodecDisplayOption(policyCodec).DisplayName,
-                    Validated: validatedPolicySettings,
-                    AudioChannels: encoderSnapshot.AudioChannels);
             }
-            string encoderText = encoderSnapshot.DisplayText;
-            string videoCodec =
-                encoderSnapshot.Validated.Resolved.Selection.FfmpegCodec;
-            bool useGpu = encoderSnapshot.Validated.UseGpu;
-            string analysisEncoderId = encoderSnapshot.Validated.Resolved.Selection.EncoderId;
-            string analysisEncoderPreset = encoderSnapshot.Validated.Preset;
-            bool analysisTenBit = encoderSnapshot.Validated.TenBit;
-            OutputContainerSelection requestedOutputContainer =
-                PolicyOutputContainer(policyIntent, runOutputContainer);
-            string analysisOutputContainer = requestedOutputContainer.ToString();
-            string analysisRestoration = _config.VideoRestoration?.Preset.ToString() ?? "Off";
 
-            // ==== TARGET SIZE (MB) ====
-            double? targetMb = null;
-            bool hasCustomTarget = meta.CustomTargetMb.HasValue;
-            bool hasCustomProfile = !string.IsNullOrWhiteSpace(meta.CustomCompressionProfile);
-            bool automaticQuality = policyIntent == null &&
-                UiGet(IsAutomaticQualitySelected, false);
-            StorageSavingsOptions storageSavings =
-                _config.StorageSavings.CloneNormalized();
-
-            string profileText = hasCustomProfile
-                ? meta!.CustomCompressionProfile!
-                : UiGet(
-                    () => comboCompressionProfile!.SelectedItem?.ToString()
-                          ?? comboCompressionProfile.Text
-                          ?? string.Empty,
-                    string.Empty);
-            VideoEncoderSelection estimateTargetEncoder =
-                encoderSnapshot.Validated.Resolved.Selection;
-            int estimateQuality =
-                encoderSnapshot.Validated.QualityValue;
-            int? estimateTargetHeight = policyIntent == null
-                ? UiGet(GetEstimateTargetHeight, null)
-                : policyIntent.PreserveSourceResolution ? null : policyIntent.MaximumOutputHeight;
-            string targetText = hasCustomProfile
-                ? string.Empty
-                : UiGet(() => txtTargetSize.Text, string.Empty);
-            bool autoTargetSize = !hasCustomProfile &&
-                UiGet(() => chkAutoTargetSize.Checked, false);
-            double? configuredManualTargetMb =
-                EncodingTargetSizeResolver.ResolveConfiguredManualTargetMb(
-                    autoTargetSize,
-                    targetText);
-            bool hasManualTarget = configuredManualTargetMb is > 0;
-            bool storageSavingsApplies =
-                storageSavings.Enabled &&
-                SizeEstimateService.IsHevcCodec(videoCodec) &&
-                !hasCustomTarget &&
-                !hasCustomProfile &&
-                !hasManualTarget &&
-                !profileText.Equals(
-                    "No Compression",
-                    StringComparison.OrdinalIgnoreCase);
-            bool useStorageQualityTarget =
-                storageSavingsApplies && storageSavings.UsesQualityTarget &&
-                !UiGet(IsAutomaticQualitySelected, false);
-            if (useStorageQualityTarget)
-                estimateQuality = storageSavings.QualityValue;
-
-            EncodingQualityIntent? qualityIntent = policyIntent == null
-                ? UiGet(GetQualityIntentFromUi, null)
-                : null;
-
-            if (policyIntent != null)
-            {
-                targetMb = policyEncodingPreset is { AutoTargetSize: false, ManualTargetMb: > 0 }
-                    ? policyEncodingPreset.ManualTargetMb
-                    : policyIntent.ProjectedOutputBytes is > 0
-                        ? policyIntent.ProjectedOutputBytes.Value / (1024d * 1024d)
-                        : null;
-            }
-            else if (hasCustomTarget)
-            {
-                targetMb = meta!.CustomTargetMb;
-            }
-            else if (!automaticQuality && profileText.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
-            {
-                // Try to keep roughly the same bitrate (with a small safety bump)
-                if (isDvdEncode)
-                {
-                    targetMb = dvdOptions!.Candidate.CombinedSizeBytes /
-                               (1024d * 1024d);
-                }
-                else
-                {
-                    int? srcKbps = ProbeSourceVideoBitrateKbps(file);
-                    if (srcKbps.HasValue && durationSec > 0)
-                    {
-                        // bits = kbps * 1000 * seconds; MB ≈ bits / 8 / 1024 / 1024
-                        //  => MB ≈ (kbps * seconds) / 8192
-                        targetMb = ((srcKbps.Value * 1.15) * durationSec) / 8192.0;
-                    }
-                }
-            }
-            else if (automaticQuality)
-            {
-                // An active manual target is explicit user intent and remains
-                // authoritative over Automatic Source Adaptive quality. Dormant
-                // textbox values are rejected by the shared resolver.
-                targetMb = EncodingTargetSizeResolver.ResolveAutomaticQualityTargetMb(
-                    automaticQuality,
-                    autoTargetSize,
-                    targetText);
-            }
-            else
-            {
-                // Manual override from UI?
-                if (hasManualTarget)
-                {
-                    targetMb = configuredManualTargetMb;
-                }
-                else if (useStorageQualityTarget)
-                {
-                    // Quality-target storage mode must reach the encoder as CQ/CRF.
-                    // The queue estimate is a projection only and must not be turned
-                    // back into a fixed target-size command.
-                    targetMb = null;
-                }
-                else if (_estimatedSizeMap.TryGetValue(file, out var est) && est > 0)
-                {
-                    targetMb = est;
-                }
-                else
-                {
-                    // Fallback to the metadata-aware estimator. If duration remains
-                    // unavailable, leave targetMb unset so EncodingService safely uses
-                    // quality-based encoding instead of inventing a fixed percentage.
-                    double fallbackEstimate = isDvdEncode
-                        ? EstimateDvdEncodeTargetMb(
-                            meta!,
-                            profileText,
-                            estimateTargetEncoder,
-                            estimateQuality,
-                            estimateTargetHeight)
-                        : _sizeEstimateService.EstimateAutoTargetMbSmart(
-                            file,
-                            profileText,
-                            estimateTargetEncoder,
-                            estimateQuality,
-                            estimateTargetHeight,
-                            encoderSnapshot.AudioChannels,
-                            storageSavingsApplies ? storageSavings : null);
-                    if (fallbackEstimate > 0)
-                        targetMb = fallbackEstimate;
-                }
-            }
+            EncodeExecutionSnapshotSettings executionSettings = CaptureEncodeExecutionSnapshotSettings(runOutputContainer);
 
             _runningEncodeJobs[row] = isDvdEncode
                 ? dvdOptions!.OutputPath
@@ -747,26 +541,24 @@ namespace MediaFlux
             DateTime? finalizationStartedUtc = null;
             bool diagnosticStarted = false;
             EncodeExecutionAttempt? executionAttempt = null;
+            string encoderText = string.Empty;
+            string videoCodec = string.Empty;
+            string analysisEncoderId = string.Empty;
+            string analysisEncoderPreset = string.Empty;
+            bool analysisTenBit = false;
+            string analysisOutputContainer = runOutputContainer.ToString();
+            string analysisRestoration = _config.VideoRestoration?.Preset.ToString() ?? "Off";
+            OutputContainerSelection requestedOutputContainer = runOutputContainer;
+            double? targetMb = null;
+            int estimateQuality = 0;
+            string encoderPreset = string.Empty;
+            bool tenBit = false;
+            ContainerCompatibilityPolicy compatibilityPolicy = ContainerCompatibilityPolicy.Intelligent;
             try
             {
-                // ==== CALL THE SERVICE ====
-                string formatChoice = encoderSnapshot.FormatText;
-                var scaleMode = policyIntent == null
-                    ? UiGet(() => GetSelectedScaleMode(), ScaleMode.None)
-                    : PolicyScaleMode(policyIntent);
-
-                string encoderPreset =
-                    encoderSnapshot.Validated.Preset;
-                bool tenBit = encoderSnapshot.Validated.TenBit;
-                int? audioChannels = encoderSnapshot.AudioChannels;
-                bool concurrentEncoderSessions =
-                    encoderSnapshot.Validated.ConcurrentEncoderSessions;
-                string outputFolder = isDvdEncode
-                    ? Path.GetDirectoryName(dvdOptions!.OutputPath) ?? string.Empty
-                    : UiGet(() => cmbEncodeOutput.Text, string.Empty);
-                string suffix = BuildOutputSuffix(formatChoice);
-
-                EncodingInputSource inputSource;
+                EncodingInputSource? preparedInput = null;
+                EncodeExecutionDvdFacts? dvdFacts = null;
+                EncodeExecutionSourceMeasurements? sourceMeasurements = null;
                 if (isDvdEncode)
                 {
                     UiInvoke(() => SetEncodeRowState(
@@ -776,7 +568,16 @@ namespace MediaFlux
                         "--:--:--",
                         "Opening the selected DVD title as one continuous program stream."));
                     var inputFactory = new DvdEncodingInputFactory();
-                    inputSource = inputFactory.Create(dvdOptions!);
+                    preparedInput = inputFactory.Create(dvdOptions!);
+                    DvdTitleCandidate candidate = dvdOptions!.Candidate;
+                    dvdFacts = new EncodeExecutionDvdFacts(
+                        dvdOptions.OutputPath,
+                        candidate.CombinedSizeBytes,
+                        candidate.CombinedDurationSeconds,
+                        candidate.VideoWidth,
+                        candidate.VideoHeight,
+                        candidate.FrameRate,
+                        candidate.VideoCodec);
                     jobLog.AppendLine(
                         $"DVD logical source: {logicalSourcePath} ({dvdOptions!.Candidate.TitleSetId}, " +
                         $"{dvdOptions.Candidate.Segments.Count} segments)");
@@ -790,28 +591,74 @@ namespace MediaFlux
                 {
                     MediaInfoService.MediaInfo mediaInfo =
                         _mediaInfoService.GetInfo(file);
-                    statisticsSourceHeight = mediaInfo.Height;
-                    inputSource = EncodingInputSource.FromFile(
-                        file,
-                        mediaInfo.AudioBitrateKbps is > 0
-                            ? mediaInfo.AudioBitrateKbps.Value
-                            : meta.EstimatedPlannedAudioBitrateKbps is > 0
-                                ? meta.EstimatedPlannedAudioBitrateKbps
-                                : null,
-                        mediaInfo.AudioStreamCount,
-                        (mediaInfo.SubtitleBitrateKbps ?? 0) +
-                        (mediaInfo.SubtitleBitrateKbps is > 0
-                            ? 0
-                            : mediaInfo.SubtitleStreamCount * 8d));
+                    sourceMeasurements = new EncodeExecutionSourceMeasurements
+                    {
+                        AudioBitrateKbps = mediaInfo.AudioBitrateKbps,
+                        AudioStreamCount = mediaInfo.AudioStreamCount,
+                        SubtitleBitrateKbps = mediaInfo.SubtitleBitrateKbps,
+                        SubtitleStreamCount = mediaInfo.SubtitleStreamCount,
+                        EstimatedPlannedAudioBitrateKbps = meta.EstimatedPlannedAudioBitrateKbps,
+                        Height = mediaInfo.Height
+                    };
                 }
+
+                double? queuedEstimate = _estimatedSizeMap.TryGetValue(file, out double estimate) && estimate > 0
+                    ? estimate
+                    : null;
+                EncodeExecutionSnapshotBuildResult buildResult = _encodeExecutionSnapshotBuilder.BuildWithDetails(
+                    new EncodeExecutionSnapshotIdentity
+                    {
+                        OperationId = meta.StatisticsOperationId,
+                        StatisticsStartUtc = meta.StatisticsStartUtc,
+                        MediaFluxVersion = Application.ProductVersion,
+                        StatisticsPath = AppPaths.EncodingStatisticsFile,
+                        ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun
+                    },
+                    executionSettings,
+                    new EncodeExecutionSnapshotItem
+                    {
+                        SourceFilePath = file,
+                        LogicalSourcePath = logicalSourcePath,
+                        PreparedInput = preparedInput,
+                        SourceMeasurements = sourceMeasurements,
+                        CustomCompressionProfile = meta.CustomCompressionProfile,
+                        CustomTargetMb = meta.CustomTargetMb,
+                        EstimatedTargetMb = queuedEstimate,
+                        SizePredictionCalibration = meta.SizePredictionCalibration,
+                        PredictionShadowExperimentAssignment = meta.PredictionShadowExperimentAssignment,
+                        SourceSizeBytes = sourceSizeBytes,
+                        MediaDurationSeconds = durationSec,
+                        LibraryPolicyIntent = policyIntent,
+                        PolicyEncodingPreset = policyEncodingPreset,
+                        Dvd = dvdFacts
+                    });
+                var builtSnapshot = buildResult.Snapshot;
+                bool storageSavingsApplies = buildResult.StorageSavingsApplies;
+                bool useStorageQualityTarget = buildResult.UsesStorageQualityTarget;
+                StorageSavingsOptions storageSavings = buildResult.StorageSavings;
+                EncodingInputSource inputSource = builtSnapshot.Input;
+                encoderText = builtSnapshot.EncoderText;
+                videoCodec = builtSnapshot.Codec;
+                analysisEncoderId = builtSnapshot.Encoder.EncoderId;
+                analysisEncoderPreset = builtSnapshot.EncoderPreset ?? string.Empty;
+                analysisTenBit = builtSnapshot.TenBit;
+                requestedOutputContainer = builtSnapshot.OutputContainer;
+                analysisOutputContainer = builtSnapshot.OutputContainer.ToString();
+                analysisRestoration = builtSnapshot.Restoration.Preset.ToString();
+                targetMb = builtSnapshot.TargetMb;
+                estimateQuality = builtSnapshot.QualityValue ?? 0;
+                encoderPreset = builtSnapshot.EncoderPreset ?? string.Empty;
+                tenBit = builtSnapshot.TenBit;
+                compatibilityPolicy = builtSnapshot.CompatibilityPolicy;
+                statisticsSourceHeight = builtSnapshot.SourceHeight;
 
                 string sourceResolution = !string.IsNullOrWhiteSpace(meta.Resolution)
                     ? meta.Resolution
                     : statisticsSourceHeight is > 0 ? $"{statisticsSourceHeight}p" : "Unknown";
-                int? diagnosticOutputHeight = RuntimeOutputHeight(statisticsSourceHeight, scaleMode);
+                int? diagnosticOutputHeight = builtSnapshot.OutputHeight;
                 _encodingDiagnosticsService.Start(new EncodingDiagnosticJob(
                     meta.StatisticsOperationId, displayName, encoderText,
-                    encoderSnapshot.Validated.Resolved.Selection.EncoderId, videoCodec, encoderPreset,
+                    builtSnapshot.Encoder.EncoderId, videoCodec, encoderPreset,
                     sourceResolution, diagnosticOutputHeight is > 0 ? $"{diagnosticOutputHeight}p" : sourceResolution,
                     tenBit ? 10 : 8, durationSec > 0 ? durationSec : null, logicalSourcePath), jobStartUtc);
                 _encodingDiagnosticsService.AttachLifecycle(meta.StatisticsOperationId, lifecycle);
@@ -825,46 +672,7 @@ namespace MediaFlux
                     HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
                 };
 
-                ResolvedVideoEncoder selectedEncoder =
-                    encoderSnapshot.Validated.Resolved;
-                ContainerCompatibilityPolicy compatibilityPolicy = GetContainerCompatibilityPolicy();
-                bool deleteSource = UiGet(() => chkDeleteSource.Checked, false);
-                var executionSnapshot = new EncodeExecutionSnapshot
-                {
-                    OperationId = meta.StatisticsOperationId,
-                    StatisticsStartUtc = meta.StatisticsStartUtc,
-                    SourceFilePath = file,
-                    LogicalSourcePath = logicalSourcePath,
-                    Input = inputSource,
-                    OutputFolder = outputFolder,
-                    Suffix = suffix,
-                    Encoder = selectedEncoder.Selection,
-                    UseGpu = useGpu,
-                    TargetMb = targetMb,
-                    SizePredictionCalibration = meta.SizePredictionCalibration,
-                    ScaleMode = scaleMode,
-                    Restoration = _config.VideoRestoration!.Clone(),
-                    EncoderPreset = encoderPreset,
-                    QualityValue = estimateQuality,
-                    QualityIntent = qualityIntent,
-                    TenBit = tenBit,
-                    AudioChannels = audioChannels,
-                    ConcurrentEncoderSessions = concurrentEncoderSessions,
-                    OutputContainer = requestedOutputContainer,
-                    ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
-                    CompatibilityPolicy = compatibilityPolicy,
-                    PredictionShadowExperimentAssignment = meta.PredictionShadowExperimentAssignment,
-                    SourceSizeBytes = sourceSizeBytes,
-                    MediaDurationSeconds = durationSec > 0 ? durationSec : null,
-                    SourceHeight = statisticsSourceHeight,
-                    OutputHeight = diagnosticOutputHeight,
-                    EncoderText = encoderText,
-                    Codec = videoCodec,
-                    MediaFluxVersion = Application.ProductVersion,
-                    StatisticsPath = AppPaths.EncodingStatisticsFile,
-                    DeleteSourceAfterCompression = deleteSource
-                };
-                executionAttempt = _encodeExecutionOrchestrator.CreateAttempt(executionSnapshot);
+                executionAttempt = _encodeExecutionOrchestrator.CreateAttempt(builtSnapshot);
                 var executionCallbacks = new EncodeExecutionCallbacks
                 {
                     Progress = jobCallback,
@@ -942,7 +750,7 @@ namespace MediaFlux
                 jobLog.AppendLine(
                     $"[MediaFlux] Encode request: source='{inputSource.SourcePath}'; " +
                     $"configured-container={requestedOutputContainer}; effective-container=authoritative resolution pending; " +
-                    $"compatibility-policy={executionSnapshot.CompatibilityPolicy}; " +
+                    $"compatibility-policy={compatibilityPolicy}; " +
                     "ffmpeg-launched=false (pending preflight)." );
 
                 if (!string.IsNullOrWhiteSpace(meta.EstimateDiagnostic))
@@ -1417,6 +1225,73 @@ namespace MediaFlux
             {
                 return null;
             }
+        }
+
+        private EncodeExecutionSnapshotSettings CaptureEncodeExecutionSnapshotSettings(
+            OutputContainerSelection runOutputContainer)
+        {
+            var fallback = new EncodeExecutionSnapshotSettings
+            {
+                OutputFolder = string.Empty,
+                CompressionProfile = string.Empty,
+                EncoderId = VideoEncoderIds.Nvenc,
+                CodecFamily = VideoCodecFamily.Hevc,
+                VideoFormatText = "H.265 / HEVC (x265)",
+                EncoderDisplayTextOverride = "GPU (NVENC)",
+                EncoderPreset = "p5",
+                NumericQualityValue = 24,
+                AutomaticQuality = false,
+                QualityTarget = QualityTarget.Balanced,
+                TenBit = false,
+                AudioChannelSelection = null,
+                LimitGpuEncodingQueueToOneJob = _config.LimitGpuEncodingQueueToOneJob,
+                IncludeConcurrentEncoderSessions = false,
+                AutoTargetSize = false,
+                TargetSizeText = string.Empty,
+                ScaleMode = EncodingService.ScaleMode.None,
+                EnableOutputSuffix = _config.EnableOutputSuffix,
+                EnableCodecSuffix = _config.EnableCodecSuffix,
+                OutputSuffix = _config.OutputSuffix,
+                Restoration = _config.VideoRestoration?.Clone() ?? new VideoRestorationSettings(),
+                StorageSavings = _config.StorageSavings?.CloneNormalized() ?? new StorageSavingsOptions(),
+                OutputContainer = runOutputContainer,
+                CompatibilityPolicy = ContainerCompatibilityPolicy.Intelligent,
+                DeleteSourceAfterCompression = false
+            };
+
+            return UiGet(
+                () => new EncodeExecutionSnapshotSettings
+                {
+                    OutputFolder = cmbEncodeOutput.Text,
+                    CompressionProfile = comboCompressionProfile?.SelectedItem?.ToString()
+                        ?? comboCompressionProfile?.Text
+                        ?? string.Empty,
+                    EncoderId = GetSelectedEncoderId(),
+                    CodecFamily = GetSelectedVideoCodecFamily(),
+                    VideoFormatText = comboVideoFormat.Text,
+                    EncoderPreset = GetSelectedEncoderPreset(),
+                    NumericQualityValue = nudAutoQuality is null
+                        ? null
+                        : (int)nudAutoQuality.Value,
+                    AutomaticQuality = IsAutomaticQualitySelected(),
+                    QualityTarget = GetSelectedQualityTarget(),
+                    TenBit = GetTenBitRequested(),
+                    AudioChannelSelection = comboAudioChannels?.SelectedItem?.ToString(),
+                    LimitGpuEncodingQueueToOneJob = _config.LimitGpuEncodingQueueToOneJob,
+                    IncludeConcurrentEncoderSessions = true,
+                    AutoTargetSize = chkAutoTargetSize.Checked,
+                    TargetSizeText = txtTargetSize.Text,
+                    ScaleMode = GetSelectedScaleMode(),
+                    EnableOutputSuffix = _config.EnableOutputSuffix,
+                    EnableCodecSuffix = _config.EnableCodecSuffix,
+                    OutputSuffix = _config.OutputSuffix,
+                    Restoration = _config.VideoRestoration?.Clone() ?? new VideoRestorationSettings(),
+                    StorageSavings = _config.StorageSavings?.CloneNormalized() ?? new StorageSavingsOptions(),
+                    OutputContainer = runOutputContainer,
+                    CompatibilityPolicy = GetContainerCompatibilityPolicy(),
+                    DeleteSourceAfterCompression = chkDeleteSource.Checked
+                },
+                fallback);
         }
 
         private async Task SendDiscordQueueCompleteNotificationAsync(DateTime queueStartedUtc)

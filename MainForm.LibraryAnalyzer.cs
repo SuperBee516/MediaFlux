@@ -133,30 +133,17 @@ namespace MediaFlux
             ScheduleEncodingPlanRefresh();
         }
 
-        private static EncodingService.ScaleMode PolicyScaleMode(LibraryPolicyQueueItem item)
-        {
-            if (item.PreserveSourceResolution || !item.MaximumOutputHeight.HasValue) return EncodingService.ScaleMode.None;
-            return item.MaximumOutputHeight.Value switch
-            {
-                <= 720 => EncodingService.ScaleMode.To720p,
-                <= 1080 => EncodingService.ScaleMode.To1080p,
-                <= 1440 => EncodingService.ScaleMode.To1440p,
-                _ => EncodingService.ScaleMode.To4K
-            };
-        }
-
         private OutputContainerSelection PolicyOutputContainer(
             LibraryPolicyQueueItem? item,
             OutputContainerSelection? ordinaryRunSelection = null)
         {
-            if (item == null)
-                return ordinaryRunSelection ?? _activeOutputContainer;
-            if (!string.IsNullOrWhiteSpace(item.EncodingPresetName))
-            {
-                EncodingPreset? preset = _presetService.LoadAll().FirstOrDefault(value => value.Name.Equals(item.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
-                if (preset != null && Enum.TryParse(preset.OutputContainer, true, out OutputContainerSelection container)) return container;
-            }
-            return item.TargetContainer;
+            EncodingPreset? preset = item is null || string.IsNullOrWhiteSpace(item.EncodingPresetName)
+                ? null
+                : _presetService.LoadAll().FirstOrDefault(value => value.Name.Equals(item.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
+            return EncodeExecutionSnapshotBuilder.ResolveOutputContainer(
+                ordinaryRunSelection ?? _activeOutputContainer,
+                item,
+                preset);
         }
 
         private async Task<bool> EnsureRequestedVideoEncodersAvailable(IReadOnlyList<DataGridViewRow> rows)

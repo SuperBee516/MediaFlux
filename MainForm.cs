@@ -37,6 +37,7 @@ namespace MediaFlux
         private readonly Dictionary<string, double> _etaSpeedState = new();
         private EncodingService _encodingService = null!;
         private EncodeExecutionOrchestrator _encodeExecutionOrchestrator = null!;
+        private EncodeExecutionSnapshotBuilder _encodeExecutionSnapshotBuilder = null!;
         private AudioService _audioService = null!;
         private MediaInfoService _mediaInfoService = null!;
         private DuplicateDetectionService _duplicateDetectionService = null!;
@@ -5180,23 +5181,9 @@ namespace MediaFlux
         }
         private int GetMaxConcurrentEncodes()
         {
-            // Only ever use >1 when GPU NVENC is active.
-            bool useNvenc = GetSelectedEncoderId().Equals(
-                VideoEncoderIds.Nvenc,
-                StringComparison.OrdinalIgnoreCase);
-
-            if (!useNvenc)
-                return 1;
-
-            if (_config.LimitGpuEncodingQueueToOneJob)
-                return 1;
-
-            return GetAutomaticNvencConcurrencyLimit();
-        }
-
-        private static int GetAutomaticNvencConcurrencyLimit()
-        {
-            return 2;
+            return EncodeExecutionSnapshotBuilder.GetMaximumConcurrentEncodes(
+                GetSelectedEncoderId(),
+                _config.LimitGpuEncodingQueueToOneJob);
         }
 
         private bool GetTenBitRequested()
@@ -5471,6 +5458,9 @@ namespace MediaFlux
                 AppPaths.DataDirectory);
 
             _sizeEstimateService = new SizeEstimateService(_mediaInfoService);
+            _encodeExecutionSnapshotBuilder = new EncodeExecutionSnapshotBuilder(
+                _sizeEstimateService,
+                _mediaInfoService.GetBitrateKbps);
             _estimateService = new EstimateBackgroundService(
                 _mediaInfoService,
                 _encodingStatisticsService,
@@ -6045,40 +6035,11 @@ namespace MediaFlux
 
         private string BuildOutputSuffix(string formatChoice)
         {
-            var parts = new List<string>();
-
-            if (_config.EnableCodecSuffix)
-            {
-                string codecLabel = GetCodecSuffixLabel(formatChoice);
-                if (!string.IsNullOrWhiteSpace(codecLabel))
-                    parts.Add($"[{codecLabel}]");
-            }
-
-            if (_config.EnableOutputSuffix)
-            {
-                string outputSuffix = _config.OutputSuffix?.Trim() ?? string.Empty;
-                if (!string.IsNullOrWhiteSpace(outputSuffix))
-                {
-                    if (_config.EnableCodecSuffix)
-                        parts.Add($"[{outputSuffix}]");
-                    else
-                        parts.Add(outputSuffix);
-                }
-            }
-
-            if (parts.Count == 0)
-                return string.Empty;
-
-            return $" {string.Join(" ", parts)}";
-        }
-
-        private static string GetCodecSuffixLabel(string formatChoice)
-        {
-            if (formatChoice.StartsWith("H.264")) return "x264";
-            if (formatChoice.StartsWith("H.265") || formatChoice.StartsWith("H.265 / HEVC")) return "HEVC";
-            if (formatChoice.StartsWith("AV1")) return "AV1";
-
-            return formatChoice.Trim();
+            return EncodeExecutionSnapshotBuilder.BuildOutputSuffix(
+                formatChoice,
+                _config.EnableOutputSuffix,
+                _config.EnableCodecSuffix,
+                _config.OutputSuffix);
         }
 
         // Map UI Resolution combo to EncodingService.ScaleMode

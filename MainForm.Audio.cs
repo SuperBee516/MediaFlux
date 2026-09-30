@@ -474,21 +474,8 @@ namespace MediaFlux
 
         private int? GetSelectedAudioChannels()
         {
-            var text = comboAudioChannels?.SelectedItem?.ToString();
-            if (string.IsNullOrWhiteSpace(text))
-                return null;
-
-            if (text.StartsWith("Stereo", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("2.0"))
-                return 2;
-
-            if (text.StartsWith("5.1", StringComparison.OrdinalIgnoreCase))
-                return 6;
-
-            if (text.StartsWith("Keep", StringComparison.OrdinalIgnoreCase))
-                return null;    // no -ac → keep source layout
-
-            return null;
+            return EncodeExecutionSnapshotBuilder.ResolveAudioChannels(
+                comboAudioChannels?.SelectedItem?.ToString());
         }
 
         private void ScanAndPopulateAudioGrid(string folder)
