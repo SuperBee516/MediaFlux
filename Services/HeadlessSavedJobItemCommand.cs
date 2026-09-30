@@ -265,17 +265,7 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             throw new HeadlessSavedJobValidationException("Saved-job source path must be absolute.");
         if (string.IsNullOrWhiteSpace(item.SourcePath) || !File.Exists(item.SourcePath))
             throw new HeadlessSavedJobValidationException($"Selected source is missing: {item.SourcePath}");
-        if (string.IsNullOrWhiteSpace(job.Settings.OutputFolder))
-            throw new HeadlessSavedJobValidationException("Saved job has no output folder; headless mode cannot borrow the current GUI output-folder control.");
-        if (!Path.IsPathFullyQualified(job.Settings.OutputFolder))
-            throw new HeadlessSavedJobValidationException("Saved job output folder must be an absolute path.");
-        if (!Directory.Exists(job.Settings.OutputFolder))
-            throw new HeadlessSavedJobValidationException("Saved job output folder does not currently exist; headless preflight will not create or alter it.");
-
-        EncodeExecutionSnapshotSettings settings;
-        try { settings = EncodeExecutionSnapshotSettings.FromSavedJob(job.Settings, _config); }
-        catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
-        { throw new HeadlessSavedJobValidationException("Saved-job execution settings are incomplete: " + ex.Message, ex); }
+        EncodeExecutionSnapshotSettings settings = ResolveSettingsForItem(job.Settings, _config, item.SourcePath);
         cancellationToken.ThrowIfCancellationRequested();
         MediaInfoService.MediaInfo info = _mediaInfo.GetInfo(item.SourcePath);
         cancellationToken.ThrowIfCancellationRequested();
@@ -352,6 +342,77 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
         { throw new HeadlessSavedJobValidationException("Could not construct the production execution snapshot: " + ex.Message, ex); }
         return built.Snapshot;
 
+    }
+
+    /// <summary>
+    /// Resolves only the output-folder primitive for the selected item, then
+    /// delegates all remaining saved-job validation to the strict shared mapper.
+    /// A blank folder preserves MainForm's established source-directory behavior.
+    /// </summary>
+    internal static EncodeExecutionSnapshotSettings ResolveSettingsForItem(
+        EncodeJobSettings savedSettings,
+        Config config,
+        string sourcePath)
+    {
+        ArgumentNullException.ThrowIfNull(savedSettings);
+        ArgumentNullException.ThrowIfNull(config);
+        if (string.IsNullOrWhiteSpace(sourcePath) || !Path.IsPathFullyQualified(sourcePath))
+            throw new HeadlessSavedJobValidationException("Saved-job source path must be absolute.");
+
+        string effectiveOutputFolder;
+        if (string.IsNullOrWhiteSpace(savedSettings.OutputFolder))
+        {
+            try
+            {
+                string fullSourcePath = Path.GetFullPath(sourcePath);
+                effectiveOutputFolder = Path.GetDirectoryName(fullSourcePath) ??
+                    throw new HeadlessSavedJobValidationException("The source-relative output folder could not be determined from the selected source.");
+            }
+            catch (HeadlessSavedJobValidationException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                throw new HeadlessSavedJobValidationException("The source-relative output folder could not be determined from the selected source.", ex);
+            }
+        }
+        else
+        {
+            if (!Path.IsPathFullyQualified(savedSettings.OutputFolder))
+                throw new HeadlessSavedJobValidationException("Saved job output folder must be an absolute path.");
+            if (HasInvalidPathComponent(savedSettings.OutputFolder))
+                throw new HeadlessSavedJobValidationException("Saved job output folder is malformed.");
+
+            string normalizedOutputFolder;
+            try { normalizedOutputFolder = Path.GetFullPath(savedSettings.OutputFolder); }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            { throw new HeadlessSavedJobValidationException("Saved job output folder is malformed.", ex); }
+
+            if (!Directory.Exists(normalizedOutputFolder))
+                throw new HeadlessSavedJobValidationException("Saved job output folder does not currently exist; headless preflight will not create or alter it.");
+
+            // Preserve the persisted absolute path as the production snapshot value.
+            effectiveOutputFolder = savedSettings.OutputFolder;
+        }
+
+        EncodeJobSettings effectiveSettings = savedSettings.Clone();
+        effectiveSettings.OutputFolder = effectiveOutputFolder;
+        try { return EncodeExecutionSnapshotSettings.FromSavedJob(effectiveSettings, config); }
+        catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
+        { throw new HeadlessSavedJobValidationException("Saved-job execution settings are incomplete: " + ex.Message, ex); }
+    }
+
+    private static bool HasInvalidPathComponent(string path)
+    {
+        if (path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+            return true;
+
+        string root = Path.GetPathRoot(path) ?? string.Empty;
+        char[] separators = [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar];
+        return path[root.Length..]
+            .Split(separators, StringSplitOptions.RemoveEmptyEntries)
+            .Any(component => component.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0);
     }
 
     private async Task<EstimateBackgroundService.SmartEstimateResult> EstimateSavedJobItemAsync(

@@ -191,6 +191,41 @@ public sealed class UiConfigPersistenceTests : IDisposable
     }
 
     [Fact]
+    public void BlankSavedJobOutputFolderStillClearsGuiOutputControl()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(_root, "blank-job-output-folder.json");
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                ComboBox output = Field<ComboBox>(form, "cmbEncodeOutput");
+                output.Text = Path.Combine(_root, "previous-output");
+                typeof(MainForm).GetMethod("ApplyJobSettings", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(form, new object[] { new EncodeJobSettings { OutputFolder = "" } });
+
+                Assert.Equal("", output.Text);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Blank saved-job output-folder UI test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
     public void ManualQualityModeSurvivesSaveReloadAndPresetOrJobRestoration()
     {
         if (!OperatingSystem.IsWindows())

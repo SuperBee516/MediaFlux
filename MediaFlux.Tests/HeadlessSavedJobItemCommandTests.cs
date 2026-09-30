@@ -225,6 +225,106 @@ public sealed class HeadlessSavedJobItemCommandTests
         Assert.Throws<InvalidDataException>(() => EncodeExecutionSnapshotSettings.FromSavedJob(new EncodeJobSettings(), new Config()));
     }
 
+    [Fact]
+    public void BlankOutputFolderResolvesPerItemAndUsesTheSharedSnapshotBuilder()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-headless-output-" + Guid.NewGuid().ToString("N"));
+        string firstDirectory = Path.Combine(root, "first");
+        string secondDirectory = Path.Combine(root, "second");
+        Directory.CreateDirectory(firstDirectory);
+        Directory.CreateDirectory(secondDirectory);
+        try
+        {
+            string firstSource = Path.Combine(firstDirectory, "clip-one.mp4");
+            string secondSource = Path.Combine(secondDirectory, "clip-two.mp4");
+            File.WriteAllText(firstSource, "fixture");
+            File.WriteAllText(secondSource, "fixture");
+            EncodeJobSettings saved = CompleteSettings(outputFolder: "");
+
+            EncodeExecutionSnapshotSettings firstSettings = HeadlessSavedJobItemPipeline.ResolveSettingsForItem(saved, new Config(), firstSource);
+            EncodeExecutionSnapshotSettings secondSettings = HeadlessSavedJobItemPipeline.ResolveSettingsForItem(saved, new Config(), secondSource);
+            Assert.Equal(firstDirectory, firstSettings.OutputFolder);
+            Assert.Equal(secondDirectory, secondSettings.OutputFolder);
+            Assert.NotEqual(firstSettings.OutputFolder, secondSettings.OutputFolder);
+            Assert.Equal("", saved.OutputFolder);
+
+            var builder = new EncodeExecutionSnapshotBuilder();
+            EncodeExecutionSnapshot firstSnapshot = builder.Build(
+                TestIdentity(), firstSettings, TestItem(firstSource));
+            EncodeExecutionSnapshot secondSnapshot = builder.Build(
+                TestIdentity(), secondSettings, TestItem(secondSource));
+
+            Assert.Equal(firstDirectory, firstSnapshot.OutputFolder);
+            Assert.Equal(secondDirectory, secondSnapshot.OutputFolder);
+            Assert.Equal("clip-one", firstSnapshot.Input.OutputBaseName);
+            Assert.Equal(OutputContainerSelection.Auto, firstSnapshot.OutputContainer);
+            Assert.Equal(" [HEVC] [SourceRelative]", firstSnapshot.Suffix);
+
+            // Snapshot construction leaves final naming and collision allocation to
+            // the existing production output-path service.
+            string requestedPath = Path.Combine(
+                firstSnapshot.OutputFolder,
+                firstSnapshot.Input.OutputBaseName + firstSnapshot.Suffix + ".mp4");
+            File.WriteAllText(requestedPath, "existing-output-fixture");
+            Assert.Equal(
+                "clip-one [HEVC] [SourceRelative] (1).mp4",
+                Path.GetFileName(OutputPathService.GetCollisionSafePath(requestedPath)));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ExplicitOutputFolderStillRequiresAnAbsoluteExistingDirectory()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-headless-explicit-output-" + Guid.NewGuid().ToString("N"));
+        string sourceDirectory = Path.Combine(root, "source");
+        string outputDirectory = Path.Combine(root, "output");
+        Directory.CreateDirectory(sourceDirectory);
+        Directory.CreateDirectory(outputDirectory);
+        string source = Path.Combine(sourceDirectory, "clip.mp4");
+        File.WriteAllText(source, "fixture");
+        try
+        {
+            EncodeExecutionSnapshotSettings explicitSettings = HeadlessSavedJobItemPipeline.ResolveSettingsForItem(
+                CompleteSettings(outputDirectory), new Config(), source);
+            Assert.Equal(outputDirectory, explicitSettings.OutputFolder);
+
+            HeadlessSavedJobValidationException relative = Assert.Throws<HeadlessSavedJobValidationException>(() =>
+                HeadlessSavedJobItemPipeline.ResolveSettingsForItem(
+                    CompleteSettings("relative-output"), new Config(), source));
+            Assert.Contains("absolute path", relative.Message, StringComparison.OrdinalIgnoreCase);
+
+            HeadlessSavedJobValidationException malformed = Assert.Throws<HeadlessSavedJobValidationException>(() =>
+                HeadlessSavedJobItemPipeline.ResolveSettingsForItem(
+                    CompleteSettings(Path.Combine(root, "bad<output>")), new Config(), source));
+            Assert.Contains("malformed", malformed.Message, StringComparison.OrdinalIgnoreCase);
+
+            HeadlessSavedJobValidationException missing = Assert.Throws<HeadlessSavedJobValidationException>(() =>
+                HeadlessSavedJobItemPipeline.ResolveSettingsForItem(
+                    CompleteSettings(Path.Combine(root, "missing")), new Config(), source));
+            Assert.Contains("does not currently exist", missing.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void OutputFolderResolutionDoesNotRelaxOtherStrictSavedJobSettings()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-headless-strict-output-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string source = Path.Combine(root, "clip.mp4");
+        File.WriteAllText(source, "fixture");
+        try
+        {
+            EncodeJobSettings incomplete = CompleteSettings("");
+            incomplete.AudioChannels = "";
+            HeadlessSavedJobValidationException error = Assert.Throws<HeadlessSavedJobValidationException>(() =>
+                HeadlessSavedJobItemPipeline.ResolveSettingsForItem(incomplete, new Config(), source));
+            Assert.Contains("execution settings are incomplete", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
     private static readonly Guid JobId = Guid.Parse("7ec5e11c-c122-4932-8b40-e620024ca8c9");
 
     private static HeadlessSavedJobCommand Command(string selector, HeadlessSavedJobMode mode = HeadlessSavedJobMode.Run) =>
@@ -236,7 +336,46 @@ public sealed class HeadlessSavedJobItemCommandTests
         Name = "Fixture",
         Enabled = false,
         ScheduleType = EncodeJobScheduleType.Manual,
+        Settings = CompleteSettings(""),
         Files = [new EncodeJobFile { SourcePath = "C:\\media\\clip.mp4" }]
+    };
+
+    private static EncodeJobSettings CompleteSettings(string outputFolder) => new()
+    {
+        OutputFolder = outputFolder,
+        CompressionProfile = "Medium Quality (Default)",
+        EncoderId = VideoEncoderIds.Nvenc,
+        VideoCodec = nameof(VideoCodecFamily.Hevc),
+        EncoderPreset = "p5",
+        OutputContainer = nameof(OutputContainerSelection.Auto),
+        QualityValue = 22,
+        QualityMode = "Manual",
+        QualityTarget = nameof(QualityTarget.Balanced),
+        AudioChannels = "Keep source layout",
+        VideoFormat = "H.265 / HEVC (x265)",
+        AutoTargetSize = true,
+        Resolution = "None",
+        EnableOutputSuffix = true,
+        EnableCodecSuffix = true,
+        OutputSuffix = "SourceRelative"
+    };
+
+    private static EncodeExecutionSnapshotIdentity TestIdentity() => new()
+    {
+        OperationId = Guid.NewGuid().ToString("N"),
+        StatisticsStartUtc = DateTime.UtcNow,
+        MediaFluxVersion = "1.7.3",
+        StatisticsPath = "C:\\UserData\\stats.jsonl",
+        ContainerCompatibilityConfirmed = false
+    };
+
+    private static EncodeExecutionSnapshotItem TestItem(string source) => new()
+    {
+        SourceFilePath = source,
+        LogicalSourcePath = source,
+        MediaDurationSeconds = 10,
+        SourceSizeBytes = 100,
+        EstimatedTargetMb = 1
     };
 
     private static PredictionShadowExperimentAssignmentBinding Binding(string id, int slot, int attempt) => new(
@@ -263,6 +402,8 @@ public sealed class HeadlessSavedJobItemCommandTests
             BuildCount++;
             if (BuildException is not null) throw BuildException;
             cancellationToken.ThrowIfCancellationRequested();
+            EncodeExecutionSnapshotSettings settings = HeadlessSavedJobItemPipeline.ResolveSettingsForItem(
+                job.Settings, new Config(), item.SourcePath);
             LastSnapshot = _builder.Build(
                 new EncodeExecutionSnapshotIdentity
                 {
@@ -272,7 +413,7 @@ public sealed class HeadlessSavedJobItemCommandTests
                     StatisticsPath = "C:\\UserData\\stats.jsonl",
                     ContainerCompatibilityConfirmed = false
                 },
-                TestSettings(),
+                settings,
                 new EncodeExecutionSnapshotItem
                 {
                     SourceFilePath = item.SourcePath,
@@ -306,31 +447,4 @@ public sealed class HeadlessSavedJobItemCommandTests
         }
     }
 
-    private static EncodeExecutionSnapshotSettings TestSettings() => new()
-    {
-        OutputFolder = "C:\\out",
-        CompressionProfile = "Medium Quality (Default)",
-        EncoderId = VideoEncoderIds.Nvenc,
-        CodecFamily = VideoCodecFamily.Hevc,
-        VideoFormatText = "H.265 / HEVC (x265)",
-        EncoderPreset = "p5",
-        NumericQualityValue = 22,
-        AutomaticQuality = false,
-        QualityTarget = QualityTarget.Balanced,
-        TenBit = false,
-        AudioChannelSelection = "Keep source layout",
-        LimitGpuEncodingQueueToOneJob = false,
-        IncludeConcurrentEncoderSessions = true,
-        AutoTargetSize = true,
-        TargetSizeText = "",
-        ScaleMode = EncodingService.ScaleMode.None,
-        EnableOutputSuffix = false,
-        EnableCodecSuffix = false,
-        OutputSuffix = "",
-        Restoration = new VideoRestorationSettings(),
-        StorageSavings = new StorageSavingsOptions(),
-        OutputContainer = OutputContainerSelection.Auto,
-        CompatibilityPolicy = ContainerCompatibilityPolicy.Intelligent,
-        DeleteSourceAfterCompression = false
-    };
 }
