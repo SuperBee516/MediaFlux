@@ -71,6 +71,25 @@ public static class EncodeFailureAnalysisService
                 plan);
         }
 
+        FfmpegAudioTimestampFailure? audioTimestampFailure =
+            Enum.TryParse(context.OutputContainer, ignoreCase: true, out OutputContainer outputContainer)
+                // Classify only terminal-exception evidence here. DiagnosticText
+                // can contain earlier failed attempts that were later recovered.
+                ? FfmpegAudioTimestampFailureClassifier.Classify(context.Exception.Message, outputContainer)
+                : null;
+        if (audioTimestampFailure is not null)
+        {
+            return Create(
+                EncodeFailureCategory.Audio,
+                "Audio timestamp compatibility / MP4 muxing",
+                "Audio timestamp incompatibility",
+                audioTimestampFailure.DescribeDiagnosis() + " No valid final output was promoted.",
+                "Review the source audio packet timestamps and the selected audio/container path. MediaFlux did not automatically transcode the copied stream.",
+                audioTimestampFailure.MatchedEvidence,
+                EncodeFailureConfidence.High,
+                plan);
+        }
+
         FfmpegNvencFailure nvenc = FfmpegNvencFailureClassifier.Classify(diagnostic);
         if (nvenc.IsReliable && IsVideoEncoderContext(context) && !IsAudioDiagnostic(diagnostic))
         {

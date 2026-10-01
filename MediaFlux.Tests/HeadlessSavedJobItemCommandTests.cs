@@ -244,6 +244,7 @@ public sealed class HeadlessSavedJobItemCommandTests
             Command("path=C:\\media\\clip.mp4"), [job], pipeline, _ => { }, CancellationToken.None);
 
         Assert.Equal(HeadlessSavedJobExitCode.EncodeFailure, result.ExitCode);
+        Assert.Equal(4, (int)result.ExitCode);
         Assert.Equal(1, pipeline.ExecuteCount);
         Assert.Equal("C:\\media\\clip.mp4", pipeline.LastSnapshot!.SourceFilePath);
     }

@@ -10,7 +10,7 @@ public sealed record FailureDiagnosticReportContext(
     string TerminalFailure, FfmpegDiagnosticSummary? Diagnostics, string RawCapturedStandardError,
     EncodingPlan? Plan = null, EncodingExecutionOutcome? Execution = null,
     string? JobId = null, string? SourceContainer = null, long? SourceSizeBytes = null,
-    IReadOnlyList<FfmpegAttemptDiagnostic>? Attempts = null);
+    IReadOnlyList<FfmpegAttemptDiagnostic>? Attempts = null, string? SpecificDiagnosis = null);
 
 /// <summary>Bounded, attempt-scoped FFmpeg evidence retained for failure reporting.</summary>
 public sealed record FfmpegAttemptDiagnostic(
@@ -33,6 +33,8 @@ public sealed class FailureDiagnosticReportBuilder
         Line(report, "Job", Value(context.Operation));
         Line(report, "Result", "FAILED");
         Line(report, "Failed stage", Value(context.TerminalFailure));
+        if (!string.IsNullOrWhiteSpace(context.SpecificDiagnosis))
+            Line(report, "Specific diagnosis", context.SpecificDiagnosis.Trim());
         Line(report, "FFmpeg exit", context.FfmpegExitCode?.ToString(CultureInfo.InvariantCulture) ?? "Not available");
         if (context.Diagnostics is { } diagnostic)
         {

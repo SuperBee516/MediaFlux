@@ -964,7 +964,7 @@ namespace MediaFlux
                             videoCodec,
                             analysisEncoderPreset,
                             analysisTenBit,
-                            analysisOutputContainer,
+                            appliedContainerDecision?.Resolved.ToString() ?? analysisOutputContainer,
                             analysisRestoration));
                 }
                 else

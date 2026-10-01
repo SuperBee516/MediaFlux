@@ -1,4 +1,5 @@
 using MediaFlux.Services;
+using MediaFlux.Models;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -43,6 +44,34 @@ public sealed class FfmpegEncodeFailureClassifierTests
             "[out#0/mp4] Error muxing a packet\n[out#0/mp4] Task finished with error code: -22 (Invalid argument)";
         Assert.Equal(FfmpegStorageFailureKind.None,
             FfmpegStorageFailureClassifier.Classify(stderr, @"Z:\output.mp4").Kind);
+    }
+
+    [Fact]
+    public void CopiedAudioNonMonotonicDtsIsRecognizedOnlyForMp4MuxSubmissionFailure()
+    {
+        const string stderr = "[aost#0:1/copy] Non-monotonic DTS; previous: 38225920, current: 38225920; Error submitting a packet to the muxer: Invalid argument\n" +
+            "[out#0/mp4] Error muxing a packet\n[out#0/mp4] Task finished with error code: -22 (Invalid argument)";
+
+        FfmpegAudioTimestampFailure failure = Assert.IsType<FfmpegAudioTimestampFailure>(
+            FfmpegAudioTimestampFailureClassifier.Classify(stderr, OutputContainer.Mp4));
+
+        Assert.Equal(1, failure.OutputAudioStreamIndex);
+        Assert.Equal(38225920, failure.PreviousDts);
+        Assert.Equal(38225920, failure.CurrentDts);
+        Assert.Contains("Non-monotonic DTS", failure.MatchedEvidence, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("stream-copy-to-MP4", failure.DescribeDiagnosis(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("ordinary unrelated FFmpeg failure", "Mp4")]
+    [InlineData("[vost#0:0/copy] Non-monotonic DTS; previous: 4, current: 4; Error submitting a packet to the muxer", "Mp4")]
+    [InlineData("[aost#0:1/copy] Non-monotonic DTS; previous: 4, current: 4; Error submitting a packet to the muxer", "Matroska")]
+    [InlineData("[aost#0:1/copy] Non-monotonic DTS; previous: 4, current: 4; Error writing trailer", "Mp4")]
+    [InlineData("AAC stream copy selected; MP4 output", "Mp4")]
+    public void AudioTimestampFailureRequiresCopiedAudioMp4AndMuxSubmissionEvidence(string stderr, string container)
+    {
+        Assert.Null(FfmpegAudioTimestampFailureClassifier.Classify(
+            stderr, Enum.Parse<OutputContainer>(container)));
     }
 
     [Theory]

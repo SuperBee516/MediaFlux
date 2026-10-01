@@ -94,6 +94,80 @@ public sealed class EncodeFailureAnalysisServiceTests
     }
 
     [Fact]
+    public void CopiedAudioMp4TimestampFailureGetsPreciseNonCorruptionDiagnosis()
+    {
+        const string stderr = "[aost#0:1/copy] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer: Invalid argument\n" +
+            "[out#0/mp4] Error muxing a packet\n[out#0/mp4] Task finished with error code: -22 (Invalid argument)";
+
+        EncodeFailureAnalysis? analysis = Analyze(
+            new InvalidOperationException("ffmpeg exited with code -22; terminal FFmpeg evidence: " + stderr),
+            stderr,
+            encoderId: "nvenc",
+            encoder: "GPU (NVENC)",
+            codec: "hevc_nvenc");
+
+        Assert.NotNull(analysis);
+        Assert.Equal(EncodeFailureCategory.Audio, analysis!.Category);
+        Assert.Equal("Audio timestamp incompatibility", analysis.Summary);
+        Assert.Contains("stream-copy-to-MP4", analysis.LikelyCause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("previous DTS 0", analysis.LikelyCause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("current DTS 0", analysis.LikelyCause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("audio output stream 1", analysis.LikelyCause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("does not establish source corruption", analysis.LikelyCause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("No valid final output was promoted", analysis.LikelyCause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("did not automatically transcode", analysis.RecommendedAction, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Non-monotonic DTS", analysis.TechnicalDetail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TimestampDiagnosisDoesNotOverrideUnrelatedFailuresOrDestinationIo()
+    {
+        EncodeFailureAnalysis? unrelated = Analyze(
+            new InvalidOperationException("encoder initialization failed"),
+            "Unknown encoder 'hevc_nvenc'",
+            encoderId: "nvenc",
+            codec: "hevc_nvenc");
+        Assert.Equal(EncodeFailureCategory.VideoEncoder, unrelated!.Category);
+
+        EncodeFailureAnalysis? destination = Analyze(
+            new InvalidOperationException("ffmpeg exited with code 1"),
+            "Error writing trailer of output.mp4: No space left on device");
+        Assert.Equal(EncodeFailureCategory.Output, destination!.Category);
+        Assert.DoesNotContain("Audio timestamp incompatibility", destination.Summary, StringComparison.OrdinalIgnoreCase);
+
+        EncodeFailureAnalysis? videoTimestamp = Analyze(
+            new InvalidOperationException("ffmpeg exited with code 1"),
+            "[vost#0:0/copy] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer\n[out#0/mp4] Error muxing a packet");
+        Assert.Equal(EncodeFailureCategory.Output, videoTimestamp!.Category);
+    }
+
+    [Fact]
+    public void CompatibleAudioCopyWithoutFailureSignatureDoesNotReceiveTimestampDiagnosis()
+    {
+        Assert.Null(FfmpegAudioTimestampFailureClassifier.Classify(
+            "AAC stream copy selected; MP4 output", OutputContainer.Mp4));
+
+        EncodeFailureAnalysis? analysis = Analyze(
+            new InvalidOperationException("no specific FFmpeg failure evidence"),
+            "AAC stream copy selected; MP4 output");
+        Assert.Equal(EncodeFailureCategory.Unknown, analysis!.Category);
+        Assert.NotEqual("Audio timestamp incompatibility", analysis.Summary);
+    }
+
+    [Fact]
+    public void EarlierTimestampFailureDoesNotOverrideUnrelatedTerminalFailure()
+    {
+        const string earlierAttempt = "[aost#0:1/copy] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer";
+        EncodeFailureAnalysis? analysis = Analyze(
+            new InvalidOperationException("Unknown encoder 'hevc_nvenc'"),
+            earlierAttempt,
+            encoderId: "nvenc",
+            codec: "hevc_nvenc");
+
+        Assert.Equal(EncodeFailureCategory.VideoEncoder, analysis!.Category);
+    }
+
+    [Fact]
     public void CancellationDoesNotProduceFailureAnalysis()
     {
         EncodeFailureAnalysis? analysis = Analyze(
@@ -126,7 +200,8 @@ public sealed class EncodeFailureAnalysisServiceTests
         string encoderId = "software",
         string encoder = "Software",
         string codec = "libx265",
-        bool canceled = false) =>
+        bool canceled = false,
+        string outputContainer = "Mp4") =>
         EncodeFailureAnalysisService.Analyze(new EncodeFailureAnalysisContext(
             exception,
             diagnostic,
@@ -139,6 +214,6 @@ public sealed class EncodeFailureAnalysisServiceTests
             codec,
             "p5",
             false,
-            "Mp4",
+            outputContainer,
             "Off"));
 }

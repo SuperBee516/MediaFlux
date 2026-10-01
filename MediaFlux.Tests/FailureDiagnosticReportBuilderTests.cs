@@ -45,6 +45,18 @@ public sealed class FailureDiagnosticReportBuilderTests
     }
 
     [Fact]
+    public void SpecificFailureDiagnosisIsIncludedInCuratedReport()
+    {
+        string diagnosis = "Audio timestamp incompatibility: the MP4 muxer rejected copied audio stream 1; no valid output was promoted.";
+        string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+            "Encode", "source.mov", "output.mp4", -22, "Audio timestamp incompatibility", null, "raw",
+            SpecificDiagnosis: diagnosis));
+
+        Assert.Contains("Failed stage          : Audio timestamp incompatibility", report);
+        Assert.Contains("Specific diagnosis    : " + diagnosis, report);
+    }
+
+    [Fact]
     public void RecoveryAndFinalizationUseAuthoritativeOutcomeValues()
     {
         string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(

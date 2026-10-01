@@ -198,8 +198,12 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
     {
         string source = CreateFile("terminal-failure.mp4");
         var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "failed-research.jsonl"));
-        var statistics = new EncodingStatisticsService(Path.Combine(_root, "failed-statistics.jsonl"));
-        var executor = new SyntheticExecutor(MakePlan(), exceptionAfterCapture: new InvalidOperationException("Synthetic terminal failure."));
+        string statisticsPath = Path.Combine(_root, "failed-statistics.jsonl");
+        var statistics = new EncodingStatisticsService(statisticsPath);
+        var executor = new SyntheticExecutor(
+            MakePlan(),
+            exceptionAfterCapture: new InvalidOperationException("Synthetic terminal failure."),
+            terminalResultBeforeFailure: EncodingTerminalResult.EncodeFailed);
         var orchestrator = CreateOrchestrator(executor, journal, statistics);
         EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(source, null));
 
@@ -210,10 +214,41 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
             outputPath: "", processingSeconds: 5, notes: "terminal failure",
             diagnosticSummary: null, retryQueued: false);
 
-        Assert.Equal(EncodingStatisticsOutcome.Failed, Assert.Single(statistics.GetAll()).Outcome);
+        EncodingStatisticsRecord failedRecord = Assert.Single(statistics.GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.Failed, failedRecord.Outcome);
+        Assert.Equal(EncodingTerminalResult.EncodeFailed.ToString(), failedRecord.TerminalResult);
+        EncodingStatisticsRecord persistedRecord = Assert.Single(new EncodingStatisticsService(statisticsPath).GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.Failed, persistedRecord.Outcome);
+        Assert.Equal(EncodingTerminalResult.EncodeFailed.ToString(), persistedRecord.TerminalResult);
         PredictionShadowJournalEvent[] events = journal.ReadEvents().ToArray();
         Assert.Equal(new[] { "Frozen", "Outcome" }, events.Select(entry => entry.EventType));
         Assert.Equal("Failed", events[1].Outcome!.State);
+    }
+
+    [Fact]
+    public async Task PrelaunchFailureCanRetainNotRunTerminalState()
+    {
+        string source = CreateFile("prelaunch-failure.mp4");
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "prelaunch-research.jsonl"));
+        string statisticsPath = Path.Combine(_root, "prelaunch-statistics.jsonl");
+        var statistics = new EncodingStatisticsService(statisticsPath);
+        var executor = new SyntheticExecutor(
+            MakePlan(),
+            exceptionAfterCapture: new InvalidOperationException("Synthetic failure before FFmpeg launch."),
+            failBeforeFfmpegLaunch: true);
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(source, null));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => orchestrator.ExecuteAsync(
+            attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        orchestrator.RecordFailedExecution(
+            attempt, Now, isCanceled: false, finalizationFailureKind: null,
+            outputPath: "", processingSeconds: 1, notes: "failed before launch",
+            diagnosticSummary: null, retryQueued: false);
+
+        EncodingStatisticsRecord record = Assert.Single(new EncodingStatisticsService(statisticsPath).GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.Failed, record.Outcome);
+        Assert.Equal(EncodingTerminalResult.NotRun.ToString(), record.TerminalResult);
     }
 
     [Fact]
@@ -725,7 +760,9 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         bool reportRecoveredOutcome = false,
         StorageSavingsEvaluation? storageSavings = null,
         AdaptiveQualitySelectionEvidence? adaptive = null,
-        bool skipBeforeEncode = false) : IEncodeRequestExecutor
+        bool skipBeforeEncode = false,
+        EncodingTerminalResult? terminalResultBeforeFailure = null,
+        bool failBeforeFfmpegLaunch = false) : IEncodeRequestExecutor
     {
         public List<string> Events { get; } = [];
         public EncodingRequest? Request { get; private set; }
@@ -753,9 +790,20 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
                 request.EncodingExecutionOutcomeCallback?.Invoke(new EncodingExecutionOutcome(
                     plan.PlanId, [], [], TerminalResult: EncodingTerminalResult.CompletedAfterRecovery));
             }
+            if (failBeforeFfmpegLaunch && exceptionAfterCapture is not null)
+            {
+                request.EncodingExecutionOutcomeCallback?.Invoke(new EncodingExecutionOutcome(
+                    plan.PlanId, [], [], TerminalResult: EncodingTerminalResult.NotRun));
+                throw exceptionAfterCapture;
+            }
             Events.Add("encode");
             if (exceptionAfterCapture is not null)
+            {
+                if (terminalResultBeforeFailure is { } terminal)
+                    request.EncodingExecutionOutcomeCallback?.Invoke(new EncodingExecutionOutcome(
+                        plan.PlanId, [], [], TerminalResult: terminal));
                 throw exceptionAfterCapture;
+            }
             return new EncodingService.EncodeResult(
                 success: true,
                 outputPath: Path.Combine(Path.GetTempPath(), "synthetic-final.mp4"),

@@ -1759,10 +1759,22 @@ namespace MediaFlux.Services
 
             if (runResult.ExitCode != 0)
             {
+                FfmpegAudioTimestampFailure? audioTimestampFailure = null;
                 FailureDiagnosticReportArtifact? diagnosticArtifacts = null;
                 string diagnosticArtifactNote = "";
                 try
                 {
+                    terminalResult = sourceUnrecoverable
+                        ? EncodingTerminalResult.SourceUnrecoverable
+                        : recoveryOutcomes.Count > 0
+                        ? EncodingTerminalResult.RecoveryFailed
+                        : EncodingTerminalResult.EncodeFailed;
+                    // The FFmpeg process launched and terminated. Publish this
+                    // final state before report construction or exception flow
+                    // can leave the service with its earlier NotRun snapshot.
+                    PublishExecutionOutcome();
+                    audioTimestampFailure = FfmpegAudioTimestampFailureClassifier.Classify(
+                        runResult.StandardError, containerDecision.Resolved);
                     FfmpegAttemptDiagnostic[] reportAttempts = ffmpegAttempts
                         .Select((attempt, index) => attempt with { IsTerminal = index == ffmpegAttempts.Count - 1 })
                         .ToArray();
@@ -1770,21 +1782,20 @@ namespace MediaFlux.Services
                         ? initialDiagnosticSummary
                         : runResult.DiagnosticSummary;
                     string reportStandardError = BuildAttemptRawEvidence(reportAttempts);
-                    terminalResult = sourceUnrecoverable
-                        ? EncodingTerminalResult.SourceUnrecoverable
-                        : recoveryOutcomes.Count > 0
-                        ? EncodingTerminalResult.RecoveryFailed
-                        : EncodingTerminalResult.EncodeFailed;
                     EncodingExecutionOutcome failureOutcome = new(
                         shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(),
                         validationOutcome, finalizationOutcome, terminalResult);
                     string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
-                        "Encode", inputSource.SourcePath, output, runResult.ExitCode, "FFmpeg process failure",
+                        "Encode", inputSource.SourcePath, output, runResult.ExitCode,
+                        audioTimestampFailure is null ? "FFmpeg process failure" : "Audio timestamp incompatibility",
                         reportDiagnostics, reportStandardError, shadowPlan, failureOutcome,
                         SourceContainer: sourceProbe.FormatName,
                         SourceSizeBytes: inputSource.Kind == EncodingInputKind.File && File.Exists(inputSource.SourcePath)
                             ? new FileInfo(inputSource.SourcePath).Length : null,
-                        Attempts: reportAttempts));
+                        Attempts: reportAttempts,
+                        SpecificDiagnosis: audioTimestampFailure is null
+                            ? null
+                            : audioTimestampFailure.DescribeDiagnosis() + " No valid final output was promoted."));
                     diagnosticArtifacts = ErrorLogService.TryWriteFailureDiagnosticArtifacts(
                         _appPath, report, reportStandardError);
                     diagnosticArtifactNote = diagnosticArtifacts is null
@@ -1840,6 +1851,12 @@ namespace MediaFlux.Services
                 if (storageFailure.IsReliable)
                     throw new InvalidOperationException(
                         $"FFmpeg stopped because {storageFailure.Describe()}. The partial staged output was not finalized; existing recovery policy controls its retention. The original source was retained. See central log: {logPath}");
+                if (audioTimestampFailure is not null)
+                    throw new InvalidOperationException(
+                        audioTimestampFailure.DescribeDiagnosis() +
+                        $" FFmpeg evidence: {audioTimestampFailure.MatchedEvidence}." +
+                        " No valid final output was promoted; any incomplete staged output remains subject to the existing cleanup policy. " +
+                        $"The original source was retained. See central log: {logPath}");
                 FfmpegNvencFailure nvencFailure = requestedEncoder.EncoderId.Equals(
                     VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase)
                     ? FfmpegNvencFailureClassifier.Classify(runResult.StandardError)
