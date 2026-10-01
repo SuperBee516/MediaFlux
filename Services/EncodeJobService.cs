@@ -24,10 +24,20 @@ public sealed class EncodeJobService
 
     /// <summary>Loads persisted jobs without converting corruption into an empty list or writing an error log.</summary>
     public List<EncodeJob> LoadStrict()
+        => LoadCore(required: false);
+
+    /// <summary>Requires a prepared isolated job store without changing normal missing-store behavior.</summary>
+    internal List<EncodeJob> LoadRequired()
+        => LoadCore(required: true);
+
+    private List<EncodeJob> LoadCore(bool required)
     {
-        if (!File.Exists(_path)) return new();
+        if (!required && !File.Exists(_path)) return new();
         string json = File.ReadAllText(_path);
-        List<EncodeJob> jobs = JsonSerializer.Deserialize<List<EncodeJob>>(json, _json) ?? new();
+        List<EncodeJob>? jobs = JsonSerializer.Deserialize<List<EncodeJob>>(json, _json);
+        if (required && jobs is null)
+            throw new InvalidDataException("The isolated encode-jobs.json must contain a saved-job array.");
+        jobs ??= new();
         foreach (EncodeJob job in jobs)
         {
             job.Files ??= new();

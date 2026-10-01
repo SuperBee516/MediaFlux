@@ -228,12 +228,22 @@ namespace MediaFlux.Models
         public Dictionary<string, bool> CheckboxStates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
         public static Config Load(string path)
+            => LoadCore(path, required: false);
+
+        /// <summary>Uses the normal config defaults/normalization, but rejects missing or null state.</summary>
+        internal static Config LoadRequired(string path)
+            => LoadCore(path, required: true);
+
+        private static Config LoadCore(string path, bool required)
         {
-            if (!File.Exists(path))
+            if (!required && !File.Exists(path))
                 return new Config();
 
             var json = File.ReadAllText(path);
-            var config = JsonSerializer.Deserialize<Config>(json) ?? new Config();
+            var config = JsonSerializer.Deserialize<Config>(json);
+            if (required && config is null)
+                throw new InvalidDataException("The isolated config.json must contain a configuration object.");
+            config ??= new Config();
 
             // Keep settings that were absent from an existing config at their
             // historical values; the new values above apply only to fresh installs.

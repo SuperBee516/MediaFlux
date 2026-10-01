@@ -26,7 +26,7 @@ internal sealed class AdaptiveVideoSampleRunner : IAdaptiveVideoSampleRunner
         _arguments = arguments;
         _packetRunner = packetRunner ?? new MediaToolProcessRunner();
         _runOverride = runOverride;
-        _root = temporaryRoot ?? Path.Combine(Path.GetTempPath(), "MediaFlux", "AdaptiveSamples");
+        _root = temporaryRoot ?? AppPaths.RuntimeTemporaryDirectory("AdaptiveSamples");
     }
 
     public async Task<RepresentativeSampleEvidence> MeasureAsync(AdaptiveQualitySelectionRequest request, int quality,

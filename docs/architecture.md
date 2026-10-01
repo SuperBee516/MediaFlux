@@ -49,6 +49,12 @@ Scrub.
 
 ## Encoding flow
 
+Headless saved-job/item commands use the shared execution snapshot builder and
+orchestrator. An optional process-scoped UserData root redirects existing persistence
+and static runtime paths without changing configuration semantics or the normal
+storage pointer. See [headless execution](headless-execution.md) for the CLI,
+prepared-tree contract and persistence boundary.
+
 The main encode queue, DVD "encode using current settings" workflow, and sample
 comparison workflow all execute video jobs through `EncodingService`.
 

@@ -11,6 +11,7 @@ public sealed class MediaFluxStoragePathService
     private const string LocationFileName = "storage-location.json";
     private readonly string _defaultRoot;
     private readonly string _locationFile;
+    private readonly string? _processRoot;
 
     public MediaFluxStoragePathService(string? defaultRoot = null, string? locationFile = null)
     {
@@ -18,14 +19,39 @@ public sealed class MediaFluxStoragePathService
         _locationFile = locationFile ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaFlux", LocationFileName);
     }
 
+    private MediaFluxStoragePathService(string processRoot)
+    {
+        _defaultRoot = processRoot;
+        _processRoot = processRoot;
+        // This pointer is never read or written in process-scoped mode.
+        _locationFile = Path.Combine(processRoot, LocationFileName);
+    }
+
+    /// <summary>A prepared headless tree. No normal pointer discovery, initialization or migration.</summary>
+    internal static MediaFluxStoragePathService ForIsolatedHeadlessRoot(string root)
+    {
+        string normalized = NormalizeIsolatedRoot(root);
+        if (!Directory.Exists(normalized))
+            throw new DirectoryNotFoundException($"The isolated UserData directory must already exist: '{normalized}'. Prepare config.json and data/encode-jobs.json before invoking MediaFlux.");
+        return new MediaFluxStoragePathService(normalized);
+    }
+
+    internal static string NormalizeIsolatedRoot(string root)
+    {
+        if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root))
+            throw new ArgumentException("The isolated UserData root must be an absolute directory path.", nameof(root));
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+    }
+
     public string DefaultRoot => _defaultRoot;
     public string LocationFile => _locationFile;
-    public string Root => ReadConfiguredRoot() ?? _defaultRoot;
+    internal bool IsProcessScoped => _processRoot is not null;
+    public string Root => _processRoot ?? ReadConfiguredRoot() ?? _defaultRoot;
     public string Data => Path.Combine(Root, "data");
     public string Temp => Path.Combine(Root, "temp");
     public string Config => Path.Combine(Root, "config.json");
-    /// <summary>External MediaFlux backup storage. It is deliberately a sibling of the user-data root.</summary>
-    public string Backups => ResolveBackupDirectory(Root);
+    /// <summary>Normal backups are external siblings; an isolated process keeps any backup path within its root.</summary>
+    public string Backups => IsProcessScoped ? Path.Combine(Root, "Backups") : ResolveBackupDirectory(Root);
     public string AiIntermediates => Path.Combine(Data, "ai-intermediates");
     public string RestorationPreviews => Path.Combine(Data, "restoration-previews");
     public string FramePreviews => Path.Combine(Data, "frame-previews");
@@ -72,6 +98,8 @@ public sealed class MediaFluxStoragePathService
 
     public void WriteConfiguredRoot(string root)
     {
+        if (IsProcessScoped)
+            throw new InvalidOperationException("An isolated headless invocation cannot rewrite a persistent storage pointer.");
         string normalized = Normalize(root); Directory.CreateDirectory(Path.GetDirectoryName(_locationFile)!);
         string temporary = _locationFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
         File.WriteAllText(temporary, JsonSerializer.Serialize(new StorageLocation(normalized)));

@@ -22,8 +22,14 @@ public enum HeadlessSavedJobExitCode
 public sealed record HeadlessSavedJobCommand(
     HeadlessSavedJobMode Mode,
     Guid JobId,
-    string ItemSelector)
+    string ItemSelector,
+    string? UserDataRoot = null)
 {
+    internal static bool IsRequested(string[] args) =>
+        (args.Length > 0 && (args[0].StartsWith("--run-saved-job", StringComparison.Ordinal) ||
+                            args[0].StartsWith("--preflight-saved-job", StringComparison.Ordinal))) ||
+        args.Any(arg => arg.StartsWith("--user-data", StringComparison.OrdinalIgnoreCase));
+
     public static bool TryParse(string[] args, out HeadlessSavedJobCommand? command, out string error)
     {
         command = null;
@@ -33,9 +39,9 @@ public sealed record HeadlessSavedJobCommand(
             error = "Expected --run-saved-job-item or --preflight-saved-job-item.";
             return false;
         }
-        if (args.Length != 4 || args[2] != "--item")
+        if (args.Length is not (4 or 6) || args[2] != "--item")
         {
-            error = "Syntax: MediaFlux.exe (--run-saved-job-item|--preflight-saved-job-item) <job-id> --item <selector>. Exactly one item selector is required.";
+            error = "Syntax: MediaFlux.exe (--run-saved-job-item|--preflight-saved-job-item) <job-id> --item <selector> [--user-data <absolute-directory>]. Exactly one item selector and at most one UserData override are permitted.";
             return false;
         }
         if (!Guid.TryParse(args[1], out Guid jobId))
@@ -48,10 +54,26 @@ public sealed record HeadlessSavedJobCommand(
             error = "Exactly one non-empty item selector is required.";
             return false;
         }
+        string? userDataRoot = null;
+        if (args.Length == 6)
+        {
+            if (args[4] != "--user-data")
+            {
+                error = "The only supported trailing option is --user-data <absolute-directory>.";
+                return false;
+            }
+            try { userDataRoot = MediaFluxStoragePathService.NormalizeIsolatedRoot(args[5]); }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                error = "Invalid isolated UserData path: " + ex.Message;
+                return false;
+            }
+        }
         command = new HeadlessSavedJobCommand(
             args[0] == "--run-saved-job-item" ? HeadlessSavedJobMode.Run : HeadlessSavedJobMode.Preflight,
             jobId,
-            args[3]);
+            args[3],
+            userDataRoot);
         return true;
     }
 }

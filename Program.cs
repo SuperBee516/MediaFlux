@@ -79,9 +79,7 @@ namespace MediaFlux
         }
 
         private static bool IsHeadlessSavedJobCommand(string[] args) =>
-            args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal) &&
-            (args[0].StartsWith("--run-saved-job", StringComparison.Ordinal) ||
-             args[0].StartsWith("--preflight-saved-job", StringComparison.Ordinal));
+            HeadlessSavedJobCommand.IsRequested(args);
 
         private static int RunHeadlessSavedJobCommand(string[] args)
         {
@@ -98,10 +96,11 @@ namespace MediaFlux
                 using var primaryMutex = new Mutex(true, @"Local\Encode.ExplorerQueue.Primary", out bool isPrimary);
                 if (!isPrimary)
                     throw new InvalidOperationException("MediaFlux is already running. Close the GUI instance before starting a headless saved-job item to prevent overlapping source/output work.");
-                string userData = AppPaths.UserDataDirectory;
-                Config config = Config.Load(AppPaths.ConfigFile);
-                var jobs = new EncodeJobService(AppPaths.EncodeJobsFile).LoadStrict();
-                var pipeline = new HeadlessSavedJobItemPipeline(config, userData, AppPaths.InstallDirectory);
+                MediaFluxStoragePathService paths = HeadlessSavedJobEnvironment.ResolvePaths(command!, AppPaths.StoragePaths);
+                using IDisposable? isolatedStorage = paths.IsProcessScoped ? AppPaths.UseIsolatedHeadlessStorage(paths) : null;
+                HeadlessSavedJobEnvironment.WriteDiagnostics(paths, Console.WriteLine);
+                HeadlessSavedJobEnvironment environment = HeadlessSavedJobEnvironment.Load(paths);
+                var pipeline = new HeadlessSavedJobItemPipeline(environment.Config, paths.Root, AppPaths.InstallDirectory);
                 using var cancellation = new CancellationTokenSource();
                 ConsoleCancelEventHandler cancel = (_, eventArgs) =>
                 {
@@ -113,7 +112,7 @@ namespace MediaFlux
                 try
                 {
                     HeadlessSavedJobReport report = HeadlessSavedJobItemRunner.RunAsync(
-                        command!, jobs, pipeline, Console.WriteLine, cancellation.Token)
+                        command!, environment.Jobs, pipeline, Console.WriteLine, cancellation.Token)
                         .GetAwaiter().GetResult();
                     if (report.ExitCode == HeadlessSavedJobExitCode.Success)
                         Console.WriteLine(report.Message);

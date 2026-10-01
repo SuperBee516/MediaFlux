@@ -23,6 +23,54 @@ public sealed class HeadlessSavedJobItemCommandTests
         Assert.Equal(expected, command!.Mode);
         Assert.Equal(JobId, command.JobId);
         Assert.Equal("path=C:\\media\\clip.mp4", command.ItemSelector);
+        Assert.Null(command.UserDataRoot);
+    }
+
+    [Theory]
+    [InlineData("--run-saved-job-item", HeadlessSavedJobMode.Run)]
+    [InlineData("--preflight-saved-job-item", HeadlessSavedJobMode.Preflight)]
+    public void ParserAcceptsOneTrailingNormalizedUserDataRoot(string mode, HeadlessSavedJobMode expected)
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-isolated", "child", "..", "UserData");
+        Assert.True(HeadlessSavedJobCommand.TryParse(
+            [mode, JobId.ToString(), "--item", "path=C:\\media\\clip.mp4", "--user-data", root],
+            out var command, out string error), error);
+        Assert.Equal(expected, command!.Mode);
+        Assert.Equal(Path.GetFullPath(root), command.UserDataRoot);
+        Assert.Equal(JobId, command.JobId);
+        Assert.Equal("path=C:\\media\\clip.mp4", command.ItemSelector);
+    }
+
+    [Fact]
+    public void ParserRejectsMalformedDuplicateOrUnsupportedIsolationOptions()
+    {
+        string[] prefix = ["--run-saved-job-item", JobId.ToString(), "--item", "path=C:\\media\\clip.mp4"];
+        string[][] tails =
+        [
+            ["--user-data"], ["--user-data", ""], ["--user-data", "relative"],
+            ["--user-data", "C:relative"], ["--user-data", "C:\\bad\0path"],
+            ["--config", "C:\\config.json"], ["--user-data=C:\\isolated"],
+            ["--user-data", "C:\\one", "--user-data", "C:\\two"],
+            ["--user-data", "C:\\one", "extra"], ["--USER-DATA", "C:\\one"]
+        ];
+        foreach (string[] tail in tails)
+        {
+            Assert.False(HeadlessSavedJobCommand.TryParse([.. prefix, .. tail], out _, out string error));
+            Assert.NotEmpty(error);
+        }
+    }
+
+    [Theory]
+    [InlineData("--user-data")]
+    [InlineData("--user-data=C:\\isolated")]
+    [InlineData("--USER-DATA")]
+    public void IsolationCannotFallThroughToGuiDispatch(string option)
+    {
+        string[] args = ["--enqueue-file", "C:\\media\\clip.mp4", option, "C:\\isolated"];
+        Assert.True(HeadlessSavedJobCommand.IsRequested(args));
+        Assert.False(HeadlessSavedJobCommand.TryParse(args, out _, out _));
+        Assert.False(HeadlessSavedJobCommand.IsRequested([]));
+        Assert.False(HeadlessSavedJobCommand.IsRequested(["--enqueue-file", "C:\\media\\clip.mp4"]));
     }
 
     [Fact]

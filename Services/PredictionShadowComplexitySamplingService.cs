@@ -50,7 +50,7 @@ public sealed class PredictionShadowComplexitySamplingService
             SampleComparisonService.BuildSamplePositions(
                 TimeSpan.FromSeconds(sourceDurationSeconds), requestedClipSeconds: 5);
         string temporaryRoot = Path.Combine(
-            Path.GetTempPath(), "MediaFlux", "PredictionShadow", Guid.NewGuid().ToString("N"));
+            AppPaths.RuntimeTemporaryDirectory("PredictionShadow"), Guid.NewGuid().ToString("N"));
         var windows = new List<PredictionShadowSampleWindow>(positions.Count);
         var decodedWindows = new List<IReadOnlyList<GrayFrame>>(positions.Count);
         var failures = new List<string>();

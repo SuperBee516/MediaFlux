@@ -6,7 +6,28 @@ namespace MediaFlux.Services
     internal static class AppPaths
     {
         private const string MigrationMarkerName = ".legacy-install-data-migrated-v1";
-        private static readonly MediaFluxStoragePathService Storage = new();
+        private static readonly MediaFluxStoragePathService NormalStorage = new();
+        private static MediaFluxStoragePathService? _headlessStorage;
+        private static MediaFluxStoragePathService Storage => Volatile.Read(ref _headlessStorage) ?? NormalStorage;
+
+        /// <summary>Selected before any headless services are constructed; never persisted.</summary>
+        internal static IDisposable UseIsolatedHeadlessStorage(MediaFluxStoragePathService storage)
+        {
+            if (!storage.IsProcessScoped)
+                throw new ArgumentException("A process-scoped headless storage root is required.", nameof(storage));
+            if (Interlocked.CompareExchange(ref _headlessStorage, storage, null) is not null)
+                throw new InvalidOperationException("An isolated headless storage root is already active.");
+            return new HeadlessStorageScope(storage);
+        }
+
+        private sealed class HeadlessStorageScope(MediaFluxStoragePathService storage) : IDisposable
+        {
+            public void Dispose() => Interlocked.CompareExchange(ref _headlessStorage, null, storage);
+        }
+
+        internal static string RuntimeTemporaryDirectory(string category) => Storage.IsProcessScoped
+            ? Path.Combine(Storage.Temp, category)
+            : Path.Combine(Path.GetTempPath(), "MediaFlux", category);
 
         public static string InstallDirectory =>
             Path.GetFullPath(AppContext.BaseDirectory)
@@ -14,7 +35,7 @@ namespace MediaFlux.Services
 
         // RootDirectory remains the legacy container for callers that need installation-scoped
         // bootstrap state. All managed user data below is resolved by Storage.
-        public static string RootDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaFlux");
+        public static string RootDirectory => Storage.IsProcessScoped ? Storage.Root : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaFlux");
         public static string UserDataDirectory => Storage.Root;
         public static string DataDirectory => Path.Combine(UserDataDirectory, "data");
         public static string LibraryCatalogFile => Path.Combine(DataDirectory, "library-catalog.db");
@@ -77,6 +98,8 @@ namespace MediaFlux.Services
 
         public static void Initialize()
         {
+            if (Storage.IsProcessScoped)
+                throw new InvalidOperationException("Isolated headless execution cannot run GUI initialization or migrate normal user data.");
             Storage.InitializeDirectories();
             string marker = Path.Combine(UserDataDirectory, MigrationMarkerName);
             InitializeBackupLocations(
