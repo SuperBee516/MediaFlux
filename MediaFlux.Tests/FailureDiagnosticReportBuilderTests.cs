@@ -57,6 +57,55 @@ public sealed class FailureDiagnosticReportBuilderTests
     }
 
     [Fact]
+    public void RuntimeShapedAudioTimestampFailureIsPrimaryAndRetainsMuxingEvidenceAsSupport()
+    {
+        const string stderr = "[aost#0:1/copy @ 0000000000000000] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer: Invalid argument\r\n" +
+            "[out#0/mp4 @ 0000000000000000] Error muxing a packet\r\n" +
+            "[out#0/mp4 @ 0000000000000000] Task finished with error code: -22 (Invalid argument)";
+        var collector = new FfmpegDiagnosticCollector();
+        foreach (string line in stderr.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
+            collector.Observe(line, FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegAudioTimestampFailure failure = Assert.IsType<FfmpegAudioTimestampFailure>(
+            FfmpegAudioTimestampFailureClassifier.Classify(stderr, OutputContainer.Mp4));
+        string diagnosis = failure.DescribeDiagnosis() + " No valid final output was promoted.";
+        FfmpegDiagnosticSummary diagnostics = collector.Complete();
+        var attempt = new FfmpegAttemptDiagnostic(
+            1, "Primary encode", "sanitized command", -22, stderr, diagnostics, IsTerminal: true);
+        string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+            "Encode", "source.mp4", "output.mp4", -22, "Audio timestamp incompatibility",
+            diagnostics, stderr, Attempts: new[] { attempt }, SpecificDiagnosis: diagnosis));
+
+        Assert.Contains("Attempt 1: Primary encode [terminal]", report);
+        Assert.Contains("Interpretation        : Audio timestamp incompatibility", report);
+        Assert.Contains("Primary category      : Audio timestamp incompatibility", report);
+        Assert.Contains("Confidence            : High", report);
+        Assert.Contains("Supporting families   : Muxing failure", report);
+        Assert.DoesNotContain("A single diagnostic family was observed; cause remains uncertain.", report);
+        Assert.Contains("audio output stream 1", report, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("previous DTS 0, current DTS 0", report, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("does not establish source corruption", report, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("did not automatically transcode", report, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("No valid final output was promoted", report, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Error muxing a packet", report);
+    }
+
+    [Fact]
+    public void GenericMuxingFailureKeepsAggregateClassificationWithoutSpecificDiagnosis()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("[out#0/mp4 @ 0000000000000000] Error muxing a packet", FfmpegDiagnosticComponent.Ffmpeg);
+
+        string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+            "Encode", "source.mp4", "output.mp4", -22, "FFmpeg process failure",
+            collector.Complete(), "[out#0/mp4 @ 0000000000000000] Error muxing a packet"));
+
+        Assert.Contains("Primary category      : Muxing", report);
+        Assert.Contains("Confidence            : Low", report);
+        Assert.DoesNotContain("Audio timestamp incompatibility", report, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void RecoveryAndFinalizationUseAuthoritativeOutcomeValues()
     {
         string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(

@@ -27,6 +27,8 @@ public sealed class FailureDiagnosticReportBuilder
     public string Build(FailureDiagnosticReportContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
+        bool hasAudioTimestampDiagnosis = HasAudioTimestampDiagnosis(context);
+        string? audioTimestampDiagnosis = hasAudioTimestampDiagnosis ? context.SpecificDiagnosis!.Trim() : null;
         var report = new StringBuilder(12 * 1024);
         Header(report);
         Section(report, "FAILURE SUMMARY");
@@ -38,8 +40,12 @@ public sealed class FailureDiagnosticReportBuilder
         Line(report, "FFmpeg exit", context.FfmpegExitCode?.ToString(CultureInfo.InvariantCulture) ?? "Not available");
         if (context.Diagnostics is { } diagnostic)
         {
-            Line(report, "Diagnostic interpretation", DiagnosticCause(diagnostic));
-            Line(report, "Confidence", diagnostic.Classification.Confidence.ToString());
+            Line(report, "Diagnostic interpretation", hasAudioTimestampDiagnosis
+                ? "Audio timestamp incompatibility"
+                : DiagnosticCause(diagnostic));
+            Line(report, "Confidence", hasAudioTimestampDiagnosis
+                ? FfmpegDiagnosticConfidence.High.ToString()
+                : diagnostic.Classification.Confidence.ToString());
         }
 
         Section(report, "JOB / SOURCE INFORMATION");
@@ -50,8 +56,8 @@ public sealed class FailureDiagnosticReportBuilder
         Line(report, "Source size", context.SourceSizeBytes is > 0 ? $"{context.SourceSizeBytes.Value:N0} bytes" : "Not available");
         RenderPlan(report, context.Plan);
         RenderTimeline(report, context.Execution);
-        RenderAttempts(report, context.Attempts);
-        RenderClassification(report, context.Diagnostics);
+        RenderAttempts(report, context.Attempts, audioTimestampDiagnosis);
+        RenderClassification(report, context.Diagnostics, audioTimestampDiagnosis);
         RenderDiagnosticSummary(report, context.Diagnostics);
         RenderEvidence(report, context.Diagnostics);
         RenderTerminalContext(report, context.RawCapturedStandardError);
@@ -106,7 +112,10 @@ public sealed class FailureDiagnosticReportBuilder
         foreach (EncodingRecoveryOutcome item in execution.Recovery) report.AppendLine($"Recovery attempt {item.Attempt}/{item.MaximumAttempts}: {item.Kind}/{item.RecoveryMode}; process={item.ProcessResult}; media={item.MediaDisposition}; result={item.Result}{(string.IsNullOrWhiteSpace(item.Detail) ? "" : " — " + item.Detail)}");
         report.AppendLine($"Terminal result: {execution.TerminalResult}");
     }
-    private static void RenderAttempts(StringBuilder report, IReadOnlyList<FfmpegAttemptDiagnostic>? attempts)
+    private static void RenderAttempts(
+        StringBuilder report,
+        IReadOnlyList<FfmpegAttemptDiagnostic>? attempts,
+        string? terminalAudioTimestampDiagnosis)
     {
         if (attempts is not { Count: > 0 })
             return;
@@ -118,7 +127,9 @@ public sealed class FailureDiagnosticReportBuilder
             Line(report, "Command", Value(attempt.Command));
             Line(report, "Exit", attempt.ExitCode.ToString(CultureInfo.InvariantCulture));
             if (attempt.Diagnostics is { } diagnostics)
-                Line(report, "Interpretation", DiagnosticCause(diagnostics));
+                Line(report, "Interpretation", attempt.IsTerminal && terminalAudioTimestampDiagnosis is not null
+                    ? "Audio timestamp incompatibility"
+                    : DiagnosticCause(diagnostics));
 
             string[] lines = attempt.StandardError.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries)
                 .TakeLast(MaxTerminalLines).ToArray();
@@ -129,17 +140,34 @@ public sealed class FailureDiagnosticReportBuilder
                 report.AppendLine("  " + LimitLine(line));
         }
     }
-    private static void RenderClassification(StringBuilder report, FfmpegDiagnosticSummary? diagnostics)
+    private static void RenderClassification(
+        StringBuilder report,
+        FfmpegDiagnosticSummary? diagnostics,
+        string? audioTimestampDiagnosis)
     {
         Section(report, "DIAGNOSTIC CLASSIFICATION");
-        if (diagnostics is null) { report.AppendLine("Structured diagnostic interpretation: Not available."); return; }
-        Line(report, "Primary category", diagnostics.Classification.PrimaryCategory.ToString());
-        Line(report, "Probable cause", diagnostics.Classification.ProbableCause);
-        Line(report, "Confidence", diagnostics.Classification.Confidence.ToString());
-        Line(report, "Supporting families", diagnostics.Classification.SupportingFamilies.Count == 0 ? "None" : string.Join(", ", diagnostics.Classification.SupportingFamilies));
-        if (HasCompetingTerminalEvidence(diagnostics))
+        if (diagnostics is null && audioTimestampDiagnosis is null)
+        {
+            report.AppendLine("Structured diagnostic interpretation: Not available.");
+            return;
+        }
+
+        Line(report, "Primary category", audioTimestampDiagnosis is null
+            ? diagnostics!.Classification.PrimaryCategory.ToString()
+            : "Audio timestamp incompatibility");
+        Line(report, "Probable cause", audioTimestampDiagnosis ?? diagnostics!.Classification.ProbableCause);
+        Line(report, "Confidence", audioTimestampDiagnosis is null
+            ? diagnostics!.Classification.Confidence.ToString()
+            : FfmpegDiagnosticConfidence.High.ToString());
+        IReadOnlyList<string> supportingFamilies = diagnostics?.Classification.SupportingFamilies ?? Array.Empty<string>();
+        Line(report, "Supporting families", supportingFamilies.Count == 0 ? "None" : string.Join(", ", supportingFamilies));
+        if (diagnostics is not null && HasCompetingTerminalEvidence(diagnostics))
             report.AppendLine("Terminal-cause note: source anomalies and a separate output/hardware failure were both observed; this interpretation does not establish which caused process termination.");
     }
+
+    private static bool HasAudioTimestampDiagnosis(FailureDiagnosticReportContext context) =>
+        string.Equals(context.TerminalFailure, "Audio timestamp incompatibility", StringComparison.OrdinalIgnoreCase) &&
+        context.SpecificDiagnosis?.StartsWith("Audio timestamp incompatibility:", StringComparison.OrdinalIgnoreCase) == true;
     private static string DiagnosticCause(FfmpegDiagnosticSummary diagnostics) =>
         HasCompetingTerminalEvidence(diagnostics)
             ? diagnostics.Classification.ProbableCause + " Source anomalies were observed, but a separate output or hardware failure prevents assigning the terminal cause from diagnostics alone."

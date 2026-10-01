@@ -28,7 +28,7 @@ internal sealed record FfmpegAudioTimestampFailure(
 internal static class FfmpegAudioTimestampFailureClassifier
 {
     private static readonly Regex CopiedAudioMuxFailure = new(
-        @"\[aost#\d+:(?<stream>\d+)/copy\]\s*Non-monotonic DTS;\s*previous:\s*(?<previous>-?\d+),\s*current:\s*(?<current>-?\d+);\s*Error submitting (?:a )?packet to the muxer",
+        @"\[aost#\d+:(?<stream>\d+)/copy(?:\s+@\s+[0-9a-f]{8,})?\]\s*Non-monotonic DTS;\s*previous:\s*(?<previous>-?\d+),\s*current:\s*(?<current>-?\d+);\s*Error submitting (?:a )?packet to the muxer",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     public static FfmpegAudioTimestampFailure? Classify(string? standardError, OutputContainer outputContainer)

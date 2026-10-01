@@ -1760,6 +1760,8 @@ namespace MediaFlux.Services
             if (runResult.ExitCode != 0)
             {
                 FfmpegAudioTimestampFailure? audioTimestampFailure = null;
+                FfmpegStorageFailure storageFailure =
+                    FfmpegStorageFailureClassifier.Classify(runResult.StandardError, output);
                 FailureDiagnosticReportArtifact? diagnosticArtifacts = null;
                 string diagnosticArtifactNote = "";
                 try
@@ -1773,8 +1775,11 @@ namespace MediaFlux.Services
                     // final state before report construction or exception flow
                     // can leave the service with its earlier NotRun snapshot.
                     PublishExecutionOutcome();
-                    audioTimestampFailure = FfmpegAudioTimestampFailureClassifier.Classify(
-                        runResult.StandardError, containerDecision.Resolved);
+                    if (!sourceUnrecoverable && !storageFailure.IsReliable)
+                    {
+                        audioTimestampFailure = FfmpegAudioTimestampFailureClassifier.Classify(
+                            runResult.StandardError, containerDecision.Resolved);
+                    }
                     FfmpegAttemptDiagnostic[] reportAttempts = ffmpegAttempts
                         .Select((attempt, index) => attempt with { IsTerminal = index == ffmpegAttempts.Count - 1 })
                         .ToArray();
@@ -1846,8 +1851,6 @@ namespace MediaFlux.Services
                     : cudaRecoveryStarted
                         ? " The software-decode NVENC recovery attempt also failed; both attempt diagnostics were recorded."
                         : " The NVDEC/CUDA recovery retry was not started; diagnostics were recorded.";
-                FfmpegStorageFailure storageFailure =
-                    FfmpegStorageFailureClassifier.Classify(runResult.StandardError, output);
                 if (storageFailure.IsReliable)
                     throw new InvalidOperationException(
                         $"FFmpeg stopped because {storageFailure.Describe()}. The partial staged output was not finalized; existing recovery policy controls its retention. The original source was retained. See central log: {logPath}");

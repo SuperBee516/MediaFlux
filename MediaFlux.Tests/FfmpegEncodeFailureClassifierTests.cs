@@ -62,6 +62,22 @@ public sealed class FfmpegEncodeFailureClassifierTests
         Assert.Contains("stream-copy-to-MP4", failure.DescribeDiagnosis(), StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void CopiedAudioNonMonotonicDtsWithRuntimeObjectAddressIsRecognized()
+    {
+        const string stderr = "[aost#0:1/copy @ 0000000000000000] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer: Invalid argument\r\n" +
+            "[out#0/mp4 @ 0000000000000000] Error muxing a packet\r\n" +
+            "[out#0/mp4 @ 0000000000000000] Task finished with error code: -22 (Invalid argument)";
+
+        FfmpegAudioTimestampFailure failure = Assert.IsType<FfmpegAudioTimestampFailure>(
+            FfmpegAudioTimestampFailureClassifier.Classify(stderr, OutputContainer.Mp4));
+
+        Assert.Equal(1, failure.OutputAudioStreamIndex);
+        Assert.Equal(0, failure.PreviousDts);
+        Assert.Equal(0, failure.CurrentDts);
+        Assert.Contains("/copy @ 0000000000000000]", failure.MatchedEvidence, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("ordinary unrelated FFmpeg failure", "Mp4")]
     [InlineData("[vost#0:0/copy] Non-monotonic DTS; previous: 4, current: 4; Error submitting a packet to the muxer", "Mp4")]
@@ -72,6 +88,14 @@ public sealed class FfmpegEncodeFailureClassifierTests
     {
         Assert.Null(FfmpegAudioTimestampFailureClassifier.Classify(
             stderr, Enum.Parse<OutputContainer>(container)));
+    }
+
+    [Fact]
+    public void AudioTimestampFailureDoesNotMatchWhenResolvedContainerContextIsUnavailable()
+    {
+        const string stderr = "[aost#0:1/copy @ 0000000000000000] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer: Invalid argument";
+
+        Assert.Null(FfmpegAudioTimestampFailureClassifier.Classify(stderr, (OutputContainer)0));
     }
 
     [Theory]

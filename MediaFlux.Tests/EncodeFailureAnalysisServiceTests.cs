@@ -96,8 +96,8 @@ public sealed class EncodeFailureAnalysisServiceTests
     [Fact]
     public void CopiedAudioMp4TimestampFailureGetsPreciseNonCorruptionDiagnosis()
     {
-        const string stderr = "[aost#0:1/copy] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer: Invalid argument\n" +
-            "[out#0/mp4] Error muxing a packet\n[out#0/mp4] Task finished with error code: -22 (Invalid argument)";
+        const string stderr = "[aost#0:1/copy @ 0000000000000000] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer: Invalid argument\r\n" +
+            "[out#0/mp4 @ 0000000000000000] Error muxing a packet\r\n[out#0/mp4 @ 0000000000000000] Task finished with error code: -22 (Invalid argument)";
 
         EncodeFailureAnalysis? analysis = Analyze(
             new InvalidOperationException("ffmpeg exited with code -22; terminal FFmpeg evidence: " + stderr),
@@ -119,6 +119,24 @@ public sealed class EncodeFailureAnalysisServiceTests
         Assert.Contains("Non-monotonic DTS", analysis.TechnicalDetail, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("Matroska")]
+    [InlineData("Unknown")]
+    public void RuntimeShapedAudioTimestampFailureRequiresResolvedMp4Context(string outputContainer)
+    {
+        const string stderr = "[aost#0:1/copy @ 0000000000000000] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer: Invalid argument\r\n" +
+            "[out#0/mp4 @ 0000000000000000] Error muxing a packet\r\n" +
+            "[out#0/mp4 @ 0000000000000000] Task finished with error code: -22 (Invalid argument)";
+
+        EncodeFailureAnalysis? analysis = Analyze(
+            new InvalidOperationException("ffmpeg exited with code -22; terminal FFmpeg evidence: " + stderr),
+            stderr,
+            outputContainer: outputContainer);
+
+        Assert.NotNull(analysis);
+        Assert.NotEqual("Audio timestamp incompatibility", analysis!.Summary);
+    }
+
     [Fact]
     public void TimestampDiagnosisDoesNotOverrideUnrelatedFailuresOrDestinationIo()
     {
@@ -131,7 +149,8 @@ public sealed class EncodeFailureAnalysisServiceTests
 
         EncodeFailureAnalysis? destination = Analyze(
             new InvalidOperationException("ffmpeg exited with code 1"),
-            "Error writing trailer of output.mp4: No space left on device");
+            "[aost#0:1/copy @ 0000000000000000] Non-monotonic DTS; previous: 0, current: 0; Error submitting a packet to the muxer: Invalid argument\r\n" +
+            "[out#0/mp4 @ 0000000000000000] Error writing trailer of output.mp4: No space left on device");
         Assert.Equal(EncodeFailureCategory.Output, destination!.Category);
         Assert.DoesNotContain("Audio timestamp incompatibility", destination.Summary, StringComparison.OrdinalIgnoreCase);
 
