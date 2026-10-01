@@ -264,6 +264,7 @@ namespace MediaFlux.Services
                     Profile = GetString(stream, "profile"),
                     Level = GetInt32(stream, "level"),
                     BitRate = GetPositiveLong(stream, "bit_rate"),
+                    ExtraDataSizeBytes = GetPositiveLong(stream, "extradata_size"),
                     TimeBase = GetString(stream, "time_base"),
                     DisplayAspectRatio = GetString(stream, "display_aspect_ratio"),
                     SampleAspectRatio = GetString(stream, "sample_aspect_ratio"),

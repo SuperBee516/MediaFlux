@@ -15,7 +15,8 @@ public enum HeadlessSavedJobExitCode
     PreflightOrValidationRejected = 3,
     EncodeFailure = 4,
     Cancelled = 5,
-    StoragePolicyRejected = 6
+    StoragePolicyRejected = 6,
+    AdaptiveStorageSavingsSkipped = 7
 }
 
 public sealed record HeadlessSavedJobCommand(
@@ -189,7 +190,9 @@ public static class HeadlessSavedJobItemRunner
         }
         catch (Exception ex)
         {
-            HeadlessSavedJobExitCode code = ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected }
+            HeadlessSavedJobExitCode code = ex is AdaptiveStorageSavingsSkippedException
+                ? HeadlessSavedJobExitCode.AdaptiveStorageSavingsSkipped
+                : ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected }
                 ? HeadlessSavedJobExitCode.StoragePolicyRejected
                 : ex is HeadlessSavedJobValidationException or EncodeExecutionAssignmentValidationException
                 ? HeadlessSavedJobExitCode.PreflightOrValidationRejected
@@ -543,7 +546,9 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
                 finalizationFailureKind: (ex as EncodeFinalizationException)?.Result.FailureKind,
                 outputPath: attempt.AttemptedOutputPath,
                 processingSeconds: timer.Elapsed.TotalSeconds,
-                notes: ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected }
+                notes: ex is AdaptiveStorageSavingsSkippedException
+                    ? "Headless saved-job item skipped — insufficient savings at acceptable quality: " + ex.Message
+                    : ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected }
                     ? "Headless saved-job item skipped — insufficient savings: " + ex.Message
                     : "Headless saved-job item execution failed: " + ex.Message,
                 diagnosticSummary: null,

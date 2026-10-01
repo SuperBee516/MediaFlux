@@ -32,6 +32,8 @@ namespace MediaFlux.Services
         public required bool CopySubtitles { get; init; }
         public required bool CopyDataStreams { get; init; }
         public bool CopyAttachments { get; init; }
+        // Adaptive samples measure video only; ordinary production mapping is unchanged.
+        public bool VideoOnly { get; init; }
         public OutputContainerDecision ContainerDecision { get; init; } = new()
         {
             Requested = OutputContainerSelection.Mp4,

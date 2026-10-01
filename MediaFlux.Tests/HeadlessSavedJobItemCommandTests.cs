@@ -346,6 +346,46 @@ public sealed class HeadlessSavedJobItemCommandTests
 
     private static readonly Guid JobId = Guid.Parse("7ec5e11c-c122-4932-8b40-e620024ca8c9");
 
+    [Fact]
+    public async Task AdaptivePreEncodeSkipHasDistinctStableHeadlessExitAndNoSuccessfulOutput()
+    {
+        var evidence = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((_, _) => 10_000))
+            .SelectAsync(AdaptiveStorageSavingsTests.Request(), null, CancellationToken.None);
+        var pipeline = new FakePipeline { ExecuteException = new AdaptiveStorageSavingsSkippedException(evidence) };
+        var report = await HeadlessSavedJobItemRunner.RunAsync(Command("path=C:\\media\\clip.mp4"), [Job()], pipeline, _ => { }, CancellationToken.None);
+        Assert.Equal(7, (int)report.ExitCode);
+        Assert.Equal(HeadlessSavedJobExitCode.AdaptiveStorageSavingsSkipped, report.ExitCode);
+        Assert.Equal(1, pipeline.ExecuteCount);
+        Assert.Equal(0, pipeline.EncodeExecutorCount);
+        Assert.Equal(0, pipeline.StatisticsCount);
+        Assert.Contains("acceptable quality", report.Message);
+    }
+
+    [Fact]
+    public void SavedAndScheduledSettingsReachSharedAdaptiveSnapshotPolicy()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-headless-adaptive-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string source = Path.Combine(root, "clip.mp4");
+        File.WriteAllText(source, "fixture");
+        try
+        {
+            var saved = CompleteSettings(root);
+            saved.QualityMode = "Automatic";
+            var config = new Config { StorageSavings = new() { Enabled = true } };
+            var fromSaved = EncodeExecutionSnapshotSettings.FromSavedJob(saved, config);
+            var fromHeadless = HeadlessSavedJobItemPipeline.ResolveSettingsForItem(saved, config, source);
+            var builder = new EncodeExecutionSnapshotBuilder();
+            var scheduled = builder.Build(TestIdentity(), fromSaved, TestItem(source));
+            var headless = builder.Build(TestIdentity(), fromHeadless, TestItem(source));
+            Assert.True(scheduled.AdaptiveStorageSavingsEnabled);
+            Assert.True(headless.AdaptiveStorageSavingsEnabled);
+            Assert.Equal(scheduled.QualityIntent, headless.QualityIntent);
+            Assert.Equal(scheduled.StorageSavingsContract, headless.StorageSavingsContract);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     private static HeadlessSavedJobCommand Command(string selector, HeadlessSavedJobMode mode = HeadlessSavedJobMode.Run) =>
         new(mode, JobId, selector);
 

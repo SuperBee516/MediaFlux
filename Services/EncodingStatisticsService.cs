@@ -13,7 +13,8 @@ namespace MediaFlux.Services
         ValidationFailed = 4,
         PromotionFailed = 5,
         FinalVerificationFailed = 6,
-        StoragePolicyRejected = 7
+        StoragePolicyRejected = 7,
+        AdaptiveStorageSavingsSkipped = 8
     }
 
     public enum EncodingStatisticsPeriod
@@ -39,6 +40,7 @@ namespace MediaFlux.Services
         public string Encoder { get; set; } = "";
         public long? SourceSizeBytes { get; set; }
         public long? OutputSizeBytes { get; set; }
+        public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; set; }
         public double? MediaDurationSeconds { get; set; }
         public double ProcessingSeconds { get; set; }
         public string EncoderId { get; set; } = "";
@@ -349,6 +351,13 @@ namespace MediaFlux.Services
                 record.TerminalResult = EncodingTerminalResult.StoragePolicyRejected.ToString();
             }
             // Incomplete failed/cancelled output files are not durable encoded output.
+            if (record.AdaptiveSelection?.Disposition == AdaptiveSelectionDisposition.Skipped)
+            {
+                record.Outcome = EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped;
+                record.TerminalResult = EncodingTerminalResult.AdaptiveStorageSavingsSkipped.ToString();
+                record.SourceAdaptiveShadow = null;
+                record.ProcessingSeconds = 0;
+            }
             if (record.Outcome != EncodingStatisticsOutcome.Success)
                 record.OutputSizeBytes = null;
         }
@@ -541,7 +550,7 @@ namespace MediaFlux.Services
 
             EncodingStatisticsRecord[] timedAttempts = all
                 .Where(record =>
-                    record.Outcome != EncodingStatisticsOutcome.Skipped &&
+                    record.Outcome is not (EncodingStatisticsOutcome.Skipped or EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped) &&
                     record.ProcessingSeconds > 0)
                 .ToArray();
             EncodingStatisticsRecord[] speedSamples = successful
@@ -557,7 +566,7 @@ namespace MediaFlux.Services
                 FilesProcessed = all.Length,
                 Successful = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Success),
                 Failed = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Failed),
-                Skipped = all.Count(record => record.Outcome is EncodingStatisticsOutcome.Skipped or EncodingStatisticsOutcome.StoragePolicyRejected),
+                Skipped = all.Count(record => record.Outcome is EncodingStatisticsOutcome.Skipped or EncodingStatisticsOutcome.StoragePolicyRejected or EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped),
                 Cancelled = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Cancelled),
                 FinalizationFailed = all.Count(record =>
                     record.Outcome is

@@ -35,6 +35,7 @@ namespace MediaFlux.Models
         public int? Level { get; init; }
         public long? BitRate { get; init; }
         public string TimeBase { get; init; } = "";
+        public long? ExtraDataSizeBytes { get; init; }
         public string DisplayAspectRatio { get; init; } = "";
         public string SampleAspectRatio { get; init; } = "";
         public string FieldOrder { get; init; } = "";

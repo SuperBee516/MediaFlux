@@ -301,6 +301,9 @@ public sealed class EncodeExecutionSnapshotBuilder
             LogicalSourcePath = item.LogicalSourcePath,
             Input = input,
             StorageSavingsContract = StorageSavingsContractService.Capture(storageSavingsApplies, input),
+            AdaptiveStorageSavingsEnabled = !isPolicyItem && item.PredictionShadowExperimentAssignment is null &&
+                AdaptiveStorageSavingsPolicy.IsPotentiallyApplicable(storageSavingsApplies, input,
+                    validated.Resolved.Selection, qualityIntent, targetMb, settings.Restoration),
             OutputFolder = outputFolder,
             Suffix = suffix,
             Encoder = validated.Resolved.Selection,

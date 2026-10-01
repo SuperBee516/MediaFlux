@@ -460,6 +460,31 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         EncodeExecutionSnapshotBuilder? builder = null) =>
         (builder ?? new EncodeExecutionSnapshotBuilder()).Build(Identity(), settings ?? Settings(), item ?? Item());
 
+    [Theory]
+    [InlineData("automatic", true)]
+    [InlineData("off", false)]
+    [InlineData("manual", false)]
+    [InlineData("target", false)]
+    [InlineData("custom", false)]
+    [InlineData("no-compression", false)]
+    [InlineData("restoration", false)]
+    [InlineData("qsv", false)]
+    public void Phase2SnapshotEligibilityIsAdditionalToUnchangedPhase1Applicability(string scenario, bool expected)
+    {
+        var settings = Settings() with { AutomaticQuality = true, StorageSavings = new() { Enabled = true } };
+        var item = Item();
+        if (scenario == "off") settings = settings with { StorageSavings = new() { Enabled = false } };
+        if (scenario == "manual") settings = settings with { AutomaticQuality = false };
+        if (scenario == "target") settings = settings with { TargetSizeText = "100", AutoTargetSize = false };
+        if (scenario == "custom") item = item with { CustomCompressionProfile = "Custom" };
+        if (scenario == "no-compression") settings = settings with { CompressionProfile = "No Compression" };
+        if (scenario == "restoration") settings = settings with { Restoration = new() { Mode = VideoRestorationMode.Custom, Preset = VideoRestorationPreset.VintageAnimationLight } };
+        if (scenario == "qsv") settings = settings with { EncoderId = VideoEncoderIds.Qsv, EncoderPreset = "slow" };
+        var snapshot = Build(settings, item);
+        Assert.Equal(expected, snapshot.AdaptiveStorageSavingsEnabled);
+        if (scenario is "manual" or "restoration" or "qsv") Assert.True(snapshot.StorageSavingsContract.Applies);
+    }
+
     private static EncodeExecutionSnapshotBuildResult BuildDetailed(
         EncodeExecutionSnapshotSettings settings,
         EncodeExecutionSnapshotItem item) =>
@@ -530,6 +555,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         Assert.Equal(expected.UseGpu, actual.UseGpu);
         Assert.Equal(expected.TargetMb, actual.TargetMb);
         Assert.Equal(expected.StorageSavingsContract, actual.StorageSavingsContract);
+        Assert.Equal(expected.AdaptiveStorageSavingsEnabled, actual.AdaptiveStorageSavingsEnabled);
         Assert.Equal(expected.ScaleMode, actual.ScaleMode);
         Assert.Equal(expected.Restoration.Mode, actual.Restoration.Mode);
         Assert.Equal(expected.Restoration.Preset, actual.Restoration.Preset);

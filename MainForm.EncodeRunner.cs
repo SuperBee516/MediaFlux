@@ -671,6 +671,10 @@ namespace MediaFlux
                 Action<string> jobCallback = line =>
                 {
                     AppendJobLog(line);
+                    if (line.StartsWith("Analyzing compression", StringComparison.Ordinal) ||
+                        line.StartsWith("Testing compression", StringComparison.Ordinal) ||
+                        line.StartsWith("Encoding at CQ", StringComparison.Ordinal) || line.StartsWith("Encoding at CRF", StringComparison.Ordinal))
+                        UiInvoke(() => { if (row.DataGridView == dgvEncodeQueue) SetEncodeRowState(row, line, "", "", line); });
                     _encodingDiagnosticsService.UpdateProgress(meta.StatisticsOperationId, line, durationSec > 0 ? durationSec : null);
                     HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
                 };
@@ -716,10 +720,19 @@ namespace MediaFlux
                     PlanSnapshot = snapshot =>
                     {
                         meta.IntelligencePlan = snapshot.Plan;
+                        if (snapshot.Plan.AdaptiveSelection is { } adaptiveSelection)
+                            AppendJobLog($"[AdaptiveStorageSavings] Preferred={adaptiveSelection.PreferredQuality}; selected={adaptiveSelection.SelectedQuality}; worst={adaptiveSelection.WorstAcceptableQuality}; {adaptiveSelection.Reason}");
                         AppendJobLog(EncodingPlanService.DescribeSummary(snapshot.Plan));
                         Ui(() =>
                         {
                             RefreshQueueWorkspaceRow(row);
+                            if (builtSnapshot.AdaptiveStorageSavingsEnabled && snapshot.Plan.Quality is { } resolvedQuality)
+                            {
+                                row.Cells["colEstimatedSize"].Value = snapshot.Plan.AdaptiveSelection?.Disposition == AdaptiveSelectionDisposition.Skipped
+                                    ? "Skipped — insufficient savings at acceptable quality"
+                                    : $"{(resolvedQuality.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF")} {resolvedQuality.EffectiveQuality} selected";
+                                row.Cells["colEstimatedSize"].ToolTipText = snapshot.Plan.AdaptiveSelection?.Reason ?? "Resolved source-adaptive quality; actual output remains subject to storage validation.";
+                            }
                             RefreshCurrentEncodingIntelligence(row, meta);
                         });
                     },
@@ -867,6 +880,7 @@ namespace MediaFlux
                             ContainerDecisionReason = result.ContainerDecisionReason,
                             DiagnosticSummary = diagnosticSummary,
                             StorageSavings = result.StorageSavings,
+                            AdaptiveSelection = executionAttempt?.AdaptiveSelection,
                             TerminalResult = meta.IntelligenceOutcome?.TerminalResult ?? EncodingTerminalResult.Completed
                         });
                     }
@@ -933,7 +947,8 @@ namespace MediaFlux
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (attemptEndUtc - jobStartUtc).TotalSeconds);
                 bool isCanceled = _cancelEncode || ex is OperationCanceledException;
-                bool storagePolicyRejected = ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected };
+                bool adaptivePolicySkipped = ex is AdaptiveStorageSavingsSkippedException;
+                bool storagePolicyRejected = adaptivePolicySkipped || ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected };
                 if (!isCanceled && !storagePolicyRejected)
                 {
                     meta.FailureAnalysis = EncodeFailureAnalysisService.Analyze(
@@ -965,7 +980,7 @@ namespace MediaFlux
                     ex as EncodeExecutionAssignmentValidationException;
                 EncodingTerminalResult? terminalResult = meta.IntelligenceOutcome?.TerminalResult;
                 if (storagePolicyRejected)
-                    terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                    terminalResult = adaptivePolicySkipped ? EncodingTerminalResult.AdaptiveStorageSavingsSkipped : EncodingTerminalResult.StoragePolicyRejected;
                 if (assignmentValidationFailure != null)
                     terminalResult = EncodingTerminalResult.ValidationFailed;
                 var notes = isCanceled
@@ -1033,12 +1048,13 @@ namespace MediaFlux
                                 ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
                                 : null,
                             SourceSizeBytes = sourceSizeBytes,
-                            OutputSizeBytes = TryGetFileSizeBytes(incompleteOutputPath),
+                            OutputSizeBytes = adaptivePolicySkipped ? null : TryGetFileSizeBytes(incompleteOutputPath),
                             WasRecommendedDvdTitle = isDvdEncode
                                 ? dvdOptions!.Candidate.IsLikelyMainFeature
                                 : null,
                             ErrorSummary = notes,
                             StorageSavings = finalizationResult?.StorageSavings,
+                            AdaptiveSelection = executionAttempt?.AdaptiveSelection,
                             FinalizationOutcome =
                                 finalizationResult?.FailureKind.ToString() ??
                                 (assignmentValidationFailure != null
@@ -1079,7 +1095,7 @@ namespace MediaFlux
                 bool retryQueued = false;
                 if (!isCanceled)
                 {
-                    retryQueued = EncodingRetryPolicy.AllowsAutomaticRetry(
+                    retryQueued = executionAttempt?.AdaptiveSelection is null && EncodingRetryPolicy.AllowsAutomaticRetry(
                             terminalResult, meta.PredictionShadowExperimentAssignment is not null) &&
                         TryQueueFailedRowForAutoRetry(row);
                     if (storagePolicyRejected)
@@ -1147,7 +1163,7 @@ namespace MediaFlux
                                       EncodeFinalizationFailureKind.Validation
                                         ? "Validation Failed"
                                     : storagePolicyRejected
-                                        ? "Skipped — insufficient savings"
+                                        ? adaptivePolicySkipped ? "Skipped — insufficient savings at acceptable quality" : "Skipped — insufficient savings"
                                          : finalizationFailure != null
                                              ? "Finalization Failed"
                                              : JobHistoryPresentation.TerminalLabel(JobStatus.Failed, terminalResult),

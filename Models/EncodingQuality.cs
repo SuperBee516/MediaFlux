@@ -52,7 +52,8 @@ public enum EncodingQualityReasonCode
     HighQualitySource,
     HighResolutionSource,
     Downscale,
-    ProviderNormalized
+    ProviderNormalized,
+    AdaptiveStorageSavingsSelection
 }
 
 public sealed record EncodingQualityReason(

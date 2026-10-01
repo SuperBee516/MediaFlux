@@ -54,6 +54,7 @@ public sealed record EncodeExecutionSnapshot
     public required bool UseGpu { get; init; }
     public double? TargetMb { get; init; }
     public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
+    public bool AdaptiveStorageSavingsEnabled { get; init; }
     public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
     public EncodingService.ScaleMode ScaleMode { get; init; }
     public required VideoRestorationSettings Restoration { get; init; }
@@ -144,6 +145,7 @@ public sealed class EncodeExecutionAttempt
     public EncodingPlan? Plan { get; internal set; }
     public EncodingExecutionOutcome? ExecutionOutcome { get; internal set; }
     public EncodingQualityResolution? QualityResolution { get; internal set; }
+    public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; internal set; }
     public EncodingService.EncodeResult? EncodeResult { get; internal set; }
     public EncodeFinalizationResult? FinalizationResult { get; internal set; }
     public SourceDeletionResult? SourceDeletion { get; internal set; }
@@ -233,6 +235,8 @@ public sealed class EncodeExecutionOrchestrator
         {
             Input = snapshot.Input,
             StorageSavingsContract = snapshot.StorageSavingsContract,
+            AdaptiveStorageSavingsEnabled = snapshot.AdaptiveStorageSavingsEnabled && snapshot.PredictionShadowExperimentAssignment is null,
+            AdaptiveSelectionCallback = evidence => attempt.AdaptiveSelection = evidence,
             OutputFolder = snapshot.OutputFolder,
             Suffix = snapshot.Suffix,
             Encoder = snapshot.Encoder,
@@ -400,6 +404,8 @@ public sealed class EncodeExecutionOrchestrator
             finalizationFailureKind = EncodeFinalizationFailureKind.StoragePolicyRejected;
         if (finalizationFailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected)
             retryQueued = false;
+        if (attempt.AdaptiveSelection is not null)
+            retryQueued = false;
         if (retryQueued)
         {
             if (assignmentFailure is null)
@@ -425,6 +431,8 @@ public sealed class EncodeExecutionOrchestrator
             EncodeFinalizationFailureKind.FinalVerification => EncodingStatisticsOutcome.FinalVerificationFailed,
             _ => isCanceled ? EncodingStatisticsOutcome.Cancelled : EncodingStatisticsOutcome.Failed
         };
+        if (!isCanceled && attempt.AdaptiveSelection?.Disposition == AdaptiveSelectionDisposition.Skipped)
+            outcome = EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped;
         return RecordStatistics(
             snapshot.OperationId,
             snapshot.StatisticsStartUtc,
@@ -496,6 +504,8 @@ public sealed class EncodeExecutionOrchestrator
         EncodeExecutionCallbacks callbacks,
         CancellationToken cancellationToken)
     {
+        if (planSnapshot.Plan.AdaptiveSelection is not null)
+            return;
         if (!attempt.TryStartResearchCapture())
         {
             callbacks.Diagnostic?.Invoke("[PredictionShadow] Duplicate pre-encode capture callback ignored for this execution attempt.");
@@ -635,6 +645,17 @@ public sealed class EncodeExecutionOrchestrator
         StorageSavingsEvaluation? storageSavings = null)
     {
         storageSavings ??= executionOutcome?.StorageSavings;
+        AdaptiveQualitySelectionEvidence? adaptive = predictionPlan?.AdaptiveSelection;
+        if (adaptive?.Disposition == AdaptiveSelectionDisposition.Skipped)
+        {
+            outcome = EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped;
+            outputSizeBytes = null;
+            finalOutputProbe = null;
+            recoveredSuccessful = false;
+        }
+        if (adaptive is not null)
+            processingSeconds = outcome == EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped ? 0
+                : Math.Max(0, processingSeconds - adaptive.SamplingSeconds);
         if (storageSavings?.Acceptance == StorageSavingsAcceptance.Rejected)
         {
             outcome = EncodingStatisticsOutcome.StoragePolicyRejected;
@@ -719,6 +740,7 @@ public sealed class EncodeExecutionOrchestrator
                 TerminalResult = outcome == EncodingStatisticsOutcome.StoragePolicyRejected
                     ? EncodingTerminalResult.StoragePolicyRejected.ToString() : executionOutcome?.TerminalResult.ToString() ?? "",
                 StorageSavings = storageSavings ?? executionOutcome?.StorageSavings,
+                AdaptiveSelection = adaptive,
                 SourceAdaptiveShadow = predictionPlan?.SourceAdaptiveShadow is { } shadow
                     ? SourceAdaptiveShadowOutcome.ForTerminalOutcome(
                         shadow,
@@ -757,7 +779,7 @@ public sealed class EncodeExecutionOrchestrator
         MediaProbeResult? finalOutputProbe,
         bool recoveredSuccessful)
     {
-        if (predictionPlan == null)
+        if (predictionPlan == null || predictionPlan.AdaptiveSelection is not null)
             return;
         try
         {

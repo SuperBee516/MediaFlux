@@ -331,6 +331,113 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.Empty(statistics.GetAll());
     }
 
+    [Fact]
+    public async Task AdaptivePolicySkipPreservesSourceContinuesQueueAndRecordsNoResearchOrSuccessfulSample()
+    {
+        string source = CreateFile("adaptive-source.mp4");
+        File.WriteAllBytes(source, new byte[1_000_000]);
+        var evidence = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((_, _) => 10_000))
+            .SelectAsync(AdaptiveStorageSavingsTests.Request(), null, CancellationToken.None);
+        EncodingPlan frozen = EncodingPlanService.FreezeAdaptiveSelection(EncodingPlanService.Create(AdaptiveStorageSavingsTests.Context()), evidence);
+        var skipped = new SyntheticExecutor(new(frozen.PlanId, frozen), adaptive: evidence, skipBeforeEncode: true);
+        var next = new SyntheticExecutor(MakePlan());
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "adaptive-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "adaptive-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(new SequentialExecutor(skipped, next), journal, statistics);
+        var first = orchestrator.CreateAttempt(Snapshot(source, null) with
+        { AdaptiveStorageSavingsEnabled = true, StorageSavingsContract = AdaptiveStorageSavingsTests.Contract, DeleteSourceAfterCompression = true });
+        var second = orchestrator.CreateAttempt(Snapshot(source, null) with { OperationId = "next-adaptive-job" });
+        await new EncodeQueueRunner().RunAsync(new[] { first, second }, async attempt =>
+        {
+            try
+            {
+                await orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
+                orchestrator.RecordSuccessfulExecution(attempt, Now, 123_456_789, 10, "success", null, false, null);
+            }
+            catch (AdaptiveStorageSavingsSkippedException ex)
+            {
+                Assert.True(orchestrator.RecordFailedExecution(attempt, Now, false, null, "", 12, ex.Message, null, retryQueued: true));
+                Assert.Empty(journal.ReadEvents());
+            }
+        }, 1, () => false, () => false);
+        Assert.True(skipped.Request!.AdaptiveStorageSavingsEnabled);
+        Assert.DoesNotContain("encode", skipped.Events);
+        Assert.Equal(1, next.Events.Count(e => e == "encode"));
+        Assert.Equal(1_000_000, new FileInfo(source).Length);
+        EncodingStatisticsRecord record = Assert.Single(statistics.GetAll(), r => r.Outcome == EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped);
+        Assert.Null(record.OutputSizeBytes);
+        Assert.Null(record.SourceAdaptiveShadow);
+        Assert.Equal(0, record.ProcessingSeconds);
+        Assert.Equal(evidence.PreferredQuality, record.AdaptiveSelection!.PreferredQuality);
+        var totals = EncodingStatisticsCalculator.Aggregate(statistics.GetAll());
+        Assert.Equal(1, totals.Skipped);
+        Assert.Equal(0, totals.Failed);
+        Assert.Equal(1, totals.Successful);
+    }
+
+    [Fact]
+    public async Task SelectedAdaptiveQualityDoesNotOverrideActualByteRejectionOrCauseAnotherFullEncode()
+    {
+        string source = CreateFile("adaptive-rejected.mp4");
+        File.WriteAllBytes(source, new byte[1_000_000]);
+        var selection = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((q, _) => q < 26 ? 10_000 : 4_000))
+            .SelectAsync(AdaptiveStorageSavingsTests.Request(), null, CancellationToken.None);
+        EncodingPlan plan = EncodingPlanService.FreezeAdaptiveSelection(EncodingPlanService.Create(AdaptiveStorageSavingsTests.Context()), selection);
+        StorageSavingsEvaluation actual = StorageSavingsContractService.Evaluate(AdaptiveStorageSavingsTests.Contract, 900_001);
+        var error = new EncodeFinalizationException(new EncodeFinalizationResult
+        { FailureKind = EncodeFinalizationFailureKind.StoragePolicyRejected, StorageSavings = actual, ErrorMessage = "Actual output misses." });
+        var executor = new SyntheticExecutor(new(plan.PlanId, plan), error, adaptive: selection);
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "adaptive-rejected-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "adaptive-rejected-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        var attempt = orchestrator.CreateAttempt(Snapshot(source, null) with
+        { AdaptiveStorageSavingsEnabled = true, StorageSavingsContract = AdaptiveStorageSavingsTests.Contract, DeleteSourceAfterCompression = true });
+        await Assert.ThrowsAsync<EncodeFinalizationException>(() => orchestrator.ExecuteAsync(attempt, new(), null, CancellationToken.None));
+        Assert.True(orchestrator.RecordFailedExecution(attempt, Now, false, null, "", 10, "rejected", null, retryQueued: true));
+        Assert.Equal(1, executor.Events.Count(e => e == "encode"));
+        Assert.Equal(26, EncodingPlanService.GetExecutionValues(attempt.Plan!).QualityResolution.EffectiveQuality);
+        var record = Assert.Single(statistics.GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.StoragePolicyRejected, record.Outcome);
+        Assert.Null(record.OutputSizeBytes);
+        Assert.Equal(26, record.AdaptiveSelection!.SelectedQuality);
+        Assert.True(File.Exists(source));
+        Assert.Empty(journal.ReadEvents());
+    }
+
+    [Fact]
+    public async Task AdaptiveAcceptedFullOutputPersistsSelectionWithoutSampleTimeOrResearch()
+    {
+        string source = CreateFile("adaptive-accepted.mp4");
+        File.WriteAllBytes(source, new byte[1_000_000]);
+        var selection = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((q, _) => q < 25 ? 10_000 : 4_000))
+            .SelectAsync(AdaptiveStorageSavingsTests.Request(), null, CancellationToken.None);
+        selection = selection with { SamplingSeconds = 12 };
+        EncodingPlan plan = EncodingPlanService.FreezeAdaptiveSelection(EncodingPlanService.Create(AdaptiveStorageSavingsTests.Context()), selection);
+        var actual = StorageSavingsContractService.Evaluate(AdaptiveStorageSavingsTests.Contract, 800_000);
+        var executor = new SyntheticExecutor(new(plan.PlanId, plan), storageSavings: actual, adaptive: selection);
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "adaptive-accepted-research.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "adaptive-accepted-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        var attempt = orchestrator.CreateAttempt(Snapshot(source, null) with
+        { AdaptiveStorageSavingsEnabled = true, StorageSavingsContract = AdaptiveStorageSavingsTests.Contract });
+        await orchestrator.ExecuteAsync(attempt, new(), null, CancellationToken.None);
+        Assert.True(orchestrator.RecordSuccessfulExecution(attempt, Now, 800_000, 42.5, "accepted", null, false, null));
+        var record = Assert.Single(statistics.GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.Success, record.Outcome);
+        Assert.Equal(800_000, record.OutputSizeBytes);
+        Assert.Equal(30.5, record.ProcessingSeconds);
+        Assert.Equal(25, record.AdaptiveSelection!.SelectedQuality);
+        Assert.Null(record.SourceAdaptiveShadow);
+        Assert.Equal("", record.PredictionConfidence);
+        Assert.Empty(journal.ReadEvents());
+        Assert.Single(executor.Events, e => e == "encode");
+        var history = new HistoryService(Path.Combine(_root, "adaptive-history.json"));
+        history.Append(new JobHistoryRecord { Status = JobStatus.Success, AdaptiveSelection = selection, OutputSizeBytes = 800_000 });
+        var readBack = Assert.Single(history.LoadAll());
+        Assert.Equal(25, readBack.AdaptiveSelection!.SelectedQuality);
+        Assert.Equal(800_000, readBack.OutputSizeBytes);
+    }
+
     private sealed class SequentialExecutor(params IEncodeRequestExecutor[] executors) : IEncodeRequestExecutor
     {
         private readonly Queue<IEncodeRequestExecutor> _executors = new(executors);
@@ -616,7 +723,9 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Exception? exceptionAfterCapture = null,
         bool finalizationSucceeded = true,
         bool reportRecoveredOutcome = false,
-        StorageSavingsEvaluation? storageSavings = null) : IEncodeRequestExecutor
+        StorageSavingsEvaluation? storageSavings = null,
+        AdaptiveQualitySelectionEvidence? adaptive = null,
+        bool skipBeforeEncode = false) : IEncodeRequestExecutor
     {
         public List<string> Events { get; } = [];
         public EncodingRequest? Request { get; private set; }
@@ -629,6 +738,8 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
             Request = request;
             Events.Add("plan");
             request.EncodingPlanSnapshotCallback?.Invoke(plan);
+            if (adaptive is not null) request.AdaptiveSelectionCallback?.Invoke(adaptive);
+            if (skipBeforeEncode) throw new AdaptiveStorageSavingsSkippedException(adaptive!);
             request.PreEncodeExecutionValidationCallback?.Invoke(plan);
             Events.Add("capture");
             if (request.PreEncodeResearchCallback is { } capture)

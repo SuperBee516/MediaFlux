@@ -15,6 +15,8 @@ namespace MediaFlux.Services
         public bool UseGpu { get; init; }
         public double? TargetMb { get; init; }
         public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
+        public bool AdaptiveStorageSavingsEnabled { get; init; }
+        public Action<AdaptiveQualitySelectionEvidence>? AdaptiveSelectionCallback { get; init; }
         public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
         public EncodingService.ScaleMode ScaleMode { get; init; } =
             EncodingService.ScaleMode.None;

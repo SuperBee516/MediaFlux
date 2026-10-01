@@ -194,6 +194,40 @@ public static class EncodingPlanService
         plan.ExecutionValues ?? throw new InvalidOperationException(
             "The plan was not created for execution.");
 
+    internal static EncodingPlan FreezeAdaptiveSelection(EncodingPlan plan, AdaptiveQualitySelectionEvidence evidence)
+    {
+        EncodingPlanExecutionValues execution = GetExecutionValues(plan);
+        EncodingQualityResolution quality = execution.QualityResolution with
+        {
+            EffectiveQuality = evidence.SelectedQuality ?? evidence.PreferredQuality,
+            Reasons = Array.AsReadOnly(execution.QualityResolution.Reasons.Append(
+                new EncodingQualityReason(EncodingQualityReasonCode.AdaptiveStorageSavingsSelection, evidence.Reason)).ToArray())
+        };
+        return new EncodingPlan
+        {
+            IsAvailable = plan.IsAvailable, UnavailableReason = plan.UnavailableReason, PlanId = plan.PlanId,
+            Source = plan.Source, SourceHealth = plan.SourceHealth, Video = plan.Video,
+            Audio = plan.Audio, Subtitles = plan.Subtitles, Container = plan.Container, Hardware = plan.Hardware,
+            Recovery = plan.Recovery is null ? null : plan.Recovery with { TolerantRecoveryPermitted = false, MaximumRetryCount = 0 },
+            Preflight = plan.Preflight,
+            RecoveryCapabilities = plan.RecoveryCapabilities is null ? null : new(
+                Array.AsReadOnly(plan.RecoveryCapabilities.Items.Select(capability => capability with
+                {
+                    Permitted = false, MaximumAttempts = 0,
+                    Reason = "Adaptive storage-savings selection permits at most one full-file encode."
+                }).ToArray())),
+            ValidationIntent = plan.ValidationIntent, FinalizationIntent = plan.FinalizationIntent, Validation = plan.Validation,
+            Quality = quality, AdaptiveSelection = evidence,
+            // Preferred-quality predictions/calibration are no longer comparable.
+            // Sample selection never enters research or successful prediction evidence.
+            SourceAdaptiveShadow = null, Estimates = new(null, null, null), SizePredictionCalibration = null,
+            Risks = Array.AsReadOnly(plan.Risks.Where(risk => risk.Code != "conditional-video-recovery").ToArray()),
+            DecisionReasons = Array.AsReadOnly(plan.DecisionReasons.Where(reason => reason.Code != EncodingDecisionReasonCode.IntelligentRecoveryAvailable).ToArray()),
+            Sections = plan.Sections,
+            ExecutionValues = execution with { QualityResolution = quality }
+        };
+    }
+
     internal static IReadOnlyList<EncodingPlanDivergence> Compare(
         EncodingPlan plan, OutputContainerDecision actualContainer,
         VideoOutputGeometryPlan? actualGeometry, VideoEncoderSelection actualEncoder,

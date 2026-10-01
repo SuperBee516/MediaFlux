@@ -18,7 +18,7 @@ public enum EncodingRecoveryProcessResult { NotStarted, Succeeded, Failed }
 public enum EncodingRecoveryDisposition { NotAttempted, Clean, Salvaged, Degraded, Rejected, SourceUnrecoverable }
 public enum EncodingSourceFailureType { TimelineCorruption, VideoBitstreamCorruption, AudioBitstreamCorruption, ContainerPacketCorruption, SourceTruncation, StorageOrIoFailure, UnsupportedCodec, OutputContainerFailure, GpuEncoderFailure, Cancellation, UnknownMediaFailure }
 public enum EncodingLifecycleStatus { NotRequired, NotRun, Passed, Failed, Skipped, Canceled }
-public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, CompletedAfterDegradedSalvage, PreflightRejected, EncodeFailed, RecoveryFailed, SourceUnrecoverable, ValidationFailed, FinalizationFailed, Canceled, StoragePolicyRejected }
+public enum EncodingTerminalResult { NotRun, Completed, CompletedAfterRecovery, CompletedAfterDegradedSalvage, PreflightRejected, EncodeFailed, RecoveryFailed, SourceUnrecoverable, ValidationFailed, FinalizationFailed, Canceled, StoragePolicyRejected, AdaptiveStorageSavingsSkipped }
 public enum EncodingRecoveryStatusKind { SourceCorruptionDetected, AttemptingSourceRecovery, ValidatingRecoveredSource, RetryingWithRecoveredSource, AttemptingDegradedSourceSalvage, ValidatingSalvagedMedia, SourceUnrecoverable }
 public enum EncodingSourceDisposition { Retained, DeferredToCaller, NotReached }
 public enum EncodingHistoricalConfidence { None, Low, Medium, High }
@@ -129,6 +129,7 @@ public sealed class EncodingPlan
     public EncodingFinalizationIntent? FinalizationIntent { get; init; }
     public EncodingPlanValidation? Validation { get; init; }
     public EncodingQualityResolution? Quality { get; init; }
+    public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; init; }
     public SourceAdaptiveShadowCalibration? SourceAdaptiveShadow { get; init; }
     public EncodingPlanEstimates Estimates { get; init; } = new(null, null, null);
     public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }

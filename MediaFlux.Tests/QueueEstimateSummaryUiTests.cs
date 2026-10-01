@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Windows.Forms;
+using MediaFlux.Models;
+using MediaFlux.Services;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -8,6 +10,70 @@ namespace MediaFlux.Tests;
 [Collection("LibraryAnalyzerUi")]
 public sealed class QueueEstimateSummaryUiTests
 {
+    [Theory]
+    [InlineData("h264", true, true, true)]
+    [InlineData("avc", true, true, true)]
+    [InlineData("h264", false, true, false)]
+    [InlineData("h264", true, false, false)]
+    public void AdaptivePendingEstimateRemovesPreferredPrecisionAndCalibrationFromRenderedQueue(
+        string sourceCodec, bool storageEnabled, bool automatic, bool pending)
+    {
+        RunOnUiThread(main =>
+        {
+            Config config = Field<Config>(main, "_config");
+            config.StorageSavings.Enabled = storageEnabled;
+            config.VideoRestoration = new();
+            Invoke(main, "SelectEncoderById", VideoEncoderIds.Libx265);
+            Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.Hevc);
+            Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
+            Field<TextBox>(main, "txtTargetSize").Text = "";
+            Field<CheckBox>(main, "chkAutoTargetSize").Checked = false;
+            var service = Field<EstimateBackgroundService>(main, "_estimateService");
+            service.ResetAndCancel();
+            string path = Path.Combine(Path.GetTempPath(), $"MediaFlux.adaptive-estimate.{Guid.NewGuid():N}.mkv");
+            DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+            SetField(main, "_suppressRowEvents", true);
+            DataGridViewRow row;
+            object meta;
+            try
+            {
+                row = queue.Rows[queue.Rows.Add()];
+                row.Tag = path;
+                row.Cells["colName"].Value = Path.GetFileName(path);
+                meta = Invoke(main, "EnsureRowMeta", row)!;
+                SetField(meta, "Path", path);
+                Field<ConcurrentDictionary<string, DataGridViewRow>>(main, "_rowsByPath")[path] = row;
+            }
+            finally { SetField(main, "_suppressRowEvents", false); }
+            var calibration = EncodingSizePredictionCalibration.Unavailable(6, "preferred estimate");
+            var context = AdaptiveStorageSavingsTests.Context() with
+            {
+                Encoder = new(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
+                QualityIntent = automatic ? EncodingQualityIntent.Automatic(QualityTarget.Balanced) : EncodingQualityIntent.LegacyNumeric(24)
+            };
+            var result = new EstimateBackgroundService.SmartEstimateResult(service.CurrentGeneration,
+                Field<Guid>(meta, "QueueItemId"), path, 12, 6, 100, "1920x1080", sourceCodec, 24,
+                false, null, null, "preferred estimate", 128, 0,
+                qualityResolution: EncodingPlanService.Create(context).Quality, sizeCalibration: calibration);
+            Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path] = 6;
+            Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(service, "_smartResults").Enqueue(result);
+            Invoke(main, "ApplySmartEstimateResultsBatch");
+            if (pending)
+            {
+                Assert.Equal(AdaptiveStorageSavingsPolicy.PendingEstimate, row.Cells["colEstimatedSize"].Value);
+                Assert.Null(row.Cells["colEstimatedSize"].Tag);
+                Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+                Assert.Null(Field<object?>(meta, "SizePredictionCalibration"));
+            }
+            else
+            {
+                Assert.Contains("6 MB", row.Cells["colEstimatedSize"].Value!.ToString());
+                Assert.Equal(6, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
+                Assert.Same(calibration, Field<object?>(meta, "SizePredictionCalibration"));
+            }
+        });
+    }
+
     [Fact]
     public void QueueSummaryDistinguishesEmptyAllExcludedAndMixedEligibility()
     {
@@ -286,9 +352,12 @@ public sealed class QueueEstimateSummaryUiTests
         (T)(typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)
             ?? throw new MissingFieldException(name));
 
-    private static T Field<T>(object target, string name) =>
-        (T)(target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(target)
-            ?? throw new MissingFieldException(name));
+    private static T Field<T>(object target, string name)
+    {
+        FieldInfo field = target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(name);
+        return (T)field.GetValue(target)!;
+    }
 
     private static void SetField(object target, string name, object value)
     {

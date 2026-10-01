@@ -150,7 +150,11 @@ namespace MediaFlux.Services
             bool usePlannedSubtitles = request.ContainerDecision.StreamPlans.Any(plan =>
                 plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
                 plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode);
-            if (request.SplitSource is { } splitMapping)
+            if (request.VideoOnly)
+            {
+                builder.Append("-map 0:v:0 -an -sn -dn -map_metadata -1 -map_chapters -1 ");
+            }
+            else if (request.SplitSource is { } splitMapping)
             {
                 builder.Append("-map 0:v:0 ");
                 AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, copySubtitles && !usePlannedSubtitles, copyDataStreams, copyAttachments, 1, includeVideo: false);
@@ -162,7 +166,7 @@ namespace MediaFlux.Services
             if (request.SampleDuration is { } sampleDuration && sampleDuration > TimeSpan.Zero)
                 builder.Append($"-t {Seconds(sampleDuration.TotalSeconds)} ");
 
-            if (copySubtitles)
+            if (copySubtitles && !request.VideoOnly)
             {
                 builder.Append("-c:s copy ");
                 int subtitleOutputIndex = 0;
@@ -175,7 +179,7 @@ namespace MediaFlux.Services
             }
             else
                 builder.Append("-sn ");
-            if (copyAttachments)
+            if (copyAttachments && !request.VideoOnly)
                 builder.Append("-c:t copy ");
 
             provider.AppendVideoFilters(builder, context);
@@ -209,10 +213,13 @@ namespace MediaFlux.Services
             }
             EncoderProviderUtilities.AppendOutputFormatFlags(builder, context);
 
-            AppendAudioArguments(builder, request);
-            AppendPlannedAudioCodecs(builder, request.ContainerDecision, request.AudioChannels);
-            AppendPlannedAudioMetadataAndDispositions(builder, request.ContainerDecision);
-            AppendPlannedSubtitleMetadataAndDispositions(builder, request.ContainerDecision);
+            if (!request.VideoOnly)
+            {
+                AppendAudioArguments(builder, request);
+                AppendPlannedAudioCodecs(builder, request.ContainerDecision, request.AudioChannels);
+                AppendPlannedAudioMetadataAndDispositions(builder, request.ContainerDecision);
+                AppendPlannedSubtitleMetadataAndDispositions(builder, request.ContainerDecision);
+            }
             if (request.ContainerDecision.Resolved == OutputContainer.Mp4)
                 builder.Append("-movflags +faststart ");
             builder.Append($"-f {request.ContainerDecision.MuxerName} ");

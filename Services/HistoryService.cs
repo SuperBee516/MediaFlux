@@ -46,6 +46,7 @@ namespace MediaFlux.Services
         public EncodingDiagnosticSummary? DiagnosticSummary { get; set; }
         public EncodingTerminalResult? TerminalResult { get; set; }
         public StorageSavingsEvaluation? StorageSavings { get; set; }
+        public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; set; }
     }
 
     public sealed class HistoryService

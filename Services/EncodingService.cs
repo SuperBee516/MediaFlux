@@ -25,6 +25,7 @@ namespace MediaFlux.Services
         private readonly Action<string> _progressCallback;
         private readonly Action<string>? _log;
         private readonly IEncodeOutputFinalizationService _finalizationService;
+        private readonly IAdaptiveVideoSampleRunner? _adaptiveSampleRunnerOverride;
 
 
         private readonly SynchronizationContext? _syncContext;
@@ -165,12 +166,14 @@ namespace MediaFlux.Services
             Action<string>? logCallback,
             string? ffmpegPath = null,
             string? ffprobePath = null,
-            IEncodeOutputFinalizationService? finalizationService = null)
+            IEncodeOutputFinalizationService? finalizationService = null,
+            IAdaptiveVideoSampleRunner? adaptiveSampleRunner = null)
         {
             if (string.IsNullOrWhiteSpace(applicationDirectory))
                 throw new ArgumentException("Application directory must be provided.", nameof(applicationDirectory));
 
             _appPath = applicationDirectory;
+            _adaptiveSampleRunnerOverride = adaptiveSampleRunner;
             var tools = FfmpegToolResolver.Resolve(applicationDirectory, ffmpegPath, ffprobePath);
             _ffmpegPath = tools.FfmpegPath;
             _ffprobePath = tools.FfprobePath;
@@ -383,7 +386,9 @@ namespace MediaFlux.Services
                 request.LifecycleDiagnostics,
                 request.FaststartStartedCallback,
                 request.PreEncodeExecutionValidationCallback,
-                request.StorageSavingsContract).ConfigureAwait(false);
+                request.StorageSavingsContract,
+                request.AdaptiveStorageSavingsEnabled,
+                request.AdaptiveSelectionCallback).ConfigureAwait(false);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -652,7 +657,9 @@ namespace MediaFlux.Services
             EncodeLifecycleDiagnostics? lifecycleDiagnostics = null,
             Action? faststartStartedCallback = null,
             Action<EncodingPlanSnapshot>? preEncodeExecutionValidationCallback = null,
-            StorageSavingsContract? storageSavingsContract = null)
+            StorageSavingsContract? storageSavingsContract = null,
+            bool adaptiveStorageSavingsEnabled = false,
+            Action<AdaptiveQualitySelectionEvidence>? adaptiveSelectionCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -849,6 +856,49 @@ namespace MediaFlux.Services
                     : null,
                 sizePredictionCalibration);
             EncodingPlan shadowPlan = EncodingPlanService.Create(planContext);
+            // Corrective timeline preparation changes production video settings.
+            // Initial adaptive samples only reproduce the ordinary strict path.
+            bool ordinaryAdaptiveInput = sourceTimelineRepairPath is null && !requireRegeneratedOutputTimeline &&
+                sourceDecodeMode == FfmpegSourceDecodeMode.Strict && sampleStart is null && sampleDuration is null;
+            if (AdaptiveStorageSavingsPolicy.TryCreateRequest(adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput, concurrentEncoderSessions,
+                storageSavingsContract ?? StorageSavingsContract.Disabled, planContext, shadowPlan,
+                out AdaptiveQualitySelectionRequest? selectionRequest, out string adaptiveReason))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                callback("Analyzing compression…");
+                var selectionRunner = _adaptiveSampleRunnerOverride ?? new AdaptiveVideoSampleRunner(
+                    _ffmpegPath, _ffprobePath, _ffprobeService, (sampleRequest, candidate, segment, sampleOutput) =>
+                    {
+                        var values = EncodingPlanService.GetExecutionValues(shadowPlan);
+                        return "-hide_banner -nostats -loglevel error " + BuildFfmpegArgs(
+                            sampleRequest.Input, sampleOutput, values.Encoder.FfmpegCodec, values.UseGpu, null,
+                            scaleMode, encoderPreset, tenBit, audioChannels: null, concurrentEncoderSessions,
+                            mapMode, copySubtitles: false, copyDataStreams: false, copyAttachments: false,
+                            containerDecision: values.ContainerDecision, knownDuration: segment.Duration,
+                            qualityValue: candidate, encoderSelection: values.Encoder,
+                            sampleStart: segment.Start, sampleDuration: segment.Duration,
+                            sourcePixelFormat: sampleRequest.Video.SourcePixelFormat,
+                            restoration: restoration, plannedVideoGeometry: values.Geometry, videoOnly: true);
+                    });
+                var samplingWatch = Stopwatch.StartNew();
+                AdaptiveQualitySelectionEvidence selection = await new StorageSavingsSampleSelector(selectionRunner)
+                    .SelectAsync(selectionRequest!, callback, cancellationToken).ConfigureAwait(false);
+                selection = selection with { SamplingSeconds = samplingWatch.Elapsed.TotalSeconds };
+                cancellationToken.ThrowIfCancellationRequested();
+                shadowPlan = EncodingPlanService.FreezeAdaptiveSelection(shadowPlan, selection);
+                adaptiveSelectionCallback?.Invoke(selection);
+                if (selection.Disposition == AdaptiveSelectionDisposition.Skipped)
+                {
+                    encodingPlanSnapshotCallback?.Invoke(new(shadowPlan.PlanId, shadowPlan));
+                    throw new AdaptiveStorageSavingsSkippedException(selection);
+                }
+                callback($"Encoding at {(selection.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF")} {selection.SelectedQuality}");
+                // Phase 2 owns one full-file attempt. Existing output validation and
+                // actual-byte rejection stay authoritative, with no automatic retry.
+                disableAutomaticFfmpegRecovery = true;
+            }
+            else if (adaptiveStorageSavingsEnabled)
+                _log?.Invoke("[AdaptiveStorageSavings] " + adaptiveReason);
             recoveryOperationId = shadowPlan.PlanId;
             var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
             var preflightOutcomes = new List<EncodingPreflightOutcome>
@@ -961,7 +1011,7 @@ namespace MediaFlux.Services
             _log?.Invoke(EncodingPlanService.DescribeSummary(shadowPlan));
             encodingPlanSnapshotCallback?.Invoke(planSnapshot);
             preEncodeExecutionValidationCallback?.Invoke(planSnapshot);
-            if (preEncodeResearchCallback is not null)
+            if (preEncodeResearchCallback is not null && shadowPlan.AdaptiveSelection is null)
             {
                 try
                 {
@@ -2333,6 +2383,7 @@ namespace MediaFlux.Services
             EncodeLifecycleDiagnostics? lifecycleDiagnostics = null,
             Action? faststartStartedCallback = null)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var stderrBuilder = new StringBuilder();
             var diagnostics = new FfmpegDiagnosticCollector();
             bool cfrFallbackEligible = sourceTimingClassification == SourceTimingClassification.Cfr &&
@@ -2769,7 +2820,8 @@ namespace MediaFlux.Services
             VideoRestorationSettings? restoration = null,
             SplitSourceInput? splitSource = null,
             string? restorationFilterOverride = null,
-            VideoOutputGeometryPlan? plannedVideoGeometry = null)
+            VideoOutputGeometryPlan? plannedVideoGeometry = null,
+            bool videoOnly = false)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -2835,6 +2887,7 @@ namespace MediaFlux.Services
                 CopySubtitles = copySubtitles,
                 CopyDataStreams = copyDataStreams,
                 CopyAttachments = copyAttachments,
+                VideoOnly = videoOnly,
                 ContainerDecision = containerDecision ?? new OutputContainerDecision
                 {
                     Requested = OutputContainerSelection.Mp4,

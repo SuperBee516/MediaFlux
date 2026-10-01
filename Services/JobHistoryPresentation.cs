@@ -67,6 +67,7 @@ public static class JobHistoryPresentation
     public static string TerminalLabel(JobStatus status, EncodingTerminalResult? terminalResult) => terminalResult switch
     {
         EncodingTerminalResult.StoragePolicyRejected => "Skipped — insufficient savings",
+        EncodingTerminalResult.AdaptiveStorageSavingsSkipped => "Skipped — insufficient savings at acceptable quality",
         EncodingTerminalResult.CompletedAfterRecovery => "Completed — Source recovered",
         EncodingTerminalResult.CompletedAfterDegradedSalvage => "Completed — Source salvaged with media loss",
         EncodingTerminalResult.SourceUnrecoverable => "Failed — Source damaged",
@@ -76,6 +77,7 @@ public static class JobHistoryPresentation
     public static string OutcomeSummary(JobHistoryRecord record) => record.TerminalResult switch
     {
         EncodingTerminalResult.StoragePolicyRejected => SummaryFor(record.TerminalResult, record.StorageSavings?.Reason ?? record.Notes),
+        EncodingTerminalResult.AdaptiveStorageSavingsSkipped => SummaryFor(record.TerminalResult, record.AdaptiveSelection?.Reason ?? record.Notes),
         EncodingTerminalResult.CompletedAfterRecovery => "Source recovered. MediaFlux detected a problem with the source media, created and validated a temporary repaired source, and completed the encode successfully. The original source was preserved.",
         EncodingTerminalResult.CompletedAfterDegradedSalvage => "Source salvaged with media loss. MediaFlux used tolerant software decoding and re-encoding after authoritative source corruption. The final output passed validation, but damaged packets or frames may have been discarded. The original source was preserved.",
         EncodingTerminalResult.SourceUnrecoverable => "Source media is damaged. MediaFlux detected extensive corruption in the source video. Automated recovery was unsuccessful, so encoding was stopped to prevent creation of an incomplete or corrupted output file. The original source was preserved.",
@@ -85,6 +87,7 @@ public static class JobHistoryPresentation
     public static string SummaryFor(EncodingTerminalResult? terminalResult, string fallback) => terminalResult switch
     {
         EncodingTerminalResult.StoragePolicyRejected => "Skipped — insufficient savings. The validated candidate did not satisfy the storage-savings contract. The original source was retained. " + fallback,
+        EncodingTerminalResult.AdaptiveStorageSavingsSkipped => "Skipped — insufficient savings at acceptable quality. No full encode was started. The original source was retained. " + fallback,
         EncodingTerminalResult.CompletedAfterRecovery => "Source recovered. MediaFlux detected a problem with the source media, created and validated a temporary repaired source, and completed the encode successfully. The original source was preserved.",
         EncodingTerminalResult.CompletedAfterDegradedSalvage => "Source salvaged with media loss. MediaFlux used tolerant software decoding and re-encoding after authoritative source corruption. The final output passed validation, but damaged packets or frames may have been discarded. The original source was preserved.",
         EncodingTerminalResult.SourceUnrecoverable => "Source media is damaged. MediaFlux detected extensive corruption in the source video. Automated recovery was unsuccessful, so encoding was stopped to prevent creation of an incomplete or corrupted output file. The original source was preserved.",

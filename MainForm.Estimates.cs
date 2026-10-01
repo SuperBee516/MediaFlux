@@ -85,19 +85,28 @@ namespace MediaFlux
                         try
                         {
                             double srcMb = item.SourceMb;
-                            double estMb = item.EstimatedMb;
+                            bool adaptivePending = !item.IsCustom && resultMeta.PredictionShadowExperimentAssignment is null &&
+                                (item.VideoCodec?.Equals("h264", StringComparison.OrdinalIgnoreCase) == true ||
+                                 item.VideoCodec?.Equals("avc", StringComparison.OrdinalIgnoreCase) == true) &&
+                                _config.StorageSavings.Enabled &&
+                                !string.Equals(comboCompressionProfile.SelectedItem?.ToString(), "No Compression", StringComparison.OrdinalIgnoreCase) &&
+                                AdaptiveStorageSavingsPolicy.IsPotentiallyApplicable(true, EncodingInputSource.FromFile(item.Path),
+                                    GetSelectedVideoEncoderSelection(), item.QualityResolution?.Intent,
+                                    EncodingTargetSizeResolver.ResolveConfiguredManualTargetMb(chkAutoTargetSize.Checked, txtTargetSize.Text),
+                                    _config.VideoRestoration);
+                            double estMb = adaptivePending ? 0 : item.EstimatedMb;
                             bool hasEstimate = srcMb > 0 && estMb > 0;
                             string customSuffix = item.IsCustom ? " (custom)" : string.Empty;
 
                             row.Cells["colEstimatedSize"].Value = hasEstimate
                                 ? $"{FormatSize(estMb)}  {PercentReduction(srcMb, estMb)}{customSuffix}"
-                                : item.UnavailableReason ?? "Metadata unavailable";
+                                : adaptivePending ? AdaptiveStorageSavingsPolicy.PendingEstimate : item.UnavailableReason ?? "Metadata unavailable";
                             if (srcMb > 0)
                                 row.Cells["colSize"].Value = FormatSize(srcMb);
                             row.Cells["colEstimatedSize"].Tag = hasEstimate
                                 ? new Tuple<double, double>(srcMb, estMb)
                                 : null;
-                            row.Cells["colEstimatedSize"].ToolTipText = hasEstimate
+                            row.Cells["colEstimatedSize"].ToolTipText = adaptivePending ? AdaptiveStorageSavingsPolicy.PendingEstimate : hasEstimate
                                 ? item.SizeCalibration?.EstimateModelId == ProductionDirectOutputResult.ModelId
                                     ? $"Historical Direct estimate from {item.SizeCalibration.EstimateIndependentFamilyCount} independent comparable sources."
                                     : item.SizeCalibration?.EstimateModelId == "ManualTarget"
@@ -156,8 +165,8 @@ namespace MediaFlux
                                 if (item.Fps > 0)
                                     rm.Fps = (int)Math.Round(item.Fps);
 
-                                rm.EstimateDiagnostic = item.EstimateDiagnostic;
-                                rm.SizePredictionCalibration = item.SizeCalibration;
+                                rm.EstimateDiagnostic = adaptivePending ? AdaptiveStorageSavingsPolicy.PendingEstimate : item.EstimateDiagnostic;
+                                rm.SizePredictionCalibration = adaptivePending ? null : item.SizeCalibration;
                                 rm.EstimatedPlannedAudioBitrateKbps =
                                     item.PlannedAudioBitrateKbps;
                                 rm.EstimatedPlannedMappedAncillaryBitrateKbps =
@@ -172,8 +181,8 @@ namespace MediaFlux
                                 estimateMeta.SrcMb = srcMb;
                                 estimateMeta.VideoCodec = codec;
                                 estimateMeta.Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0;
-                                estimateMeta.EstimateDiagnostic = item.EstimateDiagnostic;
-                                estimateMeta.SizePredictionCalibration = item.SizeCalibration;
+                                estimateMeta.EstimateDiagnostic = adaptivePending ? AdaptiveStorageSavingsPolicy.PendingEstimate : item.EstimateDiagnostic;
+                                estimateMeta.SizePredictionCalibration = adaptivePending ? null : item.SizeCalibration;
                                 estimateMeta.EstimatedPlannedAudioBitrateKbps =
                                     item.PlannedAudioBitrateKbps;
                                 estimateMeta.EstimatedPlannedMappedAncillaryBitrateKbps =
@@ -183,7 +192,7 @@ namespace MediaFlux
 
                             TrackCodecFilterCount(path, codec);
 
-                            ApplySmartRecommendation(row, item.Recommendation);
+                            ApplySmartRecommendation(row, adaptivePending ? null : item.Recommendation);
                             UpdateRowCustomFlag(row);
                             RestoreQueuedStateAfterEstimate(row);
                             applied++;
