@@ -1,7 +1,10 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MediaFlux.Models;
 using MediaFlux.Services;
+using Microsoft.Win32.SafeHandles;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -198,16 +201,82 @@ public sealed class PredictionShadowExperimentFreezeTests : IDisposable
     {
         var freeze = Fixture();
         var creates = Enumerable.Range(0, 12).Select(_ => Task.Run(() => Store.Create(freeze))).ToArray();
-        for (int i = 0; i < 50; i++)
+        Exception? readFailure = null;
+        try
         {
-            var observed = Store.Load(freeze.ExperimentId);
-            if (observed is not null) Assert.Equal(24, observed.Targets.Count);
+            for (int i = 0; i < 50; i++)
+            {
+                var observed = Store.Load(freeze.ExperimentId);
+                if (observed is not null) Assert.Equal(24, observed.Targets.Count);
+            }
         }
-        await Task.WhenAll(creates);
+        catch (Exception ex)
+        {
+            readFailure = ex;
+            throw;
+        }
+        finally
+        {
+            Task drain = Task.WhenAll(creates);
+            try { await drain; }
+            catch (Exception ex) when (readFailure is not null)
+            {
+                // Keep the primary read failure and every fault discovered while draining.
+                throw new AggregateException("Freeze reads and concurrent creators failed.",
+                    readFailure, (Exception?)drain.Exception ?? ex);
+            }
+        }
         Assert.Equal(24, Store.Load(freeze.ExperimentId)!.Targets.Count);
         Assert.Single(Directory.GetFiles(Path.GetDirectoryName(Store.GetPath(freeze.ExperimentId))!, "*.json"));
         Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(Store.GetPath(freeze.ExperimentId))!, "*.tmp"));
     }
+
+    [Fact]
+    public void LoadReadsCompleteFreezeWhileRenamedFileHasAnOpenDeleteAccessHandle()
+    {
+        var freeze = Fixture();
+        var published = Store.Create(freeze);
+        string path = Store.GetPath(freeze.ExperimentId);
+        string temporary = path + ".rename-test.tmp";
+        File.Move(path, temporary);
+
+        // Retain the same DELETE access used by a Windows rename after its new name is visible.
+        using SafeFileHandle renameHandle = CreateFileForDelete(temporary, 0x00010000,
+            FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, 3, 0, IntPtr.Zero);
+        if (renameHandle.IsInvalid) throw new Win32Exception(Marshal.GetLastPInvokeError());
+        File.Move(temporary, path, overwrite: false);
+
+        // Prove the incompatible sharing condition is present, then exercise the production reader.
+        IOException incompatibleRead = Assert.Throws<IOException>(() => File.ReadAllBytes(path));
+        Assert.Equal(32, incompatibleRead.HResult & 0xffff);
+        var loaded = Assert.IsType<PredictionShadowExperimentFreeze>(Store.Load(freeze.ExperimentId));
+        Assert.Equal(JsonSerializer.Serialize(published), JsonSerializer.Serialize(loaded));
+        Assert.Equal(24, loaded.Targets.Count);
+        Assert.True(Store.IsFrozen(freeze.ExperimentId));
+        Assert.Equal(JsonSerializer.Serialize(published), JsonSerializer.Serialize(Store.Create(freeze)));
+        Assert.Throws<InvalidDataException>(() => Store.Create(freeze with { ProtocolRevision = "conflict" }));
+    }
+
+    [Theory]
+    [InlineData(FileAccess.Read, FileShare.None)]
+    [InlineData(FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)]
+    public void LoadPreservesSharingErrorsForExclusiveReadersAndIncompatibleWriters(FileAccess access, FileShare sharing)
+    {
+        var freeze = Fixture();
+        Store.Create(freeze);
+        using (var incompatible = new FileStream(Store.GetPath(freeze.ExperimentId), FileMode.Open, access, sharing))
+        {
+            Assert.Throws<IOException>(() => Store.Load(freeze.ExperimentId));
+            Assert.Throws<IOException>(() => Store.IsFrozen(freeze.ExperimentId));
+            Assert.Throws<IOException>(() => Store.Create(freeze));
+        }
+        Assert.Equal(24, Store.Load(freeze.ExperimentId)!.Targets.Count);
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileForDelete(
+        string fileName, uint desiredAccess, FileShare shareMode, IntPtr securityAttributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
 
     [Theory]
     [InlineData("root")]

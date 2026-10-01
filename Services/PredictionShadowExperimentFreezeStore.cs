@@ -40,7 +40,14 @@ public sealed class PredictionShadowExperimentFreezeStore
     {
         string path = GetPath(experimentId);
         byte[] bytes;
-        try { bytes = File.ReadAllBytes(path); }
+        try
+        {
+            // A published name can be visible before the native rename's DELETE handle closes.
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            using var buffer = new MemoryStream();
+            stream.CopyTo(buffer);
+            bytes = buffer.ToArray();
+        }
         catch (FileNotFoundException) { return null; }
         catch (DirectoryNotFoundException) { return null; }
         PredictionShadowExperimentFreeze freeze = Deserialize(bytes);
