@@ -50,6 +50,8 @@ namespace MediaFlux.Services
         public Action<EncodingPlanSnapshot>? EncodingPlanSnapshotCallback { get; init; }
         /// <summary>Optional pre-encode research capture; failures are isolated from encoding.</summary>
         public Func<EncodingPlanSnapshot, CancellationToken, Task>? PreEncodeResearchCallback { get; init; }
+        /// <summary>Explicit research durability gate. Awaited before production; failures abort.</summary>
+        public Func<AdaptivePreAttemptObservation, CancellationToken, Task>? AdaptivePreAttemptCaptureCallback { get; init; }
         /// <summary>Required execution-policy gate; failures abort before the first FFmpeg invocation.</summary>
         public Action<EncodingPlanSnapshot>? PreEncodeExecutionValidationCallback { get; init; }
         public Action<EncodingPlanDivergence>? EncodingPlanDivergenceCallback { get; init; }

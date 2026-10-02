@@ -8,6 +8,7 @@ public partial class MainForm
 {
     private EncodeJobService _encodeJobService = null!;
     private List<EncodeJob> _encodeJobs = new();
+    private Guid? _runningSavedJobId;
     private System.Windows.Forms.Timer? _jobSchedulerTimer;
 
     private void InitializeJobManager()
@@ -231,7 +232,9 @@ public partial class MainForm
         ApplyJobSettings(job.Settings);
         await LoadJobIntoMainQueueAsync(job);
         if (dgvEncodeQueue.Rows.Count == 0) { UpdateJobResult(jobId, EncodeJobStatus.Failed, "Could not load any valid source files into the encode queue."); return; }
-        await StartEncodeAsync(processAllOverride: true);
+        _runningSavedJobId = job.Id;
+        try { await StartEncodeAsync(processAllOverride: true); }
+        finally { _runningSavedJobId = null; }
         EncodeJobStatus outcome = _cancelEncode ? EncodeJobStatus.Failed : _encodeFailedCount > 0 ? EncodeJobStatus.CompletedWithErrors : EncodeJobStatus.Completed;
         string result = outcome == EncodeJobStatus.Completed ? (_encodeStorageRejectedCount > 0 ? $"Completed with {_encodeStorageRejectedCount} file(s) skipped — insufficient savings." : "Completed.") : outcome == EncodeJobStatus.CompletedWithErrors ? $"Completed with {_encodeFailedCount} failed file(s)." : "Stopped or failed.";
         UpdateJobResult(jobId, outcome, result);

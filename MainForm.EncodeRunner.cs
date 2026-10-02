@@ -626,6 +626,8 @@ namespace MediaFlux
                     new EncodeExecutionSnapshotIdentity
                     {
                         OperationId = meta.StatisticsOperationId,
+                        SavedJobId = _runningSavedJobId,
+                        QueueRowId = meta.QueueSequence,
                         StatisticsStartUtc = meta.StatisticsStartUtc,
                         MediaFluxVersion = Application.ProductVersion,
                         StatisticsPath = AppPaths.EncodingStatisticsFile,
@@ -976,8 +978,9 @@ namespace MediaFlux
                     Math.Max(0, (attemptEndUtc - jobStartUtc).TotalSeconds);
                 bool isCanceled = _cancelEncode || ex is OperationCanceledException;
                 bool adaptivePolicySkipped = ex is AdaptiveStorageSavingsSkippedException;
+                bool researchEvidenceFailed = ex is AdaptivePreAttemptEvidenceCaptureException;
                 bool storagePolicyRejected = adaptivePolicySkipped || ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected };
-                if (!isCanceled && !storagePolicyRejected)
+                if (!isCanceled && !storagePolicyRejected && !researchEvidenceFailed)
                 {
                     meta.FailureAnalysis = EncodeFailureAnalysisService.Analyze(
                         new EncodeFailureAnalysisContext(
@@ -1007,6 +1010,15 @@ namespace MediaFlux
                 EncodeExecutionAssignmentValidationException? assignmentValidationFailure =
                     ex as EncodeExecutionAssignmentValidationException;
                 EncodingTerminalResult? terminalResult = meta.IntelligenceOutcome?.TerminalResult;
+                if (researchEvidenceFailed)
+                {
+                    terminalResult = EncodingTerminalResult.NotRun;
+                    // Identity capture can fail while CreateAttempt is still constructing.
+                    // Keep the existing single terminal append truthful even in that case.
+                    meta.IntelligenceOutcome = executionAttempt?.ExecutionOutcome ?? new(
+                        meta.IntelligencePlan?.PlanId ?? Guid.Empty, [], [],
+                        TerminalResult: EncodingTerminalResult.NotRun, ProductionEncodeCount: 0);
+                }
                 if (storagePolicyRejected)
                     terminalResult = adaptivePolicySkipped ? EncodingTerminalResult.AdaptiveStorageSavingsSkipped : EncodingTerminalResult.StoragePolicyRejected;
                 if (assignmentValidationFailure != null)
@@ -1089,7 +1101,7 @@ namespace MediaFlux
                                 finalizationResult?.FailureKind.ToString() ??
                                 (assignmentValidationFailure != null
                                     ? "ExperimentAssignmentValidationFailed"
-                                    : isCanceled ? "Canceled" : "FfmpegFailed"),
+                                    : researchEvidenceFailed ? "ResearchEvidenceCaptureFailed" : isCanceled ? "Canceled" : "FfmpegFailed"),
                             StagingPath = stagedOutputPath,
                             SourceDeletionResult = sourceRetention,
                             RequestedOutputContainer = requestedOutputContainer.ToString(),
@@ -1108,7 +1120,7 @@ namespace MediaFlux
 
                 var centralLogPath = ErrorLogService.Append(
                     Application.StartupPath,
-                    isCanceled ? "Encode job cancelled" : storagePolicyRejected ? "Encode skipped — insufficient savings" : "Encode job failed",
+                    isCanceled ? "Encode job cancelled" : researchEvidenceFailed ? "Research evidence capture failed" : storagePolicyRejected ? "Encode skipped — insufficient savings" : "Encode job failed",
                     logicalSourcePath,
                     ex,
                     $"Encoder Mode: {encoderText}{Environment.NewLine}" +
@@ -1125,7 +1137,7 @@ namespace MediaFlux
                 bool retryQueued = false;
                 if (!isCanceled)
                 {
-                    retryQueued = executionAttempt?.AdaptiveSelection is null && EncodingRetryPolicy.AllowsAutomaticRetry(
+                    retryQueued = !researchEvidenceFailed && executionAttempt?.AdaptiveSelection is null && EncodingRetryPolicy.AllowsAutomaticRetry(
                             terminalResult, meta.PredictionShadowExperimentAssignment is not null) &&
                         TryQueueFailedRowForAutoRetry(row);
                     if (storagePolicyRejected)
@@ -1189,6 +1201,8 @@ namespace MediaFlux
                                     ? "Retry Queued"
                                     : assignmentValidationFailure != null
                                         ? "Validation Failed"
+                                    : researchEvidenceFailed
+                                        ? "Research evidence capture failed"
                                     : finalizationFailure?.Result.FailureKind ==
                                       EncodeFinalizationFailureKind.Validation
                                         ? "Validation Failed"
@@ -1343,6 +1357,8 @@ namespace MediaFlux
                 OutputSuffix = _config.OutputSuffix,
                 Restoration = _config.VideoRestoration?.Clone() ?? new VideoRestorationSettings(),
                 StorageSavings = _config.StorageSavings?.CloneNormalized() ?? new StorageSavingsOptions(),
+                AdaptivePreAttemptResearchCapture = _config.AdaptivePreAttemptResearchCapture ?? new(),
+                ResearchRoot = AppPaths.UserDataDirectory,
                 OutputContainer = runOutputContainer,
                 CompatibilityPolicy = ContainerCompatibilityPolicy.Intelligent,
                 DeleteSourceAfterCompression = false
@@ -1376,6 +1392,8 @@ namespace MediaFlux
                     OutputSuffix = _config.OutputSuffix,
                     Restoration = _config.VideoRestoration?.Clone() ?? new VideoRestorationSettings(),
                     StorageSavings = _config.StorageSavings?.CloneNormalized() ?? new StorageSavingsOptions(),
+                    AdaptivePreAttemptResearchCapture = _config.AdaptivePreAttemptResearchCapture ?? new(),
+                    ResearchRoot = AppPaths.UserDataDirectory,
                     OutputContainer = runOutputContainer,
                     CompatibilityPolicy = GetContainerCompatibilityPolicy(),
                     DeleteSourceAfterCompression = chkDeleteSource.Checked

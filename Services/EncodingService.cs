@@ -407,7 +407,8 @@ namespace MediaFlux.Services
                 request.StorageSavingsContract,
                 request.AdaptiveStorageSavingsEnabled,
                 request.AdaptiveSelectionCallback,
-                request.ExperimentalPolicyCRetryEnabled).ConfigureAwait(false);
+                request.ExperimentalPolicyCRetryEnabled,
+                request.AdaptivePreAttemptCaptureCallback).ConfigureAwait(false);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -679,7 +680,8 @@ namespace MediaFlux.Services
             StorageSavingsContract? storageSavingsContract = null,
             bool adaptiveStorageSavingsEnabled = false,
             Action<AdaptiveQualitySelectionEvidence>? adaptiveSelectionCallback = null,
-            bool experimentalPolicyCRetryEnabled = false)
+            bool experimentalPolicyCRetryEnabled = false,
+            Func<AdaptivePreAttemptObservation, CancellationToken, Task>? adaptivePreAttemptCaptureCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -910,6 +912,9 @@ namespace MediaFlux.Services
                 if (selection.Disposition == AdaptiveSelectionDisposition.Skipped)
                 {
                     encodingPlanSnapshotCallback?.Invoke(new(shadowPlan.PlanId, shadowPlan));
+                    if (adaptivePreAttemptCaptureCallback is not null)
+                        await adaptivePreAttemptCaptureCallback(new(new(shadowPlan.PlanId, shadowPlan), selectionRequest,
+                            restoration?.Clone() ?? new()), cancellationToken).ConfigureAwait(false);
                     throw new AdaptiveStorageSavingsSkippedException(selection);
                 }
                 callback($"Encoding at {(selection.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF")} {selection.SelectedQuality}");
@@ -1037,6 +1042,9 @@ namespace MediaFlux.Services
             _log?.Invoke(EncodingPlanService.DescribeSummary(shadowPlan));
             encodingPlanSnapshotCallback?.Invoke(planSnapshot);
             preEncodeExecutionValidationCallback?.Invoke(planSnapshot);
+            if (adaptivePreAttemptCaptureCallback is not null)
+                await adaptivePreAttemptCaptureCallback(new(planSnapshot, selectionRequest,
+                    restoration?.Clone() ?? new()), cancellationToken).ConfigureAwait(false);
             if (preEncodeResearchCallback is not null && shadowPlan.AdaptiveSelection is null)
             {
                 try

@@ -31,6 +31,8 @@ public sealed record EncodeExecutionSnapshotSettings
     public required string OutputSuffix { get; init; }
     public required VideoRestorationSettings Restoration { get; init; }
     public required StorageSavingsOptions StorageSavings { get; init; }
+    public AdaptivePreAttemptResearchCaptureOptions AdaptivePreAttemptResearchCapture { get; init; } = new();
+    public string? ResearchRoot { get; init; }
     public required OutputContainerSelection OutputContainer { get; init; }
     public required ContainerCompatibilityPolicy CompatibilityPolicy { get; init; }
     public required bool DeleteSourceAfterCompression { get; init; }
@@ -97,6 +99,8 @@ public sealed record EncodeExecutionSnapshotSettings
             OutputSuffix = job.OutputSuffix,
             Restoration = job.Restoration?.Clone() ?? new VideoRestorationSettings(),
             StorageSavings = config.StorageSavings?.CloneNormalized() ?? new StorageSavingsOptions(),
+            AdaptivePreAttemptResearchCapture = config.AdaptivePreAttemptResearchCapture ?? new(),
+            ResearchRoot = AppPaths.UserDataDirectory,
             OutputContainer = OutputContainerPolicy.ParseSelection(job.OutputContainer),
             CompatibilityPolicy = compatibilityPolicy,
             DeleteSourceAfterCompression = job.DeleteSourceAfterCompression
@@ -148,6 +152,8 @@ public sealed record EncodeExecutionSnapshotItem
 /// <summary>Non-UI values which identify and annotate an execution snapshot.</summary>
 public sealed record EncodeExecutionSnapshotIdentity
 {
+    public Guid? SavedJobId { get; init; }
+    public long? QueueRowId { get; init; }
     public required string OperationId { get; init; }
     public required DateTime StatisticsStartUtc { get; init; }
     public required string MediaFluxVersion { get; init; }
@@ -301,6 +307,10 @@ public sealed class EncodeExecutionSnapshotBuilder
             LogicalSourcePath = item.LogicalSourcePath,
             Input = input,
             StorageSavingsContract = StorageSavingsContractService.Capture(storageSavingsApplies, input),
+            AdaptivePreAttemptResearchCapture = settings.AdaptivePreAttemptResearchCapture,
+            ResearchRoot = settings.ResearchRoot,
+            SavedJobId = identity.SavedJobId,
+            QueueRowId = identity.QueueRowId,
             AdaptiveStorageSavingsEnabled = !isPolicyItem && item.PredictionShadowExperimentAssignment is null &&
                 AdaptiveStorageSavingsPolicy.IsPotentiallyApplicable(storageSavingsApplies, input,
                     validated.Resolved.Selection, qualityIntent, targetMb, settings.Restoration),

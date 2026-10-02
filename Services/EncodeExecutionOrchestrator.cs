@@ -56,6 +56,10 @@ public sealed record EncodeExecutionSnapshot
     public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
     public bool AdaptiveStorageSavingsEnabled { get; init; }
     internal bool ExperimentalPolicyCRetryEnabled { get; init; }
+    public AdaptivePreAttemptResearchCaptureOptions AdaptivePreAttemptResearchCapture { get; init; } = new();
+    public string? ResearchRoot { get; init; }
+    public Guid? SavedJobId { get; init; }
+    public long? QueueRowId { get; init; }
     public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
     public EncodingService.ScaleMode ScaleMode { get; init; }
     public required VideoRestorationSettings Restoration { get; init; }
@@ -139,14 +143,40 @@ public sealed record EncodeExecutionCallbacks
 public sealed class EncodeExecutionAttempt
 {
     private int _researchCaptureStarted;
+    private int _adaptiveCaptureStarted;
 
-    internal EncodeExecutionAttempt(EncodeExecutionSnapshot snapshot) => Snapshot = snapshot.CopyForExecution();
+    internal EncodeExecutionAttempt(EncodeExecutionSnapshot snapshot)
+    {
+        Snapshot = snapshot.CopyForExecution();
+        if (Snapshot.AdaptivePreAttemptResearchCapture.Enabled)
+            PreAttemptSource = CaptureSourceIdentity(Snapshot);
+    }
+
+    private static AdaptivePreAttemptSourceIdentity CaptureSourceIdentity(EncodeExecutionSnapshot snapshot)
+    {
+        try
+        {
+            string path = Path.GetFullPath(snapshot.SourceFilePath);
+            var file = new FileInfo(path);
+            if (!file.Exists) throw new FileNotFoundException("Research source identity is unavailable.", path);
+            var context = snapshot.AdaptivePreAttemptResearchCapture.Source;
+            if (context is not null &&
+                (!string.Equals(Path.GetFullPath(context.CanonicalPath), path, StringComparison.OrdinalIgnoreCase) ||
+                 context.ExpectedByteLength is { } length && length != file.Length ||
+                 context.ExpectedLastWriteUtc is { } modified && modified != file.LastWriteTimeUtc))
+                throw new InvalidOperationException("Preregistered source identity is stale or belongs to another source.");
+            return new(path, file.Length, file.LastWriteTimeUtc, context?.CampaignCaseId, context?.StableSourceId, context?.Sha256);
+        }
+        catch (Exception ex) { throw new AdaptivePreAttemptEvidenceCaptureException(ex.Message, ex); }
+    }
 
     internal EncodeExecutionSnapshot Snapshot { get; }
+    internal AdaptivePreAttemptSourceIdentity? PreAttemptSource { get; }
     public EncodingPlan? Plan { get; internal set; }
     public EncodingExecutionOutcome? ExecutionOutcome { get; internal set; }
     public EncodingQualityResolution? QualityResolution { get; internal set; }
     public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; internal set; }
+    public AdaptivePreAttemptCaptureAcknowledgment? PreAttemptCapture { get; internal set; }
     public EncodingService.EncodeResult? EncodeResult { get; internal set; }
     public EncodeFinalizationResult? FinalizationResult { get; internal set; }
     public SourceDeletionResult? SourceDeletion { get; internal set; }
@@ -159,6 +189,7 @@ public sealed class EncodeExecutionAttempt
     internal EncodeExecutionAssignmentValidationException? AssignmentValidationFailure { get; set; }
     internal EncodeExecutionCallbacks? Callbacks { get; set; }
     internal bool TryStartResearchCapture() => Interlocked.Exchange(ref _researchCaptureStarted, 1) == 0;
+    internal bool TryStartAdaptiveCapture() => Interlocked.Exchange(ref _adaptiveCaptureStarted, 1) == 0;
 }
 
 public sealed record EncodeExecutionResult(
@@ -189,6 +220,7 @@ public sealed class EncodeExecutionOrchestrator
     private readonly Action? _statisticsAppended;
     private readonly Func<string> _hardwareKey;
     private readonly PredictionShadowExperimentFreezeStore _experimentFreezeStore;
+    private readonly IAdaptivePreAttemptEvidenceSink? _preAttemptEvidenceSink;
 
     public EncodeExecutionOrchestrator(
         IEncodeRequestExecutor encodingService,
@@ -196,7 +228,8 @@ public sealed class EncodeExecutionOrchestrator
         EncodingStatisticsService encodingStatisticsService,
         Action? statisticsAppended = null,
         Func<string>? hardwareKey = null,
-        PredictionShadowExperimentFreezeStore? experimentFreezeStore = null)
+        PredictionShadowExperimentFreezeStore? experimentFreezeStore = null,
+        IAdaptivePreAttemptEvidenceSink? preAttemptEvidenceSink = null)
     {
         _encodingService = encodingService ?? throw new ArgumentNullException(nameof(encodingService));
         _predictionShadowService = predictionShadowService ?? throw new ArgumentNullException(nameof(predictionShadowService));
@@ -204,6 +237,7 @@ public sealed class EncodeExecutionOrchestrator
         _statisticsAppended = statisticsAppended;
         _hardwareKey = hardwareKey ?? HardwarePerformanceService.DetectGpuIdentity;
         _experimentFreezeStore = experimentFreezeStore ?? new PredictionShadowExperimentFreezeStore();
+        _preAttemptEvidenceSink = preAttemptEvidenceSink;
     }
 
     public EncodeExecutionAttempt CreateAttempt(EncodeExecutionSnapshot snapshot)
@@ -240,6 +274,9 @@ public sealed class EncodeExecutionOrchestrator
             ExperimentalPolicyCRetryEnabled = snapshot.ExperimentalPolicyCRetryEnabled &&
                 snapshot.AdaptiveStorageSavingsEnabled && snapshot.PredictionShadowExperimentAssignment is null,
             AdaptiveSelectionCallback = evidence => attempt.AdaptiveSelection = evidence,
+            AdaptivePreAttemptCaptureCallback = snapshot.AdaptivePreAttemptResearchCapture.Enabled
+                ? (observation, token) => CaptureAdaptivePreAttemptAsync(attempt, observation, callbacks, token)
+                : null,
             OutputFolder = snapshot.OutputFolder,
             Suffix = snapshot.Suffix,
             Encoder = snapshot.Encoder,
@@ -335,6 +372,54 @@ public sealed class EncodeExecutionOrchestrator
             encoded);
         attempt.SourceDeletion = deletion;
         return new EncodeExecutionResult(encoded, deletion);
+    }
+
+    private async Task CaptureAdaptivePreAttemptAsync(EncodeExecutionAttempt attempt,
+        AdaptivePreAttemptObservation observation, EncodeExecutionCallbacks callbacks, CancellationToken token)
+    {
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            if (!attempt.TryStartAdaptiveCapture())
+                throw new InvalidOperationException("Duplicate pre-attempt capture for this logical operation.");
+            var snapshot = attempt.Snapshot;
+            var options = snapshot.AdaptivePreAttemptResearchCapture;
+            var request = observation.SelectionRequest ?? throw new InvalidOperationException("No frozen adaptive request is available.");
+            var plan = observation.Plan.Plan;
+            var selection = plan.AdaptiveSelection ?? throw new InvalidOperationException("No frozen adaptive selection is available.");
+            string root = Path.GetFullPath(snapshot.ResearchRoot ?? throw new InvalidOperationException("No captured research root is available."));
+            var values = EncodingPlanService.GetExecutionValues(plan);
+            var record = new AdaptivePreAttemptEvidenceRecord(1, options.CaptureRevision, snapshot.OperationId,
+                snapshot.SavedJobId, snapshot.QueueRowId,
+                attempt.PreAttemptSource ?? throw new InvalidOperationException("No frozen source identity is available."),
+                DateTime.UtcNow,
+                new(snapshot.MediaFluxVersion, options.ImplementationId, options.ExecutableSha256, options.FfmpegSha256,
+                    options.FfprobeSha256, options.ResearchConfigSha256, root),
+                request.Contract, request.Envelope, request.Video, request.SourceDuration, observation.Restoration,
+                new(plan.PlanId, plan.Source, plan.Video, plan.Container, plan.Hardware, plan.Audio, plan.Subtitles)
+                {
+                    MapMode = values.MapMode, CopySubtitles = values.CopySubtitles,
+                    CopyDataStreams = values.CopyDataStreams, CopyAttachments = values.CopyAttachments,
+                    ContainerDecision = values.ContainerDecision
+                },
+                selection, snapshot.AdaptiveStorageSavingsEnabled, snapshot.ExperimentalPolicyCRetryEnabled, true);
+            var sink = _preAttemptEvidenceSink ?? new AdaptivePreAttemptEvidenceStore(root);
+            var ack = await sink.CaptureAsync(record, token).ConfigureAwait(false);
+            if (!ack.Success || string.IsNullOrWhiteSpace(ack.RecordPath) || string.IsNullOrWhiteSpace(ack.Sha256))
+                throw new InvalidOperationException("The evidence sink did not acknowledge durable completion.");
+            attempt.PreAttemptCapture = ack;
+            // Diagnostics cannot undo a successful durability gate or change encoding.
+            try { callbacks.Diagnostic?.Invoke($"[AdaptivePreAttemptEvidence] Path={ack.RecordPath}; SHA256={ack.Sha256}; CapturedUtc={ack.CapturedUtc:O}; SerializationSeconds={ack.SerializationSeconds:R}; DurableWriteSeconds={ack.DurableWriteSeconds:R}; TotalSeconds={ack.TotalSeconds:R}"); }
+            catch { }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            attempt.ExecutionOutcome = new(observation.Plan.PlanId, [], [], TerminalResult: EncodingTerminalResult.NotRun, ProductionEncodeCount: 0);
+            try { callbacks.ExecutionOutcome?.Invoke(attempt.ExecutionOutcome); } catch { }
+            if (ex is AdaptivePreAttemptEvidenceCaptureException) throw;
+            throw new AdaptivePreAttemptEvidenceCaptureException(ex.Message, ex);
+        }
     }
 
     public bool RecordSuccessfulExecution(

@@ -82,6 +82,8 @@ namespace MediaFlux.Models
         public double MinimumExpectedSavingsPercent { get; set; } = 15;
         public bool WarnBeforeEncodingSkippedOrReviewItems { get; set; } = true;
         public StorageSavingsOptions StorageSavings { get; set; } = new();
+        // Research-only; no Settings UI or automatic activation from the retry gate.
+        public AdaptivePreAttemptResearchCaptureOptions AdaptivePreAttemptResearchCapture { get; set; } = new();
         public bool FindDuplicatesOnImport { get; set; } = false;
         public bool OnlyQueueDuplicateCandidates { get; set; } = false;
         public string DuplicateScanMode { get; set; } = "Strict visual duplicates";
@@ -272,6 +274,7 @@ namespace MediaFlux.Models
             config.MinimumExpectedSavingsPercent =
                 Math.Clamp(config.MinimumExpectedSavingsPercent, 0, 90);
             config.StorageSavings ??= new StorageSavingsOptions();
+            config.AdaptivePreAttemptResearchCapture ??= new AdaptivePreAttemptResearchCaptureOptions();
             config.StorageSavings.Normalize();
             config.LibraryAnalyzerUiState ??= new LibraryAnalyzerUiState();
             config.LibraryAnalyzerUiState.Normalize();
