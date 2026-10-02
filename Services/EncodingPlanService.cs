@@ -14,6 +14,7 @@ public static class EncodingPlanService
         OutputContainerDecision ContainerDecision,
         VideoOutputGeometryPlan? Geometry,
         VideoEncoderSelection Encoder,
+        string EncoderPreset,
         bool UseGpu,
         double? TargetMb,
         EncodingQualityResolution QualityResolution,
@@ -182,7 +183,7 @@ public static class EncodingPlanService
             Risks = risks,
             DecisionReasons = reasons,
             ExecutionValues = new EncodingPlanExecutionValues(
-                container, geometry, context.Encoder, context.UseGpu, context.TargetMb, quality,
+                container, geometry, context.Encoder, context.EncoderPreset, context.UseGpu, context.TargetMb, quality,
                 context.AudioChannels, context.MapMode, container.CopySubtitles,
                 container.CopyDataStreams, container.CopyAttachments)
         };
@@ -227,6 +228,113 @@ public static class EncodingPlanService
             ExecutionValues = execution with { QualityResolution = quality }
         };
     }
+
+    internal static EncodingPlan FreezeAdaptiveRetryQuality(
+        EncodingPlan plan,
+        PolicyCDecision decision,
+        int attemptNumber,
+        int completedProductionEncodeCount)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(decision);
+        if (attemptNumber != AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber)
+            throw new ArgumentOutOfRangeException(nameof(attemptNumber), "Policy C can derive only attempt 2.");
+        if (completedProductionEncodeCount != AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber)
+            throw new ArgumentOutOfRangeException(nameof(completedProductionEncodeCount), "Policy C can derive attempt 2 only after attempt 1.");
+        if (!decision.ShouldRetry || decision.ReasonCode != PolicyCDecisionReason.Selected || decision.Candidate is null)
+            throw new InvalidOperationException("A successful Policy C decision with a selected candidate is required.");
+        if (!plan.IsAvailable || plan.AdaptiveSelection is not { Disposition: AdaptiveSelectionDisposition.Selected, SelectedQuality: int selectedQuality } selection ||
+            plan.Quality is null || plan.Quality.EffectiveQuality != selectedQuality)
+            throw new InvalidOperationException("The original plan must contain a frozen selected adaptive candidate.");
+
+        AdaptiveCandidateEvidence candidate = decision.Candidate;
+        if (selection.Candidates is null || plan.Quality.Mechanism != selection.Mechanism ||
+            !string.Equals(plan.Video?.Codec, selection.Codec, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The plan codec or adaptive candidate collection does not match the frozen selection.");
+        AdaptiveCandidateEvidence[] matchingCandidates = selection.Candidates
+            .Where(row => row is not null && row.Quality == candidate.Quality)
+            .ToArray();
+        AdaptiveCandidateEvidence[] originalCandidates = selection.Candidates
+            .Where(row => row is not null && row.Quality == selectedQuality)
+            .ToArray();
+        if (matchingCandidates.Length != 1 || !ReferenceEquals(matchingCandidates[0], candidate) ||
+            originalCandidates.Length != 1 || originalCandidates[0].Classification != AdaptiveSampleClassification.Borderline)
+            throw new InvalidOperationException("The retry candidate must be a unique row in the frozen evidence and the original selection must be Borderline.");
+        if (candidate.Quality <= selectedQuality || candidate.Quality < selection.PreferredQuality ||
+            candidate.Quality > selection.WorstAcceptableQuality ||
+            candidate.Classification is not (AdaptiveSampleClassification.Borderline or AdaptiveSampleClassification.ClearlyMeets) ||
+            !HasComparableRetryEvidence(originalCandidates[0], candidate))
+            throw new InvalidOperationException("The selected retry candidate is inconsistent with the frozen quality envelope or sample evidence.");
+
+        EncodingPlanExecutionValues execution = GetExecutionValues(plan);
+        if (execution.QualityResolution.EffectiveQuality != selectedQuality ||
+            plan.Recovery?.TolerantRecoveryPermitted != false || plan.Recovery.MaximumRetryCount != 0 ||
+            plan.RecoveryCapabilities is null || plan.RecoveryCapabilities.Items.Any(item => item.Permitted || item.MaximumAttempts != 0) ||
+            plan.SourceAdaptiveShadow is not null || plan.SizePredictionCalibration is not null ||
+            plan.Estimates.TargetTotalBitrateKbps is not null || plan.Estimates.EstimatedOutputSizeMb is not null ||
+            plan.Estimates.EstimatedCompressionRatio is not null || plan.Estimates.HistoricalPrediction is not null ||
+            plan.Estimates.ProductionPredictedOutputSizeMb is not null)
+            throw new InvalidOperationException("The original adaptive plan is not frozen with recovery disabled.");
+
+        const string retryReason = "Policy C attempt 2 of 2; initial candidate rejected by Phase 1.";
+        EncodingQualityResolution quality = execution.QualityResolution with
+        {
+            EffectiveQuality = candidate.Quality,
+            Reasons = Array.AsReadOnly(execution.QualityResolution.Reasons.Append(
+                new EncodingQualityReason(EncodingQualityReasonCode.AdaptiveStorageSavingsRetry, retryReason)).ToArray())
+        };
+        return new EncodingPlan
+        {
+            IsAvailable = plan.IsAvailable, UnavailableReason = plan.UnavailableReason, PlanId = plan.PlanId,
+            Source = plan.Source, SourceHealth = plan.SourceHealth, Video = plan.Video,
+            Audio = plan.Audio, Subtitles = plan.Subtitles, Container = plan.Container, Hardware = plan.Hardware,
+            Recovery = plan.Recovery, Preflight = plan.Preflight, RecoveryCapabilities = plan.RecoveryCapabilities,
+            ValidationIntent = plan.ValidationIntent, FinalizationIntent = plan.FinalizationIntent, Validation = plan.Validation,
+            Quality = quality, AdaptiveSelection = plan.AdaptiveSelection,
+            SourceAdaptiveShadow = plan.SourceAdaptiveShadow, Estimates = plan.Estimates,
+            SizePredictionCalibration = plan.SizePredictionCalibration, Recommendation = plan.Recommendation,
+            Risks = plan.Risks, DecisionReasons = plan.DecisionReasons, Sections = plan.Sections,
+            ExecutionValues = execution with { QualityResolution = quality }
+        };
+    }
+
+    private static bool HasComparableRetryEvidence(
+        AdaptiveCandidateEvidence original,
+        AdaptiveCandidateEvidence candidate)
+    {
+        if (!ValidProjection(original) || !ValidProjection(candidate) ||
+            original.Samples is null || candidate.Samples is null || original.Samples.Count == 0 ||
+            original.Samples.Count != candidate.Samples.Count)
+            return false;
+
+        var expected = new HashSet<(string Label, long Start, long Duration)>();
+        foreach (RepresentativeSampleEvidence? evidence in original.Samples)
+        {
+            if (!ValidSample(evidence) || !expected.Add(SampleKey(evidence!.Sample)))
+                return false;
+        }
+        var actual = new HashSet<(string Label, long Start, long Duration)>();
+        foreach (RepresentativeSampleEvidence? evidence in candidate.Samples)
+        {
+            if (!ValidSample(evidence) || !actual.Add(SampleKey(evidence!.Sample)))
+                return false;
+        }
+        return actual.SetEquals(expected);
+    }
+
+    private static bool ValidProjection(AdaptiveCandidateEvidence candidate) =>
+        double.IsFinite(candidate.ProjectedLowerBytes) && candidate.ProjectedLowerBytes > 0 &&
+        double.IsFinite(candidate.ProjectedUpperBytes) && candidate.ProjectedUpperBytes > 0 &&
+        candidate.ProjectedUpperBytes >= candidate.ProjectedLowerBytes &&
+        double.IsFinite(candidate.ContainerAllowanceBytes) && candidate.ContainerAllowanceBytes >= 0;
+
+    private static bool ValidSample(RepresentativeSampleEvidence? evidence) =>
+        evidence?.Sample is { } sample && !string.IsNullOrWhiteSpace(sample.Label) &&
+        sample.Start >= TimeSpan.Zero && sample.Duration > TimeSpan.Zero && evidence.VideoBytes > 0 &&
+        double.IsFinite(evidence.MeasuredSeconds) && evidence.MeasuredSeconds > 0;
+
+    private static (string Label, long Start, long Duration) SampleKey(RepresentativeSample sample) =>
+        (sample.Label, sample.Start.Ticks, sample.Duration.Ticks);
 
     internal static IReadOnlyList<EncodingPlanDivergence> Compare(
         EncodingPlan plan, OutputContainerDecision actualContainer,

@@ -171,7 +171,10 @@ public sealed record EncodingExecutionOutcome(
     EncodingValidationOutcome? Validation = null,
     EncodingFinalizationOutcome? Finalization = null,
     EncodingTerminalResult TerminalResult = EncodingTerminalResult.NotRun,
-    StorageSavingsEvaluation? StorageSavings = null);
+    StorageSavingsEvaluation? StorageSavings = null)
+{
+    public AdaptiveStorageSavingsRetryTrace? AdaptiveStorageSavingsRetry { get; init; }
+}
 public sealed record EncodingRecoveryStatusUpdate(EncodingRecoveryStatusKind Kind, string Detail = "");
 public sealed record EncodingValidationOutcome(
     EncodingLifecycleStatus Status, EncodingLifecycleStatus OutputProbe,

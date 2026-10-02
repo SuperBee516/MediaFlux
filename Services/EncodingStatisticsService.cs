@@ -30,6 +30,8 @@ namespace MediaFlux.Services
     public sealed record EncodingStatisticsRecord
     {
         public int SchemaVersion { get; set; } = 5;
+        // Legacy/single-production-encode JSON has no value and defaults to one.
+        public int ProductionEncodeCount { get; set; } = 1;
         public string Id { get; set; } = Guid.NewGuid().ToString("N");
         public DateTime StartUtc { get; set; }
         public DateTime EndUtc { get; set; }
@@ -92,6 +94,10 @@ namespace MediaFlux.Services
         public string PredictionAssessment { get; set; } = "";
         public string TerminalResult { get; set; } = "";
         public StorageSavingsEvaluation? StorageSavings { get; set; }
+        // Nullable additive evidence; a non-null trace also marks a multi-attempt job.
+        public AdaptiveStorageSavingsRetryTrace? AdaptiveStorageSavingsRetry { get; set; }
+        [JsonIgnore]
+        public bool IsMultiAttempt => ProductionEncodeCount > 1 || AdaptiveStorageSavingsRetry is not null;
         // Additive JSONL field; older schema versions deserialize with null.
         public SourceAdaptiveShadowOutcome? SourceAdaptiveShadow { get; set; }
         // Versioned effective NVENC quality-mode settings; absent on legacy records.

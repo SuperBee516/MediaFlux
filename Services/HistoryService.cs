@@ -47,6 +47,9 @@ namespace MediaFlux.Services
         public EncodingTerminalResult? TerminalResult { get; set; }
         public StorageSavingsEvaluation? StorageSavings { get; set; }
         public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; set; }
+        public AdaptiveStorageSavingsRetryTrace? AdaptiveStorageSavingsRetry { get; set; }
+        [JsonIgnore]
+        public bool IsMultiAttempt => AdaptiveStorageSavingsRetry is not null;
     }
 
     public sealed class HistoryService
