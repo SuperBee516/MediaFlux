@@ -26,7 +26,7 @@ internal static class BoundedRetryEvidence
     private static PolicyCDecision Decision() => AdaptiveStorageSavingsRetryPolicy.Select(new(Selection(), true, true, 1, true, false));
 
     internal static AdaptiveStorageSavingsRetryTrace Trace(EncodingTerminalResult result = EncodingTerminalResult.Completed,
-        bool preparationFailure = false)
+        bool preparationFailure = false, EncoderQualityMechanism qualityMechanism = EncoderQualityMechanism.Cq)
     {
         var first = AdaptiveStorageSavingsEncodeAttempt.Create(1, AdaptiveStorageSavingsAttemptKind.Initial,
             25, 25, 950_000, Guid.NewGuid(), new string('A', 64), true, 0,
@@ -50,7 +50,7 @@ internal static class BoundedRetryEvidence
             canceled ? AdaptiveStorageSavingsAttemptOutcome.Canceled : validationFailed ? AdaptiveStorageSavingsAttemptOutcome.ValidationFailed :
             preparationFailure ? AdaptiveStorageSavingsAttemptOutcome.PreparationFailed : AdaptiveStorageSavingsAttemptOutcome.EncodeFailed,
             canceled, true);
-        return AdaptiveStorageSavingsRetryTrace.Create(25, EncoderQualityMechanism.Cq, [first, second], Decision(), 2, result);
+        return AdaptiveStorageSavingsRetryTrace.Create(25, qualityMechanism, [first, second], Decision(), 2, result);
     }
 
     internal static StorageSavingsEvaluation Savings(long bytes) => new(AdaptiveStorageSavingsTests.Contract,

@@ -58,6 +58,58 @@ public sealed class JobHistoryPresentationTests
         Assert.Equal("Failed", JobHistoryPresentation.OutcomeLabel(Record(JobStatus.Failed)));
     }
 
+    [Theory]
+    [InlineData(EncodingTerminalResult.Completed, JobStatus.Success, "Completed", "accepted")]
+    [InlineData(EncodingTerminalResult.StoragePolicyRejected, JobStatus.Skipped, "Skipped — insufficient savings", "storage savings rejected")]
+    [InlineData(EncodingTerminalResult.EncodeFailed, JobStatus.Failed, "Failed", "encode failed")]
+    [InlineData(EncodingTerminalResult.ValidationFailed, JobStatus.Failed, "Failed", "validation failed")]
+    [InlineData(EncodingTerminalResult.Canceled, JobStatus.Canceled, "Canceled", "canceled")]
+    public void BoundedRetryHistoryShowsOneLogicalOutcomeAndBothAttemptDetails(
+        EncodingTerminalResult terminal, JobStatus status, string label, string attemptTwoOutcome)
+    {
+        JobHistoryRecord record = Record(status);
+        record.TerminalResult = terminal;
+        record.ProductionEncodeCount = 2;
+        record.AdaptiveStorageSavingsRetry = BoundedRetryEvidence.Trace(terminal);
+
+        Assert.Equal(label, JobHistoryPresentation.OutcomeLabel(record));
+        Assert.Contains("2 production encodes", JobHistoryPresentation.OutcomeSummary(record));
+        string details = JobHistoryPresentation.RetryDetails(record);
+        Assert.Contains("Production encode count: 2 of 2 maximum", details);
+        Assert.Contains("Attempt 1: CQ25 — storage savings rejected", details);
+        Assert.Contains($"Attempt 2: CQ27 — {attemptTwoOutcome}", details);
+        Assert.Contains($"Final logical outcome: {label}", details);
+        Assert.Single(new[] { record });
+    }
+
+    [Fact]
+    public void LegacySingleAttemptAndGenericRecoveryHistoryHaveNoRetryNoise()
+    {
+        JobHistoryRecord legacy = Record(JobStatus.Success);
+        JobHistoryRecord recovered = Record(JobStatus.Success);
+        recovered.TerminalResult = EncodingTerminalResult.CompletedAfterRecovery;
+
+        Assert.Equal("Completed", JobHistoryPresentation.OutcomeLabel(legacy));
+        Assert.Equal("Completed successfully", JobHistoryPresentation.OutcomeSummary(legacy));
+        Assert.Equal("", JobHistoryPresentation.RetryDetails(legacy));
+        Assert.Contains("Source recovered", JobHistoryPresentation.OutcomeSummary(recovered));
+        Assert.DoesNotContain("retry", JobHistoryPresentation.OutcomeSummary(recovered), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("", JobHistoryPresentation.RetryDetails(recovered));
+    }
+
+    [Fact]
+    public void RetryQualityHistoryUsesCrfTerminologyWhenTraceUsesCrf()
+    {
+        var crfTrace = BoundedRetryEvidence.Trace(qualityMechanism: EncoderQualityMechanism.Crf);
+        JobHistoryRecord record = Record(JobStatus.Success);
+        record.AdaptiveStorageSavingsRetry = crfTrace;
+        record.ProductionEncodeCount = 2;
+
+        string details = JobHistoryPresentation.RetryDetails(record);
+        Assert.Contains("Initial adaptive quality: CRF25", details);
+        Assert.Contains("Attempt 2: CRF27", details);
+    }
+
     [Fact]
     public void ActiveRecoveryStatusUsesHumanReadableLabels()
     {

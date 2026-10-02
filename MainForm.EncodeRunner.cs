@@ -692,7 +692,6 @@ namespace MediaFlux
                     if (line.StartsWith("[AdaptiveStorageSavingsRetry] Attempt 1 finalization completed", StringComparison.Ordinal))
                         CompleteFinalizationSpan();
                     _encodingDiagnosticsService.UpdateProgress(meta.StatisticsOperationId, line, durationSec > 0 ? durationSec : null);
-                    HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
                 };
 
                 executionAttempt = _encodeExecutionOrchestrator.CreateAttempt(builtSnapshot);
@@ -740,10 +739,15 @@ namespace MediaFlux
                         if (snapshot.Plan.AdaptiveSelection is { } adaptiveSelection)
                             AppendJobLog($"[AdaptiveStorageSavings] Preferred={adaptiveSelection.PreferredQuality}; selected={adaptiveSelection.SelectedQuality}; worst={adaptiveSelection.WorstAcceptableQuality}; {adaptiveSelection.Reason}");
                         AppendJobLog(EncodingPlanService.DescribeSummary(snapshot.Plan));
-                        Ui(() =>
+                        bool retryPlan = BoundedRetryProgressPresentation.IsRetryPlan(snapshot.Plan);
+                        void ApplyPlanSnapshot()
                         {
+                            if (row.DataGridView != dgvEncodeQueue)
+                                return;
                             RefreshQueueWorkspaceRow(row);
-                            if (builtSnapshot.AdaptiveStorageSavingsEnabled && snapshot.Plan.Quality is { } resolvedQuality)
+                            if (retryPlan && snapshot.Plan.Quality is { EffectiveQuality: not null } retryQuality)
+                                ApplyBoundedRetryProgressToRow(row, retryQuality);
+                            else if (builtSnapshot.AdaptiveStorageSavingsEnabled && snapshot.Plan.Quality is { } resolvedQuality)
                             {
                                 row.Cells["colEstimatedSize"].Value = snapshot.Plan.AdaptiveSelection?.Disposition == AdaptiveSelectionDisposition.Skipped
                                     ? "Skipped — insufficient savings at acceptable quality"
@@ -751,7 +755,12 @@ namespace MediaFlux
                                 row.Cells["colEstimatedSize"].ToolTipText = snapshot.Plan.AdaptiveSelection?.Reason ?? "Resolved source-adaptive quality; actual output remains subject to storage validation.";
                             }
                             RefreshCurrentEncodingIntelligence(row, meta);
-                        });
+                        }
+
+                        if (retryPlan)
+                            UiInvoke(ApplyPlanSnapshot);
+                        else
+                            Ui(ApplyPlanSnapshot);
                     },
                     Diagnostic = line =>
                     {
@@ -1235,6 +1244,34 @@ namespace MediaFlux
                     EndEncodeMetricsForRow(row);
                 });
             }
+        }
+
+        private void ApplyBoundedRetryProgressToRow(DataGridViewRow row, EncodingQualityResolution retryQuality)
+        {
+            if (row == null || row.DataGridView != dgvEncodeQueue)
+                return;
+
+            if (!_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? metrics))
+                metrics = new EncodeMetrics();
+            metrics.Fps = 0;
+            metrics.Speed = 0;
+            metrics.TimeStr = "--";
+            metrics.LastFrame = 0;
+            metrics.LastFrameUtc = default;
+            _ = metrics.AttemptTracker.Observe(AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber);
+            metrics.RetryStatusText = BoundedRetryProgressPresentation.RetryStatus(retryQuality);
+            _activeEncodeMetrics[row] = metrics;
+            if (TryGetRowPathAndDuration(row, out string retryPath, out _) && !string.IsNullOrWhiteSpace(retryPath))
+                _etaSpeedState.Remove(retryPath);
+            else
+                _etaSpeedState.Remove($"row-{row.Index}");
+            SetEncodeRowState(row, metrics.RetryStatusText, "0%", "--:--:--",
+                $"Attempt {AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber} of {AdaptiveStorageSavingsRetryLimits.MaximumProductionAttempts} is encoding at {BoundedRetryProgressPresentation.QualityLabel(retryQuality)}. The initial adaptive selection remains recorded separately.");
+            SetEtaCellColor(row, 0);
+            row.Cells["colProgress"].ToolTipText = "Progress restarted for the retry encode.";
+            row.Cells["colEstimatedSize"].Value = BoundedRetryProgressPresentation.RetryQualityCell(retryQuality);
+            row.Cells["colEstimatedSize"].ToolTipText = "Effective quality for the active retry encode. The initial adaptive selection remains unchanged in the job evidence.";
+            UpdateQueueEstimatedCompletion();
         }
 
         private bool TryQueueFailedRowForAutoRetry(DataGridViewRow row)

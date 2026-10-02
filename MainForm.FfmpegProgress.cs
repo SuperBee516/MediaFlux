@@ -17,6 +17,7 @@ namespace MediaFlux
             public string TimeStr { get; set; } = "--";
             public long LastFrame { get; set; }
             public DateTime LastFrameUtc { get; set; }
+            public string? RetryStatusText { get; set; }
             public EncodeProgressAttemptTracker AttemptTracker { get; } = new();
         }
 
@@ -257,9 +258,8 @@ namespace MediaFlux
             if (!_activeEncodeRows.Contains(row))
                 _activeEncodeRows.Add(row);
 
-            // Raw FFmpeg telemetry and structured progress share this row state.
-            // Preserve the attempt tracker so a late callback from a prior
-            // recovery attempt cannot reopen an already advanced phase.
+            // Structured progress is the production encode's row-progress source.
+            // Preserve its attempt tracker when other telemetry updates metrics.
             if (_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? current))
             {
                 current.Fps = metrics.Fps;
@@ -289,7 +289,7 @@ namespace MediaFlux
             // Recovery starts a new FFmpeg attempt after a prior faststart or
             // verification phase. Only that new attempt may reopen frame progress.
             if (attemptDisposition == EncodeProgressAttemptDisposition.AcceptAndReset && progress.Attempt > 1)
-                row.Cells["colStatus"].Value = "Encoding";
+                row.Cells["colStatus"].Value = attemptMetrics.RetryStatusText ?? "Encoding";
             // Already-posted progress from the same attempt cannot erase a
             // container-finalization or verification stage.
             if (!EncodeLifecycleDiagnostics.ShouldApplyFrameProgress(row.Cells["colStatus"].Value?.ToString()))
@@ -312,11 +312,11 @@ namespace MediaFlux
                 : 0;
             int percent = Math.Max(existingPercent, (int)Math.Round(progress.Percent));
             row.Cells["colProgress"].Value = $"{Math.Clamp(percent, 0, 100)}%";
+            if (!_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? metrics))
+                metrics = attemptMetrics;
+            DateTime now = DateTime.UtcNow;
             if (progress.EncodedFrames is long frame)
             {
-                if (!_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? metrics))
-                    metrics = attemptMetrics;
-                DateTime now = DateTime.UtcNow;
                 if (metrics.LastFrame > 0 && frame > metrics.LastFrame)
                 {
                     double elapsed = (now - metrics.LastFrameUtc).TotalSeconds;
@@ -325,10 +325,8 @@ namespace MediaFlux
                 }
                 if (progress.Fps > 0)
                     metrics.Fps = (int)Math.Round(progress.Fps);
-                metrics.Speed = progress.Speed;
                 metrics.LastFrame = Math.Max(metrics.LastFrame, frame);
                 metrics.LastFrameUtc = now;
-                _activeEncodeMetrics[row] = metrics;
                 row.Cells["colProgress"].ToolTipText =
                     $"Encoded frames: {frame:N0}" +
                     (progress.Basis is EncodeProgressBasis.MeasuredFrames or EncodeProgressBasis.DerivedCfrFrames
@@ -337,6 +335,11 @@ namespace MediaFlux
                             ? " (FFmpeg timestamp unavailable; progress indeterminate)"
                             : "");
             }
+            if (progress.Fps > 0)
+                metrics.Fps = (int)Math.Round(progress.Fps);
+            metrics.Speed = progress.Speed;
+            metrics.TimeStr = progress.CurrentTime.ToString(@"hh\:mm\:ss\.ff");
+            _activeEncodeMetrics[row] = metrics;
             double? etaSeconds = progress.Basis is EncodeProgressBasis.MeasuredFrames or EncodeProgressBasis.DerivedCfrFrames
                 && progress.TotalFrames is long totalFrames
                 && progress.EncodedFrames is long encodedFrames
@@ -350,6 +353,8 @@ namespace MediaFlux
             row.Cells["colETA"].Value = etaSeconds.HasValue
                 ? TimeSpan.FromSeconds(etaSeconds.Value).ToString(@"hh\:mm\:ss")
                 : "--:--:--";
+            SetEtaCellColor(row, progress.Speed);
+            UpdateQueueEstimatedCompletion();
             UpdateOperationProgressPresentation();
         }
 

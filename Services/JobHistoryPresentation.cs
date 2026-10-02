@@ -74,14 +74,70 @@ public static class JobHistoryPresentation
         _ => status == JobStatus.Success ? "Completed" : StatusLabel(status)
     };
 
-    public static string OutcomeSummary(JobHistoryRecord record) => record.TerminalResult switch
+    public static string OutcomeSummary(JobHistoryRecord record)
     {
-        EncodingTerminalResult.StoragePolicyRejected => SummaryFor(record.TerminalResult, record.StorageSavings?.Reason ?? record.Notes),
-        EncodingTerminalResult.AdaptiveStorageSavingsSkipped => SummaryFor(record.TerminalResult, record.AdaptiveSelection?.Reason ?? record.Notes),
-        EncodingTerminalResult.CompletedAfterRecovery => "Source recovered. MediaFlux detected a problem with the source media, created and validated a temporary repaired source, and completed the encode successfully. The original source was preserved.",
-        EncodingTerminalResult.CompletedAfterDegradedSalvage => "Source salvaged with media loss. MediaFlux used tolerant software decoding and re-encoding after authoritative source corruption. The final output passed validation, but damaged packets or frames may have been discarded. The original source was preserved.",
-        EncodingTerminalResult.SourceUnrecoverable => "Source media is damaged. MediaFlux detected extensive corruption in the source video. Automated recovery was unsuccessful, so encoding was stopped to prevent creation of an incomplete or corrupted output file. The original source was preserved.",
-        _ => !string.IsNullOrWhiteSpace(record.ErrorSummary) ? record.ErrorSummary! : !string.IsNullOrWhiteSpace(record.Notes) ? record.Notes : record.Status == JobStatus.Success ? "Completed successfully" : record.Status.ToString()
+        string summary = record.TerminalResult switch
+        {
+            EncodingTerminalResult.StoragePolicyRejected => SummaryFor(record.TerminalResult, record.StorageSavings?.Reason ?? record.Notes),
+            EncodingTerminalResult.AdaptiveStorageSavingsSkipped => SummaryFor(record.TerminalResult, record.AdaptiveSelection?.Reason ?? record.Notes),
+            EncodingTerminalResult.CompletedAfterRecovery => "Source recovered. MediaFlux detected a problem with the source media, created and validated a temporary repaired source, and completed the encode successfully. The original source was preserved.",
+            EncodingTerminalResult.CompletedAfterDegradedSalvage => "Source salvaged with media loss. MediaFlux used tolerant software decoding and re-encoding after authoritative source corruption. The final output passed validation, but damaged packets or frames may have been discarded. The original source was preserved.",
+            EncodingTerminalResult.SourceUnrecoverable => "Source media is damaged. MediaFlux detected extensive corruption in the source video. Automated recovery was unsuccessful, so encoding was stopped to prevent creation of an incomplete or corrupted output file. The original source was preserved.",
+            _ => !string.IsNullOrWhiteSpace(record.ErrorSummary) ? record.ErrorSummary! : !string.IsNullOrWhiteSpace(record.Notes) ? record.Notes : record.Status == JobStatus.Success ? "Completed successfully" : record.Status.ToString()
+        };
+        AdaptiveStorageSavingsRetryTrace? retry = record.AdaptiveStorageSavingsRetry;
+        if (retry is not { IsMultiAttempt: true })
+            return summary;
+
+        int productionCount = Math.Max(0, record.ProductionEncodeCount);
+        string attemptSummary = productionCount == 1
+            ? "A retry was prepared; 1 production encode started."
+            : $"Bounded retry used {productionCount} production encodes.";
+        return $"{summary} {attemptSummary}";
+    }
+
+    public static string RetryDetails(JobHistoryRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        AdaptiveStorageSavingsRetryTrace? retry = record.AdaptiveStorageSavingsRetry;
+        if (retry is not { IsMultiAttempt: true })
+            return "";
+
+        var lines = new List<string>
+        {
+            "Bounded Storage Savings retry",
+            $"Production encode count: {record.ProductionEncodeCount} of {retry.MaximumProductionAttempts} maximum",
+            $"Initial adaptive quality: {RetryQualityLabel(retry.QualityMechanism, retry.InitialSelectedQuality)}",
+            $"Final logical outcome: {TerminalLabel(record.Status, retry.LogicalTerminalResult)}"
+        };
+        foreach (AdaptiveStorageSavingsEncodeAttempt attempt in retry.Attempts)
+        {
+            string process = attempt.ProcessStarted ? "process started" : "process not started";
+            string line = $"Attempt {attempt.AttemptNumber}: {RetryQualityLabel(retry.QualityMechanism, attempt.EffectiveQuality)} — {RetryOutcome(attempt.Outcome)}; {process}";
+            if (attempt.ActualCandidateOutputBytes is long bytes)
+                line += $"; candidate output {bytes:N0} bytes";
+            if (attempt.TechnicalValidationStatus != EncodingLifecycleStatus.NotRun)
+                line += $"; validation {attempt.TechnicalValidationStatus}";
+            if (!string.IsNullOrWhiteSpace(attempt.TechnicalValidationSummary))
+                line += $" ({attempt.TechnicalValidationSummary})";
+            lines.Add(line);
+        }
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string RetryQualityLabel(EncoderQualityMechanism mechanism, int quality) =>
+        $"{mechanism switch { EncoderQualityMechanism.Cq => "CQ", EncoderQualityMechanism.Crf => "CRF", EncoderQualityMechanism.Icq => "ICQ", _ => "Quality" }}{quality}";
+
+    private static string RetryOutcome(AdaptiveStorageSavingsAttemptOutcome outcome) => outcome switch
+    {
+        AdaptiveStorageSavingsAttemptOutcome.Accepted => "accepted",
+        AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected => "storage savings rejected",
+        AdaptiveStorageSavingsAttemptOutcome.EncodeFailed => "encode failed",
+        AdaptiveStorageSavingsAttemptOutcome.ValidationFailed => "validation failed",
+        AdaptiveStorageSavingsAttemptOutcome.FinalizationFailed => "finalization failed",
+        AdaptiveStorageSavingsAttemptOutcome.Canceled => "canceled",
+        AdaptiveStorageSavingsAttemptOutcome.PreparationFailed => "retry preparation failed",
+        _ => outcome.ToString()
     };
 
     public static string SummaryFor(EncodingTerminalResult? terminalResult, string fallback) => terminalResult switch
