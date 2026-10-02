@@ -6,6 +6,8 @@ namespace MediaFlux.Models
         public const string SourceBitrateTarget = "Source video bitrate";
 
         public bool Enabled { get; set; } = false;
+        /// <summary>Internal, default-off acceptance gate for the bounded Policy C retry.</summary>
+        public bool ExperimentalPolicyCRetryEnabled { get; set; } = false;
         public string TargetMode { get; set; } = SourceBitrateTarget;
         public int QualityValue { get; set; } = 28;
         public double SourceVideoBitratePercent { get; set; } = 50;
@@ -15,6 +17,7 @@ namespace MediaFlux.Models
             var clone = new StorageSavingsOptions
             {
                 Enabled = Enabled,
+                ExperimentalPolicyCRetryEnabled = ExperimentalPolicyCRetryEnabled,
                 TargetMode = TargetMode,
                 QualityValue = QualityValue,
                 SourceVideoBitratePercent = SourceVideoBitratePercent

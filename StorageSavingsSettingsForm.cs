@@ -131,6 +131,7 @@ namespace MediaFlux
                 Options = new StorageSavingsOptions
                 {
                     Enabled = _enabled.Checked,
+                    ExperimentalPolicyCRetryEnabled = Options.ExperimentalPolicyCRetryEnabled,
                     TargetMode = _qualityTarget.Checked
                         ? StorageSavingsOptions.QualityTarget
                         : StorageSavingsOptions.SourceBitrateTarget,

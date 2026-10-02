@@ -16,7 +16,8 @@ public enum PolicyCDecisionReason
     NoLowerQualitySampledCandidate,
     OutsideQualityEnvelope,
     CandidateIneligible,
-    NoEligibleCandidate
+    NoEligibleCandidate,
+    SourceIdentityChanged
 }
 
 /// <summary>

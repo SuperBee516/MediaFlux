@@ -304,6 +304,10 @@ public sealed class EncodeExecutionSnapshotBuilder
             AdaptiveStorageSavingsEnabled = !isPolicyItem && item.PredictionShadowExperimentAssignment is null &&
                 AdaptiveStorageSavingsPolicy.IsPotentiallyApplicable(storageSavingsApplies, input,
                     validated.Resolved.Selection, qualityIntent, targetMb, settings.Restoration),
+            ExperimentalPolicyCRetryEnabled = storageSavings.ExperimentalPolicyCRetryEnabled &&
+                !isPolicyItem && item.PredictionShadowExperimentAssignment is null &&
+                AdaptiveStorageSavingsPolicy.IsPotentiallyApplicable(storageSavingsApplies, input,
+                    validated.Resolved.Selection, qualityIntent, targetMb, settings.Restoration),
             OutputFolder = outputFolder,
             Suffix = suffix,
             Encoder = validated.Resolved.Selection,

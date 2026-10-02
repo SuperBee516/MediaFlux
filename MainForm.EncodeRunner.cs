@@ -541,7 +541,21 @@ namespace MediaFlux
             string stagedOutputPath = string.Empty;
             OutputContainerDecision? appliedContainerDecision = null;
             EncodingDiagnosticSummary? diagnosticSummary = null;
-            DateTime? finalizationStartedUtc = null;
+            System.Diagnostics.Stopwatch? activeFinalizationWatch = null;
+            double finalizationElapsedSeconds = 0;
+            void CompleteFinalizationSpan()
+            {
+                if (activeFinalizationWatch is null)
+                    return;
+                activeFinalizationWatch.Stop();
+                finalizationElapsedSeconds += activeFinalizationWatch.Elapsed.TotalSeconds;
+                activeFinalizationWatch = null;
+            }
+            void StartFinalizationSpan()
+            {
+                CompleteFinalizationSpan();
+                activeFinalizationWatch = System.Diagnostics.Stopwatch.StartNew();
+            }
             bool diagnosticStarted = false;
             EncodeExecutionAttempt? executionAttempt = null;
             string encoderText = string.Empty;
@@ -675,6 +689,8 @@ namespace MediaFlux
                         line.StartsWith("Testing compression", StringComparison.Ordinal) ||
                         line.StartsWith("Encoding at CQ", StringComparison.Ordinal) || line.StartsWith("Encoding at CRF", StringComparison.Ordinal))
                         UiInvoke(() => { if (row.DataGridView == dgvEncodeQueue) SetEncodeRowState(row, line, "", "", line); });
+                    if (line.StartsWith("[AdaptiveStorageSavingsRetry] Attempt 1 finalization completed", StringComparison.Ordinal))
+                        CompleteFinalizationSpan();
                     _encodingDiagnosticsService.UpdateProgress(meta.StatisticsOperationId, line, durationSec > 0 ? durationSec : null);
                     HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
                 };
@@ -690,7 +706,8 @@ namespace MediaFlux
                     StagingPathChanged = path => stagedOutputPath = path,
                     FinalizationStatusChanged = status =>
                     {
-                        finalizationStartedUtc ??= DateTime.UtcNow;
+                        if (status == "Verifying output")
+                            StartFinalizationSpan();
                         AppendJobLog($"[MediaFlux] {status}.");
                         UiInvoke(() =>
                         {
@@ -824,9 +841,10 @@ namespace MediaFlux
                         Interlocked.Exchange(ref _lastQueueCompletedTicks, DateTime.UtcNow.Ticks);
                 });
 
+                CompleteFinalizationSpan();
                 diagnosticSummary = _encodingDiagnosticsService.Complete(
                     meta.StatisticsOperationId,
-                    finalizationStartedUtc.HasValue ? Math.Max(0, (jobEndUtc - finalizationStartedUtc.Value).TotalSeconds) : 0,
+                    finalizationElapsedSeconds,
                     lifecycle.Snapshot(inputSource.SourcePath, result.OutputPath, outputSizeBytes));
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (jobEndUtc - jobStartUtc).TotalSeconds);
@@ -941,9 +959,10 @@ namespace MediaFlux
             catch (Exception ex)
             {
                 DateTime attemptEndUtc = DateTime.UtcNow;
+                CompleteFinalizationSpan();
                 diagnosticSummary = _encodingDiagnosticsService.Complete(
                     meta.StatisticsOperationId,
-                    finalizationStartedUtc.HasValue ? Math.Max(0, (attemptEndUtc - finalizationStartedUtc.Value).TotalSeconds) : 0);
+                    finalizationElapsedSeconds);
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (attemptEndUtc - jobStartUtc).TotalSeconds);
                 bool isCanceled = _cancelEncode || ex is OperationCanceledException;
@@ -983,6 +1002,8 @@ namespace MediaFlux
                     terminalResult = adaptivePolicySkipped ? EncodingTerminalResult.AdaptiveStorageSavingsSkipped : EncodingTerminalResult.StoragePolicyRejected;
                 if (assignmentValidationFailure != null)
                     terminalResult = EncodingTerminalResult.ValidationFailed;
+                if (isCanceled)
+                    terminalResult = EncodingTerminalResult.Canceled;
                 var notes = isCanceled
                     ? "Cancelled by user."
                     : JobHistoryPresentation.SummaryFor(terminalResult, ex.Message);
@@ -1053,7 +1074,7 @@ namespace MediaFlux
                                 ? dvdOptions!.Candidate.IsLikelyMainFeature
                                 : null,
                             ErrorSummary = notes,
-                            StorageSavings = finalizationResult?.StorageSavings,
+                            StorageSavings = isCanceled ? null : finalizationResult?.StorageSavings,
                             AdaptiveSelection = executionAttempt?.AdaptiveSelection,
                             FinalizationOutcome =
                                 finalizationResult?.FailureKind.ToString() ??
@@ -1066,7 +1087,7 @@ namespace MediaFlux
                             ResolvedOutputContainer = appliedContainerDecision?.Resolved.ToString(),
                             ContainerDecisionReason = appliedContainerDecision?.Reason,
                             DiagnosticSummary = diagnosticSummary,
-                            TerminalResult = terminalResult ?? (isCanceled ? EncodingTerminalResult.Canceled : EncodingTerminalResult.EncodeFailed)
+                            TerminalResult = isCanceled ? EncodingTerminalResult.Canceled : terminalResult ?? EncodingTerminalResult.EncodeFailed
                         });
                     }
                 }

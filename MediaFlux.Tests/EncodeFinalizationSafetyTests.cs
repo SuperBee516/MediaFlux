@@ -177,6 +177,29 @@ public sealed class EncodeFinalizationSafetyTests : IDisposable
     }
 
     [Fact]
+    public void ExplicitStageIdsCreateDistinctOwnedSameDirectoryPartialPaths()
+    {
+        string final = Path.Combine(_root, "policy-c.mp4");
+        Guid firstId = Guid.NewGuid();
+        Guid secondId = Guid.NewGuid();
+
+        string first = OutputPathService.CreateEncodeStagingPath(final, firstId);
+        string second = OutputPathService.CreateEncodeStagingPath(final, secondId);
+
+        Assert.NotEqual(firstId, secondId);
+        Assert.NotEqual(first, second);
+        Assert.Equal(Path.GetDirectoryName(final), Path.GetDirectoryName(first));
+        Assert.Equal(Path.GetDirectoryName(final), Path.GetDirectoryName(second));
+        Assert.Contains(firstId.ToString("N"), first, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(secondId.ToString("N"), second, StringComparison.OrdinalIgnoreCase);
+        Assert.EndsWith(".mp4.partial", first, StringComparison.OrdinalIgnoreCase);
+        Assert.EndsWith(".mp4.partial", second, StringComparison.OrdinalIgnoreCase);
+        Assert.True(OutputPathService.IsPathWithinDirectory(first, _root));
+        Assert.True(OutputPathService.IsPathWithinDirectory(second, _root));
+        Assert.Throws<ArgumentException>(() => OutputPathService.CreateEncodeStagingPath(final, Guid.Empty));
+    }
+
+    [Fact]
     public void ConcurrentStageAllocationUsesUniqueSameDirectoryPartialNames()
     {
         string final = Path.Combine(_root, "shared final.mp4");

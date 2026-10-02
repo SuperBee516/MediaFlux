@@ -241,6 +241,53 @@ public sealed class AdaptiveStorageSavingsRetryModelTests
     }
 
     [Fact]
+    public void CancellationAfterPolicySelectionCanRemainAttemptOneTerminalEvidence()
+    {
+        (EncodingPlan _, PolicyCDecision decision) = FrozenRetryInputs();
+        AdaptiveStorageSavingsEncodeAttempt attempt1 = Attempt1(
+            AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+            EncodingLifecycleStatus.Passed,
+            rejected: true,
+            contributes: true,
+            stageDisposition: AdaptiveStorageSavingsStageDisposition.Retained).WithCancellationRequested();
+
+        AdaptiveStorageSavingsRetryTrace trace = AdaptiveStorageSavingsRetryTrace.Create(
+            25, EncoderQualityMechanism.Cq, [attempt1], decision,
+            AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+            EncodingTerminalResult.Canceled);
+
+        Assert.True(trace.DecisionAfterAttempt1!.ShouldRetry);
+        Assert.True(trace.Attempts[0].CancellationRequested);
+        Assert.Equal(AdaptiveStorageSavingsStageDisposition.Retained, trace.Attempts[0].StageDisposition);
+        Assert.Equal(EncodingTerminalResult.Canceled, trace.LogicalTerminalResult);
+    }
+
+    [Fact]
+    public void LogicalCancellationPreservesTheSelectedRetryAndAttemptFacts()
+    {
+        (EncodingPlan _, PolicyCDecision decision) = FrozenRetryInputs();
+        AdaptiveStorageSavingsRetryTrace failedPreparation = AdaptiveStorageSavingsRetryTrace.Create(
+            25, EncoderQualityMechanism.Cq,
+            [
+                Attempt1(AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+                    EncodingLifecycleStatus.Passed, rejected: true, contributes: false,
+                    stageDisposition: AdaptiveStorageSavingsStageDisposition.Deleted),
+                Attempt2(AdaptiveStorageSavingsAttemptOutcome.PreparationFailed,
+                    EncodingLifecycleStatus.NotRun, accepted: false, contributes: true, stageId: null)
+            ],
+            decision,
+            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+            EncodingTerminalResult.EncodeFailed);
+
+        AdaptiveStorageSavingsRetryTrace canceled = failedPreparation.WithLogicalCancellation();
+
+        Assert.True(canceled.DecisionAfterAttempt1!.ShouldRetry);
+        Assert.Equal(EncodingTerminalResult.Canceled, canceled.LogicalTerminalResult);
+        Assert.True(canceled.Attempts[1].CancellationRequested);
+        Assert.Equal(AdaptiveStorageSavingsAttemptOutcome.PreparationFailed, canceled.Attempts[1].Outcome);
+    }
+
+    [Fact]
     public void RetryTraceRejectsAttemptThreeAndMismatchedTerminalOrDecisionEvidence()
     {
         (EncodingPlan _, PolicyCDecision decision) = FrozenRetryInputs();

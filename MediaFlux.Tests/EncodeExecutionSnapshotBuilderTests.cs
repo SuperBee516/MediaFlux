@@ -485,6 +485,36 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         if (scenario is "manual" or "restoration" or "qsv") Assert.True(snapshot.StorageSavingsContract.Applies);
     }
 
+    [Fact]
+    public void PolicyCRetryGateDefaultsOffAndFreezesOnlyForAnEligibleAdaptiveJob()
+    {
+        Assert.False(new StorageSavingsOptions().ExperimentalPolicyCRetryEnabled);
+        var optedIn = new StorageSavingsOptions
+        {
+            Enabled = true,
+            ExperimentalPolicyCRetryEnabled = true
+        };
+        Assert.True(optedIn.CloneNormalized().ExperimentalPolicyCRetryEnabled);
+
+        EncodeExecutionSnapshot eligible = Build(Settings() with
+        {
+            AutomaticQuality = true,
+            QualityTarget = QualityTarget.Balanced,
+            StorageSavings = optedIn
+        });
+        EncodeExecutionSnapshot manual = Build(Settings() with { StorageSavings = optedIn });
+
+        Assert.True(eligible.AdaptiveStorageSavingsEnabled);
+        Assert.True(eligible.ExperimentalPolicyCRetryEnabled);
+        Assert.False(manual.ExperimentalPolicyCRetryEnabled);
+        Assert.False(Build(Settings() with
+        {
+            AutomaticQuality = true,
+            QualityTarget = QualityTarget.Balanced,
+            StorageSavings = new StorageSavingsOptions { Enabled = true }
+        }).ExperimentalPolicyCRetryEnabled);
+    }
+
     private static EncodeExecutionSnapshotBuildResult BuildDetailed(
         EncodeExecutionSnapshotSettings settings,
         EncodeExecutionSnapshotItem item) =>
@@ -556,6 +586,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         Assert.Equal(expected.TargetMb, actual.TargetMb);
         Assert.Equal(expected.StorageSavingsContract, actual.StorageSavingsContract);
         Assert.Equal(expected.AdaptiveStorageSavingsEnabled, actual.AdaptiveStorageSavingsEnabled);
+        Assert.Equal(expected.ExperimentalPolicyCRetryEnabled, actual.ExperimentalPolicyCRetryEnabled);
         Assert.Equal(expected.ScaleMode, actual.ScaleMode);
         Assert.Equal(expected.Restoration.Mode, actual.Restoration.Mode);
         Assert.Equal(expected.Restoration.Preset, actual.Restoration.Preset);

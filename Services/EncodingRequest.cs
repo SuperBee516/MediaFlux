@@ -16,6 +16,7 @@ namespace MediaFlux.Services
         public double? TargetMb { get; init; }
         public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
         public bool AdaptiveStorageSavingsEnabled { get; init; }
+        internal bool ExperimentalPolicyCRetryEnabled { get; init; }
         public Action<AdaptiveQualitySelectionEvidence>? AdaptiveSelectionCallback { get; init; }
         public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
         public EncodingService.ScaleMode ScaleMode { get; init; } =

@@ -23,9 +23,14 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         PredictionShadowExperimentFreezeStore freezeStore = CreateFreezeStore(source);
         var orchestrator = CreateOrchestrator(executor, journal, statistics, freezeStore);
         PredictionShadowExperimentAssignment assignment = Assignment();
-        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(Snapshot(
+        EncodeExecutionSnapshot assignedSnapshot = Snapshot(
             source,
-            PredictionShadowExperimentAssignmentPersistence.Capture(source, assignment)));
+            PredictionShadowExperimentAssignmentPersistence.Capture(source, assignment)) with
+        {
+            AdaptiveStorageSavingsEnabled = true,
+            ExperimentalPolicyCRetryEnabled = true
+        };
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(assignedSnapshot);
 
         EncodeExecutionResult result = await orchestrator.ExecuteAsync(
             attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
@@ -33,6 +38,7 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.Equal(new[] { "plan", "capture", "encode" }, executor.Events);
         Assert.Equal(EncodingQualityIntent.Automatic(QualityTarget.Balanced), executor.Request!.QualityIntent);
         Assert.Equal(25, executor.Request.QualityValue);
+        Assert.False(executor.Request.ExperimentalPolicyCRetryEnabled);
         Assert.False(result.SourceDeletion.Deleted);
         PredictionShadowJournalEvent frozen = Assert.Single(journal.ReadEvents());
         Assert.Equal("Frozen", frozen.EventType);
@@ -54,6 +60,32 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.Equal(2, events.Length);
         Assert.Equal("Outcome", events[1].EventType);
         Assert.Equal(assignment, events[1].Outcome!.ExperimentAssignment);
+    }
+
+    [Fact]
+    public async Task ExperimentalPolicyCRetryGateIsForwardedOnlyForOrdinaryAdaptiveExecution()
+    {
+        string source = CreateFile("policy-c-gate.mp4");
+        var contract = new StorageSavingsContract(true, 1_000_000_000, 0, null,
+            long.MaxValue, "Synthetic accepted storage contract for request forwarding.");
+        StorageSavingsEvaluation accepted = StorageSavingsContractService.Evaluate(contract, 123_456_789);
+        var executor = new SyntheticExecutor(MakePlan(), storageSavings: accepted);
+        var orchestrator = CreateOrchestrator(
+            executor,
+            new PredictionShadowObservationJournal(Path.Combine(_root, "gate-research.jsonl")),
+            new EncodingStatisticsService(Path.Combine(_root, "gate-statistics.jsonl")));
+        EncodeExecutionSnapshot snapshot = Snapshot(source, null) with
+        {
+            AdaptiveStorageSavingsEnabled = true,
+            ExperimentalPolicyCRetryEnabled = true,
+            StorageSavingsContract = contract
+        };
+
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(snapshot);
+        await orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
+
+        Assert.True(executor.Request!.AdaptiveStorageSavingsEnabled);
+        Assert.True(executor.Request.ExperimentalPolicyCRetryEnabled);
     }
 
     [Fact]

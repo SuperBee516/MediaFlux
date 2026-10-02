@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,6 +27,7 @@ namespace MediaFlux.Services
         private readonly Action<string>? _log;
         private readonly IEncodeOutputFinalizationService _finalizationService;
         private readonly IAdaptiveVideoSampleRunner? _adaptiveSampleRunnerOverride;
+        private readonly Func<string, string, int, CancellationToken, Task<(int ExitCode, string StandardError)>>? _productionEncodeRunnerOverride;
 
 
         private readonly SynchronizationContext? _syncContext;
@@ -192,6 +194,22 @@ namespace MediaFlux.Services
 
             // Capture the current SynchronizationContext (WinForms UI thread) to marshal progress callbacks safely.
             _syncContext = SynchronizationContext.Current;
+        }
+
+        internal EncodingService(
+            string applicationDirectory,
+            Action<string> progressCallback,
+            Action<string>? logCallback,
+            string? ffmpegPath,
+            string? ffprobePath,
+            IEncodeOutputFinalizationService? finalizationService,
+            IAdaptiveVideoSampleRunner? adaptiveSampleRunner,
+            Func<string, string, int, CancellationToken, Task<(int ExitCode, string StandardError)>> productionEncodeRunnerOverride)
+            : this(applicationDirectory, progressCallback, logCallback, ffmpegPath, ffprobePath,
+                finalizationService, adaptiveSampleRunner)
+        {
+            _productionEncodeRunnerOverride = productionEncodeRunnerOverride ??
+                throw new ArgumentNullException(nameof(productionEncodeRunnerOverride));
         }
 
         // --------------------------------------------------------------------
@@ -388,7 +406,8 @@ namespace MediaFlux.Services
                 request.PreEncodeExecutionValidationCallback,
                 request.StorageSavingsContract,
                 request.AdaptiveStorageSavingsEnabled,
-                request.AdaptiveSelectionCallback).ConfigureAwait(false);
+                request.AdaptiveSelectionCallback,
+                request.ExperimentalPolicyCRetryEnabled).ConfigureAwait(false);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -659,7 +678,8 @@ namespace MediaFlux.Services
             Action<EncodingPlanSnapshot>? preEncodeExecutionValidationCallback = null,
             StorageSavingsContract? storageSavingsContract = null,
             bool adaptiveStorageSavingsEnabled = false,
-            Action<AdaptiveQualitySelectionEvidence>? adaptiveSelectionCallback = null)
+            Action<AdaptiveQualitySelectionEvidence>? adaptiveSelectionCallback = null,
+            bool experimentalPolicyCRetryEnabled = false)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             var performance = new PerformanceTimingService();
@@ -934,11 +954,16 @@ namespace MediaFlux.Services
             // the first finalization still have a well-defined evidence source.
             EncodeFinalizationResult finalization = new();
             EncodingTerminalResult terminalResult = EncodingTerminalResult.NotRun;
+            int productionEncodeCount = 0;
+            AdaptiveStorageSavingsRetryTrace? adaptiveRetryTrace = null;
             void PublishExecutionOutcome()
             {
                 encodingExecutionOutcomeCallback?.Invoke(new EncodingExecutionOutcome(
                     shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(),
-                    validationOutcome, finalizationOutcome, terminalResult, finalization.StorageSavings));
+                    validationOutcome, finalizationOutcome, terminalResult,
+                    terminalResult == EncodingTerminalResult.Canceled ? null : finalization.StorageSavings,
+                    productionEncodeCount)
+                { AdaptiveStorageSavingsRetry = adaptiveRetryTrace });
             }
             void RecordRecovery(EncodingRecoveryKind kind, EncodingRecoveryFailureClass failureClass,
                 EncodingRecoveryMode recoveryMode, int maximumAttempts, EncodingRecoveryResult result, string detail,
@@ -977,7 +1002,8 @@ namespace MediaFlux.Services
                     DurationDeltaSeconds: finalization.StagedValidationResult?.FailureEvidence is { } durationEvidence
                         ? Math.Abs(durationEvidence.SourceDurationSeconds - durationEvidence.OutputDurationSeconds)
                         : null));
-                EncodingExecutionOutcome outcome = new(shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult, finalization.StorageSavings);
+                EncodingExecutionOutcome outcome = new(shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult, finalization.StorageSavings, productionEncodeCount)
+                { AdaptiveStorageSavingsRetry = adaptiveRetryTrace };
                 _log?.Invoke(EncodingPlanService.DescribeRecovery(outcome));
                 encodingExecutionOutcomeCallback?.Invoke(outcome);
             }
@@ -1157,7 +1183,8 @@ namespace MediaFlux.Services
             // only to a hidden same-directory staging file until validation passes.
             string finalOutput = OutputPathService.GetCollisionSafePath(
                 Path.Combine(outFolder, $"{name}{actualSuffix}{containerDecision.Extension}"));
-            string output = OutputPathService.CreateEncodeStagingPath(finalOutput);
+            Guid outputStageId = Guid.NewGuid();
+            string output = OutputPathService.CreateEncodeStagingPath(finalOutput, outputStageId);
             _log?.Invoke(
                 $"[EncodingService] stage=OutputAllocation; effective={containerDecision.Resolved}; " +
                 $"output='{finalOutput}'; staged='{output}'");
@@ -1305,12 +1332,44 @@ namespace MediaFlux.Services
             FfmpegProcessResult runResult;
             int ffmpegAttempt = 0;
             var ffmpegAttempts = new List<FfmpegAttemptDiagnostic>();
+            DateTimeOffset? initialProcessStartedUtc = null;
+            DateTimeOffset? initialProcessExitedUtc = null;
+            double? initialProcessSeconds = null;
+            (string Path, long Length, long LastWriteUtcTicks)? adaptiveSourceIdentity = null;
+            void RecordProductionEncodeStarted(DateTimeOffset _) => productionEncodeCount++;
+            if (experimentalPolicyCRetryEnabled && adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput &&
+                shadowPlan.AdaptiveSelection is { Disposition: AdaptiveSelectionDisposition.Selected } &&
+                inputSource.Kind == EncodingInputKind.File)
+            {
+                try
+                {
+                    var sourceIdentityFile = new FileInfo(inputSource.SourcePath);
+                    sourceIdentityFile.Refresh();
+                    if (sourceIdentityFile.Exists)
+                        adaptiveSourceIdentity = (Path.GetFullPath(sourceIdentityFile.FullName), sourceIdentityFile.Length,
+                            sourceIdentityFile.LastWriteTimeUtc.Ticks);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavingsRetry] Source identity could not be captured; retry will abstain: {ex.Message}");
+                }
+            }
             using (PerformanceTimingService.PerformanceScope initialEncodeScope = performance.Measure(PerformanceTimingStage.FinalEncode))
             {
+                Stopwatch encodeWatch = Stopwatch.StartNew();
                 runResult = await RunFfmpegAsync(
                     ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
                     progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification,
-                    ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback).ConfigureAwait(false);
+                    ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback,
+                    started =>
+                    {
+                        initialProcessStartedUtc = started;
+                        RecordProductionEncodeStarted(started);
+                    },
+                    exited => initialProcessExitedUtc = exited,
+                    output).ConfigureAwait(false);
+                encodeWatch.Stop();
+                initialProcessSeconds = encodeWatch.Elapsed.TotalSeconds;
                 RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Primary encode", ffArgs, runResult);
                 initialEncodeScope.Complete();
             }
@@ -1411,7 +1470,7 @@ namespace MediaFlux.Services
                                 ? sourceDecodeMode : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
                         using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FinalEncode))
                         {
-                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback).ConfigureAwait(false);
+                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
                             RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Source container recovery retry", ffArgs, runResult);
                             scope.Complete();
                         }
@@ -1467,7 +1526,7 @@ namespace MediaFlux.Services
                                         sourceDecodeMode: FfmpegSourceDecodeMode.TolerantDecodeReencode);
                                     using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                                     {
-                                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback).ConfigureAwait(false);
+                                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
                                         RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Tolerant source salvage", ffArgs, runResult);
                                         scope.Complete();
                                     }
@@ -1575,7 +1634,7 @@ namespace MediaFlux.Services
                     _log?.Invoke($"[EncodingService] Attempt 2: software decode -> NVENC; pipeline={pipelineDiagnostic}; ffmpeg arguments: {ffArgs}");
                     using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
                     {
-                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback).ConfigureAwait(false);
+                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
                         RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "NVDEC/CUDA software-decode retry", ffArgs, runResult);
                         retryScope.Complete();
                     }
@@ -1626,7 +1685,7 @@ namespace MediaFlux.Services
                 using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
                 {
                     runResult = await RunFfmpegAsync(
-                        ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback).ConfigureAwait(false);
+                        ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
                     RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "GPU-frame pipeline software-frame fallback", ffArgs, runResult);
                     retryScope.Complete();
                 }
@@ -1676,7 +1735,7 @@ namespace MediaFlux.Services
                             }
                             using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.AudioIntegrityRecovery))
                             {
-                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback).ConfigureAwait(false);
+                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
                                 RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Audio recovery", ffArgs, runResult);
                                 retryScope.Complete();
                             }
@@ -1734,7 +1793,7 @@ namespace MediaFlux.Services
                         }
                         using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                         {
-                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback).ConfigureAwait(false);
+                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
                             RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Video decode recovery", ffArgs, runResult);
                             scope.Complete();
                         }
@@ -1937,6 +1996,70 @@ namespace MediaFlux.Services
                         ,Profile = validationProfile
                 };
             }
+            bool IsAdaptiveSourceIdentityCurrent()
+            {
+                if (adaptiveSourceIdentity is not { } identity)
+                    return false;
+                try
+                {
+                    var current = new FileInfo(inputSource.SourcePath);
+                    current.Refresh();
+                    return current.Exists &&
+                        Path.GetFullPath(current.FullName).Equals(identity.Path, StringComparison.OrdinalIgnoreCase) &&
+                        current.Length == identity.Length && current.LastWriteTimeUtc.Ticks == identity.LastWriteUtcTicks;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavingsRetry] Source identity recheck failed: {ex.Message}");
+                    return false;
+                }
+            }
+            bool IsOwnedEncodeStage(string stagePath, Guid stageId)
+            {
+                try
+                {
+                    string expected = OutputPathService.CreateEncodeStagingPath(finalOutput, stageId);
+                    string fullStage = Path.GetFullPath(stagePath);
+                    string fullFinal = Path.GetFullPath(finalOutput);
+                    string? stageDirectory = Path.GetDirectoryName(fullStage);
+                    string? finalDirectory = Path.GetDirectoryName(fullFinal);
+                    return fullStage.Equals(expected, StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrWhiteSpace(stageDirectory) &&
+                        stageDirectory.Equals(finalDirectory, StringComparison.OrdinalIgnoreCase) &&
+                        OutputPathService.IsPathWithinDirectory(fullStage, finalDirectory ?? "");
+                }
+                catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavingsRetry] Staging ownership check failed: {ex.Message}");
+                    return false;
+                }
+            }
+            AdaptiveStorageSavingsEncodeAttempt CreateAdaptiveAttempt(
+                int number,
+                AdaptiveStorageSavingsAttemptKind kind,
+                AdaptiveCandidateEvidence candidate,
+                Guid? stageId,
+                string? commandHash,
+                bool processStarted,
+                int? exitCode,
+                DateTimeOffset? processStartedAt,
+                DateTimeOffset? processExitedAt,
+                double? encodeSeconds,
+                EncodingLifecycleStatus technicalStatus,
+                string? validationSummary,
+                long? actualBytes,
+                StorageSavingsEvaluation? phaseOne,
+                AdaptiveStorageSavingsStageDisposition stageDisposition,
+                AdaptiveStorageSavingsAttemptOutcome outcome,
+                bool cancellationRequested,
+                bool contributesToTerminal)
+            {
+                return AdaptiveStorageSavingsEncodeAttempt.Create(
+                    number, kind, candidate.Quality, candidate.Quality, candidate.ProjectedUpperBytes,
+                    stageId, commandHash, processStarted, exitCode, processStartedAt, processExitedAt,
+                    encodeSeconds, technicalStatus, validationSummary, actualBytes, phaseOne,
+                    stageDisposition, outcome, cancellationRequested, contributesToTerminal);
+            }
             finalization =
                 await _finalizationService.FinalizeAsync(
                     BuildValidationRequest(),
@@ -1949,10 +2072,542 @@ namespace MediaFlux.Services
                 _log?.Invoke(StorageSavingsContractService.Describe(savingsEvidence));
             if (finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected)
             {
-                terminalResult = EncodingTerminalResult.StoragePolicyRejected;
-                PublishExecutionOutcome();
-                _log?.Invoke("[EncodingService] Storage policy rejected candidate: " + finalization.ErrorMessage);
-                throw new EncodeFinalizationException(finalization);
+                if (experimentalPolicyCRetryEnabled)
+                    callback("[AdaptiveStorageSavingsRetry] Attempt 1 finalization completed; evaluating bounded retry.");
+                EncodeFinalizationResult initialRejection = finalization;
+                bool retryExecuted = false;
+                if (experimentalPolicyCRetryEnabled && adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput &&
+                    shadowPlan.AdaptiveSelection is { Disposition: AdaptiveSelectionDisposition.Selected } selection &&
+                    selection.SelectedQuality is int selectedQuality && selection.Candidates is not null)
+                {
+                    AdaptiveCandidateEvidence[] selectedRows = selection.Candidates
+                        .Where(candidate => candidate.Quality == selectedQuality)
+                        .ToArray();
+                    AdaptiveCandidateEvidence? initialCandidate = selectedRows.Length == 1 ? selectedRows[0] : null;
+                    bool canCaptureAttempt1 = initialCandidate is not null &&
+                        qualityValue == selectedQuality &&
+                        initialCandidate.ProjectedUpperBytes > 0 &&
+                        double.IsFinite(initialCandidate.ProjectedUpperBytes) &&
+                        initialRejection.StagedValidationResult is { Success: true, Evidence: not null } &&
+                        initialRejection.StorageSavings is { Acceptance: StorageSavingsAcceptance.Rejected };
+                    if (canCaptureAttempt1)
+                    {
+                        AdaptiveCandidateEvidence capturedInitialCandidate = initialCandidate!;
+                    bool processAndRecoveryTriggerValid = productionEncodeCount == 1 && ffmpegAttempt == 1 &&
+                        runResult.ExitCode == 0 && initialProcessStartedUtc is not null &&
+                        initialProcessExitedUtc is not null && initialProcessSeconds is not null &&
+                        disableAutomaticFfmpegRecovery && recoveryOutcomes.Count == 0;
+                    bool validatedPhaseOneRejection =
+                        initialRejection.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected &&
+                        initialRejection.StorageSavings?.Acceptance == StorageSavingsAcceptance.Rejected &&
+                        initialRejection.StagedValidationResult is { Success: true, Evidence: not null } &&
+                        qualityValue == selectedQuality && processAndRecoveryTriggerValid;
+                    bool policyGateEnabled = experimentalPolicyCRetryEnabled && adaptiveStorageSavingsEnabled &&
+                        ordinaryAdaptiveInput && disableAutomaticFfmpegRecovery && recoveryOutcomes.Count == 0;
+                    PolicyCDecision decision = AdaptiveStorageSavingsRetryPolicy.Select(new PolicyCEligibility(
+                        selection,
+                        IsValidatedPhaseOneRejection: validatedPhaseOneRejection,
+                        TechnicalValidationPassed: initialRejection.StagedValidationResult is { Success: true, Evidence: not null },
+                        ProductionEncodeCount: productionEncodeCount,
+                        RetryEnabled: policyGateEnabled,
+                        CancellationRequested: cancellationToken.IsCancellationRequested));
+                    if (decision.ShouldRetry && !IsAdaptiveSourceIdentityCurrent())
+                        decision = new(false, null, PolicyCDecisionReason.SourceIdentityChanged);
+
+                        var retryAttempts = new List<AdaptiveStorageSavingsEncodeAttempt>();
+                        StorageSavingsEvaluation firstPhaseOne = initialRejection.StorageSavings!;
+                        AdaptiveStorageSavingsEncodeAttempt firstAttempt = CreateAdaptiveAttempt(
+                            AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                            AdaptiveStorageSavingsAttemptKind.Initial,
+                            capturedInitialCandidate,
+                            outputStageId,
+                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                            processStarted: true,
+                            runResult.ExitCode,
+                            initialProcessStartedUtc,
+                            initialProcessExitedUtc,
+                            initialProcessSeconds,
+                            EncodingLifecycleStatus.Passed,
+                            initialRejection.StagedValidationResult!.Summary,
+                            firstPhaseOne.CandidateOutputBytes,
+                            firstPhaseOne,
+                            AdaptiveStorageSavingsStageDisposition.Retained,
+                            AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+                            cancellationRequested: cancellationToken.IsCancellationRequested,
+                            contributesToTerminal: !decision.ShouldRetry);
+
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            firstAttempt = firstAttempt.WithCancellationRequested(contributesToTerminalResult: true);
+                            retryAttempts.Add(firstAttempt);
+                            adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                EncodingTerminalResult.Canceled);
+                            finalization = new EncodeFinalizationResult();
+                            validationOutcome = null;
+                            finalizationOutcome = null;
+                            terminalResult = EncodingTerminalResult.Canceled;
+                            PublishExecutionOutcome();
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
+
+                        if (!decision.ShouldRetry)
+                        {
+                            retryAttempts.Add(firstAttempt);
+                            adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                EncodingTerminalResult.StoragePolicyRejected);
+                            terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                            PublishExecutionOutcome();
+                            _log?.Invoke($"[AdaptiveStorageSavingsRetry] Policy C declined attempt 2: {decision.ReasonCode}.");
+                        }
+                        else
+                        {
+                            AdaptiveCandidateEvidence retryCandidate = decision.Candidate!;
+                            if (!IsAdaptiveSourceIdentityCurrent())
+                            {
+                                decision = new(false, null, PolicyCDecisionReason.SourceIdentityChanged);
+                                firstAttempt = CreateAdaptiveAttempt(
+                                    AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                    AdaptiveStorageSavingsAttemptKind.Initial, capturedInitialCandidate, outputStageId,
+                                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))), true,
+                                    runResult.ExitCode, initialProcessStartedUtc, initialProcessExitedUtc,
+                                    initialProcessSeconds, EncodingLifecycleStatus.Passed,
+                                    initialRejection.StagedValidationResult!.Summary,
+                                    firstPhaseOne.CandidateOutputBytes, firstPhaseOne,
+                                    AdaptiveStorageSavingsStageDisposition.Retained,
+                                    AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+                                    cancellationRequested: false, contributesToTerminal: true);
+                                retryAttempts.Add(firstAttempt);
+                                adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                    selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                    AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                    EncodingTerminalResult.StoragePolicyRejected);
+                                terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                                PublishExecutionOutcome();
+                            }
+                            else
+                            {
+                                if (!IsOwnedEncodeStage(output, outputStageId) || !TryDeleteFailedStagingOutput(output))
+                                {
+                                    firstAttempt = CreateAdaptiveAttempt(
+                                        AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                        AdaptiveStorageSavingsAttemptKind.Initial, capturedInitialCandidate, outputStageId,
+                                        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))), true,
+                                        runResult.ExitCode, initialProcessStartedUtc, initialProcessExitedUtc,
+                                        initialProcessSeconds, EncodingLifecycleStatus.Passed,
+                                        initialRejection.StagedValidationResult!.Summary,
+                                        firstPhaseOne.CandidateOutputBytes, firstPhaseOne,
+                                        AdaptiveStorageSavingsStageDisposition.CleanupFailed,
+                                        AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+                                        cancellationRequested: false, contributesToTerminal: true);
+                                    retryAttempts.Add(firstAttempt);
+                                    adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                        selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                        AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                        EncodingTerminalResult.StoragePolicyRejected);
+                                    terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                                    PublishExecutionOutcome();
+                                    _log?.Invoke("[AdaptiveStorageSavingsRetry] Attempt 1 staging cleanup failed; preserving the original StoragePolicyRejected result.");
+                                }
+                                else
+                                {
+                                    firstAttempt = CreateAdaptiveAttempt(
+                                        AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                        AdaptiveStorageSavingsAttemptKind.Initial, capturedInitialCandidate, outputStageId,
+                                        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))), true,
+                                        runResult.ExitCode, initialProcessStartedUtc, initialProcessExitedUtc,
+                                        initialProcessSeconds, EncodingLifecycleStatus.Passed,
+                                        initialRejection.StagedValidationResult!.Summary,
+                                        firstPhaseOne.CandidateOutputBytes, firstPhaseOne,
+                                        AdaptiveStorageSavingsStageDisposition.Deleted,
+                                        AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+                                        cancellationRequested: false, contributesToTerminal: false);
+                                    retryAttempts.Add(firstAttempt);
+
+                                    if (cancellationToken.IsCancellationRequested)
+                                    {
+                                        finalization = new EncodeFinalizationResult();
+                                        validationOutcome = null;
+                                        finalizationOutcome = null;
+                                        AdaptiveStorageSavingsEncodeAttempt canceledBeforePreparation = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, null,
+                                            null, false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun,
+                                            "Canceled after attempt-1 staging cleanup and before retry preparation.",
+                                            null, null, AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.Canceled, true, true);
+                                        retryAttempts.Add(canceledBeforePreparation);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.Canceled);
+                                        terminalResult = EncodingTerminalResult.Canceled;
+                                        PublishExecutionOutcome();
+                                        cancellationToken.ThrowIfCancellationRequested();
+                                    }
+
+                                    // From this point attempt 1 is disposed and cannot become the active result.
+                                    finalization = new EncodeFinalizationResult();
+                                    validationOutcome = null;
+                                    finalizationOutcome = null;
+                                    terminalResult = EncodingTerminalResult.NotRun;
+
+                                    EncodingPlan retryPlan;
+                                    try
+                                    {
+                                        retryPlan = EncodingPlanService.FreezeAdaptiveRetryQuality(
+                                            shadowPlan, decision, AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            productionEncodeCount);
+                                    }
+                                    catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt preparationFailure = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, null,
+                                            null, false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun, ex.Message, null, null,
+                                            AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.PreparationFailed,
+                                            false, true);
+                                        retryAttempts.Add(preparationFailure);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw new InvalidOperationException(
+                                            "Policy C attempt 2 could not be prepared from the frozen adaptive plan. The original source was retained.", ex);
+                                    }
+
+                                    Guid retryStageId = Guid.NewGuid();
+                                    string retryOutput;
+                                    try
+                                    {
+                                        retryOutput = OutputPathService.CreateEncodeStagingPath(finalOutput, retryStageId);
+                                        string fullRetryOutput = Path.GetFullPath(retryOutput);
+                                        string fullFinalOutput = Path.GetFullPath(finalOutput);
+                                        if (retryStageId == outputStageId ||
+                                            fullRetryOutput.Equals(Path.GetFullPath(output), StringComparison.OrdinalIgnoreCase) ||
+                                            File.Exists(fullRetryOutput) ||
+                                            !string.Equals(Path.GetDirectoryName(fullRetryOutput), Path.GetDirectoryName(fullFinalOutput), StringComparison.OrdinalIgnoreCase) ||
+                                            !OutputPathService.IsPathWithinDirectory(fullRetryOutput, Path.GetDirectoryName(fullFinalOutput) ?? ""))
+                                            throw new IOException("Fresh attempt-2 staging identity was not distinct, absent, and in the final output directory.");
+                                    }
+                                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt preparationFailure = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, null,
+                                            null, false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun, ex.Message, null, null,
+                                            AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.PreparationFailed,
+                                            false, true);
+                                        retryAttempts.Add(preparationFailure);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw new InvalidOperationException(
+                                            "Policy C attempt 2 could not allocate fresh staging after attempt 1 was safely removed. The original source was retained.", ex);
+                                    }
+
+                                    shadowPlan = retryPlan;
+                                    planExecution = EncodingPlanService.GetExecutionValues(retryPlan);
+                                    qualityValue = planExecution.QualityResolution.EffectiveQuality;
+                                    qualityResolutionCallback?.Invoke(planExecution.QualityResolution);
+                                    planSnapshot = new EncodingPlanSnapshot(retryPlan.PlanId, retryPlan);
+                                    encodingPlanSnapshotCallback?.Invoke(planSnapshot);
+                                    outputStageId = retryStageId;
+                                    output = retryOutput;
+                                    outputPathCallback?.Invoke(finalOutput);
+                                    stagingPathCallback?.Invoke(output);
+
+                                    ffArgs = BuildFfmpegArgs(
+                                        inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                        encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                        mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                        containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                        qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                        sourcePixelFormat,
+                                        recoveryFrameRateRational: preplannedTimelineReconstructionRate?.Text,
+                                        timestampReconstructionFilter: preplannedTimelineReconstructionRate is { } retryReconstructionRate
+                                            ? $"setpts=N*{retryReconstructionRate.Denominator}/{retryReconstructionRate.Numerator}/TB"
+                                            : null,
+                                        disableHardwareDecode: preplannedTimelineReconstructionRate is not null,
+                                        restoration: restoration,
+                                        splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                        restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                        plannedVideoGeometry: plannedOutputGeometry,
+                                        sourceDecodeMode: preplannedTimelineReconstructionRate is null
+                                            ? sourceDecodeMode
+                                            : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
+                                    _log?.Invoke($"[AdaptiveStorageSavingsRetry] Starting Policy C attempt 2 of 2; stage-id={retryStageId:N}; quality={retryCandidate.Quality}; command-sha256={Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs)))}.");
+
+                                    if (cancellationToken.IsCancellationRequested)
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt canceledBeforeLaunch = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun, "Canceled before the attempt-2 process started.",
+                                            null, null, AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.Canceled, true, true);
+                                        retryAttempts.Add(canceledBeforeLaunch);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.Canceled);
+                                        terminalResult = EncodingTerminalResult.Canceled;
+                                        PublishExecutionOutcome();
+                                        cancellationToken.ThrowIfCancellationRequested();
+                                    }
+                                    if (!IsAdaptiveSourceIdentityCurrent())
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt staleSource = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun, "Source identity changed after attempt 1; attempt 2 was not launched.",
+                                            null, null, AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.PreparationFailed, false, true);
+                                        retryAttempts.Add(staleSource);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw new InvalidOperationException("The source changed after attempt 1; Policy C attempt 2 was not launched.");
+                                    }
+
+                                    DateTimeOffset? retryStartedUtc = null;
+                                    DateTimeOffset? retryExitedUtc = null;
+                                    double? retryEncodeSeconds = null;
+                                    bool retryProcessStarted = false;
+                                    FfmpegProcessResult retryRunResult;
+                                    Stopwatch retryEncodeWatch = Stopwatch.StartNew();
+                                    try
+                                    {
+                                        using (PerformanceTimingService.PerformanceScope retryEncodeScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                                        {
+                                            retryRunResult = await RunFfmpegAsync(
+                                                ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
+                                                progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback,
+                                                sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics,
+                                                faststartStartedCallback,
+                                                started =>
+                                                {
+                                                    retryProcessStarted = true;
+                                                    retryStartedUtc = started;
+                                                    RecordProductionEncodeStarted(started);
+                                                },
+                                                exited => retryExitedUtc = exited,
+                                                output).ConfigureAwait(false);
+                                            retryEncodeScope.Complete();
+                                        }
+                                        retryEncodeWatch.Stop();
+                                        retryEncodeSeconds = retryEncodeWatch.Elapsed.TotalSeconds;
+                                    }
+                                    catch (OperationCanceledException)
+                                    {
+                                        retryEncodeWatch.Stop();
+                                        retryEncodeSeconds = retryProcessStarted ? retryEncodeWatch.Elapsed.TotalSeconds : null;
+                                        AdaptiveStorageSavingsEncodeAttempt canceledAttempt = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            retryProcessStarted, null, retryStartedUtc, retryExitedUtc, retryEncodeSeconds,
+                                            EncodingLifecycleStatus.NotRun, "Canceled during attempt-2 FFmpeg execution.",
+                                            null, null, File.Exists(output) ? AdaptiveStorageSavingsStageDisposition.Retained : AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.Canceled, true, true);
+                                        retryAttempts.Add(canceledAttempt);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.Canceled);
+                                        finalization = new EncodeFinalizationResult();
+                                        validationOutcome = null;
+                                        finalizationOutcome = null;
+                                        terminalResult = EncodingTerminalResult.Canceled;
+                                        PublishExecutionOutcome();
+                                        throw;
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        retryEncodeWatch.Stop();
+                                        retryEncodeSeconds = retryProcessStarted ? retryEncodeWatch.Elapsed.TotalSeconds : null;
+                                        AdaptiveStorageSavingsEncodeAttempt processFailure = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            retryProcessStarted, null, retryStartedUtc, retryExitedUtc, retryEncodeSeconds,
+                                            EncodingLifecycleStatus.NotRun, ex.Message, null, null,
+                                            File.Exists(output) ? AdaptiveStorageSavingsStageDisposition.Retained : AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.EncodeFailed, false, true);
+                                        retryAttempts.Add(processFailure);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        finalization = new EncodeFinalizationResult();
+                                        validationOutcome = null;
+                                        finalizationOutcome = null;
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw;
+                                    }
+
+                                    RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Policy C bounded storage retry", ffArgs, retryRunResult);
+                                    if (retryRunResult.ExitCode != 0)
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt processFailure = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            retryProcessStarted, retryRunResult.ExitCode, retryStartedUtc, retryExitedUtc,
+                                            retryEncodeSeconds, EncodingLifecycleStatus.NotRun,
+                                            SummarizeFfmpegFailure(retryRunResult.StandardError), null, null,
+                                            File.Exists(output) ? AdaptiveStorageSavingsStageDisposition.Retained : AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.EncodeFailed, false, true);
+                                        retryAttempts.Add(processFailure);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw new InvalidOperationException(
+                                            $"Policy C attempt 2 of 2 failed because FFmpeg exited with code {retryRunResult.ExitCode}. The original source was retained.");
+                                    }
+
+                                    try
+                                    {
+                                        cancellationToken.ThrowIfCancellationRequested();
+                                        finalization = await _finalizationService.FinalizeAsync(
+                                            BuildValidationRequest(), ReportFinalizationStatus, cancellationToken).ConfigureAwait(false);
+                                        lifecycleDiagnostics?.Record(EncodeLifecycleEvent.VerificationEnd);
+                                    }
+                                    catch (OperationCanceledException canceled)
+                                    {
+                                        finalization = canceled is EncodeFinalizationCanceledException finalizationCanceled
+                                            ? finalizationCanceled.Result
+                                            : new EncodeFinalizationResult();
+                                        validationOutcome = finalization.StagedValidationResult is null
+                                            ? null : EncodingPlanService.DescribeValidationOutcome(finalization);
+                                        finalizationOutcome = finalization.StagedValidationResult is null
+                                            ? null : EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                                        StorageSavingsEvaluation? canceledSavings = finalization.StorageSavings;
+                                        long? canceledBytes = canceledSavings?.CandidateOutputBytes ??
+                                            finalization.StagedValidationResult?.Evidence?.OutputSizeBytes;
+                                        AdaptiveStorageSavingsEncodeAttempt canceledAttempt = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            true, retryRunResult.ExitCode, retryStartedUtc, retryExitedUtc,
+                                            retryEncodeSeconds,
+                                            finalization.StagedValidationResult?.Success == true
+                                                ? EncodingLifecycleStatus.Passed
+                                                : finalization.StagedValidationResult is null
+                                                    ? EncodingLifecycleStatus.NotRun : EncodingLifecycleStatus.Failed,
+                                            canceled.Message, canceledBytes, canceledSavings,
+                                            File.Exists(output) || File.Exists(finalOutput)
+                                                ? AdaptiveStorageSavingsStageDisposition.Retained
+                                                : AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.Canceled, true, true);
+                                        retryAttempts.Add(canceledAttempt);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.Canceled);
+                                        terminalResult = EncodingTerminalResult.Canceled;
+                                        PublishExecutionOutcome();
+                                        throw;
+                                    }
+
+                                    validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                                    finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                                    StorageSavingsEvaluation? retrySavings = finalization.StorageSavings;
+                                    EncodeOutputValidationResult? retryValidation = finalization.StagedValidationResult;
+                                    long? retryBytes = retrySavings?.CandidateOutputBytes ?? retryValidation?.Evidence?.OutputSizeBytes;
+                                    AdaptiveStorageSavingsAttemptOutcome retryOutcome = finalization.Success
+                                        ? AdaptiveStorageSavingsAttemptOutcome.Accepted
+                                        : finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected
+                                            ? AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected
+                                            : finalization.FailureKind == EncodeFinalizationFailureKind.Validation
+                                                ? AdaptiveStorageSavingsAttemptOutcome.ValidationFailed
+                                                : AdaptiveStorageSavingsAttemptOutcome.FinalizationFailed;
+                                    AdaptiveStorageSavingsStageDisposition retryStageDisposition = finalization.Success
+                                        ? AdaptiveStorageSavingsStageDisposition.Promoted
+                                        : File.Exists(output) || File.Exists(finalOutput)
+                                            ? AdaptiveStorageSavingsStageDisposition.Retained
+                                            : AdaptiveStorageSavingsStageDisposition.NotCreated;
+                                    terminalResult = finalization.Success
+                                        ? EncodingTerminalResult.Completed
+                                        : finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected
+                                            ? EncodingTerminalResult.StoragePolicyRejected
+                                            : finalization.FailureKind == EncodeFinalizationFailureKind.Validation
+                                                ? EncodingTerminalResult.ValidationFailed
+                                                : EncodingTerminalResult.FinalizationFailed;
+                                    AdaptiveStorageSavingsEncodeAttempt completedRetryAttempt = CreateAdaptiveAttempt(
+                                        AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                        AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                        true, retryRunResult.ExitCode, retryStartedUtc, retryExitedUtc,
+                                        retryEncodeSeconds,
+                                        retryValidation?.Success == true
+                                            ? EncodingLifecycleStatus.Passed
+                                            : retryValidation is null
+                                                ? EncodingLifecycleStatus.NotRun : EncodingLifecycleStatus.Failed,
+                                        retryValidation?.Summary ?? finalization.ErrorMessage,
+                                        retryBytes, retrySavings, retryStageDisposition, retryOutcome,
+                                        false, true);
+                                    retryAttempts.Add(completedRetryAttempt);
+                                    adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                        selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                        AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber, terminalResult);
+                                    PublishExecutionOutcome();
+                                    retryExecuted = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (cancellationToken.IsCancellationRequested && !finalization.Success)
+                {
+                    // Cancellation wins over any retry-path failure that has not already promoted a final output.
+                    finalization = new EncodeFinalizationResult();
+                    validationOutcome = null;
+                    finalizationOutcome = null;
+                    terminalResult = EncodingTerminalResult.Canceled;
+                    adaptiveRetryTrace = adaptiveRetryTrace?.WithLogicalCancellation();
+                    PublishExecutionOutcome();
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                if (!retryExecuted)
+                {
+                    terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                    PublishExecutionOutcome();
+                    _log?.Invoke("[EncodingService] Storage policy rejected candidate: " + initialRejection.ErrorMessage);
+                    throw new EncodeFinalizationException(initialRejection);
+                }
+                if (finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected)
+                {
+                    terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                    PublishExecutionOutcome();
+                    _log?.Invoke("[EncodingService] Policy C attempt 2 was rejected by the unchanged storage contract: " + finalization.ErrorMessage);
+                    throw new EncodeFinalizationException(finalization);
+                }
             }
             if (preplannedTimelineReconstructionRate is { } reconstructionRate)
                 RecordRecovery(EncodingRecoveryKind.TimelineNormalization,
@@ -2016,7 +2671,7 @@ namespace MediaFlux.Services
                             runResult = await RunFfmpegAsync(
                                 ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
                                 progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback,
-                                sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback).ConfigureAwait(false);
+                                sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
                             RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Tolerant video decode recovery", ffArgs, runResult);
                             scope.Complete();
                         }
@@ -2185,7 +2840,7 @@ namespace MediaFlux.Services
                             _log?.Invoke($"[EncodingRecovery] Recovery strategy: software decode -> {timestampFilter} -> NVENC with -fps_mode passthrough; ffmpeg arguments: {ffArgs}");
                             using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                             {
-                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback).ConfigureAwait(false);
+                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
                                 RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Timestamp reconstruction recovery", ffArgs, runResult);
                                 scope.Complete();
                             }
@@ -2287,7 +2942,9 @@ namespace MediaFlux.Services
                     recoveryOutcomes.Any(outcome => outcome.MediaDisposition is EncodingRecoveryDisposition.Clean or EncodingRecoveryDisposition.Salvaged));
             PublishExecutionOutcome();
             EncodingExecutionOutcome completedOutcome = new(
-                shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult, finalization.StorageSavings);
+                shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome,
+                finalizationOutcome, terminalResult, finalization.StorageSavings, productionEncodeCount)
+            { AdaptiveStorageSavingsRetry = adaptiveRetryTrace };
             foreach (EncodingPlanDivergence divergence in EncodingPlanService.CompareLifecycle(shadowPlan, completedOutcome))
             {
                 _log?.Invoke($"[EncodingPlan] Shadow divergence: {divergence}");
@@ -2401,9 +3058,37 @@ namespace MediaFlux.Services
             SourceTimingClassification? sourceTimingClassification = null,
             int attempt = 1,
             EncodeLifecycleDiagnostics? lifecycleDiagnostics = null,
-            Action? faststartStartedCallback = null)
+            Action? faststartStartedCallback = null,
+            Action<DateTimeOffset>? processStartedCallback = null,
+            Action<DateTimeOffset>? processExitedCallback = null,
+            string? expectedStagingPath = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (_productionEncodeRunnerOverride is not null)
+            {
+                if (string.IsNullOrWhiteSpace(expectedStagingPath))
+                    throw new InvalidOperationException("The injected production encode runner requires an explicit staging path.");
+                processStartedCallback?.Invoke(DateTimeOffset.UtcNow);
+                bool exitReported = false;
+                try
+                {
+                    (int ExitCode, string StandardError) overridden = await _productionEncodeRunnerOverride(
+                        arguments, expectedStagingPath, attempt, cancellationToken).ConfigureAwait(false);
+                    processExitedCallback?.Invoke(DateTimeOffset.UtcNow);
+                    exitReported = true;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return new FfmpegProcessResult(
+                        overridden.ExitCode,
+                        overridden.StandardError ?? "",
+                        new FfmpegDiagnosticCollector().Complete());
+                }
+                catch
+                {
+                    if (!exitReported)
+                        processExitedCallback?.Invoke(DateTimeOffset.UtcNow);
+                    throw;
+                }
+            }
             var stderrBuilder = new StringBuilder();
             var diagnostics = new FfmpegDiagnosticCollector();
             bool cfrFallbackEligible = sourceTimingClassification == SourceTimingClassification.Cfr &&
@@ -2473,6 +3158,7 @@ namespace MediaFlux.Services
             try
             {
                 proc.Start();
+                processStartedCallback?.Invoke(DateTimeOffset.UtcNow);
                 lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FfmpegStart);
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();
@@ -2507,6 +3193,7 @@ namespace MediaFlux.Services
                 }
 
                 await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                processExitedCallback?.Invoke(DateTimeOffset.UtcNow);
                 lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FfmpegExit);
                 EncodeLifecycleDiagnostics.TryRecordProcessIo(proc, lifecycleDiagnostics);
             }
@@ -2514,6 +3201,7 @@ namespace MediaFlux.Services
             {
                 _log?.Invoke("[EncodingService] Encode operation cancelled.");
                 await EnsureProcessExitedAfterCancellationAsync(proc).ConfigureAwait(false);
+                processExitedCallback?.Invoke(DateTimeOffset.UtcNow);
                 throw;
             }
             finally
@@ -2561,7 +3249,7 @@ namespace MediaFlux.Services
             }
             catch (Exception ex)
             {
-                _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery could not remove failed staging output '{stagingPath}': {ex.Message}");
+                _log?.Invoke($"[EncodingService] Could not remove failed staging output '{stagingPath}': {ex.Message}");
                 return false;
             }
         }

@@ -109,6 +109,14 @@ public sealed class AdaptiveStorageSavingsEncodeAttempt
     public bool CancellationRequested { get; }
     public bool ContributesToTerminalResult { get; }
 
+    public AdaptiveStorageSavingsEncodeAttempt WithCancellationRequested(bool? contributesToTerminalResult = null) =>
+        new(AttemptNumber, Kind, EffectiveQuality, AdaptiveCandidateQuality,
+            CandidateProjectedUpperBytes, StageId, CommandSha256, ProcessStarted,
+            ProcessExitCode, ProcessStartedUtc, ProcessExitedUtc, ProductionEncodeSeconds,
+            TechnicalValidationStatus, TechnicalValidationSummary, ActualCandidateOutputBytes,
+            PhaseOneResult, StageDisposition, Outcome, cancellationRequested: true,
+            contributesToTerminalResult: contributesToTerminalResult ?? ContributesToTerminalResult);
+
     public static AdaptiveStorageSavingsEncodeAttempt Create(
         int attemptNumber,
         AdaptiveStorageSavingsAttemptKind kind,
@@ -268,6 +276,14 @@ public sealed class AdaptiveStorageSavingsRetryTrace
             terminalAttemptNumber, logicalTerminalResult);
     }
 
+    public AdaptiveStorageSavingsRetryTrace WithLogicalCancellation()
+    {
+        AdaptiveStorageSavingsEncodeAttempt[] attempts = Attempts.ToArray();
+        attempts[TerminalAttemptNumber - 1] = attempts[TerminalAttemptNumber - 1].WithCancellationRequested();
+        return new(InitialSelectedQuality, QualityMechanism, attempts, DecisionAfterAttempt1,
+            TerminalAttemptNumber, EncodingTerminalResult.Canceled);
+    }
+
     private static void Validate(
         int initialSelectedQuality,
         EncoderQualityMechanism qualityMechanism,
@@ -314,9 +330,14 @@ public sealed class AdaptiveStorageSavingsRetryTrace
             if (attempts[0].StageId is Guid firstStage && retry.StageId == firstStage)
                 throw new ArgumentException("Each attempt must use a distinct staging identity.", nameof(attempts));
         }
-        else if (decisionAfterAttempt1?.ShouldRetry == true)
+        else if (decisionAfterAttempt1?.ShouldRetry == true &&
+                 !(attempts.Count == 1 && attempts[0].Outcome == AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected &&
+                   ((attempts[0].StageDisposition == AdaptiveStorageSavingsStageDisposition.CleanupFailed &&
+                     logicalTerminalResult == EncodingTerminalResult.StoragePolicyRejected) ||
+                    (logicalTerminalResult == EncodingTerminalResult.Canceled && attempts[0].CancellationRequested &&
+                     attempts[0].StageDisposition is AdaptiveStorageSavingsStageDisposition.Retained or AdaptiveStorageSavingsStageDisposition.CleanupFailed))))
         {
-            throw new ArgumentException("A selected retry must be represented by attempt 2, including preparation failure.", nameof(decisionAfterAttempt1));
+            throw new ArgumentException("A selected retry must be represented by attempt 2 unless cleanup failure or cancellation prevented attempt 2.", nameof(decisionAfterAttempt1));
         }
 
         EncodingTerminalResult expectedTerminal = attempts[terminalAttemptNumber - 1].Outcome switch
@@ -329,7 +350,9 @@ public sealed class AdaptiveStorageSavingsRetryTrace
             AdaptiveStorageSavingsAttemptOutcome.EncodeFailed or AdaptiveStorageSavingsAttemptOutcome.PreparationFailed => EncodingTerminalResult.EncodeFailed,
             _ => throw new ArgumentOutOfRangeException(nameof(logicalTerminalResult))
         };
-        if (logicalTerminalResult != expectedTerminal)
+        bool canceledAfterAttemptCompletion = logicalTerminalResult == EncodingTerminalResult.Canceled &&
+            attempts[terminalAttemptNumber - 1].CancellationRequested;
+        if (logicalTerminalResult != expectedTerminal && !canceledAfterAttemptCompletion)
             throw new ArgumentException("Logical terminal result must match the terminal attempt outcome.", nameof(logicalTerminalResult));
     }
 }

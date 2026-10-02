@@ -55,6 +55,7 @@ public sealed record EncodeExecutionSnapshot
     public double? TargetMb { get; init; }
     public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
     public bool AdaptiveStorageSavingsEnabled { get; init; }
+    internal bool ExperimentalPolicyCRetryEnabled { get; init; }
     public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
     public EncodingService.ScaleMode ScaleMode { get; init; }
     public required VideoRestorationSettings Restoration { get; init; }
@@ -236,6 +237,8 @@ public sealed class EncodeExecutionOrchestrator
             Input = snapshot.Input,
             StorageSavingsContract = snapshot.StorageSavingsContract,
             AdaptiveStorageSavingsEnabled = snapshot.AdaptiveStorageSavingsEnabled && snapshot.PredictionShadowExperimentAssignment is null,
+            ExperimentalPolicyCRetryEnabled = snapshot.ExperimentalPolicyCRetryEnabled &&
+                snapshot.AdaptiveStorageSavingsEnabled && snapshot.PredictionShadowExperimentAssignment is null,
             AdaptiveSelectionCallback = evidence => attempt.AdaptiveSelection = evidence,
             OutputFolder = snapshot.OutputFolder,
             Suffix = snapshot.Suffix,
@@ -400,7 +403,19 @@ public sealed class EncodeExecutionOrchestrator
         if (assignmentFailure is not null)
             finalizationFailureKind = EncodeFinalizationFailureKind.Validation;
         finalizationFailureKind ??= attempt.FinalizationResult?.FailureKind;
-        if (attempt.ExecutionOutcome?.TerminalResult == EncodingTerminalResult.StoragePolicyRejected)
+        if (isCanceled)
+        {
+            finalizationFailureKind = null;
+            retryQueued = false;
+            if (attempt.ExecutionOutcome is { } canceledOutcome)
+                attempt.ExecutionOutcome = canceledOutcome with
+                {
+                    TerminalResult = EncodingTerminalResult.Canceled,
+                    StorageSavings = null,
+                    AdaptiveStorageSavingsRetry = canceledOutcome.AdaptiveStorageSavingsRetry?.WithLogicalCancellation()
+                };
+        }
+        else if (attempt.ExecutionOutcome?.TerminalResult == EncodingTerminalResult.StoragePolicyRejected)
             finalizationFailureKind = EncodeFinalizationFailureKind.StoragePolicyRejected;
         if (finalizationFailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected)
             retryQueued = false;
@@ -425,6 +440,7 @@ public sealed class EncodeExecutionOrchestrator
         EncodeExecutionSnapshot snapshot = attempt.Snapshot;
         EncodingStatisticsOutcome outcome = finalizationFailureKind switch
         {
+            _ when isCanceled => EncodingStatisticsOutcome.Cancelled,
             EncodeFinalizationFailureKind.StoragePolicyRejected => EncodingStatisticsOutcome.StoragePolicyRejected,
             EncodeFinalizationFailureKind.Validation => EncodingStatisticsOutcome.ValidationFailed,
             EncodeFinalizationFailureKind.Promotion => EncodingStatisticsOutcome.PromotionFailed,
@@ -458,7 +474,7 @@ public sealed class EncodeExecutionOrchestrator
             diagnosticSummary: diagnosticSummary,
             predictionPlan: assignmentFailure is null ? attempt.Plan : null,
             executionOutcome: assignmentFailure is null ? attempt.ExecutionOutcome : null,
-            storageSavings: attempt.FinalizationResult?.StorageSavings);
+            storageSavings: isCanceled ? null : attempt.FinalizationResult?.StorageSavings);
     }
 
     public void RecordEncodingStatistics(
@@ -656,7 +672,8 @@ public sealed class EncodeExecutionOrchestrator
         if (adaptive is not null)
             processingSeconds = outcome == EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped ? 0
                 : Math.Max(0, processingSeconds - adaptive.SamplingSeconds);
-        if (storageSavings?.Acceptance == StorageSavingsAcceptance.Rejected)
+        if (outcome != EncodingStatisticsOutcome.Cancelled &&
+            storageSavings?.Acceptance == StorageSavingsAcceptance.Rejected)
         {
             outcome = EncodingStatisticsOutcome.StoragePolicyRejected;
             outputSizeBytes = null;
@@ -669,6 +686,7 @@ public sealed class EncodeExecutionOrchestrator
             var statisticsRecord = new EncodingStatisticsRecord
             {
                 Id = operationId,
+                ProductionEncodeCount = executionOutcome?.ProductionEncodeCount ?? 0,
                 StartUtc = startUtc,
                 EndUtc = endUtc,
                 Outcome = outcome,

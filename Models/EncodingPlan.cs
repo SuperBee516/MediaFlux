@@ -171,7 +171,8 @@ public sealed record EncodingExecutionOutcome(
     EncodingValidationOutcome? Validation = null,
     EncodingFinalizationOutcome? Finalization = null,
     EncodingTerminalResult TerminalResult = EncodingTerminalResult.NotRun,
-    StorageSavingsEvaluation? StorageSavings = null)
+    StorageSavingsEvaluation? StorageSavings = null,
+    int ProductionEncodeCount = 0)
 {
     public AdaptiveStorageSavingsRetryTrace? AdaptiveStorageSavingsRetry { get; init; }
 }
