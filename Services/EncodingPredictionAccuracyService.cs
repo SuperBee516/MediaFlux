@@ -17,7 +17,7 @@ public sealed record EncodingPredictionAccuracyRow(
     double? EtaPercentError,
     double? EtaAbsolutePercentageError)
 {
-    public bool IsCleanCompleted => Record.Outcome == EncodingStatisticsOutcome.Success &&
+    public bool IsCleanCompleted => Record.IsEligibleForSingleEncodeLearning && Record.Outcome == EncodingStatisticsOutcome.Success &&
         !Record.IsSampleJob && !Record.RecoveredSuccessful;
 }
 
@@ -159,6 +159,7 @@ public sealed class EncodingPredictionAccuracyService
         EncodingStatisticsRecord[] historySnapshot = history.ToArray();
         string cohortKey = CalibrationCohortKey(context);
         EncodingStatisticsRecord[] matching = historySnapshot.Where(record =>
+                record.IsEligibleForSingleEncodeLearning &&
                 (string.IsNullOrWhiteSpace(record.EstimateModelId) ||
                  record.EstimateModelId == "GenericBppV1") &&
                 record.Outcome == EncodingStatisticsOutcome.Success && !record.IsSampleJob && !record.RecoveredSuccessful &&
@@ -253,7 +254,7 @@ public sealed class EncodingPredictionAccuracyService
     public static IReadOnlyList<EncodingCalibrationEffectiveness> BuildCalibrationEffectiveness(
         IEnumerable<EncodingStatisticsRecord> records, DateTime? decisionUtc = null)
     {
-        EncodingStatisticsRecord[] snapshot = records.ToArray();
+        EncodingStatisticsRecord[] snapshot = records.Where(record => record.IsEligibleForSingleEncodeLearning).ToArray();
         return snapshot.Where(record => !string.IsNullOrWhiteSpace(record.CalibrationCohortKey))
             .Select(record => (CohortKey: record.CalibrationCohortKey,
                 PolicyId: AdaptivePredictionPolicies.NormalizePolicyId(record.CalibrationPolicyId)))
@@ -271,6 +272,7 @@ public sealed class EncodingPredictionAccuracyService
         DateTime now = decisionUtc.HasValue ? NormalizeUtc(decisionUtc.Value) : DateTime.UtcNow;
         string normalizedPolicyId = AdaptivePredictionPolicies.NormalizePolicyId(policyId);
         EncodingStatisticsRecord[] cohort = records.Where(record =>
+            record.IsEligibleForSingleEncodeLearning &&
             string.Equals(record.CalibrationCohortKey, cohortKey, StringComparison.Ordinal) &&
             string.Equals(AdaptivePredictionPolicies.NormalizePolicyId(record.CalibrationPolicyId),
                 normalizedPolicyId, StringComparison.Ordinal)).ToArray();
@@ -340,7 +342,7 @@ public sealed class EncodingPredictionAccuracyService
         IEnumerable<EncodingStatisticsRecord> records)
     {
         EncodingStatisticsRecord[] snapshot = records.Where(record =>
-            !string.IsNullOrWhiteSpace(record.CalibrationCohortKey)).ToArray();
+            record.IsEligibleForSingleEncodeLearning && !string.IsNullOrWhiteSpace(record.CalibrationCohortKey)).ToArray();
         return snapshot.GroupBy(record => (
                 CohortKey: record.CalibrationCohortKey,
                 PolicyId: AdaptivePredictionPolicies.NormalizePolicyId(record.CalibrationPolicyId)))
@@ -372,11 +374,13 @@ public sealed class EncodingPredictionAccuracyService
     }
 
     private static IEnumerable<EncodingPredictionAccuracyRow> Eligible(IEnumerable<EncodingPredictionAccuracyRow> rows,
-        bool includeRecovered) => rows.Where(row => row.IsCleanCompleted ||
-            (includeRecovered && row.Record.Outcome == EncodingStatisticsOutcome.Success && !row.Record.IsSampleJob));
+        bool includeRecovered) => rows.Where(row => row.Record.IsEligibleForSingleEncodeLearning && (row.IsCleanCompleted ||
+            (includeRecovered && row.Record.Outcome == EncodingStatisticsOutcome.Success && !row.Record.IsSampleJob)));
 
     private static EncodingPredictionAccuracyRow CreateRow(EncodingStatisticsRecord record)
     {
+        if (!record.IsEligibleForSingleEncodeLearning)
+            return new(record, null, null, null, null, null, null, null, null);
         long? sizeSigned = Difference(record.OutputSizeBytes, record.PredictedOutputSizeBytes);
         double? etaSigned = Difference(record.ProcessingSeconds, record.PredictedProcessingSeconds);
         return new(record, sizeSigned, Absolute(sizeSigned), Percent(sizeSigned, record.PredictedOutputSizeBytes), Absolute(Percent(sizeSigned, record.PredictedOutputSizeBytes)),
@@ -473,7 +477,7 @@ public sealed class EncodingPredictionAccuracyService
     {
         foreach (EncodingStatisticsRecord record in records)
         {
-            if (record.Outcome != EncodingStatisticsOutcome.Success || record.IsSampleJob || record.RecoveredSuccessful ||
+            if (!record.IsEligibleForSingleEncodeLearning || record.Outcome != EncodingStatisticsOutcome.Success || record.IsSampleJob || record.RecoveredSuccessful ||
                 record.CalibrationDecision is not (nameof(EncodingCalibrationDecision.Applied) or nameof(EncodingCalibrationDecision.ShadowEvaluationOnly)) ||
                 !record.CalibrationEvidenceCutoffUtc.HasValue ||
                 NormalizeUtc(record.EndUtc) <= NormalizeUtc(record.CalibrationEvidenceCutoffUtc.Value) ||

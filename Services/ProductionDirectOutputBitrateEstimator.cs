@@ -67,7 +67,7 @@ public sealed class ProductionDirectOutputBitrateEstimator
             return Result(ProductionDirectOutputStatus.Ineligible, 0, null, 0, 0, null, null, cutoff);
 
         Observation[] eligible = history
-            .Where(record => record.Outcome == EncodingStatisticsOutcome.Success &&
+            .Where(record => record.IsEligibleForSingleEncodeLearning && record.Outcome == EncodingStatisticsOutcome.Success &&
                 !record.IsSampleJob && !record.RecoveredSuccessful &&
                 record.EndUtc.Kind == DateTimeKind.Utc && record.EndUtc < cutoff &&
                 string.Equals(record.TerminalResult, "Completed", StringComparison.OrdinalIgnoreCase) &&

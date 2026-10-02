@@ -561,6 +561,89 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.DoesNotContain(journal.ReadEvents(), entry => entry.Outcome?.State == "Completed");
     }
 
+    [Theory]
+    [InlineData(EncodingTerminalResult.Completed)]
+    [InlineData(EncodingTerminalResult.StoragePolicyRejected)]
+    [InlineData(EncodingTerminalResult.EncodeFailed)]
+    [InlineData(EncodingTerminalResult.ValidationFailed)]
+    [InlineData(EncodingTerminalResult.Canceled)]
+    public async Task BoundedRetryPublishesOnlyOneTerminalStatisticsAndHistoryRecord(EncodingTerminalResult terminal)
+    {
+        string source = CreateFile("retry.mp4");
+        string statisticsPath = Path.Combine(_root, "retry-statistics.jsonl");
+        var statistics = new EncodingStatisticsService(statisticsPath);
+        var history = new HistoryService(Path.Combine(_root, "retry-history.json"));
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "retry-research.jsonl"));
+        var trace = BoundedRetryEvidence.Trace(terminal);
+        var plan = BoundedRetryEvidence.Plan();
+        Exception? failure = terminal == EncodingTerminalResult.Completed ? null :
+            terminal == EncodingTerminalResult.Canceled ? new OperationCanceledException("Retry canceled") : new InvalidOperationException("Retry failed");
+        var executor = new SyntheticExecutor(new(plan.PlanId, plan), exceptionAfterCapture: failure,
+            storageSavings: trace.Attempts[1].PhaseOneResult, adaptive: plan.AdaptiveSelection, retryTrace: trace);
+        var orchestrator = CreateOrchestrator(executor, journal, statistics);
+        var attempt = orchestrator.CreateAttempt(Snapshot(source, null) with
+        {
+            AdaptiveStorageSavingsEnabled = true, ExperimentalPolicyCRetryEnabled = true,
+            StorageSavingsContract = AdaptiveStorageSavingsTests.Contract
+        });
+        int callbackCount = 0;
+        var callbacks = new EncodeExecutionCallbacks { ExecutionOutcome = _ =>
+        {
+            callbackCount++;
+            Assert.Empty(statistics.GetAll());
+            Assert.Empty(history.LoadAll());
+        } };
+        if (failure is null)
+        {
+            await orchestrator.ExecuteAsync(attempt, callbacks, null, CancellationToken.None);
+            Assert.True(orchestrator.RecordSuccessfulExecution(attempt, Now, 800_000, 75, "success", null, false, null));
+            Assert.False(orchestrator.RecordSuccessfulExecution(attempt, Now, 800_000, 75, "repeat", null, false, null));
+        }
+        else
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => orchestrator.ExecuteAsync(attempt, callbacks, null, CancellationToken.None));
+            Assert.True(orchestrator.RecordFailedExecution(attempt, Now, terminal == EncodingTerminalResult.Canceled,
+                terminal == EncodingTerminalResult.ValidationFailed ? EncodeFinalizationFailureKind.Validation : null,
+                "", 75, "terminal failure", null, retryQueued: false));
+            Assert.False(orchestrator.RecordFailedExecution(attempt, Now, false, null, "", 75, "repeat", null, retryQueued: false));
+        }
+        Assert.Equal(2, callbackCount); // initial rejection and later authoritative terminal callback
+        var stored = Assert.Single(new EncodingStatisticsService(statisticsPath).GetAll());
+        Assert.Equal(terminal.ToString(), stored.TerminalResult);
+        Assert.Equal(2, stored.ProductionEncodeCount);
+        Assert.Equal(75 - plan.AdaptiveSelection!.SamplingSeconds, stored.ProcessingSeconds);
+        Assert.Equal("27", stored.PredictionQuality);
+        BoundedRetryPersistenceTests.AssertTrace(trace, stored.AdaptiveStorageSavingsRetry!);
+        history.AppendEncodingOutcome(new() { Id = attempt.Snapshot.OperationId,
+            Status = terminal == EncodingTerminalResult.Canceled ? JobStatus.Canceled : JobStatus.Failed,
+            AdaptiveSelection = plan.AdaptiveSelection }, attempt.ExecutionOutcome);
+        var job = Assert.Single(new HistoryService(Path.Combine(_root, "retry-history.json")).LoadAll());
+        Assert.Equal(2, job.ProductionEncodeCount);
+        Assert.Equal(terminal, job.TerminalResult);
+        BoundedRetryPersistenceTests.AssertTrace(trace, job.AdaptiveStorageSavingsRetry!);
+        Assert.Empty(journal.ReadEvents());
+        Assert.Null(stored.SourceAdaptiveShadow);
+        Assert.False(stored.RecoveredSuccessful);
+    }
+
+    [Fact]
+    public void RetryOutcomeCannotFabricateSourceAdaptiveOrResearchObservationEvenWithShadowPlan()
+    {
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "blocked-shadow.jsonl"));
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "blocked-statistics.jsonl"));
+        var trace = BoundedRetryEvidence.Trace();
+        var plan = MakePlan().Plan;
+        var orchestrator = CreateOrchestrator(new SyntheticExecutor(new(plan.PlanId, plan)), journal, statistics);
+        orchestrator.RecordEncodingStatistics("retry", Now, Now, EncodingStatisticsOutcome.Success,
+            "source", "output", "hevc_nvenc", "nvenc", 1_000_000, 800_000, 120, 60,
+            predictionPlan: plan, recoveredSuccessful: true, executionOutcome:
+            new(plan.PlanId, [], [], TerminalResult: EncodingTerminalResult.Completed, ProductionEncodeCount: 2)
+            { AdaptiveStorageSavingsRetry = trace });
+        Assert.Null(Assert.Single(statistics.GetAll()).SourceAdaptiveShadow);
+        Assert.False(Assert.Single(statistics.GetAll()).RecoveredSuccessful);
+        Assert.Empty(journal.ReadEvents());
+    }
+
     private EncodeExecutionOrchestrator CreateOrchestrator(
         IEncodeRequestExecutor executor,
         PredictionShadowObservationJournal journal,
@@ -794,7 +877,8 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         AdaptiveQualitySelectionEvidence? adaptive = null,
         bool skipBeforeEncode = false,
         EncodingTerminalResult? terminalResultBeforeFailure = null,
-        bool failBeforeFfmpegLaunch = false) : IEncodeRequestExecutor
+        bool failBeforeFfmpegLaunch = false,
+        AdaptiveStorageSavingsRetryTrace? retryTrace = null) : IEncodeRequestExecutor
     {
         public List<string> Events { get; } = [];
         public EncodingRequest? Request { get; private set; }
@@ -829,6 +913,16 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
                 throw exceptionAfterCapture;
             }
             Events.Add("encode");
+            if (retryTrace is not null)
+            {
+                request.EncodingExecutionOutcomeCallback?.Invoke(new(plan.PlanId, [], [],
+                    TerminalResult: EncodingTerminalResult.StoragePolicyRejected,
+                    StorageSavings: retryTrace.Attempts[0].PhaseOneResult, ProductionEncodeCount: 1));
+                request.EncodingExecutionOutcomeCallback?.Invoke(new(plan.PlanId, [], [],
+                    TerminalResult: retryTrace.LogicalTerminalResult,
+                    StorageSavings: retryTrace.Attempts[1].PhaseOneResult, ProductionEncodeCount: 2)
+                    { AdaptiveStorageSavingsRetry = retryTrace });
+            }
             if (exceptionAfterCapture is not null)
             {
                 if (terminalResultBeforeFailure is { } terminal)

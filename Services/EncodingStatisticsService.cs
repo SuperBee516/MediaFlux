@@ -41,9 +41,13 @@ namespace MediaFlux.Services
         public string Codec { get; set; } = "";
         public string Encoder { get; set; } = "";
         public long? SourceSizeBytes { get; set; }
+        // Durable final output only. Rejected/failed candidate bytes live in the retry trace.
         public long? OutputSizeBytes { get; set; }
+        // Original frozen selection and full sample evidence; retry quality is separate.
         public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; set; }
         public double? MediaDurationSeconds { get; set; }
+        // Logical processing across attempts and validation/handoff, excluding sampling once.
+        // Individual production FFmpeg durations remain in the immutable attempt trace.
         public double ProcessingSeconds { get; set; }
         public string EncoderId { get; set; } = "";
         public string EncoderPreset { get; set; } = "";
@@ -98,6 +102,9 @@ namespace MediaFlux.Services
         public AdaptiveStorageSavingsRetryTrace? AdaptiveStorageSavingsRetry { get; set; }
         [JsonIgnore]
         public bool IsMultiAttempt => ProductionEncodeCount > 1 || AdaptiveStorageSavingsRetry is not null;
+        [JsonIgnore]
+        // Fail closed for explicit zero/invalid counts and any Policy C trace, including pre-launch failure.
+        public bool IsEligibleForSingleEncodeLearning => ProductionEncodeCount == 1 && AdaptiveStorageSavingsRetry is null;
         // Additive JSONL field; older schema versions deserialize with null.
         public SourceAdaptiveShadowOutcome? SourceAdaptiveShadow { get; set; }
         // Versioned effective NVENC quality-mode settings; absent on legacy records.
@@ -350,8 +357,10 @@ namespace MediaFlux.Services
                 !double.IsFinite(record.PredictedProcessingSeconds.Value))
                 record.PredictedProcessingSeconds = null;
 
-            // A policy-rejected candidate can never be admitted as successful training history.
-            if (record.StorageSavings?.Acceptance == StorageSavingsAcceptance.Rejected)
+            EncodingRetryPersistence.Apply(record);
+            // Cancellation and the terminal retry attempt remain authoritative.
+            if (record.Outcome != EncodingStatisticsOutcome.Cancelled &&
+                record.StorageSavings?.Acceptance == StorageSavingsAcceptance.Rejected)
             {
                 record.Outcome = EncodingStatisticsOutcome.StoragePolicyRejected;
                 record.TerminalResult = EncodingTerminalResult.StoragePolicyRejected.ToString();

@@ -80,6 +80,7 @@ public sealed class AdaptiveStorageSavingsRetryAcceptanceTests(ITestOutputHelper
             var processAttempts = new List<int>();
             var stagingPaths = new List<string>();
             var outcomes = new List<EncodingExecutionOutcome>();
+            EncodingPlanSnapshot? finalPlan = null;
             AdaptiveQualitySelectionEvidence? retrySelection = null;
             var retryService = new EncodingService(
                 Path.GetDirectoryName(tools.FfmpegPath)!, _ => { }, logCallback: null,
@@ -112,7 +113,8 @@ public sealed class AdaptiveStorageSavingsRetryAcceptanceTests(ITestOutputHelper
             EncodingRequest retryRequest = CreateRequest(source, root, encoder, capturedContract,
                     adaptive: true, retryGate: true,
                     selectionCallback: evidence => retrySelection = evidence,
-                    outcomeCallback: outcomes.Add);
+                    outcomeCallback: outcomes.Add,
+                    planCallback: snapshot => finalPlan = snapshot);
             if (retryAccepted)
             {
                 EncodingService.EncodeResult retried = await retryService.EncodeWithResultAsync(retryRequest);
@@ -165,11 +167,39 @@ public sealed class AdaptiveStorageSavingsRetryAcceptanceTests(ITestOutputHelper
             Assert.Equal(retryAccepted ? 1 : 0, recordingValidator.PromotedResults.Count);
             Assert.All(recordingValidator.PromotedResults, result => Assert.True(result.Success, result.ErrorMessage));
             Assert.Empty(outcome.Recovery);
+            Assert.NotNull(finalPlan);
+            string statisticsPath = Path.Combine(root, "retry-statistics.jsonl");
+            var statistics = new EncodingStatisticsService(statisticsPath);
+            var journal = new PredictionShadowObservationJournal(Path.Combine(root, "research.jsonl"));
+            var recorder = new EncodeExecutionOrchestrator(retryService,
+                new NvencQualityModePredictionShadowService(journal,
+                    new PredictionShadowComplexitySamplingService(tools.FfmpegPath, new MediaToolProcessRunner())), statistics);
+            recorder.RecordEncodingStatistics("live-logical-job", DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow,
+                retryAccepted ? EncodingStatisticsOutcome.Success : EncodingStatisticsOutcome.StoragePolicyRejected,
+                source, recordingFinalizer.Requests[1].FinalOutputPath, "libx265", "CPU", sourceBytes,
+                retryAccepted ? retryPhaseOne.CandidateOutputBytes : null, 5, 60,
+                predictionPlan: finalPlan!.Plan, executionOutcome: outcome);
+            var persisted = Assert.Single(new EncodingStatisticsService(statisticsPath).GetAll());
+            Assert.Equal(2, persisted.ProductionEncodeCount);
+            Assert.Equal(outcome.TerminalResult.ToString(), persisted.TerminalResult);
+            Assert.Equal(System.Text.Json.JsonSerializer.Serialize(trace),
+                System.Text.Json.JsonSerializer.Serialize(persisted.AdaptiveStorageSavingsRetry));
+            Assert.Equal(retryAccepted ? retryPhaseOne.CandidateOutputBytes : null, persisted.OutputSizeBytes);
+            Assert.False(persisted.IsEligibleForSingleEncodeLearning);
+            var history = new HistoryService(Path.Combine(root, "history.json"));
+            history.AppendEncodingOutcome(new() { Id = "live-logical-job", AdaptiveSelection = retrySelection }, outcome);
+            var historyRow = Assert.Single(new HistoryService(Path.Combine(root, "history.json")).LoadAll());
+            Assert.Equal(2, historyRow.ProductionEncodeCount);
+            Assert.Equal(outcome.TerminalResult, historyRow.TerminalResult);
+            Assert.Equal(System.Text.Json.JsonSerializer.Serialize(trace),
+                System.Text.Json.JsonSerializer.Serialize(historyRow.AdaptiveStorageSavingsRetry));
+            Assert.Empty(journal.ReadEvents());
             output.WriteLine($"Production FFmpeg launches: {processAttempts.Count}; attempts: {string.Join(", ", processAttempts)}; recovery encodes: 0.");
             output.WriteLine($"Attempt 1: {trace.Attempts[0].Outcome}; Phase 1: {initialPhaseOne.Acceptance}; bytes: {initialPhaseOne.CandidateOutputBytes}; stage: {trace.Attempts[0].StageId}; disposition: {trace.Attempts[0].StageDisposition}.");
             output.WriteLine($"Attempt 2: {trace.Attempts[1].Outcome}; Phase 1: {retryPhaseOne.Acceptance}; bytes: {retryPhaseOne.CandidateOutputBytes}; stage: {trace.Attempts[1].StageId}; disposition: {trace.Attempts[1].StageDisposition}.");
             output.WriteLine($"Actual EncodeOutputValidationService: {recordingValidator.StagedResults.Count} staged and {recordingValidator.PromotedResults.Count} promoted validations; FFprobe launches: {validatorProcesses.Requests.Count(request => Path.GetFileName(request.FileName).Equals("ffprobe.exe", StringComparison.OrdinalIgnoreCase))}; FFmpeg validation launches: {validatorProcesses.Requests.Count(request => Path.GetFileName(request.FileName).Equals("ffmpeg.exe", StringComparison.OrdinalIgnoreCase))}.");
             output.WriteLine($"Original captured contract reused by reference: true; fresh stage paths and identities: true; final logical result: {outcome.TerminalResult}; source retained: {File.Exists(source)}.");
+            output.WriteLine("Runtime trace persisted and reloaded in one statistics row and one history row; single-encode learning excluded.");
         }
         finally
         {
@@ -194,7 +224,8 @@ public sealed class AdaptiveStorageSavingsRetryAcceptanceTests(ITestOutputHelper
         int? quality = null,
         string suffix = "",
         Action<AdaptiveQualitySelectionEvidence>? selectionCallback = null,
-        Action<EncodingExecutionOutcome>? outcomeCallback = null) => new()
+        Action<EncodingExecutionOutcome>? outcomeCallback = null,
+        Action<EncodingPlanSnapshot>? planCallback = null) => new()
     {
         Input = EncodingInputSource.FromFile(source),
         OutputFolder = root,
@@ -217,7 +248,8 @@ public sealed class AdaptiveStorageSavingsRetryAcceptanceTests(ITestOutputHelper
         CopyAttachments = false,
         OutputContainer = OutputContainerSelection.Matroska,
         CompatibilityPolicy = ContainerCompatibilityPolicy.Intelligent,
-        EncodingExecutionOutcomeCallback = outcomeCallback
+        EncodingExecutionOutcomeCallback = outcomeCallback,
+        EncodingPlanSnapshotCallback = planCallback
     };
 
     private static IEncodeOutputFinalizationService CreateRealFinalizer(ToolPaths tools)

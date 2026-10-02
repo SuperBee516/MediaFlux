@@ -43,6 +43,22 @@ public sealed class ProductionDirectOutputBitrateEstimatorTests
         }
     };
 
+    [Theory]
+    [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)]
+    public void RetryJobsCannotSupplyDirectOutputSupportOrHoldoutTargets(int mode)
+    {
+        var clean = Enumerable.Range(0, 12).Select(i => Record(i)).ToArray();
+        var excluded = Enumerable.Range(20, 20).Select(i => BoundedRetryEvidence.Exclude(Record(i, 100_000), mode)).ToArray();
+        Assert.Equal(0, Estimator.Predict(Target(), excluded).IndependentFamilies);
+        var baseline = Estimator.Predict(Target(), clean);
+        var mixed = Estimator.Predict(Target(), clean.Concat(excluded));
+        Assert.Equal(baseline.IndependentFamilies, mixed.IndependentFamilies);
+        Assert.Equal(baseline.PredictedVideoBitrateKbps, mixed.PredictedVideoBitrateKbps);
+        Assert.Equal(baseline.HeldOutEligibleCount, mixed.HeldOutEligibleCount);
+        Assert.Equal(baseline.HeldOutCount, mixed.HeldOutCount);
+        Assert.Equal(baseline.MedianAbsoluteErrorPercent, mixed.MedianAbsoluteErrorPercent);
+    }
+
     [Fact]
     public void ExactCohortUsesIndependentFamilyMedianAndForwardValidation()
     {

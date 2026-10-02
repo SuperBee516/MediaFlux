@@ -45,7 +45,7 @@ public static class NvencQualityModeVideoBitratePredictionService
         double sourcePixelsPerSecond = (double)request.Width * request.Height * request.Fps;
         double sourceBpp = request.SourceVideoBitrateKbps * 1000 / sourcePixelsPerSecond;
         var comparable = history
-            .Where(record => record.Outcome == EncodingStatisticsOutcome.Success &&
+            .Where(record => record.IsEligibleForSingleEncodeLearning && record.Outcome == EncodingStatisticsOutcome.Success &&
                 !record.IsSampleJob && !record.RecoveredSuccessful &&
                 string.Equals(record.QualityModeSettingsSignature, request.SettingsSignature, StringComparison.Ordinal) &&
                 !string.IsNullOrWhiteSpace(record.SourcePath) &&
@@ -113,7 +113,7 @@ public static class NvencQualityModeVideoBitratePredictionService
         EncodingStatisticsRecord[] records = history.ToArray();
         var targets = records.Select(record => (Record: record, Outcome: record.SourceAdaptiveShadow,
                 Decision: record.SourceAdaptiveShadow?.Decision))
-            .Where(item => item.Record.Outcome == EncodingStatisticsOutcome.Success && !item.Record.IsSampleJob &&
+            .Where(item => item.Record.IsEligibleForSingleEncodeLearning && item.Record.Outcome == EncodingStatisticsOutcome.Success && !item.Record.IsSampleJob &&
                 !item.Record.RecoveredSuccessful && item.Decision?.IsPrimaryCalibrationCandidate == true &&
                 item.Decision.MaterialTransformationActive == false &&
                 item.Outcome?.ActualOutputVideoBitrateKbps is > 0 &&
@@ -163,7 +163,7 @@ public static class NvencQualityModeVideoBitratePredictionService
         {
             SourceAdaptiveShadowOutcome? outcome = record.SourceAdaptiveShadow;
             SourceAdaptiveShadowCalibration? decision = outcome?.Decision;
-            if (record.Outcome != EncodingStatisticsOutcome.Success || record.IsSampleJob ||
+            if (!record.IsEligibleForSingleEncodeLearning || record.Outcome != EncodingStatisticsOutcome.Success || record.IsSampleJob ||
                 record.RecoveredSuccessful || decision?.IsPrimaryCalibrationCandidate != true ||
                 outcome?.ActualOutputVideoBitrateKbps is not > 0 ||
                 decision.SourceVideoBitrateKbps is not > 0 || decision.FinalExecutionCq is null ||

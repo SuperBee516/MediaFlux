@@ -854,7 +854,7 @@ namespace MediaFlux
                 {
                     lock (_historyLock)
                     {
-                        _historyService.Append(new JobHistoryRecord
+                        _historyService.AppendEncodingOutcome(new JobHistoryRecord
                         {
                             Id = meta.StatisticsOperationId,
                             Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
@@ -900,7 +900,7 @@ namespace MediaFlux
                             StorageSavings = result.StorageSavings,
                             AdaptiveSelection = executionAttempt?.AdaptiveSelection,
                             TerminalResult = meta.IntelligenceOutcome?.TerminalResult ?? EncodingTerminalResult.Completed
-                        });
+                        }, executionAttempt?.ExecutionOutcome ?? meta.IntelligenceOutcome);
                     }
                 }
                 catch (Exception logEx)
@@ -1041,7 +1041,7 @@ namespace MediaFlux
                 {
                     lock (_historyLock)
                     {
-                        _historyService.Append(new JobHistoryRecord
+                        _historyService.AppendEncodingOutcome(new JobHistoryRecord
                         {
                             Id = meta.StatisticsOperationId,
                             Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
@@ -1088,7 +1088,7 @@ namespace MediaFlux
                             ContainerDecisionReason = appliedContainerDecision?.Reason,
                             DiagnosticSummary = diagnosticSummary,
                             TerminalResult = isCanceled ? EncodingTerminalResult.Canceled : terminalResult ?? EncodingTerminalResult.EncodeFailed
-                        });
+                        }, executionAttempt?.ExecutionOutcome ?? meta.IntelligenceOutcome);
                     }
                 }
                 catch (Exception logEx)

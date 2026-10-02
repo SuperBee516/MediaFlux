@@ -34,6 +34,19 @@ public sealed class EncodingHistoricalPredictionServiceTests
         Assert.Equal(EncodingHistoricalConfidence.None, prediction.Confidence);
     }
 
+    [Theory]
+    [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)]
+    public void RetryEvidenceCannotTrainHistoricalSpeedOrCompression(int mode)
+    {
+        var clean = Enumerable.Range(0, 11).Select(i => Record(i, 2)).ToArray();
+        var excluded = Enumerable.Range(20, 20).Select(i => BoundedRetryEvidence.Exclude(Record(i, 100) with
+            { OutputSizeBytes = 999_000_000 }, mode)).ToArray();
+        Assert.Equal(EncodingHistoricalConfidence.None,
+            EncodingHistoricalPredictionService.Predict(Context(), excluded).Confidence);
+        Assert.Equal(EncodingHistoricalPredictionService.Predict(Context(), clean),
+            EncodingHistoricalPredictionService.Predict(Context(), clean.Concat(excluded)));
+    }
+
     private static EncodingDecisionContext Context() => new(
         new MediaProbeResult { Success = true, Streams = new[] { new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 } } },
         EncodingInputSource.FromFile("missing.mkv"), new VideoEncoderSelection(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"), true, 100,

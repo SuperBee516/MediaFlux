@@ -686,7 +686,8 @@ public sealed class EncodeExecutionOrchestrator
             var statisticsRecord = new EncodingStatisticsRecord
             {
                 Id = operationId,
-                ProductionEncodeCount = executionOutcome?.ProductionEncodeCount ?? 0,
+                ProductionEncodeCount = executionOutcome?.ProductionEncodeCount ?? 1,
+                AdaptiveStorageSavingsRetry = executionOutcome?.AdaptiveStorageSavingsRetry,
                 StartUtc = startUtc,
                 EndUtc = endUtc,
                 Outcome = outcome,
@@ -759,7 +760,8 @@ public sealed class EncodeExecutionOrchestrator
                     ? EncodingTerminalResult.StoragePolicyRejected.ToString() : executionOutcome?.TerminalResult.ToString() ?? "",
                 StorageSavings = storageSavings ?? executionOutcome?.StorageSavings,
                 AdaptiveSelection = adaptive,
-                SourceAdaptiveShadow = predictionPlan?.SourceAdaptiveShadow is { } shadow
+                SourceAdaptiveShadow = executionOutcome?.ProductionEncodeCount is not > 1 &&
+                    executionOutcome?.AdaptiveStorageSavingsRetry is null && predictionPlan?.SourceAdaptiveShadow is { } shadow
                     ? SourceAdaptiveShadowOutcome.ForTerminalOutcome(
                         shadow,
                         outcome == EncodingStatisticsOutcome.Success,
@@ -797,7 +799,8 @@ public sealed class EncodeExecutionOrchestrator
         MediaProbeResult? finalOutputProbe,
         bool recoveredSuccessful)
     {
-        if (predictionPlan == null || predictionPlan.AdaptiveSelection is not null)
+        if (predictionPlan == null || predictionPlan.AdaptiveSelection is not null ||
+            executionOutcome?.ProductionEncodeCount > 1 || executionOutcome?.AdaptiveStorageSavingsRetry is not null)
             return;
         try
         {

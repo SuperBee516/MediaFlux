@@ -114,6 +114,21 @@ public sealed class EncodingPredictionAccuracyServiceTests
         Assert.Equal(2, service.BuildCohorts(rows, includeRecovered: true).Single().Count);
     }
 
+    [Theory]
+    [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)]
+    public void RetrySuccessCannotCreateAccuracyErrorsOrRecoveredCohortSamples(int mode)
+    {
+        var service = new EncodingPredictionAccuracyService();
+        var excluded = BoundedRetryEvidence.Exclude(Record("retry", 900, 100, 300, 50, recovered: true), mode);
+        var rows = service.CreateRows([Record("clean", 100, 100, 50, 50), excluded]).ToArray();
+        var retry = rows.Single(row => row.Record.Id == "retry");
+        Assert.False(retry.IsCleanCompleted);
+        Assert.Null(retry.SizeSignedErrorBytes);
+        Assert.Null(retry.EtaAbsolutePercentageError);
+        Assert.Equal(1, service.Summarize(rows, includeRecovered: true).CompletedCount);
+        Assert.Equal(1, service.BuildCohorts(rows, includeRecovered: true).Single().Count);
+    }
+
     private static EncodingPredictionRobustStatistics Stats(int count, double iqr, double absolute, double median = 0) =>
         new(count, median, absolute, median - iqr / 2, median + iqr / 2, iqr);
 

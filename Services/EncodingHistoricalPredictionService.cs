@@ -16,7 +16,7 @@ public sealed class EncodingHistoricalPredictionService
         string encoder = Normalize(context.Encoder.EncoderId);
         string hardware = context.UseGpu ? Normalize(HardwarePerformanceService.DetectGpuIdentity()) : "cpu";
         string tier = EncodingRuntimeEstimatorService.ResolutionTier(context.Source.Streams.FirstOrDefault(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase))?.Height);
-        EncodingStatisticsRecord[] usable = history.Where(record => record.Outcome == EncodingStatisticsOutcome.Success && !record.IsSampleJob && !record.RecoveredSuccessful && record.MediaDurationSeconds is > 0 && record.ProcessingSeconds > 0 && record.OutputSizeBytes is > 0 && record.SourceSizeBytes is > 0).ToArray();
+        EncodingStatisticsRecord[] usable = history.Where(record => record.IsEligibleForSingleEncodeLearning && record.Outcome == EncodingStatisticsOutcome.Success && !record.IsSampleJob && !record.RecoveredSuccessful && record.MediaDurationSeconds is > 0 && record.ProcessingSeconds > 0 && record.OutputSizeBytes is > 0 && record.SourceSizeBytes is > 0).ToArray();
         for (int tierMatch = 1; tierMatch <= 3; tierMatch++)
         {
             EncodingStatisticsRecord[] matches = usable.Where(record =>

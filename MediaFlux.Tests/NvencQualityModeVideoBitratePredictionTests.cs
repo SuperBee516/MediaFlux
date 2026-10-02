@@ -230,6 +230,26 @@ public sealed class NvencQualityModeVideoBitratePredictionTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
+    [Theory]
+    [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)]
+    public void RetryJobsCannotTrainRatioDirectOrEitherHoldoutBuilder(int mode)
+    {
+        EncodingStatisticsRecord[] clean = [Record("a", 3000), Record("b", 4000), Record("c", 5000)];
+        var excluded = new[] { "x", "y", "z" }.Select(key =>
+            BoundedRetryEvidence.Exclude(Record(key, 100_000), mode)).ToArray();
+        Assert.Equal(0, PredictBoth(excluded).Ratio.IndependentSourceCount);
+        var baseline = PredictBoth(clean);
+        var mixed = PredictBoth(clean.Concat(excluded));
+        Assert.Equal(baseline.Ratio.PredictedVideoBitrateKbps, mixed.Ratio.PredictedVideoBitrateKbps);
+        Assert.Equal(baseline.Direct.PredictedVideoBitrateKbps, mixed.Direct.PredictedVideoBitrateKbps);
+        Assert.Equal(3, mixed.Ratio.IndependentSourceCount);
+        Assert.Equal(3, NvencQualityModeVideoBitratePredictionService.EvaluateSourceHoldout(clean.Concat(excluded)).Count);
+        Assert.Empty(NvencQualityModeVideoBitratePredictionService.EvaluateSourceHoldout(excluded));
+        var comparison = NvencQualityModeVideoBitratePredictionService.EvaluateSourceHoldoutComparison(clean.Concat(excluded));
+        Assert.Equal(3, comparison.EligibleTargetCount);
+        Assert.Empty(NvencQualityModeVideoBitratePredictionService.EvaluateSourceHoldoutComparison(excluded).Targets);
+    }
+
     private static NvencQualityModePredictionResult Predict(
         IEnumerable<EncodingStatisticsRecord> history, bool transformed = false) =>
         NvencQualityModeVideoBitratePredictionService.Predict(

@@ -48,8 +48,10 @@ namespace MediaFlux.Services
         public StorageSavingsEvaluation? StorageSavings { get; set; }
         public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; set; }
         public AdaptiveStorageSavingsRetryTrace? AdaptiveStorageSavingsRetry { get; set; }
+        // Additive: records written before attempt counting remain single-encode jobs.
+        public int ProductionEncodeCount { get; set; } = 1;
         [JsonIgnore]
-        public bool IsMultiAttempt => AdaptiveStorageSavingsRetry is not null;
+        public bool IsMultiAttempt => ProductionEncodeCount > 1 || AdaptiveStorageSavingsRetry is not null;
     }
 
     public sealed class HistoryService
@@ -104,8 +106,16 @@ namespace MediaFlux.Services
 
         public void Append(JobHistoryRecord rec)
         {
+            EncodingRetryPersistence.Apply(rec);
             PersistLog(rec);
             File.AppendAllText(_jsonlPath, JsonSerializer.Serialize(rec, _jsonlOpts) + Environment.NewLine);
+        }
+
+        public void AppendEncodingOutcome(JobHistoryRecord rec, EncodingExecutionOutcome? outcome)
+        {
+            rec.ProductionEncodeCount = outcome?.ProductionEncodeCount ?? 1;
+            rec.AdaptiveStorageSavingsRetry = outcome?.AdaptiveStorageSavingsRetry;
+            Append(rec);
         }
 
         public void Clear()

@@ -420,6 +420,35 @@ public sealed class EncodingSizePredictionCalibrationTests
         Assert.Equal(20, mixed.SampleCount);
     }
 
+    [Theory]
+    [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)]
+    public void RetryEvidenceCannotTrainCalibrationEvaluateErrorsOrSetEffectivenessEpoch(int mode)
+    {
+        var service = new EncodingPredictionAccuracyService();
+        var clean = History(20, 1_100, 1_000);
+        var excluded = History(20, 900, 1_000).Select(record => BoundedRetryEvidence.Exclude(record, mode)).ToArray();
+        Assert.Equal(0, service.CalibrateSizePrediction(100, Context, excluded, enabled: true).SampleCount);
+        var baseline = service.CalibrateSizePrediction(100, Context, clean, enabled: true);
+        var mixed = service.CalibrateSizePrediction(100, Context, clean.Concat(excluded), enabled: true);
+        Assert.Equal(20, mixed.SampleCount);
+        Assert.Equal(baseline.EffectiveCorrectionPercent, mixed.EffectiveCorrectionPercent);
+        string key = EncodingPredictionAccuracyService.CalibrationCohortKey(Context);
+        DateTime now = DateTime.UtcNow;
+        var evaluationControls = Enumerable.Range(0, 5).Select(i => EvaluationRecord(i, key, now.AddMinutes(-5), 1_100, 1_000, 1_050)).ToArray();
+        var harmful = Enumerable.Range(20, 5).Select(i => BoundedRetryEvidence.Exclude(
+            EvaluationRecord(i, key, now, 900, 1_000, 1_200,
+                state: EncodingCalibrationEffectivenessState.Harmful, effectivenessSince: now), mode)).ToArray();
+        Assert.Empty(EncodingPredictionAccuracyService.EvaluateCalibrations(harmful).Rows);
+        Assert.Empty(EncodingPredictionAccuracyService.BuildCalibrationEffectiveness(harmful, now));
+        Assert.Empty(EncodingPredictionAccuracyService.BuildCalibrationPolicyComparisons(harmful));
+        var both = evaluationControls.Concat(harmful).ToArray();
+        Assert.Equal(5, EncodingPredictionAccuracyService.EvaluateCalibrations(both).CalibratedCount);
+        Assert.Equal(EncodingCalibrationEffectivenessState.Effective, EncodingPredictionAccuracyService
+            .EvaluateCalibrationEffectiveness(both, key, AdaptivePredictionPolicies.Current.PolicyId, now).State);
+        Assert.Equal(5, Assert.Single(EncodingPredictionAccuracyService.BuildCalibrationEffectiveness(both, now)).EvaluationCount);
+        Assert.Equal(5, Assert.Single(EncodingPredictionAccuracyService.BuildCalibrationPolicyComparisons(both)).EvaluationCount);
+    }
+
     private static EncodingStatisticsRecord[] History(int count, long actualBytes, long predictedBytes) =>
         Enumerable.Range(0, count).Select(index => new EncodingStatisticsRecord
         {

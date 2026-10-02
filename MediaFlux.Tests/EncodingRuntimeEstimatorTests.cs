@@ -118,6 +118,20 @@ public sealed class EncodingRuntimeEstimatorTests : IDisposable
         Assert.Equal(100, result.PercentWithin25);
     }
 
+    [Theory]
+    [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)]
+    public void RetryWorkCannotTrainSingleEncodeEtaOrBacktest(int mode)
+    {
+        var clean = Enumerable.Range(0, 7).Select(i => Record(i, 2)).ToArray();
+        var excluded = Enumerable.Range(20, 7).Select(i => BoundedRetryEvidence.Exclude(Record(i, .05), mode)).ToArray();
+        var mixed = clean.Concat(excluded).ToArray();
+        Assert.Equal(0, Estimator(excluded).Estimate(Workload()).SampleCount);
+        Assert.Equal(7, Estimator(mixed).Estimate(Workload()).SampleCount);
+        Assert.Equal(Estimator(clean).Estimate(Workload()).EstimatedProcessingSeconds,
+            Estimator(mixed).Estimate(Workload()).EstimatedProcessingSeconds);
+        Assert.Equal(Estimator(clean).Backtest(clean).PredictionCount, Estimator(mixed).Backtest(mixed).PredictionCount);
+    }
+
     private static EncodingRuntimeEstimatorService Estimator(IEnumerable<EncodingStatisticsRecord> records)
     {
         EncodingStatisticsRecord[] snapshot = records.ToArray();
