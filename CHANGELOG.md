@@ -5,7 +5,17 @@ All notable changes to MediaFlux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.8.0] - 2026-10-03
+
+### Added
+
+- Added optional adaptive quality selection for Storage Savings Mode. Eligible automatic HEVC jobs compare a bounded set of quality samples and start a full encode only when a candidate is projected to meet the configured storage target.
+- Added sample comparison tools for reviewing candidate clips and projected sizes before choosing encoding settings.
+
+### Improved
+
+- Improved Storage Savings estimates and ensured completed encodes meet the actual output-size contract before an output is promoted.
+- Improved FFmpeg audio timestamp failure diagnostics and encode/job lifecycle reporting.
 
 ## [1.7.3] - 2026-09-27
 

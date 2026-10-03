@@ -19,7 +19,7 @@ The same workflow runs when a `v*` tag is pushed. It performs these tasks automa
 1. Restore and build MediaFlux.
 2. Publish a self-contained Windows x64 application.
 3. Reject payloads containing user data, caches, logs, or PDB files.
-4. Generate release notes from commits since the previous tag.
+4. Generate release notes from the matching versioned section in `CHANGELOG.md`.
 5. Create the Velopack installer, portable bundle, full update package, and delta package when a prior package exists.
 6. Publish the GitHub Release and its update feed.
 7. Verify that the executable, package manifest, and package payload all report the requested release version before publishing.

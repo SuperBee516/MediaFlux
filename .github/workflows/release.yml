@@ -169,29 +169,18 @@ jobs:
       - name: Generate release notes
         shell: pwsh
         run: |
-          $currentTag = "${{ steps.version.outputs.tag }}"
-          $previousTag = git tag --sort=-version:refname | Where-Object { $_ -ne $currentTag } | Select-Object -First 1
-          $range = if ($previousTag) { "$previousTag..HEAD" } else { "HEAD" }
-          $changes = @(git log $range --pretty=format:'- %s (`%h`)')
-          if ($changes.Count -eq 0) {
-            $changes = @('- Maintenance and reliability improvements.')
-          }
-
           $changelog = Get-Content .\CHANGELOG.md -Raw
           $featureNotes = [regex]::Match($changelog, "(?ms)^## \[$([regex]::Escape('${{ steps.version.outputs.value }}'))\][^\r\n]*\s*(.*?)(?=^## |\z)").Groups[1].Value.Trim()
           if (-not $featureNotes) {
-            $featureNotes = [regex]::Match($changelog, '(?ms)^## 🎞️ Video Restoration Phase 4B[^\r\n]*\s*(.*?)(?=^## |\z)').Groups[1].Value.Trim()
-          }
-          if ($featureNotes) {
-            $changes = @($featureNotes, '', '### Commit summary', '') + $changes
+            throw "CHANGELOG.md has no release notes for version '${{ steps.version.outputs.value }}'."
           }
 
           @(
             "# MediaFlux ${{ steps.version.outputs.value }}",
             "",
             "## Changes",
-            ""
-          ) + $changes + @(
+            "",
+            $featureNotes,
             "",
             "Full project history is available in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/CHANGELOG.md)."
           ) | Set-Content .\artifacts\release-notes.md
