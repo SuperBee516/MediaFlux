@@ -410,7 +410,10 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         var next = new SyntheticExecutor(MakePlan());
         var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "adaptive-research.jsonl"));
         var statistics = new EncodingStatisticsService(Path.Combine(_root, "adaptive-statistics.jsonl"));
+        var history = new HistoryService(Path.Combine(_root, "adaptive-history.json"));
         var orchestrator = CreateOrchestrator(new SequentialExecutor(skipped, next), journal, statistics);
+        EncodingExecutionOutcome? publishedOutcome = null;
+        var callbacks = new EncodeExecutionCallbacks { ExecutionOutcome = outcome => publishedOutcome = outcome };
         var first = orchestrator.CreateAttempt(Snapshot(source, null) with
         { AdaptiveStorageSavingsEnabled = true, StorageSavingsContract = AdaptiveStorageSavingsTests.Contract, DeleteSourceAfterCompression = true });
         var second = orchestrator.CreateAttempt(Snapshot(source, null) with { OperationId = "next-adaptive-job" });
@@ -418,7 +421,7 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         {
             try
             {
-                await orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
+                await orchestrator.ExecuteAsync(attempt, callbacks, null, CancellationToken.None);
                 orchestrator.RecordSuccessfulExecution(attempt, Now, 123_456_789, 10, "success", null, false, null);
             }
             catch (AdaptiveStorageSavingsSkippedException ex)
@@ -429,9 +432,14 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         }, 1, () => false, () => false);
         Assert.True(skipped.Request!.AdaptiveStorageSavingsEnabled);
         Assert.DoesNotContain("encode", skipped.Events);
+        Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped, publishedOutcome?.TerminalResult);
+        Assert.Equal(0, publishedOutcome?.ProductionEncodeCount);
+        Assert.Equal(publishedOutcome, first.ExecutionOutcome);
         Assert.Equal(1, next.Events.Count(e => e == "encode"));
         Assert.Equal(1_000_000, new FileInfo(source).Length);
         EncodingStatisticsRecord record = Assert.Single(statistics.GetAll(), r => r.Outcome == EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped);
+        Assert.Equal(0, record.ProductionEncodeCount);
+        Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped.ToString(), record.TerminalResult);
         Assert.Null(record.OutputSizeBytes);
         Assert.Null(record.SourceAdaptiveShadow);
         Assert.Equal(0, record.ProcessingSeconds);
@@ -440,6 +448,21 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.Equal(1, totals.Skipped);
         Assert.Equal(0, totals.Failed);
         Assert.Equal(1, totals.Successful);
+
+        history.AppendEncodingOutcome(new JobHistoryRecord
+        {
+            Id = first.Snapshot.OperationId,
+            Status = JobStatus.Skipped,
+            TerminalResult = EncodingTerminalResult.AdaptiveStorageSavingsSkipped,
+            FinalizationOutcome = MainForm.ResolveFailureHistoryFinalizationOutcome(
+                null, assignmentValidationFailed: false, researchEvidenceFailed: false,
+                adaptivePolicySkipped: true, isCanceled: false)
+        }, first.ExecutionOutcome);
+        JobHistoryRecord historyRecord = Assert.Single(new HistoryService(Path.Combine(_root, "adaptive-history.json")).LoadAll());
+        Assert.Equal(JobStatus.Skipped, historyRecord.Status);
+        Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped, historyRecord.TerminalResult);
+        Assert.Equal(0, historyRecord.ProductionEncodeCount);
+        Assert.Equal(nameof(EncodingLifecycleStatus.NotRun), historyRecord.FinalizationOutcome);
     }
 
     [Fact]

@@ -14,23 +14,46 @@ namespace MediaFlux
 {
     public partial class MainForm : MediaFluxForm
     {
+        internal enum EncodeQueueStartOutcome
+        {
+            NotStarted,
+            ReviewCancelled,
+            Canceled,
+            Completed
+        }
+
         private long _lastQueueCompletedTicks;
         private bool _sequentialQueueTiming;
         private readonly System.Collections.Concurrent.ConcurrentDictionary<DataGridViewRow, DateTime> _queueDispatchTimes = new();
+
+        internal static string ResolveFailureHistoryFinalizationOutcome(
+            EncodeFinalizationResult? finalizationResult,
+            bool assignmentValidationFailed,
+            bool researchEvidenceFailed,
+            bool adaptivePolicySkipped,
+            bool isCanceled) =>
+            finalizationResult?.FailureKind.ToString() ??
+            (assignmentValidationFailed
+                ? "ExperimentAssignmentValidationFailed"
+                : researchEvidenceFailed
+                    ? "ResearchEvidenceCaptureFailed"
+                    : adaptivePolicySkipped
+                        ? EncodingLifecycleStatus.NotRun.ToString()
+                        : isCanceled ? "Canceled" : "FfmpegFailed");
         private async void btnStartEncode_Click(object? sender, EventArgs e)
         {
             await StartEncodeAsync();
         }
 
-        private async Task StartEncodeAsync(bool? processAllOverride = null)
+        private async Task<EncodeQueueStartOutcome> StartEncodeAsync(bool? processAllOverride = null)
         {
             // prevent re-entry
             if (_encodingActive)
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             if (_mediaRemuxCts != null)
             {
                 ShowStatusInfo("Wait for the active remux to finish or cancel it before encoding.");
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             }
 
             var eligibleRows = GetEligibleEncodeRowsInExecutionOrder().ToList();
@@ -66,7 +89,7 @@ namespace MediaFlux
 
             IReadOnlyList<DataGridViewRow>? resolvedRows = scope.Resolve(scopeChoice);
             if (resolvedRows == null)
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
 
             bool requestedAll = ReferenceEquals(resolvedRows, scope.EligibleJobs);
             var requestedRows = resolvedRows.ToList();
@@ -75,15 +98,15 @@ namespace MediaFlux
             if (!requestedAll && requestedRows.Count == 0)
             {
                 ShowStatusInfo("Select one or more files to encode.");
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             }
 
             if (!EnsureFfmpegToolsAvailable())
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             if (!await EnsureRequestedVideoEncodersAvailable(requestedRows))
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             if (!await ConfirmExplicitMp4CompatibilityAsync(requestedRows))
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             // Capture the configured selection once for this run.  The preview is
             // advisory and the mutable UI state must not be reread while workers
             // are building authoritative production requests.
@@ -93,7 +116,7 @@ namespace MediaFlux
             if (requestedRows.Any(row => row.Tag is not RowMeta { IsDvdEncode: true }) &&
                 !ValidateOutputFolderAgainstWatchFolder(cmbEncodeOutput.Text, showMessage: true))
             {
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             }
             foreach (string dvdOutputFolder in requestedRows
                          .Select(row => (row.Tag as RowMeta)?.DvdEncodeOptions?.OutputPath)
@@ -105,14 +128,14 @@ namespace MediaFlux
                         dvdOutputFolder,
                         showMessage: true))
                 {
-                    return;
+                    return EncodeQueueStartOutcome.NotStarted;
                 }
             }
 
             RecommendationStartChoice recommendationChoice =
                 ReviewRecommendationsBeforeStart(requestedRows);
             if (recommendationChoice == RecommendationStartChoice.Cancel)
-                return;
+                return EncodeQueueStartOutcome.ReviewCancelled;
             if (recommendationChoice == RecommendationStartChoice.CandidatesOnly)
             {
                 requestedRows = requestedRows
@@ -125,7 +148,7 @@ namespace MediaFlux
                 {
                     ShowStatusInfo(
                         "No Strong or Moderate candidates remain in the requested queue scope.");
-                    return;
+                    return EncodeQueueStartOutcome.NotStarted;
                 }
             }
 
@@ -202,7 +225,7 @@ namespace MediaFlux
                 {
                     lblEncodeStatus.Text = "Nothing to encode.";
                     ResetEncodeMetrics();
-                    return;
+                    return EncodeQueueStartOutcome.NotStarted;
                 }
 
                 lblEncodeStatus.Text = "Encoding…";
@@ -240,6 +263,9 @@ namespace MediaFlux
 
                 if (!_cancelEncode)
                     await SendDiscordQueueCompleteNotificationAsync(queueStartedUtc);
+                return _cancelEncode
+                    ? EncodeQueueStartOutcome.Canceled
+                    : EncodeQueueStartOutcome.Completed;
             }
             finally
             {
@@ -1097,11 +1123,12 @@ namespace MediaFlux
                             ErrorSummary = notes,
                             StorageSavings = isCanceled ? null : finalizationResult?.StorageSavings,
                             AdaptiveSelection = executionAttempt?.AdaptiveSelection,
-                            FinalizationOutcome =
-                                finalizationResult?.FailureKind.ToString() ??
-                                (assignmentValidationFailure != null
-                                    ? "ExperimentAssignmentValidationFailed"
-                                    : researchEvidenceFailed ? "ResearchEvidenceCaptureFailed" : isCanceled ? "Canceled" : "FfmpegFailed"),
+                            FinalizationOutcome = ResolveFailureHistoryFinalizationOutcome(
+                                finalizationResult,
+                                assignmentValidationFailure != null,
+                                researchEvidenceFailed,
+                                adaptivePolicySkipped,
+                                isCanceled),
                             StagingPath = stagedOutputPath,
                             SourceDeletionResult = sourceRetention,
                             RequestedOutputContainer = requestedOutputContainer.ToString(),

@@ -5,14 +5,15 @@ namespace MediaFlux;
 internal sealed class JobManagerForm : MediaFluxForm
 {
     private readonly DataGridView _grid = new() { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = false, AutoGenerateColumns = false };
-    private readonly Func<IReadOnlyList<EncodeJob>> _jobs; private readonly Action<Guid, string> _action;
+    private readonly Func<IReadOnlyList<EncodeJob>> _jobs; private readonly Func<Guid, string, Task> _action;
     private Guid? _contextJobId;
-    public JobManagerForm(Func<IReadOnlyList<EncodeJob>> jobs, Action<Guid, string> action)
+    public JobManagerForm(Func<IReadOnlyList<EncodeJob>> jobs, Func<Guid, string, Task> action)
     {
         _jobs = jobs; _action = action; Text = "Job Manager"; StartPosition = FormStartPosition.CenterParent; ClientSize = new Size(900, 410);
         foreach (var header in new[] { "Name", "Files", "Schedule / Next Run", "Estimated Output", "Estimated Savings", "Status", "Last Run", "Enabled" }) _grid.Columns.Add(header, header);
         var menu = new ContextMenuStrip();
-        foreach (var text in new[] { "Run Now", "Edit Job", "Edit Encode Settings", "Change Schedule", "View Files", "Load into Main Queue", "Enable / Disable", "Delete" }) menu.Items.Add(text, null, (_, __) => InvokeAction(text));
+        foreach (var text in new[] { "Run Now", "Edit Job", "Edit Encode Settings", "Change Schedule", "View Files", "Load into Main Queue", "Enable / Disable", "Delete" })
+            menu.Items.Add(text, null, async (_, __) => await InvokeActionAsync(text));
         menu.Opening += (_, e) =>
         {
             if (_contextJobId == null && _grid.CurrentRow?.Tag is Guid currentId)
@@ -29,13 +30,23 @@ internal sealed class JobManagerForm : MediaFluxForm
             _grid.CurrentCell = _grid.Rows[e.RowIndex].Cells[0];
             _contextJobId = _grid.Rows[e.RowIndex].Tag as Guid?;
         };
-        _grid.CellDoubleClick += (_, __) => InvokeAction("Edit Job"); Controls.Add(_grid); Shown += (_, __) => RefreshJobs(); Activated += (_, __) => RefreshJobs();
+        _grid.CellDoubleClick += async (_, __) => await InvokeActionAsync("Edit Job"); Controls.Add(_grid); Shown += (_, __) => RefreshJobs(); Activated += (_, __) => RefreshJobs();
     }
-    private void InvokeAction(string action)
+    internal async Task InvokeActionAsync(string action)
     {
         Guid? jobId = _contextJobId ?? (_grid.CurrentRow?.Tag as Guid?);
         _contextJobId = null;
-        if (jobId.HasValue) { _action(jobId.Value, action); RefreshJobs(); }
+        if (!jobId.HasValue)
+            return;
+        try
+        {
+            await _action(jobId.Value, action);
+        }
+        finally
+        {
+            if (!IsDisposed)
+                RefreshJobs();
+        }
     }
     private void RefreshJobs()
     {

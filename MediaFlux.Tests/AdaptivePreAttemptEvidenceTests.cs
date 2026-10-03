@@ -109,7 +109,9 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
 
         Assert.True(orchestrator.RecordSuccessfulExecution(attempt, DateTime.UtcNow, 100, 1, "test", null, false, null));
         Assert.False(orchestrator.RecordSuccessfulExecution(attempt, DateTime.UtcNow, 100, 1, "test", null, false, null));
-        Assert.Single(new EncodingStatisticsService(attempt.Snapshot.StatisticsPath).GetAll());
+        EncodingStatisticsRecord statisticsRecord = Assert.Single(
+            new EncodingStatisticsService(attempt.Snapshot.StatisticsPath).GetAll());
+        Assert.Equal(1, statisticsRecord.ProductionEncodeCount);
         var history = new HistoryService(Path.Combine(_root, "history.json"));
         history.AppendEncodingOutcome(new() { Id = attempt.Snapshot.OperationId, Status = JobStatus.Success,
             AdaptiveSelection = attempt.AdaptiveSelection, TerminalResult = EncodingTerminalResult.Completed }, attempt.ExecutionOutcome);

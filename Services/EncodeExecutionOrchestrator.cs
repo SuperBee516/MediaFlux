@@ -358,6 +358,18 @@ public sealed class EncodeExecutionOrchestrator
             attempt.FinalizationResult = ex.Result;
             throw;
         }
+        catch (AdaptiveStorageSavingsSkippedException)
+        {
+            var outcome = new EncodingExecutionOutcome(
+                attempt.Plan?.PlanId ?? Guid.Empty,
+                [],
+                [],
+                TerminalResult: EncodingTerminalResult.AdaptiveStorageSavingsSkipped,
+                ProductionEncodeCount: 0);
+            attempt.ExecutionOutcome = outcome;
+            callbacks.ExecutionOutcome?.Invoke(outcome);
+            throw;
+        }
         attempt.EncodeResult = encoded;
         if (!encoded.Success || !encoded.FinalizationSucceeded)
             throw new InvalidOperationException("Encoding did not complete validated output finalization.");

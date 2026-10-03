@@ -40,7 +40,7 @@ public partial class MainForm
         form.ShowDialog(this);
     }
 
-    private async void HandleJobManagerAction(Guid jobId, string action)
+    private async Task HandleJobManagerAction(Guid jobId, string action)
     {
         EncodeJob? job = EncodeJobService.FindById(_encodeJobs, jobId);
         if (job == null)
@@ -233,14 +233,36 @@ public partial class MainForm
         await LoadJobIntoMainQueueAsync(job);
         if (dgvEncodeQueue.Rows.Count == 0) { UpdateJobResult(jobId, EncodeJobStatus.Failed, "Could not load any valid source files into the encode queue."); return; }
         _runningSavedJobId = job.Id;
-        try { await StartEncodeAsync(processAllOverride: true); }
+        EncodeQueueStartOutcome startOutcome;
+        try { startOutcome = await StartEncodeAsync(processAllOverride: true); }
         finally { _runningSavedJobId = null; }
-        EncodeJobStatus outcome = _cancelEncode ? EncodeJobStatus.Failed : _encodeFailedCount > 0 ? EncodeJobStatus.CompletedWithErrors : EncodeJobStatus.Completed;
-        string result = outcome == EncodeJobStatus.Completed ? (_encodeStorageRejectedCount > 0 ? $"Completed with {_encodeStorageRejectedCount} file(s) skipped — insufficient savings." : "Completed.") : outcome == EncodeJobStatus.CompletedWithErrors ? $"Completed with {_encodeFailedCount} failed file(s)." : "Stopped or failed.";
+        (EncodeJobStatus outcome, string result) = ResolveSavedJobRunResult(
+            startOutcome,
+            _encodeFailedCount,
+            _encodeStorageRejectedCount);
         UpdateJobResult(jobId, outcome, result);
         ErrorLogService.Append(AppPaths.UserDataDirectory, "Completed saved job", details: $"Id={job.Id}; Name={job.Name}; Status={outcome}; Result={result}");
         if (scheduled) ShowStatusInfo($"Scheduled job '{job.Name}' {result}");
     }
+
+    internal static (EncodeJobStatus Status, string Result) ResolveSavedJobRunResult(
+        EncodeQueueStartOutcome startOutcome,
+        int failedCount,
+        int skippedCount) => startOutcome switch
+        {
+            EncodeQueueStartOutcome.ReviewCancelled =>
+                (EncodeJobStatus.Ready, "Canceled during pre-encode review; no encode run started."),
+            EncodeQueueStartOutcome.NotStarted =>
+                (EncodeJobStatus.Ready, "Encoding did not start."),
+            EncodeQueueStartOutcome.Canceled =>
+                (EncodeJobStatus.Failed, "Stopped or failed."),
+            _ when failedCount > 0 =>
+                (EncodeJobStatus.CompletedWithErrors, $"Completed with {failedCount} failed file(s)."),
+            _ =>
+                (EncodeJobStatus.Completed, skippedCount > 0
+                    ? $"Completed with {skippedCount} file(s) skipped — insufficient savings."
+                    : "Completed.")
+        };
 
     private void UpdateJobResult(Guid jobId, EncodeJobStatus status, string result)
     {
