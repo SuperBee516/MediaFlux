@@ -5,6 +5,20 @@ All notable changes to MediaFlux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-10-04
+
+### Improved
+
+- Restored fast queue estimate generation and removed expensive analysis from normal estimate refreshes, keeping quality changes more responsive.
+- Improved encode reliability and fallback behavior. Recommendations are advisory and no longer prevent starting an encode.
+- Simplified Estimated Output and Recommendation details in the queue, with technical estimate information available in Inspector.
+- Improved same-codec Source Adaptive estimate bounds and reduced unnecessary Inspector probing.
+- Added regression coverage for estimate ownership, queue presentation, quality changes, and encode lifecycle stability.
+
+### Notes
+
+- Estimated output size is advisory and can vary materially with source complexity and encoder behavior.
+
 ## [1.8.0] - 2026-10-03
 
 ### Added
