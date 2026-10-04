@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefaultItemExcludesInProjectFolder>$(DefaultItemExcludesInProjectFolder);TestResults/**</DefaultItemExcludesInProjectFolder>
 
     <RootNamespace>MediaFlux</RootNamespace>
     <AssemblyName>MediaFlux</AssemblyName>
