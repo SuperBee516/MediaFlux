@@ -2639,6 +2639,8 @@ namespace MediaFlux
             public SmartEncodeRecommendation? EncodeRecommendation = null;
             public SmartEncodeRecommendation? BaselineEncodeRecommendation = null;
             public string EstimateDiagnostic = "";
+            public bool AdaptiveQualitySelectionPending;
+            public bool AdaptiveSelectionSkipped;
             public double EstimatedPlannedAudioBitrateKbps = 0;
             public double EstimatedPlannedMappedAncillaryBitrateKbps = 0;
             public DeepMediaAnalysisResult? DeepAnalysis = null;

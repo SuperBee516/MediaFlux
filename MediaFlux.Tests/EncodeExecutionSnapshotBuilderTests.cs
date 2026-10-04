@@ -28,6 +28,30 @@ public sealed class EncodeExecutionSnapshotBuilderTests
     }
 
     [Fact]
+    public void ProvisionalQueuedEstimateDoesNotBecomeTargetForAutomaticAdaptiveSelection()
+    {
+        EncodingSizePredictionCalibration calibration = EncodingSizePredictionCalibration.Unavailable(
+            6, "Provisional queue estimate.");
+        EncodeExecutionSnapshot snapshot = Build(
+            Settings() with
+            {
+                AutomaticQuality = true,
+                QualityTarget = QualityTarget.Balanced,
+                StorageSavings = new StorageSavingsOptions { Enabled = true }
+            },
+            Item() with
+            {
+                EstimatedTargetMb = 6,
+                SizePredictionCalibration = calibration
+            });
+
+        Assert.Null(snapshot.TargetMb);
+        Assert.Equal(EncodingQualityIntent.Automatic(QualityTarget.Balanced), snapshot.QualityIntent);
+        Assert.True(snapshot.AdaptiveStorageSavingsEnabled);
+        Assert.Same(calibration, snapshot.SizePredictionCalibration);
+    }
+
+    [Fact]
     public void ManualQualityRetainsNumericCqAndCrfIntent()
     {
         EncodeExecutionSnapshot cq = Build(Settings() with

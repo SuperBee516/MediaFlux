@@ -59,13 +59,16 @@ public sealed class BoundedRetryProgressPresentationTests
                 Dictionary<string, double> etaSpeedState = Field<Dictionary<string, double>>(formType, main, "_etaSpeedState");
                 Assert.Contains(Path.GetFullPath(source), etaSpeedState.Keys);
 
+                row.Cells["colEstimatedSize"].Value = "6 MB  (-40.0%)";
+                row.Cells["colEstimatedSize"].ToolTipText = "Provisional output-size estimate.";
                 Method(formType, "ApplyBoundedRetryProgressToRow").Invoke(main,
                     [row, Quality(EncoderQualityMechanism.Cq, 27, EncodingQualityReasonCode.AdaptiveStorageSavingsRetry)]);
 
                 Assert.Single(queue.Rows.Cast<DataGridViewRow>(), candidate => !candidate.IsNewRow);
                 Assert.Same(row, Assert.Single(queue.Rows.Cast<DataGridViewRow>(), candidate => !candidate.IsNewRow));
                 Assert.Equal("Retrying at CQ27 — attempt 2 of 2", row.Cells["colStatus"].Value?.ToString());
-                Assert.Equal("CQ27 executing (attempt 2 of 2)", row.Cells["colEstimatedSize"].Value?.ToString());
+                Assert.Equal("6 MB  (-40.0%)", row.Cells["colEstimatedSize"].Value?.ToString());
+                Assert.Contains("CQ27", row.Cells["colEstimatedSize"].ToolTipText);
                 Assert.Equal("0%", row.Cells["colProgress"].Value?.ToString());
                 Assert.Equal("--:--:--", row.Cells["colETA"].Value?.ToString());
                 Assert.Equal(0, etaSpeedState[Path.GetFullPath(source)]);

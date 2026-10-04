@@ -772,16 +772,11 @@ namespace MediaFlux
                         {
                             if (row.DataGridView != dgvEncodeQueue)
                                 return;
-                            RefreshQueueWorkspaceRow(row);
                             if (retryPlan && snapshot.Plan.Quality is { EffectiveQuality: not null } retryQuality)
                                 ApplyBoundedRetryProgressToRow(row, retryQuality);
-                            else if (builtSnapshot.AdaptiveStorageSavingsEnabled && snapshot.Plan.Quality is { } resolvedQuality)
-                            {
-                                row.Cells["colEstimatedSize"].Value = snapshot.Plan.AdaptiveSelection?.Disposition == AdaptiveSelectionDisposition.Skipped
-                                    ? "Skipped — insufficient savings at acceptable quality"
-                                    : $"{(resolvedQuality.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF")} {resolvedQuality.EffectiveQuality} selected";
-                                row.Cells["colEstimatedSize"].ToolTipText = snapshot.Plan.AdaptiveSelection?.Reason ?? "Resolved source-adaptive quality; actual output remains subject to storage validation.";
-                            }
+                            else
+                                ApplyAdaptivePlanSnapshotPresentation(row, meta, snapshot.Plan);
+                            RefreshQueueWorkspaceRow(row);
                             RefreshCurrentEncodingIntelligence(row, meta);
                         }
 
@@ -1310,9 +1305,67 @@ namespace MediaFlux
                 $"Attempt {AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber} of {AdaptiveStorageSavingsRetryLimits.MaximumProductionAttempts} is encoding at {BoundedRetryProgressPresentation.QualityLabel(retryQuality)}. The initial adaptive selection remains recorded separately.");
             SetEtaCellColor(row, 0);
             row.Cells["colProgress"].ToolTipText = "Progress restarted for the retry encode.";
-            row.Cells["colEstimatedSize"].Value = BoundedRetryProgressPresentation.RetryQualityCell(retryQuality);
-            row.Cells["colEstimatedSize"].ToolTipText = "Effective quality for the active retry encode. The initial adaptive selection remains unchanged in the job evidence.";
+            string retryTooltip = $"Active retry encode is using {BoundedRetryProgressPresentation.QualityLabel(retryQuality)}. The initial adaptive selection remains unchanged in the job evidence.";
+            string estimateTooltip = row.Cells["colEstimatedSize"].ToolTipText ?? string.Empty;
+            row.Cells["colEstimatedSize"].ToolTipText = string.IsNullOrWhiteSpace(estimateTooltip)
+                ? retryTooltip
+                : estimateTooltip + Environment.NewLine + retryTooltip;
             UpdateQueueEstimatedCompletion();
+        }
+
+        private void ApplyAdaptivePlanSnapshotPresentation(
+            DataGridViewRow row,
+            RowMeta meta,
+            EncodingPlan plan)
+        {
+            meta.IntelligencePlan = plan;
+            meta.AdaptiveQualitySelectionPending = false;
+            meta.AdaptiveSelectionSkipped = plan.AdaptiveSelection?.Disposition == AdaptiveSelectionDisposition.Skipped;
+            if (plan.AdaptiveSelection is not null)
+                meta.SizePredictionCalibration = null;
+
+            DataGridViewCell estimateCell = row.Cells["colEstimatedSize"];
+            AdaptiveQualitySelectionEvidence? selection = plan.AdaptiveSelection;
+            if (selection?.Disposition == AdaptiveSelectionDisposition.Skipped)
+            {
+                estimateCell.Value = "Skipped — insufficient savings at acceptable quality";
+                estimateCell.Tag = null;
+                estimateCell.ToolTipText = selection.Reason;
+                if (!string.IsNullOrWhiteSpace(meta.Path) && _estimatedSizeMap.Remove(meta.Path))
+                {
+                    _queueTotalsDirty = true;
+                    UpdateSizeTotals(force: true);
+                }
+                return;
+            }
+
+            double estimateMb = GetInspectorEstimatedSizeMb(row);
+            if (estimateMb <= 0 && string.Equals(
+                    Convert.ToString(estimateCell.Value),
+                    AdaptiveStorageSavingsPolicy.PendingEstimate,
+                    StringComparison.Ordinal))
+            {
+                estimateCell.Value = "Metadata unavailable";
+                estimateCell.Tag = null;
+                estimateCell.ToolTipText = string.IsNullOrWhiteSpace(meta.EstimateDiagnostic)
+                    ? "No numeric output-size estimate is available."
+                    : meta.EstimateDiagnostic;
+            }
+
+            if (selection?.Disposition == AdaptiveSelectionDisposition.Selected)
+            {
+                string mechanism = selection.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF";
+                int quality = selection.SelectedQuality ?? plan.Quality?.EffectiveQuality ?? selection.PreferredQuality;
+                estimateCell.ToolTipText = estimateMb > 0
+                    ? $"Provisional output-size estimate. Source Adaptive selected {mechanism} {quality} after representative sampling; this size was estimated before that selection.{Environment.NewLine}{selection.Reason}"
+                    : $"No numeric output-size estimate is available. Source Adaptive selected {mechanism} {quality} after representative sampling.{Environment.NewLine}{selection.Reason}";
+            }
+            else if (estimateMb <= 0 && string.IsNullOrWhiteSpace(Convert.ToString(estimateCell.Value)))
+            {
+                estimateCell.ToolTipText = string.IsNullOrWhiteSpace(meta.EstimateDiagnostic)
+                    ? "No numeric output-size estimate is available."
+                    : meta.EstimateDiagnostic;
+            }
         }
 
         private bool TryQueueFailedRowForAutoRetry(DataGridViewRow row)

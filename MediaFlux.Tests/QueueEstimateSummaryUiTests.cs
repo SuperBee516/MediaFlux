@@ -15,7 +15,7 @@ public sealed class QueueEstimateSummaryUiTests
     [InlineData("avc", true, true, true)]
     [InlineData("h264", false, true, false)]
     [InlineData("h264", true, false, false)]
-    public void AdaptivePendingEstimateRemovesPreferredPrecisionAndCalibrationFromRenderedQueue(
+    public void AdaptivePendingEstimateRetainsValidProvisionalOutputSize(
         string sourceCodec, bool storageEnabled, bool automatic, bool pending)
     {
         RunOnUiThread(main =>
@@ -55,22 +55,170 @@ public sealed class QueueEstimateSummaryUiTests
                 Field<Guid>(meta, "QueueItemId"), path, 12, 6, 100, "1920x1080", sourceCodec, 24,
                 false, null, null, "preferred estimate", 128, 0,
                 qualityResolution: EncodingPlanService.Create(context).Quality, sizeCalibration: calibration);
-            Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path] = 6;
             Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(service, "_smartResults").Enqueue(result);
             Invoke(main, "ApplySmartEstimateResultsBatch");
+            Invoke(main, "UpdateSizeTotals", true);
+            Invoke(main, "RefreshQueueWorkspaceRow", row);
             if (pending)
             {
-                Assert.Equal(AdaptiveStorageSavingsPolicy.PendingEstimate, row.Cells["colEstimatedSize"].Value);
-                Assert.Null(row.Cells["colEstimatedSize"].Tag);
-                Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+                Assert.Contains("6 MB", row.Cells["colEstimatedSize"].Value!.ToString());
+                Assert.IsType<Tuple<double, double>>(row.Cells["colEstimatedSize"].Tag);
+                Assert.Equal(6d, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
+                Assert.Equal(6d, Field<double>(main, "_queueTotalEstimatedMb"));
+                Assert.Equal("6 MB", Field<Label>(main, "_summaryNewSizeValue").Text);
+                Assert.Equal(1, Field<int>(main, "_queueEstimatedFileCount"));
+                Assert.Equal(6d, Field<double>(main, "_queueTotalSavingsEstimateOutputMb"));
+                Assert.Equal(1, Field<int>(main, "_queueSavingsEstimateFileCount"));
+                Assert.NotEqual("--", Field<Label>(main, "_summaryTotalEstimatedSavedValue").Text);
+                Assert.Contains("12 MB → 6 MB", row.Cells["colSourceEstimate"].Value!.ToString());
+                Assert.DoesNotContain(AdaptiveStorageSavingsPolicy.PendingEstimate, row.Cells["colSourceEstimate"].Value!.ToString());
+                Assert.Contains("Provisional output-size estimate", row.Cells["colEstimatedSize"].ToolTipText);
+                Assert.True(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
                 Assert.Null(Field<object?>(meta, "SizePredictionCalibration"));
+                Assert.Contains("Provisional output-size estimate", Field<string>(meta, "EstimateDiagnostic"));
             }
             else
             {
                 Assert.Contains("6 MB", row.Cells["colEstimatedSize"].Value!.ToString());
                 Assert.Equal(6, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
                 Assert.Same(calibration, Field<object?>(meta, "SizePredictionCalibration"));
+                Assert.False(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
             }
+        });
+    }
+
+    [Fact]
+    public void AdaptivePendingEstimateWithUnavailableMetadataDoesNotFabricateOutputSize()
+    {
+        RunOnUiThread(main =>
+        {
+            Config config = Field<Config>(main, "_config");
+            config.StorageSavings.Enabled = true;
+            config.VideoRestoration = new();
+            Invoke(main, "SelectEncoderById", VideoEncoderIds.Libx265);
+            Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.Hevc);
+            Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
+
+            EstimateBackgroundService service = Field<EstimateBackgroundService>(main, "_estimateService");
+            service.ResetAndCancel();
+            (DataGridViewRow row, object meta, string path) = AddQueueRow(main, "MediaFlux.adaptive-estimate-unavailable");
+            EncodingDecisionContext context = AdaptiveStorageSavingsTests.Context() with
+            {
+                Encoder = new(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265")
+            };
+            var result = new EstimateBackgroundService.SmartEstimateResult(service.CurrentGeneration,
+                Field<Guid>(meta, "QueueItemId"), path, 12, 0, 100, "1920x1080", "h264", 24,
+                false, "Metadata unavailable", null, "Required media metadata could not be determined.", 128, 0,
+                qualityResolution: EncodingPlanService.Create(context).Quality);
+            Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(service, "_smartResults").Enqueue(result);
+
+            Invoke(main, "ApplySmartEstimateResultsBatch");
+            Invoke(main, "UpdateSizeTotals", true);
+            Invoke(main, "RefreshQueueWorkspaceRow", row);
+
+            Assert.Equal(AdaptiveStorageSavingsPolicy.PendingEstimate, row.Cells["colEstimatedSize"].Value);
+            Assert.DoesNotContain(path, Field<Dictionary<string, double>>(main, "_estimatedSizeMap").Keys);
+            Assert.Equal(0d, Field<double>(main, "_queueTotalEstimatedMb"));
+            Assert.True(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
+            Assert.Contains("No numeric output-size estimate is available yet", row.Cells["colEstimatedSize"].ToolTipText);
+            Assert.Contains("12 MB →", row.Cells["colSourceEstimate"].Value!.ToString());
+            Assert.Contains(AdaptiveStorageSavingsPolicy.PendingEstimate, row.Cells["colSourceEstimate"].Value!.ToString());
+        });
+    }
+
+    [Fact]
+    public void AdaptiveEstimateReplacementUpdatesTotalsByDelta()
+    {
+        RunOnUiThread(main =>
+        {
+            Config config = Field<Config>(main, "_config");
+            config.StorageSavings.Enabled = true;
+            config.VideoRestoration = new();
+            Invoke(main, "SelectEncoderById", VideoEncoderIds.Libx265);
+            Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.Hevc);
+            Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
+
+            EstimateBackgroundService service = Field<EstimateBackgroundService>(main, "_estimateService");
+            service.ResetAndCancel();
+            (DataGridViewRow row, object meta, string path) = AddQueueRow(main, "MediaFlux.adaptive-estimate-replacement");
+            Dictionary<string, double> estimates = Field<Dictionary<string, double>>(main, "_estimatedSizeMap");
+            estimates[path] = 8d;
+            SetField(main, "_queueTotalEstimatedMb", 8d);
+            var calibration = EncodingSizePredictionCalibration.Unavailable(6, "preferred estimate");
+            EncodingDecisionContext context = AdaptiveStorageSavingsTests.Context() with
+            {
+                Encoder = new(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265")
+            };
+            var result = new EstimateBackgroundService.SmartEstimateResult(service.CurrentGeneration,
+                Field<Guid>(meta, "QueueItemId"), path, 12, 6, 100, "1920x1080", "h264", 24,
+                false, null, null, "preferred estimate", 128, 0,
+                qualityResolution: EncodingPlanService.Create(context).Quality, sizeCalibration: calibration);
+            Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(service, "_smartResults").Enqueue(result);
+
+            Invoke(main, "ApplySmartEstimateResultsBatch");
+
+            Assert.Equal(6d, estimates[path]);
+            Assert.Equal(6d, Field<double>(main, "_queueTotalEstimatedMb"));
+            Invoke(main, "UpdateSizeTotals", true);
+            Assert.Equal("6 MB", Field<Label>(main, "_summaryNewSizeValue").Text);
+            Assert.Equal(1, Field<int>(main, "_queueEstimatedFileCount"));
+        });
+    }
+
+    [Fact]
+    public void AdaptivePlanSnapshotKeepsProvisionalSizeAndPublishesSelectedQualityInPlan()
+    {
+        RunOnUiThread(main =>
+        {
+            (DataGridViewRow row, object meta, string path) = AddQueueRow(main, "MediaFlux.adaptive-plan-selected");
+            var calibration = EncodingSizePredictionCalibration.Unavailable(6, "preferred estimate");
+            SetField(meta, "SizePredictionCalibration", calibration);
+            SetField(meta, "AdaptiveQualitySelectionPending", true);
+            row.Cells["colEstimatedSize"].Value = "6 MB  (-50.0%)";
+            row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(12, 6);
+            Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path] = 6d;
+            SetField(main, "_queueTotalEstimatedMb", 6d);
+            EncodingPlan plan = BuildAdaptivePlan(AdaptiveSelectionDisposition.Selected, 26);
+
+            Invoke(main, "ApplyAdaptivePlanSnapshotPresentation", row, meta, plan);
+            Invoke(main, "RefreshQueueWorkspaceRow", row);
+
+            Assert.Equal("6 MB  (-50.0%)", row.Cells["colEstimatedSize"].Value);
+            Assert.Equal(6d, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
+            Assert.Equal(6d, Field<double>(main, "_queueTotalEstimatedMb"));
+            Assert.False(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
+            Assert.Null(Field<object?>(meta, "SizePredictionCalibration"));
+            Assert.Same(plan, Field<EncodingPlan?>(meta, "IntelligencePlan"));
+            Assert.Equal(26, Field<EncodingPlan?>(meta, "IntelligencePlan")!.AdaptiveSelection!.SelectedQuality);
+            Assert.Contains("selected CQ 26", row.Cells["colEstimatedSize"].ToolTipText);
+            Assert.Contains("12 MB → 6 MB", row.Cells["colSourceEstimate"].Value!.ToString());
+        });
+    }
+
+    [Fact]
+    public void AdaptiveSkipReplacesSizePresentationAndExcludesSkippedOutputFromQueueTotal()
+    {
+        RunOnUiThread(main =>
+        {
+            (DataGridViewRow row, object meta, string path) = AddQueueRow(main, "MediaFlux.adaptive-plan-skipped");
+            SetField(meta, "AdaptiveQualitySelectionPending", true);
+            row.Cells["colEstimatedSize"].Value = "6 MB  (-50.0%)";
+            row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(12, 6);
+            Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path] = 6d;
+            Invoke(main, "UpdateSizeTotals", true);
+            EncodingPlan plan = BuildAdaptivePlan(AdaptiveSelectionDisposition.Skipped, null);
+
+            Invoke(main, "ApplyAdaptivePlanSnapshotPresentation", row, meta, plan);
+            Invoke(main, "RefreshQueueWorkspaceRow", row);
+
+            Assert.Equal("Skipped — insufficient savings at acceptable quality", row.Cells["colEstimatedSize"].Value);
+            Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+            Assert.Equal(0d, Field<double>(main, "_queueTotalEstimatedMb"));
+            Assert.Equal(0, Field<int>(main, "_queueEstimatedFileCount"));
+            Assert.Equal(0, Field<int>(main, "_queueEstimateEligibleFileCount"));
+            Assert.True(Field<bool>(meta, "AdaptiveSelectionSkipped"));
+            Assert.False(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
+            Assert.Contains("12 MB → Skipped", row.Cells["colSourceEstimate"].Value!.ToString());
         });
     }
 
@@ -316,6 +464,57 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.Equal("8 MB", Field<Label>(main, "_summaryNewSizeValue").Text);
             Assert.Equal(0, Field<MediaFlux.Services.EstimateBackgroundService>(main, "_estimateService").PendingEstimates);
         });
+    }
+
+    private static (DataGridViewRow Row, object Meta, string Path) AddQueueRow(MainForm main, string prefix)
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"{prefix}.{Guid.NewGuid():N}.mkv");
+        DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+        SetField(main, "_suppressRowEvents", true);
+        try
+        {
+            DataGridViewRow row = queue.Rows[queue.Rows.Add()];
+            row.Tag = path;
+            row.Cells["colName"].Value = Path.GetFileName(path);
+            row.Cells["colSize"].Value = "12 MB";
+            object meta = Invoke(main, "EnsureRowMeta", row)!;
+            SetField(meta, "Path", path);
+            SetField(meta, "SrcMb", 12d);
+            SetField(meta, "SourceSizeBytes", 12L * 1024 * 1024);
+            Field<ConcurrentDictionary<string, DataGridViewRow>>(main, "_rowsByPath")[path] = row;
+            return (row, meta, path);
+        }
+        finally
+        {
+            SetField(main, "_suppressRowEvents", false);
+        }
+    }
+
+    private static EncodingPlan BuildAdaptivePlan(AdaptiveSelectionDisposition disposition, int? selectedQuality)
+    {
+        EncodingDecisionContext context = AdaptiveStorageSavingsTests.Context() with
+        {
+            Encoder = new(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265")
+        };
+        EncodingPlan initial = EncodingPlanService.Create(context);
+        var evidence = new AdaptiveQualitySelectionEvidence(
+            disposition,
+            context.Encoder.EncoderId,
+            context.Encoder.FfmpegCodec,
+            QualityTarget.Balanced,
+            EncoderQualityMechanism.Cq,
+            24,
+            selectedQuality,
+            34,
+            10,
+            null,
+            false,
+            null,
+            Array.Empty<AdaptiveCandidateEvidence>(),
+            disposition == AdaptiveSelectionDisposition.Skipped
+                ? "Skipped — insufficient savings at acceptable quality."
+                : "Source Adaptive selected the highest acceptable tested quality.");
+        return EncodingPlanService.FreezeAdaptiveSelection(initial, evidence);
     }
 
     private static void RunOnUiThread(Action<MainForm> action)

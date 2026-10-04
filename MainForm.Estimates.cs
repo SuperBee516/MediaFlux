@@ -12,6 +12,14 @@ namespace MediaFlux
 {
     public partial class MainForm : MediaFluxForm
     {
+        private const string ProvisionalAdaptiveEstimateTooltip =
+            "Provisional output-size estimate. Source Adaptive may revise the effective quality after representative sampling.";
+
+        private static string WithProvisionalAdaptiveEstimateDiagnostic(string diagnostic) =>
+            string.IsNullOrWhiteSpace(diagnostic)
+                ? ProvisionalAdaptiveEstimateTooltip
+                : ProvisionalAdaptiveEstimateTooltip + Environment.NewLine + diagnostic;
+
         private (int w, int h) ProbeResolutionPixels(string file)
         {
             return _mediaInfoService.GetResolutionPixels(file);
@@ -94,7 +102,7 @@ namespace MediaFlux
                                     GetSelectedVideoEncoderSelection(), item.QualityResolution?.Intent,
                                     EncodingTargetSizeResolver.ResolveConfiguredManualTargetMb(chkAutoTargetSize.Checked, txtTargetSize.Text),
                                     _config.VideoRestoration);
-                            double estMb = adaptivePending ? 0 : item.EstimatedMb;
+                            double estMb = item.EstimatedMb;
                             bool hasEstimate = srcMb > 0 && estMb > 0;
                             string customSuffix = item.IsCustom ? " (custom)" : string.Empty;
 
@@ -106,7 +114,11 @@ namespace MediaFlux
                             row.Cells["colEstimatedSize"].Tag = hasEstimate
                                 ? new Tuple<double, double>(srcMb, estMb)
                                 : null;
-                            row.Cells["colEstimatedSize"].ToolTipText = adaptivePending ? AdaptiveStorageSavingsPolicy.PendingEstimate : hasEstimate
+                            row.Cells["colEstimatedSize"].ToolTipText = adaptivePending
+                                ? hasEstimate
+                                    ? ProvisionalAdaptiveEstimateTooltip
+                                    : $"{AdaptiveStorageSavingsPolicy.PendingEstimate}. No numeric output-size estimate is available yet. {item.UnavailableReason ?? "Required media metadata could not be determined."}"
+                                : hasEstimate
                                 ? item.SizeCalibration?.EstimateModelId == ProductionDirectOutputResult.ModelId
                                     ? $"Historical Direct estimate from {item.SizeCalibration.EstimateIndependentFamilyCount} independent comparable sources."
                                     : item.SizeCalibration?.EstimateModelId == "ManualTarget"
@@ -165,8 +177,12 @@ namespace MediaFlux
                                 if (item.Fps > 0)
                                     rm.Fps = (int)Math.Round(item.Fps);
 
-                                rm.EstimateDiagnostic = adaptivePending ? AdaptiveStorageSavingsPolicy.PendingEstimate : item.EstimateDiagnostic;
+                                rm.EstimateDiagnostic = adaptivePending && hasEstimate
+                                    ? WithProvisionalAdaptiveEstimateDiagnostic(item.EstimateDiagnostic)
+                                    : item.EstimateDiagnostic;
                                 rm.SizePredictionCalibration = adaptivePending ? null : item.SizeCalibration;
+                                rm.AdaptiveQualitySelectionPending = adaptivePending;
+                                rm.AdaptiveSelectionSkipped = false;
                                 rm.EstimatedPlannedAudioBitrateKbps =
                                     item.PlannedAudioBitrateKbps;
                                 rm.EstimatedPlannedMappedAncillaryBitrateKbps =
@@ -181,8 +197,12 @@ namespace MediaFlux
                                 estimateMeta.SrcMb = srcMb;
                                 estimateMeta.VideoCodec = codec;
                                 estimateMeta.Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0;
-                                estimateMeta.EstimateDiagnostic = adaptivePending ? AdaptiveStorageSavingsPolicy.PendingEstimate : item.EstimateDiagnostic;
+                                estimateMeta.EstimateDiagnostic = adaptivePending && hasEstimate
+                                    ? WithProvisionalAdaptiveEstimateDiagnostic(item.EstimateDiagnostic)
+                                    : item.EstimateDiagnostic;
                                 estimateMeta.SizePredictionCalibration = adaptivePending ? null : item.SizeCalibration;
+                                estimateMeta.AdaptiveQualitySelectionPending = adaptivePending;
+                                estimateMeta.AdaptiveSelectionSkipped = false;
                                 estimateMeta.EstimatedPlannedAudioBitrateKbps =
                                     item.PlannedAudioBitrateKbps;
                                 estimateMeta.EstimatedPlannedMappedAncillaryBitrateKbps =
@@ -721,7 +741,8 @@ namespace MediaFlux
                 _queueFileCount++;
                 string? path = GetPathFromRow(row);
                 RowMeta? meta = row.Tag as RowMeta;
-                bool estimateEligible = meta?.ExcludedFromEncodeAsDuplicate != true;
+                bool estimateEligible = meta?.ExcludedFromEncodeAsDuplicate != true &&
+                    meta?.AdaptiveSelectionSkipped != true;
                 if (estimateEligible)
                     _queueEstimateEligibleFileCount++;
                 double sourceMb = 0;
