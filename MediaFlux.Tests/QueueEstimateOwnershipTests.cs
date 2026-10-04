@@ -90,8 +90,8 @@ public sealed class QueueEstimateOwnershipTests
                 // Simulate queued idle estimates whose rows become active jobs
                 // before their completion callbacks are applied.
                 estimateService.ResetAndCancel();
-                runningJobs[transition] = transitionPath;
-                Invoke(main, "SetEncodeRowState", transition, "Retrying encode with recovered source…", "", "", "Recovery retry owns this status.");
+                object? transitionEstimate = transition.Cells["colEstimatedSize"].Value;
+                Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(transitionPath));
 
                 Guid transitionId = (Guid)transitionMeta.GetType().GetField("QueueItemId")!.GetValue(transitionMeta)!;
                 Guid idleId = (Guid)idleMeta.GetType().GetField("QueueItemId")!.GetValue(idleMeta)!;
@@ -108,17 +108,20 @@ public sealed class QueueEstimateOwnershipTests
                 var resultQueue = Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(estimateService, "_smartResults");
                 resultQueue.Enqueue(Result(estimateService.CurrentGeneration, transitionId, transitionPath, 8, 6, recommendation, calibration));
                 resultQueue.Enqueue(Result(estimateService.CurrentGeneration, idleId, idlePath, 12, 9, recommendation, calibration));
+                Invoke(main, "ClaimQueueRowForProduction", transition, transitionPath);
+                Invoke(main, "SetEncodeRowState", transition, "Retrying encode with recovered source…", "", "", "Recovery retry owns this status.");
 
                 Invoke(main, "ApplySmartEstimateResultsBatch");
 
                 Assert.Equal("Retrying encode with recovered source…", transition.Cells["colStatus"].Value);
                 Assert.Equal("Retrying encode with recovered source…", transitionMeta.GetType().GetField("CurrentProcessingStage")!.GetValue(transitionMeta));
                 Assert.Equal("Queued", idle.Cells["colStatus"].Value);
-                Assert.Equal(6d, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[transitionPath]);
+                Assert.Equal(transitionEstimate, transition.Cells["colEstimatedSize"].Value);
+                Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(transitionPath));
                 Assert.Equal(9d, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[idlePath]);
                 Assert.True(Field<double>(main, "_queueTotalEstimatedMb") > 0);
                 Invoke(main, "UpdateSizeTotals", true);
-                Assert.Equal(17d, Field<double>(main, "_queueTotalEstimatedMb"));
+                Assert.Equal(11d, Field<double>(main, "_queueTotalEstimatedMb"));
                 Assert.Same(planControl, planTable.Controls[0]);
                 Assert.Equal(frozenDecisionUtc, plan.SizePredictionCalibration?.DecisionUtc);
 

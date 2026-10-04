@@ -87,11 +87,15 @@ public sealed class AdaptiveStorageSavingsRetryAcceptanceTests(ITestOutputHelper
                 tools.FfmpegPath, tools.FfprobePath, recordingFinalizer,
                 new FixedAdaptiveSamples((request, _, sample) =>
                 {
-                    double uncertainStreamBytes = request.Ancillary.StreamBytes - request.Ancillary.MinimumStreamBytes;
-                    if (uncertainStreamBytes <= 2 || request.Contract.MaximumAcceptedOutputBytes is not long maximum ||
-                        maximum <= request.Ancillary.MinimumStreamBytes + uncertainStreamBytes / 2)
+                    if (request.Contract.MaximumAcceptedOutputBytes is not long maximum)
                         throw new InvalidOperationException("The live fixture cannot produce borderline sample evidence for its captured contract.");
-                    long videoBytes = (long)Math.Floor(maximum - request.Ancillary.MinimumStreamBytes - uncertainStreamBytes / 2);
+                    double videoBudget = maximum * 0.99 - request.Ancillary.StreamBytes;
+                    if (videoBudget <= 0 || request.SourceDuration.TotalSeconds <= 25)
+                        throw new InvalidOperationException("The live fixture requires three regions and a positive video budget.");
+                    // Average sampled projection meets while the highest scene misses.
+                    // This keeps the fixture eligible for the guarded borderline path.
+                    double rate = videoBudget / request.SourceDuration.TotalSeconds * (sample.Label == "Middle" ? 1.2 : 0.6);
+                    long videoBytes = (long)Math.Floor(rate * sample.Duration.TotalSeconds);
                     return new(sample, Math.Max(1, videoBytes), sample.Duration.TotalSeconds);
                 }),
                 async (arguments, stagingPath, attempt, cancellationToken) =>
@@ -284,7 +288,7 @@ public sealed class AdaptiveStorageSavingsRetryAcceptanceTests(ITestOutputHelper
             "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24",
             "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
-            "-t", "5", "-map", "0:v:0", "-map", "1:a:0",
+            "-t", "30", "-map", "0:v:0", "-map", "1:a:0",
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "0",
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", source
         }) start.ArgumentList.Add(argument);

@@ -497,6 +497,10 @@ public sealed class EncodeExecutionSnapshotBuilder
             return configuredManualTargetMb;
         if (useStorageQualityTarget)
             return null;
+        // A numeric CQ/CRF request has no target-size budget. Queue estimates
+        // (including empirical previews) are advisory and must never change RC.
+        if (string.IsNullOrWhiteSpace(item.CustomCompressionProfile) && !storageSavingsApplies && item.Dvd is null)
+            return null;
         if (item.EstimatedTargetMb is > 0)
             return item.EstimatedTargetMb;
 

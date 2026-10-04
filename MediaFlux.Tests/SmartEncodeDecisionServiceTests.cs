@@ -56,6 +56,36 @@ public sealed class SmartEncodeDecisionServiceTests
             reason.Contains("low-confidence Generic BPP fallback estimate", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Theory]
+    [InlineData("NotEligible")]
+    [InlineData("Ineligible")]
+    public void DirectEstimatorInapplicabilityDoesNotSuppressGenericFallbackRecommendation(
+        string directStatus)
+    {
+        EncodingSizePredictionCalibration calibration = GenericFallbackCalibration() with
+        {
+            EstimateStatus = $"LowConfidenceGenericFallback:{directStatus}"
+        };
+
+        SmartEncodeConfidence? ceiling =
+            SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(calibration);
+        Assert.Null(ceiling);
+
+        SmartEncodeRecommendation worthwhile = Evaluate(
+            DefaultSource(),
+            DefaultIntent(estimatedOutputMb: 550, estimateConfidenceCeiling: ceiling));
+        Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate, worthwhile.Kind);
+        Assert.Equal(45, worthwhile.EstimatedSavingsPercent);
+        Assert.Null(worthwhile.ConfidenceCeiling);
+
+        SmartEncodeRecommendation belowMinimum = Evaluate(
+            DefaultSource(),
+            DefaultIntent(estimatedOutputMb: 920, minimumSavingsPercent: 15,
+                estimateConfidenceCeiling: ceiling));
+        Assert.Equal(SmartEncodeRecommendationKind.Skip, belowMinimum.Kind);
+        Assert.Equal(8, belowMinimum.EstimatedSavingsPercent);
+    }
+
     [Fact]
     public void LowConfidenceCeilingSurvivesAgreeingDeepAnalysis()
     {

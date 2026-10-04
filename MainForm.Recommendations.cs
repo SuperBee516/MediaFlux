@@ -20,6 +20,7 @@ namespace MediaFlux
             RowMeta meta = EnsureRowMeta(row);
             meta.EncodeRecommendation = null;
             meta.BaselineEncodeRecommendation = null;
+            meta.RecommendationPending = false;
             meta.DeepAnalysis = null;
             var cell = row.Cells["colEncodeRecommendation"];
             cell.Value = _config.SmartRecommendationsEnabled ? "Analyzing…" : "";
@@ -62,6 +63,7 @@ namespace MediaFlux
             RowMeta meta = EnsureRowMeta(row);
             if (updateBaseline)
             {
+                meta.RecommendationPending = false;
                 meta.BaselineEncodeRecommendation = recommendation;
                 meta.DeepAnalysis = null;
                 if (recommendation != null &&
@@ -150,23 +152,35 @@ namespace MediaFlux
                     })
                 .ToList();
             int skip = eligible.Count(row =>
-                (row.Tag as RowMeta)?.EncodeRecommendation?.Kind ==
-                SmartEncodeRecommendationKind.Skip);
+            {
+                RowMeta? meta = row.Tag as RowMeta;
+                return meta?.IntelligencePlan?.Recommendation?.Recommendation == EncodingRecommendationKind.Skip ||
+                    (meta?.IntelligencePlan?.Recommendation == null &&
+                     meta?.EncodeRecommendation?.Kind == SmartEncodeRecommendationKind.Skip);
+            });
             int review = eligible.Count(row =>
-                (row.Tag as RowMeta)?.EncodeRecommendation?.Kind ==
-                SmartEncodeRecommendationKind.Review);
+            {
+                RowMeta? meta = row.Tag as RowMeta;
+                return meta?.IntelligencePlan?.Recommendation?.Recommendation == EncodingRecommendationKind.Review ||
+                    (meta?.IntelligencePlan?.Recommendation == null &&
+                     meta?.EncodeRecommendation?.Kind == SmartEncodeRecommendationKind.Review);
+            });
             int remuxOnly = eligible.Count(row =>
-                (row.Tag as RowMeta)?.EncodeRecommendation?.Kind ==
-                SmartEncodeRecommendationKind.RemuxOnly);
+                (row.Tag as RowMeta)?.IntelligencePlan?.Recommendation == null &&
+                (row.Tag as RowMeta)?.EncodeRecommendation?.Kind == SmartEncodeRecommendationKind.RemuxOnly);
+            int pending = eligible.Count(row => IsQueueRecommendationPending(row.Tag as RowMeta));
             int unavailable = eligible.Count(row =>
             {
-                SmartEncodeRecommendation? recommendation =
-                    (row.Tag as RowMeta)?.EncodeRecommendation;
-                return recommendation == null ||
-                       recommendation.Kind == SmartEncodeRecommendationKind.Unavailable;
+                RowMeta? meta = row.Tag as RowMeta;
+                if (meta?.IntelligencePlan?.Recommendation != null ||
+                    IsQueueRecommendationPending(meta))
+                    return false;
+
+                SmartEncodeRecommendation? recommendation = meta?.EncodeRecommendation;
+                return recommendation == null || recommendation.Kind == SmartEncodeRecommendationKind.Unavailable;
             });
 
-            if (skip == 0 && review == 0 && remuxOnly == 0 && unavailable == 0)
+            if (skip == 0 && review == 0 && remuxOnly == 0 && pending == 0 && unavailable == 0)
                 return RecommendationStartChoice.EncodeAll;
 
             DialogResult choice = RecommendationStartForm.ShowRecommendationChoice(
@@ -174,6 +188,7 @@ namespace MediaFlux
                 skip,
                 review,
                 remuxOnly,
+                pending,
                 unavailable);
 
             return choice switch
@@ -186,7 +201,34 @@ namespace MediaFlux
 
         private static bool IsSmartEncodeCandidate(DataGridViewRow row)
         {
+            if (row.Tag is RowMeta meta && meta.IntelligencePlan?.Recommendation is { } planRecommendation)
+                return planRecommendation.Recommendation == EncodingRecommendationKind.Encode;
+
             return (row.Tag as RowMeta)?.EncodeRecommendation?.IsCandidate == true;
+        }
+
+        private static bool IsQueueRecommendationPending(RowMeta? meta) =>
+            meta?.IntelligencePlan?.Recommendation == null && meta?.RecommendationPending == true;
+
+        private void SetSmartRecommendationPending(DataGridViewRow row)
+        {
+            if (row == null || row.IsNewRow || row.DataGridView != dgvEncodeQueue ||
+                !dgvEncodeQueue.Columns.Contains("colEncodeRecommendation"))
+                return;
+
+            RowMeta meta = EnsureRowMeta(row);
+            meta.EncodeRecommendation = null;
+            meta.BaselineEncodeRecommendation = null;
+            meta.RecommendationPending = _config.SmartRecommendationsEnabled;
+            meta.DeepAnalysis = null;
+            var cell = row.Cells["colEncodeRecommendation"];
+            cell.Value = _config.SmartRecommendationsEnabled ? "Adaptive pending" : "";
+            cell.ToolTipText = _config.SmartRecommendationsEnabled
+                ? GetQueueAnalysisPresentation(row, meta).BuildTooltip()
+                : "";
+            ApplyRecommendationCellStyle(cell, null);
+            if (row.Selected || dgvEncodeQueue.CurrentRow == row)
+                UpdateQueueSelectionPreview();
         }
 
         private void ViewRecommendationDetails_Click(object? sender, EventArgs e)
@@ -202,7 +244,9 @@ namespace MediaFlux
                 (row.Tag as RowMeta)?.EncodeRecommendation;
             if (recommendation == null)
             {
-                ShowStatusInfo("A recommendation is not available for the selected file.");
+                ShowStatusInfo(IsQueueRecommendationPending(row.Tag as RowMeta)
+                    ? "The recommendation is pending until Source Adaptive selects its final quality setting."
+                    : "A recommendation is not available for the selected file.");
                 return;
             }
 
@@ -259,11 +303,12 @@ namespace MediaFlux
             {
                 "Strong candidate" => 0,
                 "Moderate candidate" => 1,
-                "Review" => 2,
-                "Remux only" => 3,
-                "Skip" => 4,
-                "Analyzing…" => 5,
-                _ => 6
+                "Adaptive pending" => 2,
+                "Review" => 3,
+                "Remux only" => 4,
+                "Skip" => 5,
+                "Analyzing…" => 6,
+                _ => 7
             };
         }
     }

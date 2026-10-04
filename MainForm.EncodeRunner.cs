@@ -413,18 +413,14 @@ namespace MediaFlux
                 return;
             }
 
-            // Publish job ownership before pre-encode metadata probing. This lets
-            // estimate workers exclude the exact source even during parallel
-            // dispatch/recovery stages before FFmpeg itself is launched.
-            RowMeta meta = EnsureRowMeta(row);
-            string activeJobPath = meta.IsDvdEncode && meta.DvdEncodeOptions != null
-                ? meta.DvdEncodeOptions.OutputPath
-                : sourcePath;
-            _runningEncodeJobs[row] = activeJobPath;
+            // Permanently invalidate pre-claim advisory results before awaiting
+            // preview drain or starting any production metadata/sampling work.
+            ClaimQueueRowForProduction(row, sourcePath);
             DateTime dispatchUtc = _queueDispatchTimes.TryRemove(row, out DateTime recordedDispatchUtc)
                 ? recordedDispatchUtc : DateTime.UtcNow;
             try
             {
+                using var previewExclusion = await PreviewSamplingCoordinator.Shared.EnterProductionAsync(cancellationToken);
                 await EncodeSingleRowCore(row, cancellationToken, runOutputContainer, dispatchUtc);
             }
             finally
@@ -432,6 +428,20 @@ namespace MediaFlux
                 _runningEncodeJobs.TryRemove(row, out _);
                 UiInvoke(() => RestoreQueuedStateAfterEstimate(row));
             }
+        }
+
+        private void ClaimQueueRowForProduction(DataGridViewRow row, string sourcePath)
+        {
+            // The claim and estimate application share the UI thread, so revision
+            // invalidation and active ownership are observed as one transition.
+            UiInvoke(() =>
+            {
+                RowMeta meta = EnsureRowMeta(row);
+                meta.EstimateAuthorityRevision = checked(meta.EstimateAuthorityRevision + 1);
+                _runningEncodeJobs[row] = meta.IsDvdEncode && meta.DvdEncodeOptions != null
+                    ? meta.DvdEncodeOptions.OutputPath
+                    : sourcePath;
+            });
         }
 
         private async Task EncodeSingleRowCore(
@@ -765,7 +775,12 @@ namespace MediaFlux
                     {
                         meta.IntelligencePlan = snapshot.Plan;
                         if (snapshot.Plan.AdaptiveSelection is { } adaptiveSelection)
+                        {
                             AppendJobLog($"[AdaptiveStorageSavings] Preferred={adaptiveSelection.PreferredQuality}; selected={adaptiveSelection.SelectedQuality}; worst={adaptiveSelection.WorstAcceptableQuality}; {adaptiveSelection.Reason}");
+                            foreach (string diagnostic in StorageSavingsSampleSelector.DescribeDiagnostics(adaptiveSelection,
+                                durationSec, builtSnapshot.StorageSavingsContract.MaximumAcceptedOutputBytes ?? 0))
+                                AppendJobLog(diagnostic);
+                        }
                         AppendJobLog(EncodingPlanService.DescribeSummary(snapshot.Plan));
                         bool retryPlan = BoundedRetryProgressPresentation.IsRetryPlan(snapshot.Plan);
                         void ApplyPlanSnapshot()
@@ -862,6 +877,17 @@ namespace MediaFlux
                         return;
 
                     EncodingTerminalResult? completedTerminal = meta.IntelligenceOutcome?.TerminalResult;
+                    if (result.FinalizationSucceeded && result.FinalOutputSizeBytes is > 0)
+                    {
+                        meta.EmpiricalPreview = null;
+                        meta.SizePredictionCalibration = null;
+                        double finalMb = result.FinalOutputSizeBytes.Value / (1024d * 1024);
+                        _estimatedSizeMap[meta.Path] = finalMb;
+                        row.Cells["colEstimatedSize"].Value = $"{FormatSize(finalMb)}  {PercentReduction(meta.SrcMb, finalMb)}";
+                        row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(meta.SrcMb, finalMb);
+                        row.Cells["colEstimatedSize"].ToolTipText = "Actual validated final output size.";
+                        _queueTotalsDirty = true;
+                    }
                     SetEncodeRowState(
                         row,
                         JobHistoryPresentation.TerminalLabel(JobStatus.Success, completedTerminal),
@@ -1319,10 +1345,30 @@ namespace MediaFlux
             EncodingPlan plan)
         {
             meta.IntelligencePlan = plan;
+            meta.EmpiricalPreview = null;
             meta.AdaptiveQualitySelectionPending = false;
+            meta.RecommendationPending = false;
             meta.AdaptiveSelectionSkipped = plan.AdaptiveSelection?.Disposition == AdaptiveSelectionDisposition.Skipped;
             if (plan.AdaptiveSelection is not null)
+            {
                 meta.SizePredictionCalibration = null;
+                string reason = plan.AdaptiveSelection.Disposition switch
+                {
+                    AdaptiveSelectionDisposition.Skipped =>
+                        "Adaptive sample selection skipped the encode; no candidate output exists for a final-output recommendation.",
+                    AdaptiveSelectionDisposition.NotSuitable =>
+                        "Adaptive sample measurements were not usable; no sampled output projection is available for a final-output recommendation.",
+                    _ =>
+                        "Adaptive sample selection completed; no full-file output has been validated, so the preferred-quality estimate is not a final-output projection."
+                };
+                ApplySmartRecommendation(row, new SmartEncodeRecommendation
+                {
+                    Kind = SmartEncodeRecommendationKind.Unavailable,
+                    Confidence = SmartEncodeConfidence.Low,
+                    PrimaryReason = reason,
+                    Reasons = [reason]
+                });
+            }
 
             DataGridViewCell estimateCell = row.Cells["colEstimatedSize"];
             AdaptiveQualitySelectionEvidence? selection = plan.AdaptiveSelection;

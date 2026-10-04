@@ -14,11 +14,13 @@ internal sealed class AdaptiveVideoSampleRunner : IAdaptiveVideoSampleRunner
     private readonly Func<AdaptiveQualitySelectionRequest, int, RepresentativeSample, string, string> _arguments;
     private readonly Func<string, string, CancellationToken, Task>? _runOverride;
     private readonly string _root;
+    private readonly VideoSamplePurpose _purpose;
 
     public AdaptiveVideoSampleRunner(string ffmpeg, string ffprobe, IMediaProbeService probe,
         Func<AdaptiveQualitySelectionRequest, int, RepresentativeSample, string, string> arguments,
         IMediaToolProcessRunner? packetRunner = null,
-        Func<string, string, CancellationToken, Task>? runOverride = null, string? temporaryRoot = null)
+        Func<string, string, CancellationToken, Task>? runOverride = null, string? temporaryRoot = null,
+        VideoSamplePurpose purpose = VideoSamplePurpose.ProductionAcceptance)
     {
         _ffmpeg = ffmpeg;
         _ffprobe = ffprobe;
@@ -26,7 +28,8 @@ internal sealed class AdaptiveVideoSampleRunner : IAdaptiveVideoSampleRunner
         _arguments = arguments;
         _packetRunner = packetRunner ?? new MediaToolProcessRunner();
         _runOverride = runOverride;
-        _root = temporaryRoot ?? AppPaths.RuntimeTemporaryDirectory("AdaptiveSamples");
+        _root = temporaryRoot ?? AppPaths.RuntimeTemporaryDirectory(purpose == VideoSamplePurpose.PreviewEstimation ? "PreviewSamples" : "AdaptiveSamples");
+        _purpose = purpose;
     }
 
     public async Task<RepresentativeSampleEvidence> MeasureAsync(AdaptiveQualitySelectionRequest request, int quality,
@@ -40,13 +43,15 @@ internal sealed class AdaptiveVideoSampleRunner : IAdaptiveVideoSampleRunner
         {
             string arguments = _arguments(request, quality, sample, output);
             if (_runOverride is not null) await _runOverride(output, arguments, cancellationToken).ConfigureAwait(false);
-            else await RunProcessAsync(_ffmpeg, arguments, cancellationToken).ConfigureAwait(false);
+            else await RunProcessAsync(_ffmpeg, arguments, cancellationToken,
+                lowPriority: _purpose == VideoSamplePurpose.PreviewEstimation).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             MediaProbeResult probe = await _probe.ProbeAsync(output, cancellationToken).ConfigureAwait(false);
             MediaProbeStreamInfo? video = probe.Streams.SingleOrDefault(s => s.CodecType == "video");
             if (!probe.Success || video is null || probe.Streams.Any(s => s.CodecType != "video") ||
                 video.Width != request.Video.Geometry.Width || video.Height != request.Video.Geometry.Height ||
-                !video.CodecName.Equals("hevc", StringComparison.OrdinalIgnoreCase) ||
+                !video.CodecName.Equals(request.Video.Encoder.CodecFamily switch
+                    { VideoCodecFamily.H264 => "h264", VideoCodecFamily.Av1 => "av1", _ => "hevc" }, StringComparison.OrdinalIgnoreCase) ||
                 string.IsNullOrWhiteSpace(video.PixelFormat) ||
                 !video.PixelFormat.Equals(request.Video.TenBit ? "yuv420p10le" : "yuv420p", StringComparison.OrdinalIgnoreCase) ||
                 !PreservesKnownColor(request.Video.SourceColorRange, video.ColorRange) ||
@@ -55,6 +60,13 @@ internal sealed class AdaptiveVideoSampleRunner : IAdaptiveVideoSampleRunner
                 !PreservesKnownColor(request.Video.SourceColorPrimaries, video.ColorPrimaries) ||
                 (video.DurationSeconds ?? probe.DurationSeconds) is not > 0)
                 throw new InvalidDataException("Adaptive video sample did not preserve planned geometry, bit depth, known color signaling or usable duration.");
+            double measuredSeconds = video.DurationSeconds ?? probe.DurationSeconds!.Value;
+            // Stream duration is encoded-media time, never the requested window.
+            // One frame plus mux timestamp precision permits normal seek/end rounding.
+            if (video.FrameRate is > 0 && double.IsFinite(video.FrameRate.Value) &&
+                Math.Abs(measuredSeconds - sample.Duration.TotalSeconds) > 1 / video.FrameRate.Value + 0.001)
+                throw new InvalidDataException(FormattableString.Invariant(
+                    $"Adaptive sample encoded duration does not match its requested temporal window: start={sample.Start.TotalSeconds:F6}s, requested={sample.Duration.TotalSeconds:F6}s, measured={measuredSeconds:F6}s, fps={video.FrameRate:F6}."));
             MediaToolProcessResult packets = await _packetRunner.RunAsync(new MediaToolProcessRequest
             {
                 FileName = _ffprobe,
@@ -75,7 +87,7 @@ internal sealed class AdaptiveVideoSampleRunner : IAdaptiveVideoSampleRunner
             }
             cancellationToken.ThrowIfCancellationRequested();
             if (bytes <= 0) throw new InvalidDataException("Adaptive sample contains no measured video packets.");
-            return new(sample, bytes, video.DurationSeconds ?? probe.DurationSeconds!.Value);
+            return new(sample, bytes, measuredSeconds) { Purpose = _purpose };
         }
         finally
         {
@@ -89,7 +101,7 @@ internal sealed class AdaptiveVideoSampleRunner : IAdaptiveVideoSampleRunner
         source.Equals("unspecified", StringComparison.OrdinalIgnoreCase) || source.Equals(produced, StringComparison.OrdinalIgnoreCase);
 
     internal static async Task RunProcessAsync(string executable, string arguments, CancellationToken cancellationToken,
-        Action<int>? processStarted = null)
+        Action<int>? processStarted = null, bool lowPriority = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var process = new Process { StartInfo = new ProcessStartInfo
@@ -99,6 +111,11 @@ internal sealed class AdaptiveVideoSampleRunner : IAdaptiveVideoSampleRunner
             CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
         } };
         process.Start();
+        if (lowPriority)
+        {
+            try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { }
+        }
         // FFmpeg emits no progress records here; loglevel error bounds diagnostics.
         Task<string> stderr = process.StandardError.ReadToEndAsync();
         Task<string> stdout = process.StandardOutput.ReadToEndAsync();

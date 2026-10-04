@@ -197,6 +197,8 @@ public static class EncodingPlanService
 
     internal static EncodingPlan FreezeAdaptiveSelection(EncodingPlan plan, AdaptiveQualitySelectionEvidence evidence)
     {
+        if (evidence.Candidates.Any(c => c.Samples.Any(s => s.Purpose != VideoSamplePurpose.ProductionAcceptance)))
+            throw new InvalidDataException("Preview evidence cannot be frozen as production selection.");
         EncodingPlanExecutionValues execution = GetExecutionValues(plan);
         EncodingQualityResolution quality = execution.QualityResolution with
         {
@@ -218,6 +220,8 @@ public static class EncodingPlanService
                     Reason = "Adaptive storage-savings selection permits at most one full-file encode."
                 }).ToArray())),
             ValidationIntent = plan.ValidationIntent, FinalizationIntent = plan.FinalizationIntent, Validation = plan.Validation,
+            // Do not carry the preferred-quality recommendation forward; its size
+            // evidence is invalidated below and it may no longer describe execution.
             Quality = quality, AdaptiveSelection = evidence,
             // Preferred-quality predictions/calibration are no longer comparable.
             // Sample selection never enters research or successful prediction evidence.
@@ -329,7 +333,7 @@ public static class EncodingPlanService
         double.IsFinite(candidate.ContainerAllowanceBytes) && candidate.ContainerAllowanceBytes >= 0;
 
     private static bool ValidSample(RepresentativeSampleEvidence? evidence) =>
-        evidence?.Sample is { } sample && !string.IsNullOrWhiteSpace(sample.Label) &&
+        evidence?.Purpose == VideoSamplePurpose.ProductionAcceptance && evidence.Sample is { } sample && !string.IsNullOrWhiteSpace(sample.Label) &&
         sample.Start >= TimeSpan.Zero && sample.Duration > TimeSpan.Zero && evidence.VideoBytes > 0 &&
         double.IsFinite(evidence.MeasuredSeconds) && evidence.MeasuredSeconds > 0;
 
@@ -449,7 +453,9 @@ public static class EncodingPlanService
             .FirstOrDefault(item => item.Kind == EncodingRecoveryKind.AudioStream);
         string recommendation = plan.Recommendation is { } advisory
             ? $"Recommendation={advisory.DisplayName}; Reason={advisory.PrimaryReason}; Confidence={advisory.Confidence}"
-            : "Recommendation=Unavailable";
+            : plan.AdaptiveSelection is not null
+                ? "Recommendation=Unavailable (adaptive sample selection invalidated preferred-quality estimates)"
+                : "Recommendation=Unavailable";
         SourceAdaptiveShadowCalibration? shadow = plan.SourceAdaptiveShadow;
         string shadowSummary = shadow is null ? "" :
             $" Source Adaptive shadow: status={shadow.Status}; CQ={shadow.InitialCq?.ToString() ?? "n/a"} (unchanged); " +

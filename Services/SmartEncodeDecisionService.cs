@@ -381,14 +381,13 @@ namespace MediaFlux.Services
         internal static SmartEncodeConfidence? ResolveEstimateConfidenceCeiling(
             EncodingSizePredictionCalibration? calibration)
         {
-            return calibration is
-                {
-                    EstimateModelId: "GenericBppV1",
-                    EstimateStatus: var status,
-                    Applied: false
-                } && status.StartsWith("LowConfidenceGenericFallback:", StringComparison.Ordinal)
-                ? SmartEncodeConfidence.Low
-                : null;
+            if (calibration is { EstimateModelId: "GenericBppV1", EstimateStatus: "LowConfidenceGenericFallback:PreviewUnavailable" })
+                return SmartEncodeConfidence.Low;
+            if (calibration is not { EstimateModelId: "GenericBppV1", EstimateStatus: var status, Applied: false } ||
+                !status.StartsWith("LowConfidenceGenericFallback:", StringComparison.Ordinal))
+                return null;
+            string directStatus = status["LowConfidenceGenericFallback:".Length..];
+            return directStatus is "NotEligible" or "Ineligible" ? null : SmartEncodeConfidence.Low;
         }
 
         private static SmartEncodeConfidence ResolveConfidence(

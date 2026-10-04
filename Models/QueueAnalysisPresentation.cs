@@ -36,6 +36,17 @@ public sealed class QueueAnalysisPresentation
     public IReadOnlyList<string> Reasons { get; }
     public bool IsAvailable => Recommendation != null || Quality != null;
 
+    public QueueAnalysisPresentation WithSizeEvidence(EmpiricalPreviewResult? preview, EncodingSizePredictionCalibration? calibration)
+    {
+        bool fallback = calibration?.EstimateModelId == "GenericBppV1";
+        string? estimate = EstimatedResult;
+        if (fallback && estimate is not null) estimate = "~" + estimate + " (low confidence)";
+        if (preview is { LikelyDisposition: AdaptiveSelectionDisposition.Skipped } && estimate is not null)
+            estimate += $" at {preview.Mechanism.ToString().ToUpperInvariant()}{preview.DisplayQuality} · likely skip";
+        return new(Status, Recommendation, fallback ? "Low" : Confidence, estimate,
+            SavingsLabel, SavingsValue, Quality, preview is null ? Reasons : Reasons.Append(preview.Description).ToArray());
+    }
+
     public static QueueAnalysisPresentation Create(
         SmartEncodeRecommendation? recommendation,
         double sourceMb = 0,
@@ -76,6 +87,25 @@ public sealed class QueueAnalysisPresentation
                 .Where(reason => !string.IsNullOrWhiteSpace(reason))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray());
+    }
+
+    public static QueueAnalysisPresentation CreateAdaptivePending(
+        double sourceMb = 0,
+        double estimatedOutputMb = 0,
+        EncodingQualityResolution? quality = null)
+    {
+        string? estimatedResult = sourceMb > 0 && estimatedOutputMb > 0
+            ? $"{FormatSize(sourceMb)} → {FormatSize(estimatedOutputMb)}"
+            : null;
+        return new QueueAnalysisPresentation(
+            string.Empty,
+            "Adaptive pending",
+            null,
+            estimatedResult,
+            null,
+            null,
+            quality,
+            ["The final Source Adaptive quality decision has not been selected yet, so this advisory recommendation is pending."]);
     }
 
     public static QueueAnalysisPresentation Create(EncodingRecommendation? recommendation)

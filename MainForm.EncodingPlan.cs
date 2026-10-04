@@ -185,7 +185,7 @@ public partial class MainForm
 
         QueueAnalysisPresentation presentation = GetQueueAnalysisPresentation(row, meta);
         string tooltip = presentation.BuildTooltip();
-        string? calibration = GetQueueAnalysisCalibration(meta.SizePredictionCalibration);
+        string? calibration = meta.EmpiricalPreview?.Description ?? GetQueueAnalysisCalibration(meta.SizePredictionCalibration);
         string itemKey = GetEncodingPlanItemKey(row, meta);
         if (string.Equals(_renderedQueueAnalysisItemKey, itemKey, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(_renderedQueueAnalysisTooltip, tooltip, StringComparison.Ordinal) &&
@@ -209,7 +209,7 @@ public partial class MainForm
         if (presentation.EstimatedResult != null)
             AddQueueAnalysisItem("Estimated result", presentation.EstimatedResult);
         if (calibration != null)
-            AddQueueAnalysisItem("Size calibration", calibration);
+            AddQueueAnalysisItem(meta.EmpiricalPreview is null ? "Size calibration" : "Size estimate", calibration);
         if (presentation.Quality != null)
         {
             foreach (EncodingPlanItem item in EncodingQualityPresentation.CreateItems(presentation.Quality))
@@ -230,15 +230,24 @@ public partial class MainForm
         if (sourceMb <= 0)
             _queueSourceSizeMap.TryGetValue(path, out sourceMb);
         _estimatedSizeMap.TryGetValue(path, out double estimatedOutputMb);
+        QueueAnalysisPresentation presentation;
         if (meta.IntelligencePlan?.Recommendation is EncodingRecommendation planRecommendation)
-            return QueueAnalysisPresentation.Create(planRecommendation);
-        return QueueAnalysisPresentation.Create(meta.EncodeRecommendation, sourceMb, estimatedOutputMb, meta.IntelligencePlan?.Quality ?? meta.QualityPreview);
+            presentation = QueueAnalysisPresentation.Create(planRecommendation);
+        else if (meta.RecommendationPending)
+            presentation = QueueAnalysisPresentation.CreateAdaptivePending(
+                sourceMb,
+                estimatedOutputMb,
+                meta.QualityPreview);
+        else presentation = QueueAnalysisPresentation.Create(meta.EncodeRecommendation, sourceMb, estimatedOutputMb, meta.IntelligencePlan?.Quality ?? meta.QualityPreview);
+        return presentation.WithSizeEvidence(meta.EmpiricalPreview, meta.SizePredictionCalibration);
     }
 
     internal static string? GetQueueAnalysisCalibration(EncodingSizePredictionCalibration? calibration)
     {
         if (calibration == null)
             return null;
+        if (calibration.EstimateModelId == EmpiricalPreviewResult.ModelId)
+            return $"Empirical projection (advisory): {calibration.BasePredictionMb:0.##} MB; production sampling revalidates quality and storage acceptance.";
 
         if (calibration.EstimateModelId == ProductionDirectOutputResult.ModelId)
             return $"Estimate: Historical Direct; {calibration.EstimateIndependentFamilyCount} independent sources; " +
@@ -258,11 +267,8 @@ public partial class MainForm
             ? $"; learning strength {calibration.LearningStrength:0.##}"
             : string.Empty;
         string origin = calibration.EstimateModelId == "GenericBppV1"
-            ? calibration.Applied
-                ? "Estimate: historically calibrated Generic BPP; "
-                : SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(calibration) == SmartEncodeConfidence.Low
-                    ? "Estimate: Generic BPP (low confidence fallback); "
-                    : "Estimate: Generic BPP; "
+            ? calibration.Applied ? "Estimate: historically calibrated Generic BPP (low confidence fallback); "
+                : "Estimate: Generic BPP (low confidence fallback); "
             : string.Empty;
         return $"{origin}{prediction}; {policyId}; {calibration.EffectivenessState}{learning}";
     }

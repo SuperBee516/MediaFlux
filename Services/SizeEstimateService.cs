@@ -221,7 +221,8 @@ namespace MediaFlux.Services
             int sourceAttachmentStreamCount = 0,
             long sourceAttachmentSizeBytes = 0,
             StorageSavingsOptions? storageSavings = null,
-            bool sourceAdaptiveCeilingEligible = false)
+            bool sourceAdaptiveCeilingEligible = false,
+            bool useResolvedQualityTarget = false)
         {
             if (srcMb <= 0 || durationSec <= 0 || width <= 0 || height <= 0 || fps <= 0)
                 return SizeEstimateBreakdown.Unavailable;
@@ -330,14 +331,18 @@ namespace MediaFlux.Services
                 0.55,
                 1.65);
 
-            int effectiveQuality = storageSavingsApplies && savings.UsesQualityTarget
+            bool usesStorageQualityTarget = storageSavingsApplies &&
+                savings.UsesQualityTarget && !useResolvedQualityTarget;
+            bool usesStorageBitrateTarget = storageSavingsApplies &&
+                !savings.UsesQualityTarget && !useResolvedQualityTarget;
+            int effectiveQuality = usesStorageQualityTarget
                 ? savings.QualityValue
                 : Math.Clamp(quality, 0, 51);
             double targetVideoKbps;
             string mode;
             bool usesSourceVideoBitrateFloor = false;
             bool usesSourceVideoBitrateCeiling = false;
-            if (storageSavingsApplies && !savings.UsesQualityTarget)
+            if (usesStorageBitrateTarget)
             {
                 targetVideoKbps =
                     sourceVideoKbps * savings.SourceVideoBitratePercent / 100d;
@@ -347,7 +352,8 @@ namespace MediaFlux.Services
             else
             {
                 double profileScale =
-                    storageSavingsApplies && savings.UsesQualityTarget
+                    storageSavingsApplies &&
+                    (savings.UsesQualityTarget || useResolvedQualityTarget)
                         ? 1d
                         : GetCompressionMultiplier(compressionProfile);
                 double qualityScale =
@@ -359,9 +365,11 @@ namespace MediaFlux.Services
                     complexity;
                 targetVideoKbps =
                     ((double)outputWidth * outputHeight * fps * targetBpp) / 1000.0;
-                mode = storageSavingsApplies && savings.UsesQualityTarget
-                    ? $"storage quality target {effectiveQuality} (CQ/CRF/ICQ)"
-                    : $"conservative profile {compressionProfile}, quality {effectiveQuality}";
+                mode = useResolvedQualityTarget
+                    ? $"Source Adaptive quality target {effectiveQuality} (CQ/CRF/ICQ)"
+                    : usesStorageQualityTarget
+                        ? $"storage quality target {effectiveQuality} (CQ/CRF/ICQ)"
+                        : $"conservative profile {compressionProfile}, quality {effectiveQuality}";
 
                 bool sameEfficientCodecUnchangedResolution =
                     UsesSameEfficientCodecQualityFloor(
@@ -437,11 +445,11 @@ namespace MediaFlux.Services
                 PlannedMappedAncillaryBitrateKbps = mappedAncillaryKbps,
                 TargetVideoBitrateKbps = targetVideoKbps,
                 TargetTotalBitrateKbps = targetTotalKbps,
+                EffectiveQuality = effectiveQuality,
                 UsedMeasuredVideoBitrate = usedMeasuredVideoBitrate,
                 UsesSourceVideoBitrateFloor = usesSourceVideoBitrateFloor,
                 UsesSourceVideoBitrateCeiling = usesSourceVideoBitrateCeiling,
-                UsesStorageQualityTarget =
-                    storageSavingsApplies && savings.UsesQualityTarget,
+                UsesStorageQualityTarget = usesStorageQualityTarget,
                 Diagnostic = diagnostic
             };
         }
@@ -601,6 +609,7 @@ namespace MediaFlux.Services
         public double PlannedMappedAncillaryBitrateKbps { get; init; }
         public double TargetVideoBitrateKbps { get; init; }
         public double TargetTotalBitrateKbps { get; init; }
+        public int? EffectiveQuality { get; init; }
         public bool UsedMeasuredVideoBitrate { get; init; }
         public bool UsesSourceVideoBitrateFloor { get; init; }
         public bool UsesSourceVideoBitrateCeiling { get; init; }

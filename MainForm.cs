@@ -2620,6 +2620,7 @@ namespace MediaFlux
             private int _inspectorLogCharacters;
 
             public Guid QueueItemId = Guid.NewGuid();
+            public long EstimateAuthorityRevision;
             public long QueueSequence;
             public string Path = "";
             public double DurationSec = 0; // Initialized to suppress warning
@@ -2638,8 +2639,10 @@ namespace MediaFlux
             public string DuplicateReason = "";
             public SmartEncodeRecommendation? EncodeRecommendation = null;
             public SmartEncodeRecommendation? BaselineEncodeRecommendation = null;
+            public bool RecommendationPending;
             public string EstimateDiagnostic = "";
             public bool AdaptiveQualitySelectionPending;
+            public EmpiricalPreviewResult? EmpiricalPreview;
             public bool AdaptiveSelectionSkipped;
             public double EstimatedPlannedAudioBitrateKbps = 0;
             public double EstimatedPlannedMappedAncillaryBitrateKbps = 0;
@@ -5467,7 +5470,11 @@ namespace MediaFlux
             _estimateService = new EstimateBackgroundService(
                 _mediaInfoService,
                 _encodingStatisticsService,
-                IsEstimateSourceOwnedByActiveEncode);
+                IsEstimateSourceOwnedByActiveEncode,
+                _encodingService,
+                new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath),
+                _encodeExecutionSnapshotBuilder,
+                PreviewToolIdentity(_config.FfmpegPath));
             _duplicateDetectionService = new DuplicateDetectionService(
                 _mediaInfoService,
                 AppPaths.InstallDirectory,

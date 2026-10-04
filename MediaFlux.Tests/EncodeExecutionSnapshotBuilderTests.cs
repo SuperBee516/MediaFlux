@@ -71,7 +71,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
 
         Assert.Null(cq.QualityIntent);
         Assert.Equal(19, cq.QualityValue);
-        Assert.Equal(100, cq.TargetMb);
+        Assert.Null(cq.TargetMb);
         Assert.Null(crf.QualityIntent);
         Assert.Equal(23, crf.QualityValue);
         Assert.Equal("libx264", crf.Codec);
@@ -553,7 +553,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         ContainerCompatibilityConfirmed = false
     };
 
-    private static EncodeExecutionSnapshotSettings Settings() => new()
+    internal static EncodeExecutionSnapshotSettings Settings() => new()
     {
         OutputFolder = "C:\\Out",
         CompressionProfile = "Medium Quality (Default)",

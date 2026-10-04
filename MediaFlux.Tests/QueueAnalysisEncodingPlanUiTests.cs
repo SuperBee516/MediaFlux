@@ -59,6 +59,13 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 Assert.Contains("20%", ControlText(analysis));
 
                 SetPlan(formType, main, analyzed);
+                object precedenceMeta = formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(main, [analyzed])!;
+                Assert.Equal("Review", Invoke(formType, main, "GetQueueWorkspaceRecommendationText", analyzed));
+                Assert.False((bool)Invoke(formType, main, "IsSmartEncodeCandidate", analyzed)!);
+                QueueAnalysisPresentation frozenPresentation = Assert.IsType<QueueAnalysisPresentation>(
+                    Invoke(formType, main, "GetQueueAnalysisPresentation", analyzed, precedenceMeta));
+                Assert.Equal("Review", frozenPresentation.Recommendation);
                 TabControl inspectorTabs = Field<TabControl>(formType, main, "_encodeInfoTabs");
                 inspectorTabs.SelectedTab = inspectorTabs.TabPages.Cast<TabPage>()
                     .Single(page => page.Text == "Plan & Analysis");
@@ -182,7 +189,7 @@ public sealed class QueueAnalysisEncodingPlanUiTests
     {
         object meta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new MissingMethodException("EnsureRowMeta")).Invoke(main, [row])!;
-        meta.GetType().GetField("IntelligencePlan", BindingFlags.Instance | BindingFlags.Public)!.SetValue(meta, new EncodingPlan
+        var plan = new EncodingPlan
         {
             IsAvailable = true,
             Source = new("h264", 1920, 1080, 24, 600),
@@ -191,7 +198,19 @@ public sealed class QueueAnalysisEncodingPlanUiTests
             Estimates = new(null, null, null),
             SizePredictionCalibration = EncodingSizePredictionCalibration.Unavailable(
                 100, "Frozen test decision.", "PredictionCalibrationPolicyV1", DateTime.UnixEpoch)
-        });
+        };
+        typeof(EncodingPlan).GetProperty("Recommendation", BindingFlags.Instance | BindingFlags.Public)!
+            .SetValue(plan, new EncodingRecommendation(
+                EncodingRecommendationKind.Review,
+                "Frozen plan review takes precedence.",
+                ["Frozen plan review takes precedence."],
+                EncodingHistoricalConfidence.Medium,
+                100,
+                900,
+                90,
+                EncodingRecommendationRisk.Medium,
+                []));
+        meta.GetType().GetField("IntelligencePlan", BindingFlags.Instance | BindingFlags.Public)!.SetValue(meta, plan);
     }
 
     private static SmartEncodeRecommendation Recommendation(double EstimatedSavingsPercent = 35) => new()
@@ -208,12 +227,12 @@ public sealed class QueueAnalysisEncodingPlanUiTests
         (T)(formType.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)
             ?? throw new MissingFieldException(name));
 
-    private static void Invoke(Type formType, MainForm main, string name, params object?[] args)
+    private static object? Invoke(Type formType, MainForm main, string name, params object?[] args)
     {
-        MethodInfo method = formType.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+        MethodInfo method = formType.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.NonPublic)
             .SingleOrDefault(candidate => candidate.Name == name && candidate.GetParameters().Length == args.Length)
             ?? throw new MissingMethodException(name);
-        method.Invoke(main, args);
+        return method.Invoke(method.IsStatic ? null : main, args);
     }
 
     private static string ControlText(Control control) => string.Join("\n", control.Controls.Cast<Control>()

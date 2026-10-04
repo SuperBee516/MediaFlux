@@ -17,7 +17,8 @@ namespace MediaFlux.Services
         private readonly SmartEncodeDecisionService _decisionService = new();
         private readonly EncodingStatisticsService? _statistics;
         private readonly EncodingPredictionAccuracyService _accuracy = new();
-        private readonly ProductionDirectOutputBitrateEstimator _directEstimator = new();
+        private readonly QueueEmpiricalPreviewProvider? _previewProvider;
+        private readonly Func<string, MediaInfoService.MediaInfo> _readMetadata;
         private readonly Func<string, bool> _isSourceOwnedByActiveJob;
         private readonly object _resetLock = new();
         private readonly int _workerCount = Math.Max(1, Math.Min(4, Environment.ProcessorCount - 1));
@@ -34,13 +35,25 @@ namespace MediaFlux.Services
         public EstimateBackgroundService(
             MediaInfoService mediaInfoService,
             EncodingStatisticsService? statistics = null,
-            Func<string, bool>? isSourceOwnedByActiveJob = null)
+            Func<string, bool>? isSourceOwnedByActiveJob = null,
+            EncodingService? previewEncodingService = null,
+            IMediaProbeService? previewProbeService = null,
+            EncodeExecutionSnapshotBuilder? snapshots = null,
+            string previewToolSignature = "")
         {
             _mediaInfoService = mediaInfoService ?? throw new ArgumentNullException(nameof(mediaInfoService));
+            _readMetadata = _mediaInfoService.GetInfo;
             _statistics = statistics;
             _isSourceOwnedByActiveJob = isSourceOwnedByActiveJob ?? (_ => false);
+            if (previewEncodingService is not null && previewProbeService is not null && snapshots is not null)
+                _previewProvider = new(previewEncodingService, previewProbeService, snapshots, previewToolSignature);
             StartWorkers();
         }
+
+        internal EstimateBackgroundService(MediaInfoService media, QueueEmpiricalPreviewProvider preview,
+            Func<string, MediaInfoService.MediaInfo> metadata, Func<string, bool>? isOwned = null)
+            : this(media, isSourceOwnedByActiveJob: isOwned)
+        { _previewProvider = preview; _readMetadata = metadata; }
 
         public readonly struct SmartEstimateResult
         {
@@ -61,6 +74,8 @@ namespace MediaFlux.Services
             public double PlannedMappedAncillaryBitrateKbps { get; }
             public EncodingQualityResolution? QualityResolution { get; }
             public EncodingSizePredictionCalibration? SizeCalibration { get; }
+            public EmpiricalPreviewResult? EmpiricalPreview { get; }
+            public long EstimateAuthorityRevision { get; }
 
             public SmartEstimateResult(
                 int generation,
@@ -79,7 +94,9 @@ namespace MediaFlux.Services
                 double plannedAudioBitrateKbps,
                 double plannedMappedAncillaryBitrateKbps,
                 EncodingQualityResolution? qualityResolution = null,
-                EncodingSizePredictionCalibration? sizeCalibration = null)
+                EncodingSizePredictionCalibration? sizeCalibration = null,
+                EmpiricalPreviewResult? empiricalPreview = null,
+                long estimateAuthorityRevision = 0)
             {
                 Generation = generation;
                 QueueItemId = queueItemId;
@@ -99,6 +116,8 @@ namespace MediaFlux.Services
                     plannedMappedAncillaryBitrateKbps;
                 QualityResolution = qualityResolution;
                 SizeCalibration = sizeCalibration;
+                EmpiricalPreview = empiricalPreview;
+                EstimateAuthorityRevision = estimateAuthorityRevision;
             }
         }
 
@@ -166,6 +185,9 @@ namespace MediaFlux.Services
             public int OutputBitDepth { get; }
             public bool ConcurrentEncoderSessions { get; }
             public bool HistoricalCalibrationEnabled { get; init; }
+            public EncodeExecutionSnapshotSettings? PreviewSettings { get; init; }
+            public EncodeExecutionSnapshotItem? PreviewItem { get; init; }
+            public long EstimateAuthorityRevision { get; init; }
         }
 
         // Include completed-but-not-yet-applied results so the UI does not report
@@ -193,7 +215,10 @@ namespace MediaFlux.Services
             Guid queueItemId = default,
             string encoderPreset = "",
             int outputBitDepth = 0,
-            bool concurrentEncoderSessions = false)
+            bool concurrentEncoderSessions = false,
+            EncodeExecutionSnapshotSettings? previewSettings = null,
+            EncodeExecutionSnapshotItem? previewItem = null,
+            long estimateAuthorityRevision = 0)
         {
             if (string.IsNullOrWhiteSpace(path))
                 return;
@@ -218,7 +243,8 @@ namespace MediaFlux.Services
                 encoderPreset,
                 outputBitDepth,
                 concurrentEncoderSessions)
-            { HistoricalCalibrationEnabled = historicalCalibrationEnabled });
+            { HistoricalCalibrationEnabled = historicalCalibrationEnabled, PreviewSettings = previewSettings, PreviewItem = previewItem,
+                EstimateAuthorityRevision = estimateAuthorityRevision });
         }
 
         public bool TryDequeueSmart(out SmartEstimateResult result)
@@ -281,16 +307,17 @@ namespace MediaFlux.Services
         private void StartWorkers()
         {
             var ct = _estimateCts.Token;
+            var queue = _workItems;
             _workers = Enumerable.Range(0, _workerCount)
-                .Select(_ => Task.Run(() => WorkerLoop(ct), ct))
+                .Select(_ => Task.Run(() => WorkerLoopAsync(queue, ct), ct))
                 .ToArray();
         }
 
-        private void WorkerLoop(CancellationToken ct)
+        private async Task WorkerLoopAsync(BlockingCollection<EstimateWorkItem> queue, CancellationToken ct)
         {
             try
             {
-                foreach (var item in _workItems.GetConsumingEnumerable(ct))
+                foreach (var item in queue.GetConsumingEnumerable(ct))
                 {
                     if (ct.IsCancellationRequested)
                         break;
@@ -300,7 +327,7 @@ namespace MediaFlux.Services
                         if (item.Generation == Volatile.Read(ref _generation) &&
                             !_isSourceOwnedByActiveJob(item.Path))
                         {
-                            ProcessSmartEstimate(item);
+                            await ProcessSmartEstimateAsync(item, ct).ConfigureAwait(false);
                         }
                     }
                     finally
@@ -316,7 +343,7 @@ namespace MediaFlux.Services
             }
         }
 
-        private void ProcessSmartEstimate(EstimateWorkItem item)
+        private async Task ProcessSmartEstimateAsync(EstimateWorkItem item, CancellationToken cancellationToken)
         {
             try
             {
@@ -332,7 +359,7 @@ namespace MediaFlux.Services
                 double fps = 0;
                 try
                 {
-                    info = _mediaInfoService.GetInfo(item.Path);
+                    info = _readMetadata(item.Path);
                     int w = info.Width ?? 0;
                     int h = info.Height ?? 0;
                     if (w > 0 && h > 0)
@@ -395,73 +422,22 @@ namespace MediaFlux.Services
                         info.AttachmentStreamCount,
                         info.AttachmentSizeBytes,
                         item.StorageSavings,
-                        sourceAdaptiveCeilingEligible: item.SourceAdaptiveCeilingEligible)
+                        sourceAdaptiveCeilingEligible: item.SourceAdaptiveCeilingEligible,
+                        useResolvedQualityTarget: qualityResolution is
+                        {
+                            Intent: { Kind: EncodingQualityIntentKind.QualityTarget },
+                            EffectiveQuality: not null,
+                            IsSupersededByTargetSize: false
+                        })
                     : null;
                 DateTime estimateCutoffUtc = DateTime.UtcNow;
-                ProductionDirectOutputResult? directResult = null;
-                if (estimateBreakdown is { EstimatedOutputMb: > 0 } && _statistics != null &&
-                    useProfileEstimate && !item.IsCustom && item.SourceAdaptiveCeilingEligible &&
-                    !item.StorageSavings.Enabled &&
-                    item.QualityIntent?.Kind == EncodingQualityIntentKind.QualityTarget &&
-                    qualityResolution is { Mechanism: EncoderQualityMechanism.Cq,
-                        EffectiveQuality: >= 0 and <= 51, IsSupersededByTargetSize: false } &&
-                    info.Width is > 0 && info.Height is > 0 && fps > 0 &&
-                    info.BitrateKbps is > 0 &&
-                    (item.TargetHeight is null || item.TargetHeight == info.Height))
-                {
-                    string signature = NvencQualityModeSettingsSignature.Create(
-                        item.Encoder.EncoderId, item.Encoder.FfmpegCodec,
-                        item.EncoderPreset, item.OutputBitDepth,
-                        item.ConcurrentEncoderSessions);
-                    if (!string.IsNullOrWhiteSpace(signature) && File.Exists(item.Path))
-                    {
-                        try
-                        {
-                            long sourceBytes = new FileInfo(item.Path).Length;
-                            string family = ProductionDirectOutputBitrateEstimator.SourceFamily(
-                                sourceBytes, durSec, info.BitrateKbps.Value,
-                                info.Width.Value, info.Height.Value, fps);
-                            directResult = _directEstimator.Predict(
-                                new ProductionDirectOutputRequest(codec ?? "", item.Encoder.FfmpegCodec,
-                                    item.Encoder.EncoderId, item.EncoderPreset, item.OutputBitDepth,
-                                    qualityResolution.EffectiveQuality.Value, signature,
-                                    info.Width.Value, info.Height.Value, fps,
-                                    item.QualityIntent.Target!.Value, info.BitrateKbps.Value, family,
-                                    estimateCutoffUtc, MaterialTransformationActive: false),
-                                _statistics.GetAll());
-                            estimateBreakdown = ProductionDirectOutputBitrateEstimator.SelectSizeBreakdown(
-                                estimateBreakdown, durSec, directResult);
-                        }
-                        catch
-                        {
-                            // Statistics are advisory; preserve the generic estimate on read failure.
-                        }
-                    }
-                }
                 double estMb = estimateBreakdown?.EstimatedOutputMb ??
                     (item.ManualTargetMb > 0 ? item.ManualTargetMb : 0);
                 double baseEstMb = estMb;
                 EncodingSizePredictionCalibration? sizeCalibration = null;
                 if (baseEstMb > 0)
                 {
-                    if (directResult?.Supported == true)
-                    {
-                        // Generic BPP calibration has a different residual distribution.
-                        // Direct estimates bypass it until their own model has evidence.
-                        sizeCalibration = EncodingSizePredictionCalibration.Unavailable(baseEstMb,
-                            "Historical Direct estimate; generic BPP calibration bypassed.",
-                            AdaptivePredictionPolicies.Current.PolicyId, estimateCutoffUtc) with
-                        {
-                            EstimateModelId = ProductionDirectOutputResult.ModelId,
-                            EstimateStatus = directResult.Status.ToString(),
-                            EstimateIndependentFamilyCount = directResult.IndependentFamilies,
-                            EstimateHeldOutCount = directResult.HeldOutCount,
-                            EstimateHeldOutEligibleCount = directResult.HeldOutEligibleCount,
-                            EstimateMedianAbsoluteErrorPercent = directResult.MedianAbsoluteErrorPercent,
-                            EstimatePredictedVideoBitrateKbps = directResult.PredictedVideoBitrateKbps
-                        };
-                    }
-                    else try
+                    try
                     {
                         int sourceHeight = info.Height ?? 0;
                         int outputHeight = item.TargetHeight is > 0 ? Math.Min(sourceHeight, item.TargetHeight.Value) : sourceHeight;
@@ -495,17 +471,13 @@ namespace MediaFlux.Services
                         sizeCalibration = EncodingSizePredictionCalibration.Unavailable(baseEstMb,
                             $"Calibration unavailable: {ex.Message}", AdaptivePredictionPolicies.Current.PolicyId, DateTime.UtcNow);
                     }
-                    if (directResult?.Supported != true && sizeCalibration != null)
+                    if (sizeCalibration != null)
                         sizeCalibration = sizeCalibration with
                         {
                             EstimateModelId = useProfileEstimate ? "GenericBppV1" : "ManualTarget",
                             EstimateStatus = useProfileEstimate
-                                ? $"LowConfidenceGenericFallback:{directResult?.Status.ToString() ?? "NotEligible"}"
+                                ? "LowConfidenceGenericFallback:NotEligible"
                                 : "ManualTarget",
-                            EstimateIndependentFamilyCount = directResult?.IndependentFamilies ?? 0,
-                            EstimateHeldOutCount = directResult?.HeldOutCount ?? 0,
-                            EstimateHeldOutEligibleCount = directResult?.HeldOutEligibleCount ?? 0,
-                            EstimateMedianAbsoluteErrorPercent = directResult?.MedianAbsoluteErrorPercent,
                             EstimatePredictedVideoBitrateKbps = estimateBreakdown?.TargetVideoBitrateKbps
                         };
                 }
@@ -516,9 +488,6 @@ namespace MediaFlux.Services
                         : "Required metadata is unavailable.");
                 if (sizeCalibration != null)
                     estimateDiagnostic = $"Estimate model: {sizeCalibration.EstimateModelId}; status: {sizeCalibration.EstimateStatus}; " +
-                        (directResult?.Supported == true
-                            ? $"evidence: {directResult.IndependentFamilies} independent families, forward-held-out {directResult.HeldOutCount}/{directResult.HeldOutEligibleCount}, median error {directResult.MedianAbsoluteErrorPercent:0.#}%. "
-                            : string.Empty) +
                         $"{estimateDiagnostic} Size calibration decision: {sizeCalibration.Decision}; {sizeCalibration.Reason} " +
                         $"Historical {sizeCalibration.Confidence} confidence, N={sizeCalibration.SampleCount}, median signed error {sizeCalibration.MedianSignedErrorPercent:+0.##;-0.##;0}%; " +
                         $"effectiveness {sizeCalibration.EffectivenessState}, evaluation N={sizeCalibration.EvaluationSampleCount}, median improvement {sizeCalibration.MedianCalibrationImprovementPercent:+0.##;-0.##;0}%." +
@@ -527,6 +496,56 @@ namespace MediaFlux.Services
                             : sizeCalibration.Applied
                                 ? $" Applied correction {sizeCalibration.EffectiveCorrectionPercent:+0.##;-0.##;0}%."
                                 : string.Empty);
+                bool constantQuality = useProfileEstimate &&
+                    !item.Profile.Equals("No Compression", StringComparison.OrdinalIgnoreCase) &&
+                    (item.PreviewSettings?.AutomaticQuality == true || item.QualityIntent is not null ||
+                     item.PreviewItem?.CustomCompressionProfile is null &&
+                     (!item.StorageSavings.Enabled || !SizeEstimateService.IsHevcCodec(item.Encoder.FfmpegCodec) || item.StorageSavings.UsesQualityTarget));
+                if (item.PreviewItem?.LibraryPolicyIntent?.ProjectedOutputBytes is > 0)
+                    constantQuality = false;
+                EmpiricalPreviewResult? preview = null;
+                if (constantQuality)
+                {
+                    string fallbackReason;
+                    try
+                    {
+                        if (_previewProvider is null || item.PreviewSettings is null || item.PreviewItem is null)
+                            throw new PreviewUnavailableException("Empirical preview tools/settings are unavailable.");
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var measured = await _previewProvider.EstimateAsync(item.PreviewSettings,
+                            item.PreviewItem with { EstimatedTargetMb = baseEstMb }, cancellationToken).ConfigureAwait(false);
+                        preview = measured.Result;
+                        qualityResolution = measured.Quality;
+                        displayEstMb = baseEstMb = estMb = preview.ProjectedTotalBytes / (1024d * 1024);
+                        srcMb = preview.SourceBytes / (1024d * 1024);
+                        sizeCalibration = EncodingSizePredictionCalibration.Unavailable(baseEstMb,
+                            "Empirical video projection; historical Generic BPP calibration bypassed.") with
+                        {
+                            EstimateModelId = EmpiricalPreviewResult.ModelId, EstimateStatus = "AdvisoryPreview",
+                            EstimatePredictedVideoBitrateKbps = preview.Candidates.Single(c => c.Quality == preview.DisplayQuality).MeanVideoBytesPerSecond * 8 / 1000
+                        };
+                        estimateDiagnostic = preview.Diagnostic;
+                        fallbackReason = "";
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        fallbackReason = ex.Message.Length <= 300 ? ex.Message : ex.Message[..300];
+                    }
+                    if (preview is null)
+                    {
+                        sizeCalibration = (sizeCalibration ?? EncodingSizePredictionCalibration.Unavailable(baseEstMb, fallbackReason)) with
+                        { EstimateModelId = "GenericBppV1", EstimateStatus = "LowConfidenceGenericFallback:PreviewUnavailable" };
+                        estimateDiagnostic = $"EstimateSource=GenericBppV1; low confidence / provisional fallback; preview unavailable: {fallbackReason}. {estimateDiagnostic}";
+                    }
+                }
+                else if (sizeCalibration is not null)
+                {
+                    // Configured targets and derived bitrate budgets have arithmetic authority.
+                    displayEstMb = baseEstMb;
+                    sizeCalibration = EncodingSizePredictionCalibration.Unavailable(baseEstMb, "Target/bitrate arithmetic is authoritative.") with
+                    { EstimateModelId = useProfileEstimate ? "BitrateArithmetic" : "ManualTarget", EstimateStatus = "Arithmetic" };
+                }
                 System.Diagnostics.Debug.WriteLine(
                     $"[SizeEstimate] {item.Path}: {estimateDiagnostic}");
                 string? unavailableReason = null;
@@ -585,7 +604,8 @@ namespace MediaFlux.Services
                         });
                 }
 
-                if (_isSourceOwnedByActiveJob(item.Path))
+                cancellationToken.ThrowIfCancellationRequested();
+                if (item.Generation != CurrentGeneration || _isSourceOwnedByActiveJob(item.Path))
                     return;
 
                 _smartResults.Enqueue(
@@ -594,11 +614,12 @@ namespace MediaFlux.Services
                         item.IsCustom, unavailableReason, recommendation, estimateDiagnostic,
                         estimateBreakdown?.PlannedAudioBitrateKbps ?? 0,
                         estimateBreakdown?.PlannedMappedAncillaryBitrateKbps ?? 0,
-                        qualityResolution, sizeCalibration));
+                        qualityResolution, sizeCalibration, preview, item.EstimateAuthorityRevision));
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
             catch (Exception ex)
             {
-                if (_isSourceOwnedByActiveJob(item.Path))
+                if (cancellationToken.IsCancellationRequested || item.Generation != CurrentGeneration || _isSourceOwnedByActiveJob(item.Path))
                     return;
 
                 System.Diagnostics.Debug.WriteLine(
@@ -608,7 +629,7 @@ namespace MediaFlux.Services
                         item.Generation, item.QueueItemId, item.Path, 0, 0, 0, null, null, 0,
                         item.IsCustom, "Metadata unavailable", null,
                         $"Estimate failed: {ex.Message}", 0, 0,
-                        sizeCalibration: null));
+                        sizeCalibration: null, estimateAuthorityRevision: item.EstimateAuthorityRevision));
             }
         }
 

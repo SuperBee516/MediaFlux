@@ -540,6 +540,73 @@ public sealed class SizeEstimateServiceTests
     }
 
     [Fact]
+    public void AutomaticSourceAdaptiveEstimateUsesResolvedQualityAcrossStorageModes()
+    {
+        var source = new MediaProbeResult
+        {
+            Success = true,
+            Streams =
+            [
+                new MediaProbeStreamInfo
+                {
+                    CodecType = "video", CodecName = "h264", Width = 1920,
+                    Height = 1080, FrameRate = 30, BitRate = 6_000_000
+                }
+            ]
+        };
+        var encoder = new VideoEncoderSelection(
+            VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc");
+        var policy = new EncodingQualityPolicyService();
+        var storageModes = new[]
+        {
+            new MediaFlux.Models.StorageSavingsOptions
+            {
+                Enabled = true,
+                TargetMode = MediaFlux.Models.StorageSavingsOptions.QualityTarget,
+                QualityValue = 30
+            },
+            new MediaFlux.Models.StorageSavingsOptions
+            {
+                Enabled = true,
+                TargetMode = MediaFlux.Models.StorageSavingsOptions.SourceBitrateTarget,
+                SourceVideoBitratePercent = 20
+            }
+        };
+
+        double[][] estimatesByStorageMode = storageModes.Select(storage =>
+            Enum.GetValues<QualityTarget>().Select(target =>
+            {
+                EncodingQualityResolution resolved = policy.Resolve(new(
+                    EncodingQualityIntent.Automatic(target), source, encoder,
+                    null, EncodingService.ScaleMode.None, null));
+                SizeEstimateBreakdown estimate =
+                    SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                        srcMb: 2_700, durationSec: 3_600, width: 1920, height: 1080,
+                        fps: 30, sourceVideoBitrateKbps: 6_000, sourceCodec: "h264",
+                        compressionProfile: "Medium Quality (Default)",
+                        targetCodec: encoder.FfmpegCodec,
+                        quality: resolved.EffectiveQuality!.Value,
+                        targetHeight: null,
+                        storageSavings: storage,
+                        useResolvedQualityTarget: true);
+
+                Assert.Equal(resolved.EffectiveQuality, estimate.EffectiveQuality);
+                Assert.False(estimate.UsesStorageQualityTarget);
+                Assert.Contains(
+                    $"Source Adaptive quality target {resolved.EffectiveQuality}",
+                    estimate.Diagnostic);
+                return estimate.EstimatedOutputMb;
+            }).ToArray()).ToArray();
+
+        foreach (double[] estimates in estimatesByStorageMode)
+        {
+            Assert.Equal(estimates.Order(), estimates);
+            Assert.All(estimates.Zip(estimates.Skip(1)), pair => Assert.True(pair.First < pair.Second));
+        }
+        Assert.Equal(estimatesByStorageMode[0], estimatesByStorageMode[1]);
+    }
+
+    [Fact]
     public void ResolvedAutomaticQualityDrivesMonotonicOutputEstimates()
     {
         var source = new MediaProbeResult

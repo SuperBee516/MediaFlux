@@ -4,7 +4,11 @@ public enum AdaptiveSampleClassification { ClearlyMeets, Borderline, ClearlyMiss
 public enum AdaptiveSelectionDisposition { Selected, Skipped, NotSuitable }
 
 public sealed record RepresentativeSample(string Label, TimeSpan Start, TimeSpan Duration);
-public sealed record RepresentativeSampleEvidence(RepresentativeSample Sample, long VideoBytes, double MeasuredSeconds);
+public enum VideoSamplePurpose { ProductionAcceptance, PreviewEstimation }
+public sealed record RepresentativeSampleEvidence(RepresentativeSample Sample, long VideoBytes, double MeasuredSeconds)
+{
+    public VideoSamplePurpose Purpose { get; init; } = VideoSamplePurpose.ProductionAcceptance;
+}
 public sealed record AdaptiveAncillaryAllowance(double AudioBytes, double SubtitleBytes, double DataBytes, long AttachmentBytes)
 {
     public double StreamBytes => AudioBytes + SubtitleBytes + DataBytes + AttachmentBytes;
@@ -13,7 +17,11 @@ public sealed record AdaptiveAncillaryAllowance(double AudioBytes, double Subtit
     public double MinimumStreamBytes => AttachmentBytes;
 }
 public sealed record AdaptiveCandidateEvidence(int Quality, IReadOnlyList<RepresentativeSampleEvidence> Samples,
-    double ProjectedLowerBytes, double ProjectedUpperBytes, double ContainerAllowanceBytes, AdaptiveSampleClassification Classification);
+    double ProjectedLowerBytes, double ProjectedUpperBytes, double ContainerAllowanceBytes, AdaptiveSampleClassification Classification)
+{
+    // Equal temporal strata, not a calibrated prediction or a byte acceptance bound.
+    public double? ProjectedTypicalBytes { get; init; }
+}
 
 /// <summary>Sample evidence, never accepted final-output bytes or a completed sample job.</summary>
 public sealed record AdaptiveQualitySelectionEvidence(
@@ -23,6 +31,7 @@ public sealed record AdaptiveQualitySelectionEvidence(
     AdaptiveAncillaryAllowance? Ancillary, IReadOnlyList<AdaptiveCandidateEvidence> Candidates, string Reason)
 {
     public double SamplingSeconds { get; init; }
+    public double? SourceDurationSeconds { get; init; }
 }
 
 public sealed class AdaptiveStorageSavingsSkippedException : InvalidOperationException

@@ -642,6 +642,9 @@ namespace MediaFlux
             if (planRecommendation != null)
                 return planRecommendation.DisplayName;
 
+            if (meta?.RecommendationPending == true)
+                return "Adaptive pending";
+
             return meta?.EncodeRecommendation?.Kind switch
             {
                 SmartEncodeRecommendationKind.StrongCandidate or SmartEncodeRecommendationKind.ModerateCandidate => "Encode",
@@ -692,8 +695,7 @@ namespace MediaFlux
             {
                 SmartEncodeRecommendationKind.Skip => QueueWorkspaceRecommendationFilter.Skip,
                 SmartEncodeRecommendationKind.Review or
-                SmartEncodeRecommendationKind.RemuxOnly or
-                SmartEncodeRecommendationKind.Unavailable => QueueWorkspaceRecommendationFilter.Review,
+                SmartEncodeRecommendationKind.RemuxOnly => QueueWorkspaceRecommendationFilter.Review,
                 _ => QueueWorkspaceRecommendationFilter.None
             };
         }
@@ -902,6 +904,9 @@ namespace MediaFlux
             }
             else
             {
+                if (IsQueueRecommendationPending(meta))
+                    return true;
+
                 SmartEncodeRecommendation? recommendation = meta.EncodeRecommendation;
                 if (recommendation?.Kind is SmartEncodeRecommendationKind.Skip or
                     SmartEncodeRecommendationKind.Review or
@@ -997,6 +1002,12 @@ namespace MediaFlux
             string estimate = estimateMb > 0
                 ? FormatSize(estimateMb)
                 : string.IsNullOrWhiteSpace(estimateText) ? "not analyzed" : estimateText;
+            if (estimateMb > 0 && meta?.SizePredictionCalibration?.EstimateModelId == "GenericBppV1")
+                estimate = "~" + estimate + " (low confidence)";
+            else if (estimateMb > 0 && meta?.AdaptiveQualitySelectionPending == true && meta.EmpiricalPreview is null)
+                estimate += " (provisional)";
+            if (estimateMb > 0 && meta?.EmpiricalPreview is { LikelyDisposition: AdaptiveSelectionDisposition.Skipped } skipped)
+                estimate += $" at {skipped.Mechanism.ToString().ToUpperInvariant()}{skipped.DisplayQuality} · likely skip";
             SetQueueWorkspaceCellValue(row.Cells["colSourceEstimate"], $"{source} → {estimate}");
 
             string sizeTooltip = $"Source size: {source}{Environment.NewLine}Estimated output: {estimate}";

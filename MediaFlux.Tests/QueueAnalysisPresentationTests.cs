@@ -7,6 +7,16 @@ namespace MediaFlux.Tests;
 public sealed class QueueAnalysisPresentationTests
 {
     [Theory]
+    [InlineData("EmpiricalPreview", false)]
+    [InlineData("GenericBppV1", false)]
+    [InlineData("ManualTarget", true)]
+    [InlineData("", true)]
+    public void LegacyDeepProjectionCannotReplaceCurrentConstantQualityAuthority(string model, bool allowed)
+    {
+        var estimate = EncodingSizePredictionCalibration.Unavailable(1, "estimate") with { EstimateModelId = model };
+        Assert.Equal(allowed, MainForm.CanApplyLegacyDeepProjection(estimate));
+    }
+    [Theory]
     [InlineData(SmartEncodeRecommendationKind.StrongCandidate, "Strong candidate")]
     [InlineData(SmartEncodeRecommendationKind.ModerateCandidate, "Moderate candidate")]
     [InlineData(SmartEncodeRecommendationKind.Review, "Review")]
@@ -114,7 +124,7 @@ public sealed class QueueAnalysisPresentationTests
 
         Assert.Contains("Generic BPP (low confidence fallback)", fallbackText);
         Assert.Contains("historically calibrated Generic BPP", appliedText);
-        Assert.DoesNotContain("low confidence fallback", appliedText,
+        Assert.Contains("low confidence fallback", appliedText,
             StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Generic BPP", manualTargetText);
     }
@@ -128,6 +138,18 @@ public sealed class QueueAnalysisPresentationTests
         Assert.Equal("Queue analysis has not been performed for this file.", presentation.Status);
         Assert.Null(presentation.Recommendation);
         Assert.Empty(presentation.Reasons);
+    }
+
+    [Fact]
+    public void AdaptivePendingIsPresentedSeparatelyFromUnavailable()
+    {
+        QueueAnalysisPresentation presentation =
+            QueueAnalysisPresentation.CreateAdaptivePending(1_000, 550);
+
+        Assert.True(presentation.IsAvailable);
+        Assert.Equal("Adaptive pending", presentation.Recommendation);
+        Assert.Equal("1000 MB → 550 MB", presentation.EstimatedResult);
+        Assert.Contains("final Source Adaptive quality decision", presentation.BuildTooltip());
     }
 
     [Fact]

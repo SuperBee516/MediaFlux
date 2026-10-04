@@ -6,6 +6,17 @@ namespace MediaFlux.Tests;
 
 public sealed class AdaptiveStorageSavingsRetryPolicyTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PreviewTaggedEvidenceCannotAuthorizePolicyCRetry(bool original)
+    {
+        var first = Candidate(25, 80, 120, AdaptiveSampleClassification.Borderline);
+        var second = Candidate(26, 70, 95);
+        if (original) first = first with { Samples = first.Samples.Select(s => s with { Purpose = VideoSamplePurpose.PreviewEstimation }).ToArray() };
+        else second = second with { Samples = second.Samples.Select(s => s with { Purpose = VideoSamplePurpose.PreviewEstimation }).ToArray() };
+        Assert.False(Select(Selection(first, second)).ShouldRetry);
+    }
     private static readonly RepresentativeSample[] Windows =
     [
         new("Beginning", TimeSpan.Zero, TimeSpan.FromSeconds(10)),

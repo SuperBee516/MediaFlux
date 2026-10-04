@@ -29,18 +29,37 @@ public sealed class AdaptiveVideoSampleRunnerTests
             }, root);
         try
         {
-            RepresentativeSample sample = StorageSavingsSampleSelector.Positions(request.SourceDuration)[0];
+            RepresentativeSample sample = new("Measured window", TimeSpan.Zero, TimeSpan.FromSeconds(25));
             Task<RepresentativeSampleEvidence> work = runner.MeasureAsync(request, 24, sample, cancellation.Token);
             if (outcome == "success")
             {
                 var measured = await work;
                 Assert.Equal(30_000, measured.VideoBytes); // packet bytes, not file or audio bytes
-                Assert.Equal(25, measured.MeasuredSeconds);
+                Assert.Equal(24.98, measured.MeasuredSeconds);
                 Assert.Contains("v:0", packets.LastRequest!.Arguments);
             }
             else if (outcome == "cancel") await Assert.ThrowsAnyAsync<OperationCanceledException>(() => work);
             else if (outcome == "bad-measurement") await Assert.ThrowsAsync<InvalidDataException>(() => work);
             else await Assert.ThrowsAsync<InvalidOperationException>(() => work);
+            Assert.Empty(Directory.GetFileSystemEntries(root));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task InflatedEncodedDurationCannotUnderstateVideoRate()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFluxAdaptiveDurationTests", Guid.NewGuid().ToString("N"));
+        var request = AdaptiveStorageSavingsTests.Request();
+        var packets = new PacketRunner();
+        var runner = new AdaptiveVideoSampleRunner("unused", "ffprobe", new Probe(request, 100),
+            (_, _, _, output) => output, packets,
+            (output, _, token) => File.WriteAllBytesAsync(output, new byte[123], token), root);
+        try
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() => runner.MeasureAsync(request, 24,
+                new("Window", TimeSpan.Zero, TimeSpan.FromSeconds(25)), CancellationToken.None));
+            Assert.Null(packets.LastRequest);
             Assert.Empty(Directory.GetFileSystemEntries(root));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
@@ -89,6 +108,11 @@ public sealed class AdaptiveVideoSampleRunnerTests
         var geometry = new VideoOutputGeometryPlan(1920, 1080, 1280, 720, 1280, 720, "1280:720", plannedPixels, 2, "downscale");
         string full = builder.Build(Command(false));
         string sample = builder.Build(Command(true));
+        // Compare the complete generated video argument block, including filters,
+        // pixel/residency flags, rate control, tune, B frames, lookahead and AQ.
+        Assert.Equal(VideoArguments(full), VideoArguments(sample));
+        Assert.Equal(full[..full.IndexOf("-i ", StringComparison.Ordinal)],
+            sample[..sample.IndexOf("-ss ", StringComparison.Ordinal)]);
         foreach (string argument in new[] { $"-c:v {codec}", $"-preset {preset}", qualityFlag, "1280:720" })
         { Assert.Contains(argument, full); Assert.Contains(argument, sample); }
         Assert.Contains("-map 0:v:0 -an -sn -dn", sample);
@@ -99,6 +123,16 @@ public sealed class AdaptiveVideoSampleRunnerTests
         Assert.Contains("-t 25", sample);
         Assert.DoesNotContain("-ss 37.5", full);
         Assert.Contains("\\\\server\\media\\source.mkv", sample);
+
+        static string VideoArguments(string arguments)
+        {
+            int codec = arguments.IndexOf("-c:v ", StringComparison.Ordinal);
+            int filter = arguments.IndexOf("-vf ", StringComparison.Ordinal);
+            int start = filter >= 0 ? Math.Min(filter, codec) : codec;
+            int audio = arguments.IndexOf("-c:a ", start, StringComparison.Ordinal);
+            int mux = arguments.IndexOf("-f ", start, StringComparison.Ordinal);
+            return arguments[start..(audio >= 0 ? audio : mux)].Trim();
+        }
 
         FfmpegCommandRequest Command(bool videoOnly) => new()
         {
@@ -115,14 +149,14 @@ public sealed class AdaptiveVideoSampleRunnerTests
         };
     }
 
-    private sealed class Probe(AdaptiveQualitySelectionRequest request) : IMediaProbeService
+    private sealed class Probe(AdaptiveQualitySelectionRequest request, double seconds = 24.98) : IMediaProbeService
     {
         public Task<MediaProbeResult> ProbeAsync(string path, CancellationToken cancellationToken = default) => Task.FromResult(new MediaProbeResult
         {
-            Success = true, DurationSeconds = 25, Streams = [new()
+            Success = true, DurationSeconds = 123, Streams = [new()
             {
                 CodecType = "video", CodecName = "hevc", Width = request.Video.Geometry.Width,
-                Height = request.Video.Geometry.Height, PixelFormat = "yuv420p"
+                Height = request.Video.Geometry.Height, PixelFormat = "yuv420p", DurationSeconds = seconds, FrameRate = 30
             }]
         });
     }

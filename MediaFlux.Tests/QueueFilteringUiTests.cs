@@ -95,6 +95,103 @@ public sealed class QueueFilteringUiTests
     }
 
     [Fact]
+    public void RecommendationViewsKeepAdaptivePendingAndUnavailableOutOfReviewAndCandidates()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        Exception? failure = null;
+        MainForm? main = null;
+        string? isolatedConfigPath = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                main = new MainForm();
+                isolatedConfigPath = QueueWorkspaceTestSupport.UseIsolatedConfig(main);
+                main.Show();
+                Application.DoEvents();
+
+                Config config = Field<Config>(main, "_config");
+                config.SmartRecommendationsEnabled = true;
+                config.WarnBeforeEncodingSkippedOrReviewItems = true;
+                DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+                SetField(main, "_suppressRowEvents", true);
+                DataGridViewRow encode = AddRow(queue, @"C:\Media\Encode.mkv", "Queued");
+                DataGridViewRow skip = AddRow(queue, @"C:\Media\Skip.mkv", "Queued");
+                DataGridViewRow review = AddRow(queue, @"C:\Media\Review.mkv", "Queued");
+                DataGridViewRow pending = AddRow(queue, @"C:\Media\Pending.mkv", "Queued");
+                DataGridViewRow unavailable = AddRow(queue, @"C:\Media\Unavailable.mkv", "Queued");
+                SetField(main, "_suppressRowEvents", false);
+
+                SmartEncodeDecisionService decisionService = new();
+                EncodingSizePredictionCalibration notEligible = EncodingSizePredictionCalibration.Unavailable(
+                    550, "Direct estimator does not apply to this mode.", "PredictionCalibrationPolicyV1", DateTime.UnixEpoch) with
+                {
+                    EstimateModelId = "GenericBppV1",
+                    EstimateStatus = "LowConfidenceGenericFallback:NotEligible"
+                };
+                SmartEncodeConfidence? ordinaryFallbackCeiling =
+                    SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(notEligible);
+                Invoke(main, "ApplySmartRecommendation", encode,
+                    decisionService.Evaluate(RecommendationSource(), RecommendationIntent(550, ordinaryFallbackCeiling)), true);
+                Invoke(main, "ApplySmartRecommendation", skip,
+                    decisionService.Evaluate(RecommendationSource(), RecommendationIntent(920, ordinaryFallbackCeiling)), true);
+                Invoke(main, "ApplySmartRecommendation", review,
+                    decisionService.Evaluate(RecommendationSource(fieldOrder: "tt"), RecommendationIntent(550, ordinaryFallbackCeiling)), true);
+                object pendingMeta = Invoke(main, "EnsureRowMeta", pending)!;
+                SetMetaField(main, pending, "AdaptiveQualitySelectionPending", true);
+                Invoke(main, "SetSmartRecommendationPending", pending);
+                Invoke(main, "ApplySmartRecommendation", unavailable,
+                    decisionService.Evaluate(RecommendationSource(width: 0), RecommendationIntent(550, ordinaryFallbackCeiling)), true);
+
+                Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate,
+                    MetaRecommendation(main, encode).Kind);
+                Assert.Equal(SmartEncodeRecommendationKind.Skip, MetaRecommendation(main, skip).Kind);
+                Assert.Equal(SmartEncodeRecommendationKind.Review, MetaRecommendation(main, review).Kind);
+                Assert.Equal(SmartEncodeRecommendationKind.Unavailable, MetaRecommendation(main, unavailable).Kind);
+                Assert.Equal("Encode", Invoke(main, "GetQueueWorkspaceRecommendationText", encode));
+                Assert.Equal("Skip", Invoke(main, "GetQueueWorkspaceRecommendationText", skip));
+                Assert.Equal("Review", Invoke(main, "GetQueueWorkspaceRecommendationText", review));
+                Assert.Equal("Adaptive pending", Invoke(main, "GetQueueWorkspaceRecommendationText", pending));
+                Assert.Equal("Unavailable", Invoke(main, "GetQueueWorkspaceRecommendationText", unavailable));
+                Assert.False((bool)Invoke(main, "IsSmartEncodeCandidate", pending)!);
+
+                Invoke(main, "RefreshQueueWorkspacePresentation");
+                Assert.Equal("1", Field<Label>(main, "_queueWorkspaceReadyValue").Text);
+                Assert.Equal("4", Field<Label>(main, "_queueWorkspaceAttentionValue").Text);
+
+                ComboBox view = Field<ComboBox>(main, "_queueWorkspaceViewSelector");
+                view.SelectedItem = "Encode";
+                Assert.True((bool)Invoke(main, "ShouldShowEncodeQueueRow", encode)!);
+                Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", pending)!);
+                view.SelectedItem = "Skip";
+                Assert.True((bool)Invoke(main, "ShouldShowEncodeQueueRow", skip)!);
+                Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", unavailable)!);
+                view.SelectedItem = "Review";
+                Assert.True((bool)Invoke(main, "ShouldShowEncodeQueueRow", review)!);
+                Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", pending)!);
+                Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", unavailable)!);
+                view.SelectedItem = "Attention";
+                Assert.True((bool)Invoke(main, "ShouldShowEncodeQueueRow", pending)!);
+                Assert.True((bool)Invoke(main, "ShouldShowEncodeQueueRow", unavailable)!);
+                Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", encode)!);
+                Assert.Same(pendingMeta, Meta(main, pending));
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(main);
+                QueueWorkspaceTestSupport.DeleteIsolatedConfig(isolatedConfigPath);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Recommendation workspace filtering UI test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
     public void DuplicateCandidateFilteringUsesTheUnifiedPredicateAndCanLeaveNoVisibleRows()
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -258,6 +355,36 @@ public sealed class QueueFilteringUiTests
         row.Cells["colEncodeRecommendation"].Value = kind.ToString();
     }
 
+    private static SmartEncodeSourceInfo RecommendationSource(int width = 1920, string fieldOrder = "progressive") => new()
+    {
+        Path = @"C:\Media\source.mkv",
+        SourceMb = 1_000,
+        DurationSeconds = 1_800,
+        Width = width,
+        Height = 1_080,
+        FramesPerSecond = 30,
+        VideoBitrateKbps = 5_000,
+        TotalBitrateKbps = 5_200,
+        AudioBitrateKbps = 192,
+        VideoStreamCount = 1,
+        AudioStreamCount = 1,
+        VideoCodec = "h264",
+        FormatName = "matroska",
+        FieldOrder = fieldOrder
+    };
+
+    private static SmartEncodeIntent RecommendationIntent(double estimateMb, SmartEncodeConfidence? ceiling) => new()
+    {
+        TargetCodec = "hevc_nvenc",
+        EstimatedOutputMb = estimateMb,
+        MinimumSavingsPercent = 15,
+        EstimateConfidenceCeiling = ceiling
+    };
+
+    private static SmartEncodeRecommendation MetaRecommendation(MainForm main, DataGridViewRow row) =>
+        (SmartEncodeRecommendation)(MetaField(main, row, "EncodeRecommendation")
+            ?? throw new InvalidOperationException("The queue row has no recommendation."));
+
     private static long QueueSequence(MainForm main, DataGridViewRow row) =>
         Convert.ToInt64(MetaField(main, row, "QueueSequence"));
 
@@ -298,9 +425,9 @@ public sealed class QueueFilteringUiTests
 
     private static object? Invoke(MainForm main, string name, params object?[] args)
     {
-        MethodInfo method = typeof(MainForm).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+        MethodInfo method = typeof(MainForm).GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.NonPublic)
             .SingleOrDefault(candidate => candidate.Name == name && candidate.GetParameters().Length == args.Length)
             ?? throw new MissingMethodException(name);
-        return method.Invoke(main, args);
+        return method.Invoke(method.IsStatic ? null : main, args);
     }
 }

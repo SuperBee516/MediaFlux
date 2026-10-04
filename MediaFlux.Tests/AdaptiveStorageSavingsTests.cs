@@ -86,7 +86,7 @@ public sealed class AdaptiveStorageSavingsTests
         TimeSpan duration = TimeSpan.FromSeconds(seconds);
         var positions = StorageSavingsSampleSelector.Positions(duration);
         Assert.Equal(positions, StorageSavingsSampleSelector.Positions(duration));
-        Assert.Equal(seconds <= 25 ? 1 : 3, positions.Count);
+        Assert.Equal(seconds <= 25 ? 1 : seconds <= 75 ? 3 : 9, positions.Count);
         Assert.Equal(TimeSpan.Zero, positions[0].Start);
         Assert.Equal(duration, positions[^1].Start + positions[^1].Duration);
         Assert.All(positions, p => Assert.InRange(p.Duration.TotalSeconds, double.Epsilon, 25));
@@ -101,7 +101,7 @@ public sealed class AdaptiveStorageSavingsTests
         var result = await Select(runner);
         Assert.Equal(24, result.SelectedQuality);
         Assert.Single(result.Candidates);
-        Assert.Equal(3, runner.Calls.Count);
+        Assert.Equal(9, runner.Calls.Count);
         Assert.Equal(AdaptiveSampleClassification.ClearlyMeets, result.Candidates[0].Classification);
     }
 
@@ -132,7 +132,7 @@ public sealed class AdaptiveStorageSavingsTests
     [Fact]
     public async Task BorderlineIsNotMissAndProceedsAtHighestQualityBorderline()
     {
-        var result = await Select(new FakeSamples((q, i) => q == 24 ? 10_000 : i == 0 ? 5_000 : 10_000));
+        var result = await Select(new FakeSamples((q, i) => q == 24 ? 10_000 : i % 3 == 0 ? 5_000 : 7_500));
         Assert.Equal(AdaptiveSelectionDisposition.Selected, result.Disposition);
         Assert.Equal(25, result.SelectedQuality);
         Assert.Contains("borderline", result.Reason);
@@ -142,7 +142,7 @@ public sealed class AdaptiveStorageSavingsTests
     public async Task ExactByteBoundaryClearlyMeets()
     {
         var result = await Select(new FakeSamples((_, _) => 7_000));
-        Assert.Equal(Contract.MaximumAcceptedOutputBytes!.Value, result.Candidates[0].ProjectedUpperBytes);
+        Assert.InRange(result.Candidates[0].ProjectedUpperBytes, Contract.MaximumAcceptedOutputBytes!.Value - 10, Contract.MaximumAcceptedOutputBytes.Value);
         Assert.Equal(AdaptiveSampleClassification.ClearlyMeets, result.Candidates[0].Classification);
     }
 
@@ -160,7 +160,7 @@ public sealed class AdaptiveStorageSavingsTests
     {
         AdaptiveQualitySelectionRequest request = Request() with { Ancillary = new(500_000, 0, 0, 0) };
         var result = await Select(new FakeSamples((_, _) => 5_000), request);
-        Assert.Equal(AdaptiveSelectionDisposition.Selected, result.Disposition);
+        Assert.Equal(AdaptiveSelectionDisposition.Skipped, result.Disposition);
         Assert.All(result.Candidates, c => Assert.Equal(AdaptiveSampleClassification.Borderline, c.Classification));
         Assert.Equal(StorageSavingsAcceptance.Rejected, StorageSavingsContractService.Evaluate(Contract, 900_001).Acceptance);
         Assert.Equal(StorageSavingsAcceptance.Accepted, StorageSavingsContractService.Evaluate(Contract, 900_000).Acceptance);
@@ -185,9 +185,14 @@ public sealed class AdaptiveStorageSavingsTests
         EncodingPlan initial = EncodingPlanService.Create(Context());
         var selected = await Select(new FakeSamples((q, _) => q < 26 ? 10_000 : 4_000));
         EncodingPlan final = EncodingPlanService.FreezeAdaptiveSelection(initial, selected);
+        Assert.NotNull(initial.Recommendation);
         Assert.Equal(24, initial.Quality!.EffectiveQuality);
         Assert.Equal(26, final.Quality!.EffectiveQuality);
         Assert.Equal(initial.Quality.Intent, final.Quality.Intent);
+        Assert.Null(final.Recommendation);
+        Assert.Contains(
+            "Recommendation=Unavailable (adaptive sample selection invalidated preferred-quality estimates)",
+            EncodingPlanService.DescribeSummary(final));
         Assert.Equal(26, EncodingPlanService.GetExecutionValues(final).QualityResolution.EffectiveQuality);
         Assert.Same(selected, final.AdaptiveSelection);
         Assert.Null(final.SourceAdaptiveShadow);

@@ -124,6 +124,7 @@ namespace MediaFlux
                             chkAutoTargetSize.Checked &&
                             meta.CustomTargetMb is not > 0 &&
                             !_config.StorageSavings.Enabled &&
+                            CanApplyLegacyDeepProjection(meta.SizePredictionCalibration) &&
                             result.ProjectedOutputMb is > 0;
                         if (appliedCalibratedEstimate)
                         {
@@ -289,6 +290,9 @@ namespace MediaFlux
                 ClipSeconds = 8
             };
         }
+
+        internal static bool CanApplyLegacyDeepProjection(EncodingSizePredictionCalibration? estimate) =>
+            estimate?.EstimateModelId is not (EmpiricalPreviewResult.ModelId or "GenericBppV1");
 
         private void ApplyCalibratedEstimate(
             DataGridViewRow row,

@@ -6,6 +6,7 @@ namespace MediaFlux
             int skip,
             int review,
             int remuxOnly,
+            int pending,
             int unavailable)
         {
             Text = "Review Smart Encode Recommendations";
@@ -27,7 +28,7 @@ namespace MediaFlux
             var counts = new Label
             {
                 Text =
-                    $"Skip: {skip:N0}     Review: {review:N0}     " +
+                    $"Adaptive pending: {pending:N0}     Skip: {skip:N0}     Review: {review:N0}     " +
                     $"Remux only: {remuxOnly:N0}     Unavailable: {unavailable:N0}",
                 AutoSize = true,
                 Location = new Point(18, 52)
@@ -83,10 +84,11 @@ namespace MediaFlux
             int skip,
             int review,
             int remuxOnly,
+            int pending,
             int unavailable)
         {
             using var dialog =
-                new RecommendationStartForm(skip, review, remuxOnly, unavailable);
+                new RecommendationStartForm(skip, review, remuxOnly, pending, unavailable);
             return dialog.ShowDialog(owner);
         }
     }

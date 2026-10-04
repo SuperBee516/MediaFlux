@@ -13,7 +13,7 @@ namespace MediaFlux
     public partial class MainForm : MediaFluxForm
     {
         private const string ProvisionalAdaptiveEstimateTooltip =
-            "Provisional output-size estimate. Source Adaptive may revise the effective quality after representative sampling.";
+            "Provisional output-size estimate with low confidence before sampling. Estimated savings are advisory; Source Adaptive may revise the effective quality after representative sampling.";
 
         private static string WithProvisionalAdaptiveEstimateDiagnostic(string diagnostic) =>
             string.IsNullOrWhiteSpace(diagnostic)
@@ -88,10 +88,18 @@ namespace MediaFlux
                         row?.Cells != null &&
                         row.Tag is RowMeta resultMeta &&
                         resultMeta.QueueItemId == item.QueueItemId &&
+                        resultMeta.EstimateAuthorityRevision == item.EstimateAuthorityRevision &&
+                        !IsQueueRowActivelyEncoding(row) &&
                         PathsIdentifySameSource(resultMeta.Path, item.Path))
                     {
                         try
                         {
+                            if (item.EmpiricalPreview is { SourceWriteUtcTicks: > 0 } binding)
+                            {
+                                var source = new FileInfo(item.Path);
+                                if (!source.Exists || source.Length != binding.SourceBytes || source.LastWriteTimeUtc.Ticks != binding.SourceWriteUtcTicks)
+                                    continue;
+                            }
                             double srcMb = item.SourceMb;
                             bool adaptivePending = !item.IsCustom && resultMeta.PredictionShadowExperimentAssignment is null &&
                                 (item.VideoCodec?.Equals("h264", StringComparison.OrdinalIgnoreCase) == true ||
@@ -105,16 +113,23 @@ namespace MediaFlux
                             double estMb = item.EstimatedMb;
                             bool hasEstimate = srcMb > 0 && estMb > 0;
                             string customSuffix = item.IsCustom ? " (custom)" : string.Empty;
+                            bool empirical = item.EmpiricalPreview is not null;
+                            bool fallback = item.SizeCalibration?.EstimateModelId == "GenericBppV1";
+                            string forecast = item.EmpiricalPreview is { LikelyDisposition: AdaptiveSelectionDisposition.Skipped } skipped
+                                ? $" at {skipped.Mechanism.ToString().ToUpperInvariant()}{skipped.DisplayQuality} · likely skip" : "";
 
                             row.Cells["colEstimatedSize"].Value = hasEstimate
-                                ? $"{FormatSize(estMb)}  {PercentReduction(srcMb, estMb)}{customSuffix}"
+                                ? (fallback ? "~" : "") + $"{FormatSize(estMb)}  {PercentReduction(srcMb, estMb)}{customSuffix}" +
+                                    (fallback ? " (low confidence)" : adaptivePending && !empirical ? " (provisional)" : "") + forecast
                                 : adaptivePending ? AdaptiveStorageSavingsPolicy.PendingEstimate : item.UnavailableReason ?? "Metadata unavailable";
                             if (srcMb > 0)
                                 row.Cells["colSize"].Value = FormatSize(srcMb);
                             row.Cells["colEstimatedSize"].Tag = hasEstimate
                                 ? new Tuple<double, double>(srcMb, estMb)
                                 : null;
-                            row.Cells["colEstimatedSize"].ToolTipText = adaptivePending
+                            row.Cells["colEstimatedSize"].ToolTipText = empirical || fallback
+                                ? item.EstimateDiagnostic
+                                : adaptivePending
                                 ? hasEstimate
                                     ? ProvisionalAdaptiveEstimateTooltip
                                     : $"{AdaptiveStorageSavingsPolicy.PendingEstimate}. No numeric output-size estimate is available yet. {item.UnavailableReason ?? "Required media metadata could not be determined."}"
@@ -177,10 +192,11 @@ namespace MediaFlux
                                 if (item.Fps > 0)
                                     rm.Fps = (int)Math.Round(item.Fps);
 
-                                rm.EstimateDiagnostic = adaptivePending && hasEstimate
+                                rm.EmpiricalPreview = item.EmpiricalPreview;
+                                rm.EstimateDiagnostic = adaptivePending && hasEstimate && !empirical
                                     ? WithProvisionalAdaptiveEstimateDiagnostic(item.EstimateDiagnostic)
                                     : item.EstimateDiagnostic;
-                                rm.SizePredictionCalibration = adaptivePending ? null : item.SizeCalibration;
+                                rm.SizePredictionCalibration = adaptivePending && !empirical && !fallback ? null : item.SizeCalibration;
                                 rm.AdaptiveQualitySelectionPending = adaptivePending;
                                 rm.AdaptiveSelectionSkipped = false;
                                 rm.EstimatedPlannedAudioBitrateKbps =
@@ -197,10 +213,11 @@ namespace MediaFlux
                                 estimateMeta.SrcMb = srcMb;
                                 estimateMeta.VideoCodec = codec;
                                 estimateMeta.Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0;
-                                estimateMeta.EstimateDiagnostic = adaptivePending && hasEstimate
+                                estimateMeta.EmpiricalPreview = item.EmpiricalPreview;
+                                estimateMeta.EstimateDiagnostic = adaptivePending && hasEstimate && !empirical
                                     ? WithProvisionalAdaptiveEstimateDiagnostic(item.EstimateDiagnostic)
                                     : item.EstimateDiagnostic;
-                                estimateMeta.SizePredictionCalibration = adaptivePending ? null : item.SizeCalibration;
+                                estimateMeta.SizePredictionCalibration = adaptivePending && !empirical && !fallback ? null : item.SizeCalibration;
                                 estimateMeta.AdaptiveQualitySelectionPending = adaptivePending;
                                 estimateMeta.AdaptiveSelectionSkipped = false;
                                 estimateMeta.EstimatedPlannedAudioBitrateKbps =
@@ -212,7 +229,12 @@ namespace MediaFlux
 
                             TrackCodecFilterCount(path, codec);
 
-                            ApplySmartRecommendation(row, adaptivePending ? null : item.Recommendation);
+                            bool recommendationPending = adaptivePending &&
+                                item.Recommendation is { Kind: not SmartEncodeRecommendationKind.Unavailable };
+                            if (recommendationPending)
+                                SetSmartRecommendationPending(row);
+                            else
+                                ApplySmartRecommendation(row, item.Recommendation);
                             UpdateRowCustomFlag(row);
                             RestoreQueuedStateAfterEstimate(row);
                             applied++;
@@ -348,6 +370,7 @@ namespace MediaFlux
             bool useProfileEstimate = SizeEstimateService.ShouldUseProfileEstimate(
                 autoRequested,
                 manualTargetMb);
+            var previewSettings = CaptureEncodeExecutionSnapshotSettings(GetSelectedOutputContainer());
 
             int queued = 0;
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
@@ -446,7 +469,9 @@ namespace MediaFlux
                 // Keep the path → row map in sync for the UI pump
                 _rowsByPath[path] = row;
                 _estimatedSizeMap.Remove(path);
-                row.Cells["colEstimatedSize"].Value = "Analyzing…";
+                estimateMeta.EmpiricalPreview = null;
+                estimateMeta.SizePredictionCalibration = null;
+                row.Cells["colEstimatedSize"].Value = "Estimating…";
                 row.Cells["colEstimatedSize"].Tag = null;
                 row.Cells["colEstimatedSize"].ToolTipText = "Reading this file's metadata and recalculating with the current encoding settings.";
                 SetRecommendationAnalyzing(row);
@@ -478,7 +503,20 @@ namespace MediaFlux
                     estimateMeta.QueueItemId,
                     encoderSettings.Preset,
                     encoderSettings.TenBit ? 10 : 8,
-                    encoderSettings.ConcurrentEncoderSessions);
+                    encoderSettings.ConcurrentEncoderSessions,
+                    previewSettings,
+                    new EncodeExecutionSnapshotItem
+                    {
+                        SourceFilePath = path, LogicalSourcePath = path,
+                        CustomCompressionProfile = estimateMeta.CustomCompressionProfile,
+                        CustomTargetMb = estimateMeta.CustomTargetMb,
+                        PredictionShadowExperimentAssignment = estimateMeta.PredictionShadowExperimentAssignment,
+                        LibraryPolicyIntent = estimateMeta.LibraryPolicyIntent,
+                        PolicyEncodingPreset = string.IsNullOrWhiteSpace(estimateMeta.LibraryPolicyIntent?.EncodingPresetName)
+                            ? null : _presetService.LoadAll().FirstOrDefault(preset => preset.Name.Equals(
+                                estimateMeta.LibraryPolicyIntent.EncodingPresetName, StringComparison.OrdinalIgnoreCase))
+                    },
+                    estimateMeta.EstimateAuthorityRevision);
                 queued++;
             }
 
@@ -559,7 +597,10 @@ namespace MediaFlux
             Guid queueItemId,
             string encoderPreset,
             int outputBitDepth,
-            bool concurrentEncoderSessions)
+            bool concurrentEncoderSessions,
+            EncodeExecutionSnapshotSettings? previewSettings = null,
+            EncodeExecutionSnapshotItem? previewItem = null,
+            long estimateAuthorityRevision = 0)
         {
             _estimateService.QueueSmartEstimate(
                 path,
@@ -580,7 +621,21 @@ namespace MediaFlux
                 queueItemId,
                 encoderPreset,
                 outputBitDepth,
-                concurrentEncoderSessions);
+                concurrentEncoderSessions,
+                previewSettings,
+                previewItem,
+                estimateAuthorityRevision);
+        }
+
+        private static string PreviewToolIdentity(string? configuredPath)
+        {
+            var tools = FfmpegToolResolver.Resolve(AppPaths.InstallDirectory, configuredPath);
+            try
+            {
+                var file = new FileInfo(tools.FfmpegPath);
+                return $"{file.FullName}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
+            }
+            catch { return tools.FfmpegPath; }
         }
 
         private bool IsEstimateSourceOwnedByActiveEncode(string path)

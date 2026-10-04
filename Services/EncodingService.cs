@@ -684,6 +684,7 @@ namespace MediaFlux.Services
             Func<AdaptivePreAttemptObservation, CancellationToken, Task>? adaptivePreAttemptCaptureCallback = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
+            using var previewExclusion = await PreviewSamplingCoordinator.Shared.EnterProductionAsync(cancellationToken).ConfigureAwait(false);
             var performance = new PerformanceTimingService();
             void ReportFinalizationStatus(string status)
             {
@@ -3505,6 +3506,27 @@ namespace MediaFlux.Services
         // --------------------------------------------------------------------
         // Argument builder (GPU optimizations + mapping + target-size budgeting)
         // --------------------------------------------------------------------
+        internal IAdaptiveVideoSampleRunner CreatePreviewSampleRunner(EncodingDecisionContext context, EncodingPlan plan,
+            bool concurrentEncoderSessions) => new AdaptiveVideoSampleRunner(_ffmpegPath, _ffprobePath, _ffprobeService,
+                (request, quality, sample, output) => BuildPreviewSampleArguments(context, plan, concurrentEncoderSessions,
+                    request, quality, sample, output), purpose: VideoSamplePurpose.PreviewEstimation);
+
+        internal string BuildPreviewSampleArguments(EncodingDecisionContext context, EncodingPlan plan,
+            bool concurrentEncoderSessions, AdaptiveQualitySelectionRequest request, int quality,
+            RepresentativeSample sample, string output)
+        {
+            var values = EncodingPlanService.GetExecutionValues(plan);
+            return "-hide_banner -nostats -loglevel error " + BuildFfmpegArgs(
+                request.Input, output, values.Encoder.FfmpegCodec, values.UseGpu, null,
+                context.ScaleMode, values.EncoderPreset, context.TenBit, audioChannels: null, concurrentEncoderSessions,
+                context.MapMode, copySubtitles: false, copyDataStreams: false, copyAttachments: false,
+                containerDecision: values.ContainerDecision, knownDuration: sample.Duration,
+                qualityValue: quality, encoderSelection: values.Encoder,
+                sampleStart: sample.Start, sampleDuration: sample.Duration,
+                sourcePixelFormat: request.Video.SourcePixelFormat, restoration: context.Restoration,
+                plannedVideoGeometry: values.Geometry, videoOnly: true);
+        }
+
         private string BuildFfmpegArgs(
             EncodingInputSource input,
             string output,

@@ -170,7 +170,7 @@ public static class AdaptiveStorageSavingsRetryPolicy
         foreach (RepresentativeSampleEvidence? evidence in candidate.Samples)
         {
             RepresentativeSample? sample = evidence?.Sample;
-            if (evidence is null || sample is null || string.IsNullOrWhiteSpace(sample.Label) ||
+            if (evidence is null || evidence.Purpose != VideoSamplePurpose.ProductionAcceptance || sample is null || string.IsNullOrWhiteSpace(sample.Label) ||
                 sample.Start < TimeSpan.Zero || sample.Duration <= TimeSpan.Zero ||
                 evidence.VideoBytes <= 0 || !double.IsFinite(evidence.MeasuredSeconds) || evidence.MeasuredSeconds <= 0)
                 return false;
