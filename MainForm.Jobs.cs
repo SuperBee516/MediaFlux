@@ -250,8 +250,6 @@ public partial class MainForm
         int failedCount,
         int skippedCount) => startOutcome switch
         {
-            EncodeQueueStartOutcome.ReviewCancelled =>
-                (EncodeJobStatus.Ready, "Canceled during pre-encode review; no encode run started."),
             EncodeQueueStartOutcome.NotStarted =>
                 (EncodeJobStatus.Ready, "Encoding did not start."),
             EncodeQueueStartOutcome.Canceled =>

@@ -95,7 +95,7 @@ public sealed class QueueFilteringUiTests
     }
 
     [Fact]
-    public void RecommendationViewsKeepAdaptivePendingAndUnavailableOutOfReviewAndCandidates()
+    public void RecommendationViewsKeepPendingAndUnavailableNeutralAndNonBlocking()
     {
         if (!OperatingSystem.IsWindows()) return;
 
@@ -114,7 +114,6 @@ public sealed class QueueFilteringUiTests
 
                 Config config = Field<Config>(main, "_config");
                 config.SmartRecommendationsEnabled = true;
-                config.WarnBeforeEncodingSkippedOrReviewItems = true;
                 DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
                 SetField(main, "_suppressRowEvents", true);
                 DataGridViewRow encode = AddRow(queue, @"C:\Media\Encode.mkv", "Queued");
@@ -150,20 +149,23 @@ public sealed class QueueFilteringUiTests
                 Assert.Equal(SmartEncodeRecommendationKind.Skip, MetaRecommendation(main, skip).Kind);
                 Assert.Equal(SmartEncodeRecommendationKind.Review, MetaRecommendation(main, review).Kind);
                 Assert.Equal(SmartEncodeRecommendationKind.Unavailable, MetaRecommendation(main, unavailable).Kind);
-                // The configured warning cannot gate ordinary Review, Unavailable,
-                // or unfinished recommendation results.
-                Assert.Equal("EncodeAll", Invoke(main, "ReviewRecommendationsBeforeStart",
-                    (object)new DataGridViewRow[] { review, unavailable, pending })!.ToString());
                 Assert.Equal("Encode", Invoke(main, "GetQueueWorkspaceRecommendationText", encode));
                 Assert.Equal("Skip", Invoke(main, "GetQueueWorkspaceRecommendationText", skip));
                 Assert.Equal("Review", Invoke(main, "GetQueueWorkspaceRecommendationText", review));
-                Assert.Equal("Adaptive pending", Invoke(main, "GetQueueWorkspaceRecommendationText", pending));
+                Assert.Equal("—", Invoke(main, "GetQueueWorkspaceRecommendationText", pending));
                 Assert.Equal("Unavailable", Invoke(main, "GetQueueWorkspaceRecommendationText", unavailable));
-                Assert.False((bool)Invoke(main, "IsSmartEncodeCandidate", pending)!);
+                Assert.Equal("—", pending.Cells["colEncodeRecommendation"].Value);
+                Assert.Equal(string.Empty, pending.Cells["colEncodeRecommendation"].ToolTipText);
+                Assert.False((bool)Invoke(main, "QueueWorkspaceRecommendationNeedsAttention", pendingMeta)!);
+                Assert.False((bool)Invoke(main, "QueueWorkspaceRecommendationNeedsAttention", Meta(main, unavailable))!);
+
+                review.Selected = true;
+                Invoke(main, "UpdateQueueWorkspaceActionState");
+                Assert.True(Field<Button>(main, "_btnStartSelectedQueue").Enabled);
 
                 Invoke(main, "RefreshQueueWorkspacePresentation");
-                Assert.Equal("1", Field<Label>(main, "_queueWorkspaceReadyValue").Text);
-                Assert.Equal("4", Field<Label>(main, "_queueWorkspaceAttentionValue").Text);
+                Assert.Equal("3", Field<Label>(main, "_queueWorkspaceReadyValue").Text);
+                Assert.Equal("2", Field<Label>(main, "_queueWorkspaceAttentionValue").Text);
 
                 ComboBox view = Field<ComboBox>(main, "_queueWorkspaceViewSelector");
                 view.SelectedItem = "Encode";
@@ -177,8 +179,8 @@ public sealed class QueueFilteringUiTests
                 Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", pending)!);
                 Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", unavailable)!);
                 view.SelectedItem = "Attention";
-                Assert.True((bool)Invoke(main, "ShouldShowEncodeQueueRow", pending)!);
-                Assert.True((bool)Invoke(main, "ShouldShowEncodeQueueRow", unavailable)!);
+                Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", pending)!);
+                Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", unavailable)!);
                 Assert.False((bool)Invoke(main, "ShouldShowEncodeQueueRow", encode)!);
                 Assert.Same(pendingMeta, Meta(main, pending));
             }

@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
+using MediaFlux.Services;
 
 namespace MediaFlux
 {
@@ -164,12 +165,12 @@ namespace MediaFlux
                 dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
                 {
                     Name = "colSourceEstimate",
-                    HeaderText = "Source Size → Estimate",
+                    HeaderText = "Estimated Output",
                     Width = ScaleUi(205),
                     MinimumWidth = ScaleUi(165),
                     SortMode = DataGridViewColumnSortMode.Automatic,
                     Resizable = DataGridViewTriState.True,
-                    ToolTipText = "A display projection of the existing source-size and output-estimate values. Click the header to sort by source file size."
+                    ToolTipText = "Estimated output size. Click the header to sort by estimated size."
                 });
             }
         }
@@ -643,7 +644,7 @@ namespace MediaFlux
                 return planRecommendation.DisplayName;
 
             if (meta?.RecommendationPending == true)
-                return "Adaptive pending";
+                return "—";
 
             return meta?.EncodeRecommendation?.Kind switch
             {
@@ -904,9 +905,6 @@ namespace MediaFlux
             }
             else
             {
-                if (IsQueueRecommendationPending(meta))
-                    return true;
-
                 SmartEncodeRecommendation? recommendation = meta.EncodeRecommendation;
                 if (recommendation?.Kind is SmartEncodeRecommendationKind.Skip or
                     SmartEncodeRecommendationKind.Review or
@@ -915,12 +913,6 @@ namespace MediaFlux
                     return true;
                 }
 
-                if (_config.SmartRecommendationsEnabled &&
-                    _config.WarnBeforeEncodingSkippedOrReviewItems &&
-                    (recommendation == null || recommendation.Kind == SmartEncodeRecommendationKind.Unavailable))
-                {
-                    return true;
-                }
             }
 
             return false;
@@ -998,23 +990,31 @@ namespace MediaFlux
                 estimateMb = mappedEstimate;
             }
 
-            string source = sourceMb > 0 ? FormatSize(sourceMb) : "--";
             string estimate = estimateMb > 0
                 ? FormatSize(estimateMb)
-                : string.IsNullOrWhiteSpace(estimateText) ? "not analyzed" : estimateText;
-            if (estimateMb > 0 && meta?.SizePredictionCalibration?.EstimateModelId == "GenericBppV1")
-                estimate = "~" + estimate + " (low confidence)";
-            else if (estimateMb > 0 && meta?.AdaptiveQualitySelectionPending == true && meta.EmpiricalPreview is null)
-                estimate += " (provisional)";
-            if (estimateMb > 0 && meta?.EmpiricalPreview is { LikelyDisposition: AdaptiveSelectionDisposition.Skipped } skipped)
-                estimate += $" at {skipped.Mechanism.ToString().ToUpperInvariant()}{skipped.DisplayQuality} · likely skip";
-            SetQueueWorkspaceCellValue(row.Cells["colSourceEstimate"], $"{source} → {estimate}");
-
-            string sizeTooltip = $"Source size: {source}{Environment.NewLine}Estimated output: {estimate}";
-            string existingEstimateTooltip = row.Cells["colEstimatedSize"].ToolTipText;
-            if (!string.IsNullOrWhiteSpace(existingEstimateTooltip))
-                sizeTooltip += Environment.NewLine + existingEstimateTooltip;
-            SetQueueWorkspaceCellTooltip(row.Cells["colSourceEstimate"], sizeTooltip);
+                : string.Equals(
+                    estimateText,
+                    AdaptiveStorageSavingsPolicy.PendingEstimate,
+                    StringComparison.Ordinal)
+                    ? "Estimating…"
+                    : estimateText.Contains("Metadata unavailable", StringComparison.OrdinalIgnoreCase)
+                        ? "Unavailable"
+                        : string.IsNullOrWhiteSpace(estimateText) ? "—" : estimateText;
+            SetQueueWorkspaceCellValue(row.Cells["colSourceEstimate"], estimate);
+            SetQueueWorkspaceCellTooltip(
+                row.Cells["colSourceEstimate"],
+                estimateMb > 0
+                    ? BuildQueueEstimateTooltip(meta, sourceMb, estimateMb)
+                    : estimate.Contains("skip", StringComparison.OrdinalIgnoreCase)
+                        ? estimate
+                        : "Estimated output is not available yet.");
+            SetQueueWorkspaceCellTooltip(
+                row.Cells["colEstimatedSize"],
+                estimateMb > 0
+                    ? BuildQueueEstimateTooltip(meta, sourceMb, estimateMb)
+                    : estimate.Contains("skip", StringComparison.OrdinalIgnoreCase)
+                        ? estimate
+                        : "Estimated output is not available yet.");
 
             (string planText, string planTooltip) = GetQueueWorkspacePlannedOutput(row, meta);
             SetQueueWorkspaceCellValue(row.Cells["colPlannedOutput"], planText);
@@ -1022,7 +1022,7 @@ namespace MediaFlux
 
             if (meta?.EncodeRecommendation != null || meta?.IntelligencePlan?.Recommendation != null)
             {
-                string recommendationTooltip = GetQueueAnalysisPresentation(row, meta).BuildTooltip();
+                string recommendationTooltip = GetQueueAnalysisPresentation(row, meta).BuildQueueTooltip();
                 SetQueueWorkspaceCellTooltip(row.Cells["colEncodeRecommendation"], recommendationTooltip);
             }
         }

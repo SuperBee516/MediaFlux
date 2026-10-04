@@ -188,7 +188,7 @@ public sealed class QueueWorkspaceUiTests
                 Assert.Equal("File", queue.Columns["colName"].HeaderText);
                 Assert.Equal("Recommendation", queue.Columns["colEncodeRecommendation"].HeaderText);
                 Assert.Equal("Planned Output", queue.Columns["colPlannedOutput"].HeaderText);
-                Assert.Equal("Source Size → Estimate", queue.Columns["colSourceEstimate"].HeaderText);
+                Assert.Equal("Estimated Output", queue.Columns["colSourceEstimate"].HeaderText);
                 Assert.True(queue.Columns["colProgress"].Visible);
                 Assert.True(queue.Columns["colETA"].Visible);
                 Assert.False(queue.Columns["colSize"].Visible);

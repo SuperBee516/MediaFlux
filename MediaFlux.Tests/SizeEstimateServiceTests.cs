@@ -296,7 +296,7 @@ public sealed class SizeEstimateServiceTests
     }
 
     [Fact]
-    public void SourceAdaptiveSameCodecPreservesLegitimateLowerTarget()
+    public void SourceAdaptiveSameCodecFloorsLowProjectionAtNinetyPercentOfMeasuredSource()
     {
         const double durationSeconds = 1_800;
         const int videoKbps = 8_000;
@@ -310,8 +310,9 @@ public sealed class SizeEstimateServiceTests
             sourceAdaptiveCeilingEligible: true);
 
         Assert.False(estimate.UsesSourceVideoBitrateCeiling);
-        Assert.False(estimate.UsesSourceVideoBitrateFloor);
-        Assert.True(estimate.TargetVideoBitrateKbps < videoKbps);
+        Assert.True(estimate.UsesSourceVideoBitrateFloor);
+        Assert.Equal(videoKbps * 0.90, estimate.TargetVideoBitrateKbps, precision: 6);
+        Assert.Contains("same-codec 90% source floor applied", estimate.Diagnostic);
     }
 
     [Fact]

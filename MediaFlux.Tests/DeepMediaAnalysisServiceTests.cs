@@ -73,7 +73,7 @@ public sealed class DeepMediaAnalysisServiceTests
     }
 
     [Fact]
-    public void LargeProjectionDisagreementMovesCandidateToReview()
+    public void LargeProjectionDisagreementLowersConfidenceWithoutCreatingReview()
     {
         var baseline = new SmartEncodeRecommendation
         {
@@ -97,11 +97,12 @@ public sealed class DeepMediaAnalysisServiceTests
                 SmartEncodeContentHint.Auto,
                 intendedOutputMb: 500);
 
-        Assert.Equal(SmartEncodeRecommendationKind.Review, refined.Kind);
+        Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate, refined.Kind);
         Assert.Equal(SmartEncodeConfidence.Medium, refined.Confidence);
         Assert.Contains(
             refined.Reasons,
-            reason => reason.Contains("80%", StringComparison.OrdinalIgnoreCase));
+            reason => reason.Contains("80%", StringComparison.OrdinalIgnoreCase) &&
+                      reason.Contains("estimate disagreement lowers confidence", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

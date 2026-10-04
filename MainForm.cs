@@ -2638,13 +2638,13 @@ namespace MediaFlux
             {
                 double projectedMb = meta.LibraryPolicyIntent.ProjectedOutputBytes.Value / (1024d * 1024d);
                 _estimatedSizeMap[path] = projectedMb;
-                row.Cells["colEstimatedSize"].Value = $"{FormatSize(projectedMb)} (policy projection)";
+                row.Cells["colEstimatedSize"].Value = FormatSize(projectedMb);
             }
             else if (meta.CustomTargetMb.HasValue && meta.CustomTargetMb.Value > 0)
             {
                 double customMb = meta.CustomTargetMb.Value;
                 _estimatedSizeMap[path] = customMb;
-                row.Cells["colEstimatedSize"].Value = $"{FormatSize(customMb)} (custom)";
+                row.Cells["colEstimatedSize"].Value = FormatSize(customMb);
             }
             else if (!string.IsNullOrWhiteSpace(meta.CustomCompressionProfile))
             {
@@ -2669,14 +2669,14 @@ namespace MediaFlux
                 if (estMb > 0)
                 {
                     _estimatedSizeMap[path] = estMb;
-                    row.Cells["colEstimatedSize"].Value = $"{FormatSize(estMb)} (custom)";
+                    row.Cells["colEstimatedSize"].Value = FormatSize(estMb);
                 }
                 else
                 {
                     _estimatedSizeMap.Remove(path);
-                    row.Cells["colEstimatedSize"].Value = "Metadata unavailable (custom profile)";
+                    row.Cells["colEstimatedSize"].Value = "Unavailable";
                     row.Cells["colEstimatedSize"].ToolTipText =
-                        "Required media metadata could not be determined. MediaFlux will not substitute a shared or fixed estimate.";
+                        "Estimated output is not available yet.";
                 }
             }
 
@@ -4175,9 +4175,14 @@ namespace MediaFlux
 
         private void DgvEncodeQueue_SortCompare(object? sender, DataGridViewSortCompareEventArgs e)
         {
-            if (e.Column.Name is "colSize" or "colSourceEstimate")
+            if (e.Column.Name == "colSize")
             {
                 e.SortResult = CompareQueueSourceSizeRows(e.RowIndex1, e.RowIndex2);
+                e.Handled = true;
+            }
+            else if (e.Column.Name == "colSourceEstimate")
+            {
+                e.SortResult = CompareQueueEstimatedOutputRows(e.RowIndex1, e.RowIndex2);
                 e.Handled = true;
             }
             else if (e.Column.Name == "colEstimatedSize")
@@ -4216,6 +4221,52 @@ namespace MediaFlux
             return pathComparison != 0
                 ? pathComparison
                 : first.Sequence.CompareTo(second.Sequence);
+        }
+
+        private int CompareQueueEstimatedOutputRows(int firstRowIndex, int secondRowIndex)
+        {
+            (double? OutputMb, string Path, long Sequence) first = GetQueueEstimatedOutputSortKey(firstRowIndex);
+            (double? OutputMb, string Path, long Sequence) second = GetQueueEstimatedOutputSortKey(secondRowIndex);
+            bool firstKnown = first.OutputMb is > 0;
+            bool secondKnown = second.OutputMb is > 0;
+            if (firstKnown != secondKnown)
+                return firstKnown ? 1 : -1;
+
+            if (firstKnown)
+            {
+                int sizeComparison = first.OutputMb!.Value.CompareTo(second.OutputMb!.Value);
+                if (sizeComparison != 0)
+                    return sizeComparison;
+            }
+
+            int pathComparison = StringComparer.OrdinalIgnoreCase.Compare(first.Path, second.Path);
+            return pathComparison != 0
+                ? pathComparison
+                : first.Sequence.CompareTo(second.Sequence);
+        }
+
+        private (double? OutputMb, string Path, long Sequence) GetQueueEstimatedOutputSortKey(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= dgvEncodeQueue.Rows.Count)
+                return (null, string.Empty, rowIndex);
+
+            DataGridViewRow row = dgvEncodeQueue.Rows[rowIndex];
+            RowMeta? meta = row.Tag as RowMeta;
+            string path = meta?.Path ?? Convert.ToString(row.Tag) ?? string.Empty;
+            double? outputMb = null;
+            if (!string.IsNullOrWhiteSpace(path) &&
+                _estimatedSizeMap.TryGetValue(path, out double estimateMb) && estimateMb > 0)
+            {
+                outputMb = estimateMb;
+            }
+            else
+            {
+                double parsed = ParseSizeToMb(row.Cells["colSourceEstimate"].Value?.ToString());
+                if (parsed > 0)
+                    outputMb = parsed;
+            }
+
+            return (outputMb, path, meta?.QueueSequence ?? rowIndex);
         }
 
         private (long? SizeBytes, string Path, long Sequence) GetQueueSourceSizeSortKey(int rowIndex)

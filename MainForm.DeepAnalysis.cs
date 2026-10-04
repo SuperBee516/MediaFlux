@@ -311,23 +311,12 @@ namespace MediaFlux
             double sourceMb = meta.SrcMb > 0
                 ? meta.SrcMb
                 : new FileInfo(meta.Path).Length / (1024d * 1024d);
-            row.Cells["colEstimatedSize"].Value =
-                $"{FormatSize(calibratedMb)}  {PercentReduction(sourceMb, calibratedMb)} (calibrated)";
+            row.Cells["colEstimatedSize"].Value = FormatSize(calibratedMb);
             row.Cells["colEstimatedSize"].Tag =
                 new Tuple<double, double>(sourceMb, calibratedMb);
 
-            string range = result.ProjectedOutputLowerMb is > 0 &&
-                           result.ProjectedOutputUpperMb is > 0
-                ? $" Expected range: {FormatSize(result.ProjectedOutputLowerMb.Value)}–" +
-                  $"{FormatSize(result.ProjectedOutputUpperMb.Value)}."
-                : string.Empty;
-            string comparison = metadataEstimateMb > 0
-                ? $" Fast metadata estimate: {FormatSize(metadataEstimateMb)}."
-                : string.Empty;
             row.Cells["colEstimatedSize"].ToolTipText =
-                $"Calibrated from {result.ProjectionSampleCount} representative quality-mode " +
-                $"sample(s) using the selected encoder settings ({result.ProjectionConfidence} confidence)." +
-                range + comparison;
+                BuildQueueEstimateTooltip(meta, sourceMb, calibratedMb);
             meta.EstimateDiagnostic =
                 $"Calibrated sample estimate: output={calibratedMb:0.##} MB, " +
                 $"range={result.ProjectedOutputLowerMb:0.##}–{result.ProjectedOutputUpperMb:0.##} MB, " +

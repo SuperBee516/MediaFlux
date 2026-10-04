@@ -10,7 +10,7 @@ namespace MediaFlux.Tests;
 public sealed class QueueSizeSortingUiTests
 {
     [Fact]
-    public void SourceSizeColumnSortsByBytesAndKeepsUnknownsDeterministic()
+    public void EstimatedOutputColumnSortsByOutputSizeAndKeepsUnknownsDeterministic()
     {
         if (!OperatingSystem.IsWindows())
             return;
@@ -28,11 +28,11 @@ public sealed class QueueSizeSortingUiTests
                 Application.DoEvents();
 
                 DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
-                AddRow(main, queue, "medium.mkv", "1.2 GB", 1_288_490_189);
-                AddRow(main, queue, "unknown-b.mkv", "—", null);
-                AddRow(main, queue, "large.mkv", "2.0 GB", 2_147_483_648);
-                AddRow(main, queue, "small.mkv", "950 MB", 996_147_200);
-                AddRow(main, queue, "unknown-a.mkv", "—", null);
+                AddRow(main, queue, "medium.mkv", "1.2 GB", 1_288_490_189, 1_500);
+                AddRow(main, queue, "unknown-b.mkv", "—", null, 450);
+                AddRow(main, queue, "large.mkv", "2.0 GB", 2_147_483_648, 1_900);
+                AddRow(main, queue, "small.mkv", "950 MB", 996_147_200, 700);
+                AddRow(main, queue, "unknown-a.mkv", "—", null, null);
 
                 DataGridViewColumn sourceSize = queue.Columns["colSourceEstimate"];
                 Assert.Equal(DataGridViewColumnSortMode.Automatic, sourceSize.SortMode);
@@ -72,7 +72,13 @@ public sealed class QueueSizeSortingUiTests
             throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
-    private static void AddRow(MainForm main, DataGridView queue, string name, string sizeText, long? sizeBytes)
+    private static void AddRow(
+        MainForm main,
+        DataGridView queue,
+        string name,
+        string sizeText,
+        long? sizeBytes,
+        double? estimatedMb)
     {
         int index = queue.Rows.Add();
         DataGridViewRow row = queue.Rows[index];
@@ -83,8 +89,10 @@ public sealed class QueueSizeSortingUiTests
         meta.GetType().GetField("SourceSizeBytes", BindingFlags.Instance | BindingFlags.Public)!.SetValue(meta, sizeBytes);
         row.Cells["colName"].Value = name;
         row.Cells["colSize"].Value = sizeText;
-        row.Cells["colSourceEstimate"].Value = $"{sizeText} → estimate";
+        row.Cells["colSourceEstimate"].Value = estimatedMb is > 0 ? $"{estimatedMb:0} MB" : "—";
         row.Cells["colStatus"].Value = "Queued";
+        if (estimatedMb is > 0)
+            Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path] = estimatedMb.Value;
     }
 
     private static string[] DisplayNames(DataGridView queue) => queue.Rows

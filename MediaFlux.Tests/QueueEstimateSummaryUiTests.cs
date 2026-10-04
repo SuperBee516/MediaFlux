@@ -296,19 +296,22 @@ public sealed class QueueEstimateSummaryUiTests
             Invoke(main, "ApplySmartEstimateResultsBatch");
             Invoke(main, "RefreshQueueWorkspaceRow", row);
             string estimate = row.Cells["colEstimatedSize"].Value!.ToString()!;
-            string combined = row.Cells["colSourceEstimate"].Value!.ToString()!;
+            string queueEstimate = row.Cells["colSourceEstimate"].Value!.ToString()!;
+            Assert.Equal("6 MB", estimate);
+            Assert.Equal("6 MB", queueEstimate);
+            Assert.Contains("Estimated output: 6 MB", row.Cells["colEstimatedSize"].ToolTipText);
+            Assert.DoesNotContain("confidence", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("calibration", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.OrdinalIgnoreCase);
             if (fallback)
             {
-                Assert.StartsWith("~", estimate);
-                Assert.Contains("low confidence", estimate);
-                Assert.Contains("low confidence", combined);
+                Assert.DoesNotContain("~", estimate);
             }
             else
             {
-                Assert.Contains("likely skip", estimate);
-                Assert.Contains("CRF26", combined);
-                Assert.DoesNotContain("provisional", estimate);
-                Assert.Contains("Empirical projection", row.Cells["colEstimatedSize"].ToolTipText);
+                Assert.DoesNotContain("likely skip", estimate, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("CRF26", queueEstimate);
+                Assert.DoesNotContain("provisional", estimate, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("Empirical projection", row.Cells["colEstimatedSize"].ToolTipText);
                 Assert.Same(preview, Field<EmpiricalPreviewResult?>(meta, "EmpiricalPreview"));
             }
             Assert.False(Field<bool>(meta, "AdaptiveSelectionSkipped"));
@@ -445,8 +448,7 @@ public sealed class QueueEstimateSummaryUiTests
             Invoke(main, "RefreshQueueWorkspaceRow", row);
             if (pending)
             {
-                Assert.Contains("6 MB", row.Cells["colEstimatedSize"].Value!.ToString());
-                Assert.Contains("(provisional)", row.Cells["colEstimatedSize"].Value!.ToString());
+                Assert.Equal("6 MB", row.Cells["colEstimatedSize"].Value);
                 Assert.IsType<Tuple<double, double>>(row.Cells["colEstimatedSize"].Tag);
                 Assert.Equal(6d, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
                 Assert.Equal(6d, Field<double>(main, "_queueTotalEstimatedMb"));
@@ -455,25 +457,24 @@ public sealed class QueueEstimateSummaryUiTests
                 Assert.Equal(6d, Field<double>(main, "_queueTotalSavingsEstimateOutputMb"));
                 Assert.Equal(1, Field<int>(main, "_queueSavingsEstimateFileCount"));
                 Assert.NotEqual("--", Field<Label>(main, "_summaryTotalEstimatedSavedValue").Text);
-                Assert.Contains("12 MB → 6 MB", row.Cells["colSourceEstimate"].Value!.ToString());
-                Assert.Contains("(provisional)", row.Cells["colSourceEstimate"].Value!.ToString());
+                Assert.Equal("6 MB", row.Cells["colSourceEstimate"].Value);
                 Assert.DoesNotContain(AdaptiveStorageSavingsPolicy.PendingEstimate, row.Cells["colSourceEstimate"].Value!.ToString());
-                Assert.Contains("Provisional output-size estimate", row.Cells["colEstimatedSize"].ToolTipText);
-                Assert.Contains("low confidence", row.Cells["colEstimatedSize"].ToolTipText);
+                Assert.Contains("Estimated output: 6 MB", row.Cells["colEstimatedSize"].ToolTipText);
+                Assert.DoesNotContain("confidence", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("Provisional", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.OrdinalIgnoreCase);
                 Assert.True(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
                 Assert.Null(Field<object?>(meta, "SizePredictionCalibration"));
                 Assert.Contains("Provisional output-size estimate", Field<string>(meta, "EstimateDiagnostic"));
                 Assert.Null(Field<SmartEncodeRecommendation?>(meta, "EncodeRecommendation"));
                 Assert.True(Field<bool>(meta, "RecommendationPending"));
-                Assert.Equal("Adaptive pending", row.Cells["colEncodeRecommendation"].Value);
-                Assert.Contains("final Source Adaptive quality decision", row.Cells["colEncodeRecommendation"].ToolTipText);
-                Assert.Equal("Adaptive pending", Invoke(main, "GetQueueWorkspaceRecommendationText", row));
-                Assert.False((bool)Invoke(main, "IsSmartEncodeCandidate", row)!);
-                Assert.True((bool)Invoke(main, "QueueWorkspaceRecommendationNeedsAttention", meta)!);
+                Assert.Equal("—", row.Cells["colEncodeRecommendation"].Value);
+                Assert.Equal(string.Empty, row.Cells["colEncodeRecommendation"].ToolTipText);
+                Assert.Equal("—", Invoke(main, "GetQueueWorkspaceRecommendationText", row));
+                Assert.False((bool)Invoke(main, "QueueWorkspaceRecommendationNeedsAttention", meta)!);
                 Assert.Equal("None", Invoke(main, "GetQueueWorkspaceRecommendationFilter", meta)?.ToString());
                 Invoke(main, "RefreshQueueWorkspacePresentation");
-                Assert.Equal("0", Field<Label>(main, "_queueWorkspaceReadyValue").Text);
-                Assert.Equal("1", Field<Label>(main, "_queueWorkspaceAttentionValue").Text);
+                Assert.Equal("1", Field<Label>(main, "_queueWorkspaceReadyValue").Text);
+                Assert.Equal("0", Field<Label>(main, "_queueWorkspaceAttentionValue").Text);
             }
             else
             {
@@ -521,13 +522,12 @@ public sealed class QueueEstimateSummaryUiTests
             Invoke(main, "UpdateSizeTotals", true);
             Invoke(main, "RefreshQueueWorkspaceRow", row);
 
-            Assert.Equal(AdaptiveStorageSavingsPolicy.PendingEstimate, row.Cells["colEstimatedSize"].Value);
+            Assert.Equal("Unavailable", row.Cells["colEstimatedSize"].Value);
             Assert.DoesNotContain(path, Field<Dictionary<string, double>>(main, "_estimatedSizeMap").Keys);
             Assert.Equal(0d, Field<double>(main, "_queueTotalEstimatedMb"));
             Assert.True(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
-            Assert.Contains("No numeric output-size estimate is available yet", row.Cells["colEstimatedSize"].ToolTipText);
-            Assert.Contains("12 MB →", row.Cells["colSourceEstimate"].Value!.ToString());
-            Assert.Contains(AdaptiveStorageSavingsPolicy.PendingEstimate, row.Cells["colSourceEstimate"].Value!.ToString());
+            Assert.Equal("Estimated output is not available yet.", row.Cells["colEstimatedSize"].ToolTipText);
+            Assert.Equal("Unavailable", row.Cells["colSourceEstimate"].Value);
             Assert.False(Field<bool>(meta, "RecommendationPending"));
             Assert.Equal(SmartEncodeRecommendationKind.Unavailable,
                 Field<SmartEncodeRecommendation>(meta, "EncodeRecommendation").Kind);
@@ -584,9 +584,9 @@ public sealed class QueueEstimateSummaryUiTests
             SetField(meta, "SizePredictionCalibration", calibration);
             SetField(meta, "AdaptiveQualitySelectionPending", true);
             SetField(meta, "RecommendationPending", true);
-            row.Cells["colEstimatedSize"].Value = "6 MB  (-50.0%)";
+            row.Cells["colEstimatedSize"].Value = "6 MB";
             row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(12, 6);
-            row.Cells["colEncodeRecommendation"].Value = "Adaptive pending";
+            row.Cells["colEncodeRecommendation"].Value = "—";
             Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path] = 6d;
             SetField(main, "_queueTotalEstimatedMb", 6d);
             EncodingPlan plan = BuildAdaptivePlan(AdaptiveSelectionDisposition.Selected, 26);
@@ -594,7 +594,7 @@ public sealed class QueueEstimateSummaryUiTests
             Invoke(main, "ApplyAdaptivePlanSnapshotPresentation", row, meta, plan);
             Invoke(main, "RefreshQueueWorkspaceRow", row);
 
-            Assert.Equal("6 MB  (-50.0%)", row.Cells["colEstimatedSize"].Value);
+            Assert.Equal("6 MB", row.Cells["colEstimatedSize"].Value);
             Assert.Equal(6d, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
             Assert.Equal(6d, Field<double>(main, "_queueTotalEstimatedMb"));
             Assert.False(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
@@ -606,8 +606,9 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.Null(Field<object?>(meta, "SizePredictionCalibration"));
             Assert.Same(plan, Field<EncodingPlan?>(meta, "IntelligencePlan"));
             Assert.Equal(26, Field<EncodingPlan?>(meta, "IntelligencePlan")!.AdaptiveSelection!.SelectedQuality);
-            Assert.Contains("selected CQ 26", row.Cells["colEstimatedSize"].ToolTipText);
-            Assert.Contains("12 MB → 6 MB", row.Cells["colSourceEstimate"].Value!.ToString());
+            Assert.Contains("Quality: Balanced", row.Cells["colEstimatedSize"].ToolTipText);
+            Assert.DoesNotContain("CQ 26", row.Cells["colEstimatedSize"].ToolTipText);
+            Assert.Equal("6 MB", row.Cells["colSourceEstimate"].Value);
         });
     }
 
@@ -618,7 +619,7 @@ public sealed class QueueEstimateSummaryUiTests
         {
             (DataGridViewRow row, object meta, string path) = AddQueueRow(main, "MediaFlux.adaptive-plan-skipped");
             SetField(meta, "AdaptiveQualitySelectionPending", true);
-            row.Cells["colEstimatedSize"].Value = "6 MB  (-50.0%)";
+            row.Cells["colEstimatedSize"].Value = "6 MB";
             row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(12, 6);
             Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path] = 6d;
             Invoke(main, "UpdateSizeTotals", true);
@@ -634,7 +635,7 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.Equal(0, Field<int>(main, "_queueEstimateEligibleFileCount"));
             Assert.True(Field<bool>(meta, "AdaptiveSelectionSkipped"));
             Assert.False(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
-            Assert.Contains("12 MB → Skipped", row.Cells["colSourceEstimate"].Value!.ToString());
+            Assert.Equal("Skipped — insufficient savings at acceptable quality", row.Cells["colSourceEstimate"].Value);
         });
     }
 

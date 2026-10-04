@@ -28,19 +28,48 @@ public sealed class QueueAnalysisEncodingPlanUiTests
 
                 Type formType = typeof(MainForm);
                 DataGridView queue = Field<DataGridView>(formType, main, "dgvEncodeQueue");
-                DataGridViewRow analyzed = queue.Rows[queue.Rows.Add()];
-                DataGridViewRow notAnalyzed = queue.Rows[queue.Rows.Add()];
+                FieldInfo suppressRowEvents = formType.GetField("_suppressRowEvents", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new MissingFieldException("_suppressRowEvents");
+                suppressRowEvents.SetValue(main, true);
+                DataGridViewRow analyzed;
+                DataGridViewRow notAnalyzed;
+                try
+                {
+                    analyzed = queue.Rows[queue.Rows.Add()];
+                    notAnalyzed = queue.Rows[queue.Rows.Add()];
+                }
+                finally
+                {
+                    suppressRowEvents.SetValue(main, false);
+                }
                 SetMeta(formType, main, analyzed, Recommendation(), 1_000);
+                object analyzedMeta = formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(main, [analyzed])!;
+                analyzedMeta.GetType().GetField("QualityPreview", BindingFlags.Instance | BindingFlags.Public)!
+                    .SetValue(analyzedMeta, new EncodingQualityResolution(
+                        EncodingQualityIntent.Automatic(QualityTarget.HighQuality),
+                        22,
+                        EncoderQualityMechanism.Cq,
+                        EncodingQualityAssessment.TypicalSource,
+                        false,
+                        [new(EncodingQualityReasonCode.QualityTargetSelected, "High Quality selected.")]));
                 SetMeta(formType, main, notAnalyzed, null, 0);
                 analyzed.Selected = true;
 
+                QueueAnalysisPresentation pendingPreflightPresentation = Assert.IsType<QueueAnalysisPresentation>(
+                    Invoke(formType, main, "GetQueueAnalysisPresentation", analyzed, analyzedMeta));
+                Assert.NotNull(pendingPreflightPresentation.Quality);
+                Assert.Contains("Quality preference", pendingPreflightPresentation.BuildTooltip());
                 Invoke(formType, main, "ScheduleEncodingPlanRefresh");
+                Assert.Contains("Quality preference", (string?)formType.GetField("_renderedQueueAnalysisTooltip", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main));
                 TableLayoutPanel analysis = Field<TableLayoutPanel>(formType, main, "_queueAnalysisTable");
                 Label analysisStatus = Field<Label>(formType, main, "_queueAnalysisStatusLabel");
                 Label planStatus = Field<Label>(formType, main, "_encodingPlanStatusLabel");
                 Assert.Empty(analysisStatus.Text);
                 Assert.Contains("RECOMMENDATION", ControlText(analysis));
                 Assert.Contains("Strong candidate", ControlText(analysis));
+                Assert.Contains("QUALITY PREFERENCE", ControlText(analysis));
+                Assert.Contains("EFFECTIVE QUALITY", ControlText(analysis));
                 Assert.Equal("Encoding Intelligence will appear when the existing encode preflight publishes its plan.", planStatus.Text);
 
                 Control analysisControl = analysis.Controls[0];
@@ -50,6 +79,9 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 SetMeta(formType, main, notAnalyzed, Recommendation(), 1_000, "analyzed.mkv");
                 object reboundMeta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
                     ?? throw new MissingMethodException("EnsureRowMeta")).Invoke(main, [notAnalyzed])!;
+                reboundMeta.GetType().GetField("QualityPreview", BindingFlags.Instance | BindingFlags.Public)!
+                    .SetValue(reboundMeta, analyzedMeta.GetType().GetField("QualityPreview", BindingFlags.Instance | BindingFlags.Public)!
+                        .GetValue(analyzedMeta));
                 Invoke(formType, main, "RenderQueueAnalysis", notAnalyzed, reboundMeta, null);
                 Assert.Same(analysisControl, analysis.Controls[0]);
 
@@ -62,7 +94,9 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 object precedenceMeta = formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)!
                     .Invoke(main, [analyzed])!;
                 Assert.Equal("Review", Invoke(formType, main, "GetQueueWorkspaceRecommendationText", analyzed));
-                Assert.False((bool)Invoke(formType, main, "IsSmartEncodeCandidate", analyzed)!);
+                analyzed.Selected = true;
+                Invoke(formType, main, "UpdateQueueWorkspaceActionState");
+                Assert.True(Field<Button>(formType, main, "_btnStartSelectedQueue").Enabled);
                 QueueAnalysisPresentation frozenPresentation = Assert.IsType<QueueAnalysisPresentation>(
                     Invoke(formType, main, "GetQueueAnalysisPresentation", analyzed, precedenceMeta));
                 Assert.Equal("Review", frozenPresentation.Recommendation);
@@ -108,9 +142,9 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 Assert.Same(planControl, plan.Controls[0]);
                 Assert.Equal(frozenDecisionUtc, frozenPlan.SizePredictionCalibration?.DecisionUtc);
 
-                object analyzedMeta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
+                object calibrationMeta = (formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)
                     ?? throw new MissingMethodException("EnsureRowMeta")).Invoke(main, [analyzed])!;
-                FieldInfo calibrationField = analyzedMeta.GetType().GetField("SizePredictionCalibration", BindingFlags.Instance | BindingFlags.Public)
+                FieldInfo calibrationField = calibrationMeta.GetType().GetField("SizePredictionCalibration", BindingFlags.Instance | BindingFlags.Public)
                     ?? throw new MissingFieldException("SizePredictionCalibration");
                 var calibration = EncodingSizePredictionCalibration.Unavailable(100, "No eligible historical cohort.",
                     "PredictionCalibrationPolicyV1", DateTime.UtcNow);
@@ -124,7 +158,7 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 Assert.Same(calibrationControl, analysis.Controls.Cast<Control>().First(control => ControlText(control).Contains("SIZE CALIBRATION", StringComparison.Ordinal)));
                 Assert.Equal(frozenDecisionUtc, frozenPlan.SizePredictionCalibration?.DecisionUtc);
 
-                calibrationField.SetValue(analyzedMeta, calibration with
+                calibrationField.SetValue(calibrationMeta, calibration with
                 {
                     EffectivenessState = EncodingCalibrationEffectivenessState.Harmful,
                     LearningStrength = .75
@@ -155,6 +189,10 @@ public sealed class QueueAnalysisEncodingPlanUiTests
                 Assert.NotSame(planControl, plan.Controls[0]);
 
                 SetMeta(formType, main, notAnalyzed, null, 0);
+                object emptyMeta = formType.GetMethod("EnsureRowMeta", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(main, [notAnalyzed])!;
+                emptyMeta.GetType().GetField("QualityPreview", BindingFlags.Instance | BindingFlags.Public)!
+                    .SetValue(emptyMeta, null);
                 analyzed.Selected = false;
                 notAnalyzed.Selected = true;
                 Invoke(formType, main, "ScheduleEncodingPlanRefresh");

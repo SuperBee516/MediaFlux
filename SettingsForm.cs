@@ -40,7 +40,6 @@ namespace MediaFlux
         private CheckBox chkSmartRecommendations = null!;
         private CheckBox chkHistoricalSizeCalibration = null!;
         private NumericUpDown nudMinimumExpectedSavings = null!;
-        private CheckBox chkWarnBeforeEncodingRecommendations = null!;
         private StorageSavingsOptions _storageSavingsOptions = new();
         private DuplicateKeeperPreferences _duplicateKeeperPreferences = new();
         private readonly ToolTip _settingsToolTip = new();
@@ -371,19 +370,11 @@ namespace MediaFlux
                 Location = new Point(306, 52)
             };
 
-            chkWarnBeforeEncodingRecommendations = new CheckBox
-            {
-                Text = "Warn before encoding Skip, Review, or unavailable files",
-                AutoSize = true,
-                Location = new Point(15, 78),
-                Checked = config.WarnBeforeEncodingSkippedOrReviewItems
-            };
-
             chkHistoricalSizeCalibration = new CheckBox
             {
                 Text = "Use historical results to improve size predictions",
                 AutoSize = true,
-                Location = new Point(15, 105),
+                Location = new Point(15, 78),
                 Checked = config.UseHistoricalSizePredictionCalibration
             };
 
@@ -392,8 +383,6 @@ namespace MediaFlux
                 nudMinimumExpectedSavings.Enabled = chkSmartRecommendations.Checked;
                 minimumLabel.Enabled = chkSmartRecommendations.Checked;
                 percentLabel.Enabled = chkSmartRecommendations.Checked;
-                chkWarnBeforeEncodingRecommendations.Enabled =
-                    chkSmartRecommendations.Checked;
             };
 
             grpSmartRecommendations.Controls.Add(chkSmartRecommendations);
@@ -401,15 +390,12 @@ namespace MediaFlux
             grpSmartRecommendations.Controls.Add(minimumLabel);
             grpSmartRecommendations.Controls.Add(nudMinimumExpectedSavings);
             grpSmartRecommendations.Controls.Add(percentLabel);
-            grpSmartRecommendations.Controls.Add(chkWarnBeforeEncodingRecommendations);
             grpSmartRecommendations.Controls.Add(chkHistoricalSizeCalibration);
             Controls.Add(grpSmartRecommendations);
 
             nudMinimumExpectedSavings.Enabled = chkSmartRecommendations.Checked;
             minimumLabel.Enabled = chkSmartRecommendations.Checked;
             percentLabel.Enabled = chkSmartRecommendations.Checked;
-            chkWarnBeforeEncodingRecommendations.Enabled =
-                chkSmartRecommendations.Checked;
             UpdateStorageSavingsButton();
         }
 
@@ -1069,8 +1055,6 @@ namespace MediaFlux
             Config.UseHistoricalSizePredictionCalibration = chkHistoricalSizeCalibration.Checked;
             Config.MinimumExpectedSavingsPercent =
                 (double)nudMinimumExpectedSavings.Value;
-            Config.WarnBeforeEncodingSkippedOrReviewItems =
-                chkWarnBeforeEncodingRecommendations.Checked;
             Config.StorageSavings =
                 _storageSavingsOptions.CloneNormalized();
             Config.FindDuplicatesOnImport = chkFindDuplicatesOnImport.Checked;

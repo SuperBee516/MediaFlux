@@ -21,6 +21,74 @@ namespace MediaFlux
                 ? ProvisionalAdaptiveEstimateTooltip
                 : ProvisionalAdaptiveEstimateTooltip + Environment.NewLine + diagnostic;
 
+        private string BuildQueueEstimateTooltip(
+            RowMeta? meta,
+            double sourceMb,
+            double? estimatedOutputMb,
+            EncodingQualityResolution? quality = null)
+        {
+            quality ??= meta?.IntelligencePlan?.Quality ?? meta?.QualityPreview;
+            string? qualitySummary = null;
+            if (meta?.IntelligencePlan?.AdaptiveSelection is { Disposition: AdaptiveSelectionDisposition.Selected } adaptiveSelection)
+            {
+                qualitySummary = EncodingQualityPresentation.QualityTargetDisplayName(adaptiveSelection.Target);
+            }
+            else if (quality is { IsSupersededByTargetSize: false })
+            {
+                string? target = quality.Intent.Target is { } qualityTarget
+                    ? EncodingQualityPresentation.QualityTargetDisplayName(qualityTarget)
+                    : null;
+                string? effective = quality.EffectiveQuality is { } value
+                    ? $"{EncodingQualityPresentation.Mechanism(quality.Mechanism)} {value}"
+                    : null;
+                qualitySummary = target is null
+                    ? effective
+                    : target;
+            }
+
+            string? encoderSummary = null;
+            try
+            {
+                EncodingPlanVideo? plannedVideo = meta?.IntelligencePlan?.Video;
+                VideoEncoderSelection selection = plannedVideo is null
+                    ? GetSelectedVideoEncoderSelection()
+                    : new VideoEncoderSelection(
+                        VideoEncoderCompatibility.ResolveEncoderId(
+                            plannedVideo.Encoder,
+                            VideoEncoderCompatibility.ParseCodecFamily(plannedVideo.Codec)),
+                        VideoEncoderCompatibility.ParseCodecFamily(plannedVideo.Codec),
+                        plannedVideo.Codec);
+                string encoderName = selection.EncoderId switch
+                {
+                    VideoEncoderIds.Nvenc => "NVENC",
+                    VideoEncoderIds.Qsv => "Intel QSV",
+                    VideoEncoderIds.Libx264 or VideoEncoderIds.Libx265 or VideoEncoderIds.SvtAv1 or
+                        VideoEncoderIds.LegacySoftware => "Software",
+                    _ => "Encoder"
+                };
+                string codecName = selection.CodecFamily switch
+                {
+                    VideoCodecFamily.H264 => "H.264",
+                    VideoCodecFamily.Hevc => "HEVC",
+                    VideoCodecFamily.Av1 => "AV1",
+                    _ => string.Empty
+                };
+                encoderSummary = string.IsNullOrEmpty(codecName)
+                    ? encoderName
+                    : $"{encoderName} {codecName}";
+            }
+            catch
+            {
+                // Tooltip details are optional and must not affect estimation.
+            }
+
+            return QueueAnalysisPresentation.BuildEstimatedOutputTooltip(
+                sourceMb > 0 ? sourceMb : null,
+                estimatedOutputMb,
+                qualitySummary,
+                encoderSummary);
+        }
+
         private (int w, int h) ProbeResolutionPixels(string file)
         {
             return _mediaInfoService.GetResolutionPixels(file);
@@ -123,38 +191,22 @@ namespace MediaFlux
                                     _config.VideoRestoration);
                             double estMb = item.EstimatedMb;
                             bool hasEstimate = srcMb > 0 && estMb > 0;
-                            string customSuffix = item.IsCustom ? " (custom)" : string.Empty;
                             bool empirical = item.EmpiricalPreview is not null;
                             bool fallback = item.SizeCalibration?.EstimateModelId == "GenericBppV1";
-                            string forecast = item.EmpiricalPreview is { LikelyDisposition: AdaptiveSelectionDisposition.Skipped } skipped
-                                ? $" at {skipped.Mechanism.ToString().ToUpperInvariant()}{skipped.DisplayQuality} · likely skip" : "";
 
                             row.Cells["colEstimatedSize"].Value = hasEstimate
-                                ? (fallback ? "~" : "") + $"{FormatSize(estMb)}  {PercentReduction(srcMb, estMb)}{customSuffix}" +
-                                    (fallback ? " (low confidence)" : adaptivePending && !empirical ? " (provisional)" : "") + forecast
-                                : adaptivePending ? AdaptiveStorageSavingsPolicy.PendingEstimate : item.UnavailableReason ?? "Metadata unavailable";
+                                ? FormatSize(estMb)
+                                : adaptivePending && string.IsNullOrWhiteSpace(item.UnavailableReason)
+                                    ? "Estimating…"
+                                    : "Unavailable";
                             if (srcMb > 0)
                                 row.Cells["colSize"].Value = FormatSize(srcMb);
                             row.Cells["colEstimatedSize"].Tag = hasEstimate
                                 ? new Tuple<double, double>(srcMb, estMb)
                                 : null;
-                            row.Cells["colEstimatedSize"].ToolTipText = empirical || fallback
-                                ? item.EstimateDiagnostic
-                                : adaptivePending
-                                ? hasEstimate
-                                    ? ProvisionalAdaptiveEstimateTooltip
-                                    : $"{AdaptiveStorageSavingsPolicy.PendingEstimate}. No numeric output-size estimate is available yet. {item.UnavailableReason ?? "Required media metadata could not be determined."}"
-                                : hasEstimate
-                                ? item.SizeCalibration?.EstimateModelId == ProductionDirectOutputResult.ModelId
-                                    ? $"Historical Direct estimate from {item.SizeCalibration.EstimateIndependentFamilyCount} independent comparable sources."
-                                    : item.SizeCalibration?.EstimateModelId == "ManualTarget"
-                                        ? "Manual target size selected; the requested output size is configured by the user."
-                                    : item.SizeCalibration is { EstimateModelId: "GenericBppV1", Applied: true }
-                                        ? "Historically calibrated Generic BPP size estimate."
-                                    : SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(item.SizeCalibration) == SmartEncodeConfidence.Low
-                                        ? "Generic BPP size estimate; low-confidence fallback when comparable Direct evidence is unavailable."
-                                        : "Calculated independently from this file's size, duration, resolution, frame rate, bitrate, codec, and current encoding settings."
-                                : "Required media metadata could not be determined. MediaFlux will not substitute a shared or fixed estimate.";
+                            row.Cells["colEstimatedSize"].ToolTipText = hasEstimate
+                                ? BuildQueueEstimateTooltip(resultMeta, srcMb, estMb, item.QualityResolution)
+                                : "Estimated output is not available yet.";
                             if (_queueSourceSizeMap.TryGetValue(item.Path, out var previousSrc))
                                 _queueTotalSourceMb += srcMb - previousSrc;
                             else
@@ -451,22 +503,20 @@ namespace MediaFlux
                     if (estimateMb > 0)
                     {
                         _estimatedSizeMap[path!] = estimateMb;
-                        row.Cells["colEstimatedSize"].Value =
-                            $"{FormatSize(estimateMb)}  {PercentReduction(sourceMb, estimateMb)}" +
-                            (isCustom ? " (custom)" : "");
+                        row.Cells["colEstimatedSize"].Value = FormatSize(estimateMb);
                         row.Cells["colEstimatedSize"].Tag =
                             new Tuple<double, double>(sourceMb, estimateMb);
                     }
                     else
                     {
                         _estimatedSizeMap.Remove(path!);
-                        row.Cells["colEstimatedSize"].Value = "Metadata unavailable";
+                        row.Cells["colEstimatedSize"].Value = "Unavailable";
                         row.Cells["colEstimatedSize"].Tag = null;
                     }
 
-                    row.Cells["colEstimatedSize"].ToolTipText =
-                        "Estimated from the combined DVD title size, duration, resolution, " +
-                        "frame rate, codec, and current encoding settings.";
+                    row.Cells["colEstimatedSize"].ToolTipText = estimateMb > 0
+                        ? BuildQueueEstimateTooltip(meta, sourceMb, estimateMb)
+                        : "Estimated output is not available yet.";
                     SetRecommendationUnavailable(
                         row,
                         "DVD title recommendations remain in the DVD import workflow.");

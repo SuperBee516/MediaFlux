@@ -382,8 +382,9 @@ namespace MediaFlux.Services
 
                 // Source Adaptive is bounded for a straightforward same-codec,
                 // unchanged-resolution lossy re-encode. Increasing bitrate cannot
-                // restore information discarded by the source. A lower model
-                // result remains valid and is intentionally preserved.
+                // restore information discarded by the source, while a projection
+                // far below the measured source bitrate can promise implausible
+                // savings when the deterministic content model underestimates.
                 if (sourceAdaptiveCeilingEligible &&
                     !savings.Enabled &&
                     usedMeasuredVideoBitrate &&
@@ -394,6 +395,12 @@ namespace MediaFlux.Services
                         targetVideoKbps = sourceVideoKbps;
                         usesSourceVideoBitrateCeiling = true;
                         mode += "; same-codec source ceiling applied; increasing bitrate would not recover source quality";
+                    }
+                    else if (targetVideoKbps < sourceVideoKbps * 0.90)
+                    {
+                        targetVideoKbps = sourceVideoKbps * 0.90;
+                        usesSourceVideoBitrateFloor = true;
+                        mode += "; same-codec 90% source floor applied to bound low projections";
                     }
                 }
                 else if (sameEfficientCodecUnchangedResolution &&

@@ -9,19 +9,6 @@ namespace MediaFlux.Tests;
 public sealed class JobManagerLifecycleTests
 {
     [Fact]
-    public void ReviewCancellationKeepsSavedJobReadyAndDoesNotReportCompleted()
-    {
-        (EncodeJobStatus status, string result) = MainForm.ResolveSavedJobRunResult(
-            MainForm.EncodeQueueStartOutcome.ReviewCancelled,
-            failedCount: 0,
-            skippedCount: 0);
-
-        Assert.Equal(EncodeJobStatus.Ready, status);
-        Assert.Equal("Canceled during pre-encode review; no encode run started.", result);
-        Assert.NotEqual("Completed.", result);
-    }
-
-    [Fact]
     public void CompletedQueueWithSkippedFilesRemainsCompleted()
     {
         (EncodeJobStatus status, string result) = MainForm.ResolveSavedJobRunResult(

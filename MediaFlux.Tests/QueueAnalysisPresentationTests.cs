@@ -49,6 +49,51 @@ public sealed class QueueAnalysisPresentationTests
     }
 
     [Fact]
+    public void QueueRecommendationTooltipKeepsInternalConfidenceDetailsOutOfTheGrid()
+    {
+        QueueAnalysisPresentation presentation = QueueAnalysisPresentation.Create(new SmartEncodeRecommendation
+        {
+            Kind = SmartEncodeRecommendationKind.StrongCandidate,
+            Confidence = SmartEncodeConfidence.Low,
+            EstimatedSavingsPercent = 42,
+            EstimatedSavingsMb = 420,
+            PrimaryReason = "The selected settings are expected to produce significant savings.",
+            Reasons = [
+                "The selected settings are expected to produce significant savings.",
+                "Size and savings use a low-confidence Generic BPP fallback estimate."
+            ]
+        });
+
+        string queueTooltip = presentation.BuildQueueTooltip();
+        Assert.Contains("Strong candidate", queueTooltip);
+        Assert.Contains("Estimated savings: 42% (420 MB)", queueTooltip);
+        Assert.DoesNotContain("Confidence:", queueTooltip);
+        Assert.DoesNotContain("low-confidence", queueTooltip, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("low-confidence", presentation.BuildTooltip(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EstimatedOutputTooltipContainsOnlyOperationalSummary()
+    {
+        string tooltip = QueueAnalysisPresentation.BuildEstimatedOutputTooltip(
+            sourceMb: 1_000,
+            estimatedOutputMb: 580,
+            quality: "High",
+            encoder: "NVENC HEVC");
+
+        Assert.Equal(
+            string.Join(Environment.NewLine,
+                "Estimated output: 580 MB",
+                "Estimated savings: 42%",
+                "Quality: High",
+                "Encoder: NVENC HEVC"),
+            tooltip);
+        Assert.DoesNotContain("confidence", tooltip, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("calibration", tooltip, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CQ", tooltip, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void NegativeSavingsUseIncreaseLanguage()
     {
         QueueAnalysisPresentation presentation = QueueAnalysisPresentation.Create(

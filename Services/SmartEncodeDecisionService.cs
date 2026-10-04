@@ -120,22 +120,6 @@ namespace MediaFlux.Services
                     reasons.ToArray());
             }
 
-            if (intent.EstimateConfidenceCeiling == SmartEncodeConfidence.Low &&
-                savingsPercent >= minimumSavings)
-            {
-                const string uncertainSavingsReason =
-                    "Potential savings are shown, but the low-confidence Generic BPP fallback is insufficient to recommend encoding.";
-                reasons.Insert(0, uncertainSavingsReason);
-                return Create(
-                    SmartEncodeRecommendationKind.Review,
-                    ResolveConfidence(source, intent.EstimateConfidenceCeiling),
-                    savingsPercent,
-                    savingsMb,
-                    uncertainSavingsReason,
-                    intent.EstimateConfidenceCeiling,
-                    reasons.ToArray());
-            }
-
             SmartEncodeRecommendationKind kind;
             string primaryReason;
             if (savingsMb <= 0)
@@ -211,14 +195,11 @@ namespace MediaFlux.Services
                 }
                 else
                 {
-                    kind = SmartEncodeRecommendationKind.Review;
                     confidence = SmartEncodeConfidence.Medium;
-                    primaryReason =
-                        "Sample encoding disagrees substantially with the current size estimate.";
-                    reasons.Insert(
-                        0,
+                    reasons.Add(
                         $"Beginning/middle/end samples project {analysis.ProjectedOutputMb.Value:0.#} MB " +
-                        $"instead of {intendedOutputMb:0.#} MB ({differencePercent:0}% difference).");
+                        $"instead of {intendedOutputMb:0.#} MB ({differencePercent:0}% difference); " +
+                        "the estimate disagreement lowers confidence but does not indicate a source issue.");
                 }
 
                 if (analysis.ProjectedOutputLowerMb is > 0 &&

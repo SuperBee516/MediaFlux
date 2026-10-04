@@ -146,6 +146,45 @@ public sealed class QueueAnalysisPresentation
         return string.Join(Environment.NewLine, lines);
     }
 
+    public string BuildQueueTooltip()
+    {
+        if (!IsAvailable)
+            return Status;
+
+        var lines = new List<string>();
+        if (Recommendation != null)
+            lines.Add(Recommendation);
+        if (SavingsLabel != null && SavingsValue != null)
+            lines.Add($"{SavingsLabel}: {SavingsValue}");
+        if (Reasons.Count > 0)
+            lines.Add(Reasons[0]);
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    public static string BuildEstimatedOutputTooltip(
+        double? sourceMb,
+        double? estimatedOutputMb,
+        string? quality,
+        string? encoder)
+    {
+        if (estimatedOutputMb is not > 0)
+            return "Estimated output is not available yet.";
+
+        var lines = new List<string> { $"Estimated output: {FormatSize(estimatedOutputMb.Value)}" };
+        if (sourceMb is > 0)
+        {
+            double savingsPercent = (sourceMb.Value - estimatedOutputMb.Value) / sourceMb.Value * 100d;
+            lines.Add(savingsPercent >= 0
+                ? $"Estimated savings: {savingsPercent:0.#}%"
+                : $"Estimated increase: {Math.Abs(savingsPercent):0.#}%");
+        }
+        if (!string.IsNullOrWhiteSpace(quality))
+            lines.Add($"Quality: {quality.Trim()}");
+        if (!string.IsNullOrWhiteSpace(encoder))
+            lines.Add($"Encoder: {encoder.Trim()}");
+        return string.Join(Environment.NewLine, lines);
+    }
+
     private static string FormatSize(double megabytes) =>
         megabytes >= 1024 ? $"{megabytes / 1024d:0.##} GB" : $"{megabytes:0.#} MB";
 }

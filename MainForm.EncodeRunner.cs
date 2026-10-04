@@ -17,7 +17,6 @@ namespace MediaFlux
         internal enum EncodeQueueStartOutcome
         {
             NotStarted,
-            ReviewCancelled,
             Canceled,
             Completed
         }
@@ -131,26 +130,6 @@ namespace MediaFlux
                         dvdOutputFolder,
                         showMessage: true))
                 {
-                    return EncodeQueueStartOutcome.NotStarted;
-                }
-            }
-
-            RecommendationStartChoice recommendationChoice =
-                ReviewRecommendationsBeforeStart(requestedRows);
-            if (recommendationChoice == RecommendationStartChoice.Cancel)
-                return EncodeQueueStartOutcome.ReviewCancelled;
-            if (recommendationChoice == RecommendationStartChoice.CandidatesOnly)
-            {
-                requestedRows = requestedRows
-                    .Where(row =>
-                        row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true } &&
-                        IsSmartEncodeCandidate(row))
-                    .ToList();
-                requestedAll = false;
-                if (requestedRows.Count == 0)
-                {
-                    ShowStatusInfo(
-                        "No Strong or Moderate candidates remain in the requested queue scope.");
                     return EncodeQueueStartOutcome.NotStarted;
                 }
             }
@@ -890,7 +869,7 @@ namespace MediaFlux
                         meta.SizePredictionCalibration = null;
                         double finalMb = result.FinalOutputSizeBytes.Value / (1024d * 1024);
                         _estimatedSizeMap[meta.Path] = finalMb;
-                        row.Cells["colEstimatedSize"].Value = $"{FormatSize(finalMb)}  {PercentReduction(meta.SrcMb, finalMb)}";
+                        row.Cells["colEstimatedSize"].Value = FormatSize(finalMb);
                         row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(meta.SrcMb, finalMb);
                         row.Cells["colEstimatedSize"].ToolTipText = "Actual validated final output size.";
                         _queueTotalsDirty = true;
@@ -1338,11 +1317,6 @@ namespace MediaFlux
                 $"Attempt {AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber} of {AdaptiveStorageSavingsRetryLimits.MaximumProductionAttempts} is encoding at {BoundedRetryProgressPresentation.QualityLabel(retryQuality)}. The initial adaptive selection remains recorded separately.");
             SetEtaCellColor(row, 0);
             row.Cells["colProgress"].ToolTipText = "Progress restarted for the retry encode.";
-            string retryTooltip = $"Active retry encode is using {BoundedRetryProgressPresentation.QualityLabel(retryQuality)}. The initial adaptive selection remains unchanged in the job evidence.";
-            string estimateTooltip = row.Cells["colEstimatedSize"].ToolTipText ?? string.Empty;
-            row.Cells["colEstimatedSize"].ToolTipText = string.IsNullOrWhiteSpace(estimateTooltip)
-                ? retryTooltip
-                : estimateTooltip + Environment.NewLine + retryTooltip;
             UpdateQueueEstimatedCompletion();
         }
 
@@ -1383,7 +1357,7 @@ namespace MediaFlux
             {
                 estimateCell.Value = "Skipped — insufficient savings at acceptable quality";
                 estimateCell.Tag = null;
-                estimateCell.ToolTipText = selection.Reason;
+                estimateCell.ToolTipText = "Source Adaptive skipped this item; no output size is estimated.";
                 if (!string.IsNullOrWhiteSpace(meta.Path) && _estimatedSizeMap.Remove(meta.Path))
                 {
                     _queueTotalsDirty = true;
@@ -1398,26 +1372,19 @@ namespace MediaFlux
                     AdaptiveStorageSavingsPolicy.PendingEstimate,
                     StringComparison.Ordinal))
             {
-                estimateCell.Value = "Metadata unavailable";
+                estimateCell.Value = "Unavailable";
                 estimateCell.Tag = null;
-                estimateCell.ToolTipText = string.IsNullOrWhiteSpace(meta.EstimateDiagnostic)
-                    ? "No numeric output-size estimate is available."
-                    : meta.EstimateDiagnostic;
+                estimateCell.ToolTipText = "Estimated output is not available yet.";
             }
 
-            if (selection?.Disposition == AdaptiveSelectionDisposition.Selected)
+            if (estimateMb > 0)
             {
-                string mechanism = selection.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF";
-                int quality = selection.SelectedQuality ?? plan.Quality?.EffectiveQuality ?? selection.PreferredQuality;
-                estimateCell.ToolTipText = estimateMb > 0
-                    ? $"Provisional output-size estimate. Source Adaptive selected {mechanism} {quality} after representative sampling; this size was estimated before that selection.{Environment.NewLine}{selection.Reason}"
-                    : $"No numeric output-size estimate is available. Source Adaptive selected {mechanism} {quality} after representative sampling.{Environment.NewLine}{selection.Reason}";
+                estimateCell.Value = FormatSize(estimateMb);
+                estimateCell.ToolTipText = BuildQueueEstimateTooltip(meta, meta.SrcMb, estimateMb);
             }
             else if (estimateMb <= 0 && string.IsNullOrWhiteSpace(Convert.ToString(estimateCell.Value)))
             {
-                estimateCell.ToolTipText = string.IsNullOrWhiteSpace(meta.EstimateDiagnostic)
-                    ? "No numeric output-size estimate is available."
-                    : meta.EstimateDiagnostic;
+                estimateCell.ToolTipText = "Estimated output is not available yet.";
             }
         }
 

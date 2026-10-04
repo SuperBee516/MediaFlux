@@ -36,7 +36,7 @@ public sealed class SmartEncodeDecisionServiceTests
     }
 
     [Fact]
-    public void LowConfidenceGenericFallbackShowsPotentialSavingsAsReview()
+    public void LowConfidenceGenericFallbackKeepsPotentialSavingsAdvisoryWithoutReview()
     {
         EncodingSizePredictionCalibration calibration = GenericFallbackCalibration();
         SmartEncodeConfidence? ceiling =
@@ -45,13 +45,12 @@ public sealed class SmartEncodeDecisionServiceTests
             DefaultSource(),
             DefaultIntent(estimatedOutputMb: 350, estimateConfidenceCeiling: ceiling));
 
-        Assert.Equal(SmartEncodeRecommendationKind.Review, result.Kind);
+        Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate, result.Kind);
         Assert.Equal(SmartEncodeConfidence.Low, result.Confidence);
         Assert.Equal(SmartEncodeConfidence.Low, result.ConfidenceCeiling);
         Assert.Equal(65, result.EstimatedSavingsPercent);
         Assert.Equal(650, result.EstimatedSavingsMb);
-        Assert.Contains("low-confidence Generic BPP fallback", result.PrimaryReason,
-            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("low-confidence", result.PrimaryReason, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(result.Reasons, reason =>
             reason.Contains("low-confidence Generic BPP fallback estimate", StringComparison.OrdinalIgnoreCase));
     }
@@ -106,9 +105,13 @@ public sealed class SmartEncodeDecisionServiceTests
             SmartEncodeContentHint.Auto,
             intendedOutputMb: 350);
 
-        Assert.Equal(SmartEncodeRecommendationKind.Review, refined.Kind);
+        Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate, refined.Kind);
         Assert.Equal(SmartEncodeConfidence.Low, refined.Confidence);
         Assert.Equal(SmartEncodeConfidence.Low, refined.ConfidenceCeiling);
+        Assert.Contains(refined.Reasons, reason =>
+            reason.Contains("agrees with the current estimate", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(refined.Reasons, reason =>
+            reason.Contains("estimate disagreement lowers confidence", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
