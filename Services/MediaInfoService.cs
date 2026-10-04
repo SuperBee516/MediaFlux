@@ -61,7 +61,7 @@ namespace MediaFlux.Services
             }
 
             Stopwatch probeWatch = Stopwatch.StartNew();
-            Debug.WriteLine(
+            CriticalPathTiming.WriteLine(
                 $"[CriticalPathTiming] stage=ffprobe-start source={Path.GetFileName(path)} utc={DateTime.UtcNow:O}");
             MediaInfo info;
             try
@@ -71,7 +71,7 @@ namespace MediaFlux.Services
             finally
             {
                 probeWatch.Stop();
-                Debug.WriteLine(
+                CriticalPathTiming.WriteLine(
                     $"[CriticalPathTiming] stage=ffprobe-end source={Path.GetFileName(path)} " +
                     $"elapsedMs={probeWatch.Elapsed.TotalMilliseconds:0} utc={DateTime.UtcNow:O}");
             }
@@ -169,7 +169,7 @@ namespace MediaFlux.Services
             // cached, so explicitly retry the duration-only probe before reporting
             // that target-size estimation is unavailable.
             Stopwatch probeWatch = Stopwatch.StartNew();
-            Debug.WriteLine(
+            CriticalPathTiming.WriteLine(
                 $"[CriticalPathTiming] stage=ffprobe-duration-only-start source={Path.GetFileName(path)} utc={DateTime.UtcNow:O}");
             double durationSeconds;
             try
@@ -179,7 +179,7 @@ namespace MediaFlux.Services
             finally
             {
                 probeWatch.Stop();
-                Debug.WriteLine(
+                CriticalPathTiming.WriteLine(
                     $"[CriticalPathTiming] stage=ffprobe-duration-only-end source={Path.GetFileName(path)} " +
                     $"elapsedMs={probeWatch.Elapsed.TotalMilliseconds:0} utc={DateTime.UtcNow:O}");
             }

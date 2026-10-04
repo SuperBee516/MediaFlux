@@ -67,7 +67,6 @@ public sealed class QueueSelectionResponsivenessUiTests
                     SetField(meta, "DurationSec", cases[index].Duration);
                     SetField(meta, "Resolution", cases[index].Resolution);
                     SetField(meta, "Fps", cases[index].Fps);
-                    SetField(meta, "CustomTargetMb", 1d); // Prevents the separate advisory-quality request.
                     estimates[path] = 0.5;
                     metas[index] = meta;
                 }
@@ -99,6 +98,22 @@ public sealed class QueueSelectionResponsivenessUiTests
                 SetField(metas[0], "DurationSec", 1800d);
                 Invoke(main, "UpdateQueueSelectionPreview");
                 Assert.Equal("00:30:00", preview["Length"].Text);
+
+                // Configuration refresh also uses retained metadata: the source
+                // is absent and the metadata service is deliberately null.
+                File.Delete(Field<string>(metas[0], "Path"));
+                Invoke(main, "UpdateEncodePreview", true);
+                Assert.Equal("00:30:00", preview["Length"].Text);
+                Assert.Equal("1920 × 1080", preview["Dimensions"].Text);
+                Assert.Equal(0.5, estimates[Field<string>(metas[0], "Path")]);
+
+                // Auto container preview must not claim the MP4 extension when
+                // preflight will resolve the actual container from source streams.
+                Field<ComboBox>(main, "comboOutputContainer").SelectedIndex = 0;
+                Invoke(main, "UpdateEncodePreview", true);
+                Assert.Contains("extension resolved before start", preview["Output"].Text, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain(".mp4", preview["Output"].Text, StringComparison.OrdinalIgnoreCase);
+
 
                 DateTime frozenDecisionUtc = DateTime.UnixEpoch;
                 var plan = new EncodingPlan
@@ -168,34 +183,6 @@ public sealed class QueueSelectionResponsivenessUiTests
         Assert.Equal(720, snapshot.Height);
         Assert.Equal(90, snapshot.DurationSeconds);
         Assert.False(service.TryGetCachedInfo(missingPath, out _));
-    }
-
-    [Fact]
-    public void RepeatedQualityPreviewRequestForTheSameRowAndGenerationIsDeduplicated()
-    {
-        Type rowMetaType = typeof(MainForm).GetNestedType("RowMeta", BindingFlags.NonPublic)
-            ?? throw new MissingMemberException("MainForm.RowMeta");
-        object meta = Activator.CreateInstance(rowMetaType, nonPublic: true)
-            ?? throw new InvalidOperationException("Could not create queue row metadata.");
-        MethodInfo begin = typeof(MainForm).GetMethod(
-            "TryBeginQualityPreviewRequest",
-            BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new MissingMethodException("TryBeginQualityPreviewRequest");
-        MethodInfo end = typeof(MainForm).GetMethod(
-            "EndQualityPreviewRequest",
-            BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new MissingMethodException("EndQualityPreviewRequest");
-
-        Assert.True((bool)begin.Invoke(null, [meta, 4])!);
-        Assert.False((bool)begin.Invoke(null, [meta, 4])!);
-
-        // A new configuration generation may replace a stale request; completion
-        // of the old request must not clear the newer request's ownership marker.
-        Assert.True((bool)begin.Invoke(null, [meta, 5])!);
-        end.Invoke(null, [meta, 4]);
-        Assert.False((bool)begin.Invoke(null, [meta, 5])!);
-        end.Invoke(null, [meta, 5]);
-        Assert.True((bool)begin.Invoke(null, [meta, 5])!);
     }
 
     private static string MakeFile(string directory, string name)

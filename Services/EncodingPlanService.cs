@@ -142,17 +142,8 @@ public static class EncodingPlanService
             ? new FileInfo(context.Input.SourcePath).Length : null;
         double? ratio = sourceBytes is > 0 && context.TargetMb is > 0
             ? context.TargetMb.Value * 1024d * 1024d / sourceBytes.Value : null;
-        EncodingHistoricalPrediction historicalPrediction;
-        try
-        {
-            historicalPrediction = new EncodingHistoricalPredictionService(
-                new EncodingStatisticsService(AppPaths.EncodingStatisticsFile)).Predict(context);
-        }
-        catch
-        {
-            historicalPrediction = new(0, 0, EncodingHistoricalConfidence.None, null, null, null, null, null, null, null, null, null, null, "HistoryUnavailable");
-        }
-
+        // Historical forecasts are observational. Loading the statistics journal
+        // cannot supply execution quality or become a prerequisite for Start.
         var source = new EncodingPlanSource(sourceVideo?.CodecName ?? "unknown", sourceVideo?.Width, sourceVideo?.Height, sourceVideo?.FrameRate, context.KnownDuration > TimeSpan.Zero ? context.KnownDuration.TotalSeconds : null)
         {
             SizeBytes = context.Source.SizeBytes,
@@ -184,7 +175,7 @@ public static class EncodingPlanService
             Quality = quality,
             SourceAdaptiveShadow = sourceAdaptiveShadow,
             Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio,
-                historicalPrediction, context.SizePredictionCalibration?.CalibratedPredictionMb),
+                null, context.SizePredictionCalibration?.CalibratedPredictionMb),
             SizePredictionCalibration = context.SizePredictionCalibration,
             Risks = risks,
             DecisionReasons = reasons,

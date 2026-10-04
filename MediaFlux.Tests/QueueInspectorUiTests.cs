@@ -256,6 +256,12 @@ public sealed class QueueInspectorUiTests
                 Assert.Contains("#2: subrip", media.Text);
                 Assert.DoesNotContain("not cached yet", media.Text, StringComparison.OrdinalIgnoreCase);
 
+                // The inspector may reuse an unchanged cache entry, then must
+                // stop presenting it as current when the source signature changes.
+                File.AppendAllText(path, "changed");
+                string changedSourceDetails = (string)Invoke(main, "BuildQueueInspectorMediaText", row)!;
+                Assert.Contains("Container: Not cached", changedSourceDetails);
+
                 // Ownership is intentionally active and no cache exists for this input.
                 // The cache-only inspector still renders a safe unavailable state without
                 // asking MediaInfoService to fill the miss.

@@ -180,7 +180,9 @@ namespace MediaFlux
                 return recommendation == null || recommendation.Kind == SmartEncodeRecommendationKind.Unavailable;
             });
 
-            if (skip == 0 && review == 0 && remuxOnly == 0 && pending == 0 && unavailable == 0)
+            // Advisory Review/Unavailable/Pending alone cannot interrupt Start.
+            // Preserve the configured warning for explicit Skip/remux advice.
+            if (skip == 0 && remuxOnly == 0)
                 return RecommendationStartChoice.EncodeAll;
 
             DialogResult choice = RecommendationStartForm.ShowRecommendationChoice(

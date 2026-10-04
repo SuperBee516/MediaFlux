@@ -3209,7 +3209,7 @@ namespace MediaFlux.Services
                 proc.Start();
                 DateTimeOffset processStartedUtc = DateTimeOffset.UtcNow;
                 processStartWatch.Stop();
-                Debug.WriteLine(
+                CriticalPathTiming.WriteLine(
                     $"[CriticalPathTiming] stage=ffmpeg-process-start utc={processStartedUtc:O} " +
                     $"attempt={attempt} launchMs={processStartWatch.Elapsed.TotalMilliseconds:0}");
                 processStartedCallback?.Invoke(processStartedUtc);

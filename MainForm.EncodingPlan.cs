@@ -153,7 +153,6 @@ public partial class MainForm
 
         RowMeta meta = EnsureRowMeta(rows[0]);
         RenderQueueAnalysis(rows[0], meta, null);
-        RequestQualityPreview(rows[0], meta);
         if (meta.IntelligencePlan == null)
         {
             RenderEncodingPlanStatus("Encoding Intelligence will appear when the existing encode preflight publishes its plan.");
@@ -275,7 +274,6 @@ public partial class MainForm
 
     private void InvalidateEncodingPlansForConfigurationChange()
     {
-        Interlocked.Increment(ref _qualityPreviewGeneration);
         foreach (DataGridViewRow row in dgvEncodeQueue?.Rows.Cast<DataGridViewRow>() ?? Enumerable.Empty<DataGridViewRow>())
         {
             if (row.Tag is RowMeta meta)
@@ -286,115 +284,6 @@ public partial class MainForm
             }
         }
     }
-
-    private void RequestQualityPreview(DataGridViewRow row, RowMeta meta)
-    {
-        if (!IsAutomaticQualitySelected() || meta.IntelligencePlan != null ||
-            meta.HasCustomSettings || string.IsNullOrWhiteSpace(meta.Path) ||
-            meta.QualityPreview != null)
-            return;
-
-        int generation = _qualityPreviewGeneration;
-        string path = meta.Path;
-        QualityTarget target = GetSelectedQualityTarget();
-        VideoEncoderSelection encoder = GetSelectedVideoEncoderSelection();
-        EncodingService.ScaleMode scaleMode = GetSelectedScaleMode();
-        bool tenBit = chkTenBit?.Checked == true;
-        double? targetMb = EncodingTargetSizeResolver.ResolveAutomaticQualityTargetMb(
-            automaticQuality: true,
-            autoTargetSize: chkAutoTargetSize.Checked,
-            configuredManualTarget: txtTargetSize.Text);
-
-        if (!TryBeginQualityPreviewRequest(meta, generation))
-            return;
-
-        _ = Task.Run(async () =>
-        {
-            bool requestReleasedOnUi = false;
-            try
-            {
-                if (!File.Exists(path))
-                    return;
-
-                var probe = await new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath)
-                    .ProbeAsync(path).ConfigureAwait(false);
-                if (!probe.Success)
-                    return;
-                MediaProbeStreamInfo? video = probe.Streams.FirstOrDefault(stream =>
-                    stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
-                VideoOutputGeometryPlan? geometry = null;
-                if (video?.Width is > 0 && video.Height is > 0)
-                {
-                    VideoOutputResolutionPlan resolution = VideoRestorationPipeline.ResolveFinalOutputResolution(
-                        video.Width.Value, video.Height.Value, _config.VideoRestoration, scaleMode);
-                    geometry = VideoOutputGeometryPlanner.Resolve(
-                        video.Width.Value, video.Height.Value, resolution, encoder, tenBit);
-                }
-                EncodingQualityResolution quality = new EncodingQualityPolicyService().Resolve(
-                    new EncodingQualityPolicyRequest(
-                        EncodingQualityIntent.Automatic(target), probe, encoder,
-                        geometry, scaleMode, targetMb));
-                if (IsDisposed || !IsHandleCreated)
-                    return;
-
-                UiInvoke(() =>
-                {
-                    try
-                    {
-                        if (generation != _qualityPreviewGeneration || IsDisposed ||
-                            !ReferenceEquals(dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault(), row) ||
-                            !string.Equals(meta.Path, path, StringComparison.OrdinalIgnoreCase) ||
-                            meta.IntelligencePlan != null)
-                        {
-                            return;
-                        }
-                        using (BeginPlanAndAnalysisLayoutUpdate(_encodingPlanGroup))
-                        {
-                            meta.QualityPreview = quality;
-                            RenderQueueAnalysis(row, meta, null);
-                        }
-                    }
-                    finally
-                    {
-                        EndQualityPreviewRequest(meta, generation);
-                    }
-                });
-                requestReleasedOnUi = true;
-            }
-            catch
-            {
-                // Queue preview is advisory; encode-time preflight remains authoritative.
-            }
-            finally
-            {
-                if (!requestReleasedOnUi)
-                    EndQualityPreviewRequest(meta, generation);
-            }
-        });
-    }
-
-    private static bool TryBeginQualityPreviewRequest(RowMeta meta, int generation)
-    {
-        while (true)
-        {
-            int current = Volatile.Read(ref meta.QualityPreviewRequestGeneration);
-            if (current == generation)
-                return false;
-            if (Interlocked.CompareExchange(
-                    ref meta.QualityPreviewRequestGeneration,
-                    generation,
-                    current) == current)
-            {
-                return true;
-            }
-        }
-    }
-
-    private static void EndQualityPreviewRequest(RowMeta meta, int generation) =>
-        Interlocked.CompareExchange(
-            ref meta.QualityPreviewRequestGeneration,
-            int.MinValue,
-            generation);
 
     private void AddQueueAnalysisSection(string title, IReadOnlyList<string> reasons)
     {

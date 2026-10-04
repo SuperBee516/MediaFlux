@@ -84,7 +84,7 @@ public sealed class QueueEstimateOwnershipTests
                 Assert.Equal("Estimating", transition.Cells["colStatus"].Value);
                 Assert.Equal("Estimating", idle.Cells["colStatus"].Value);
                 EstimateBackgroundService estimateService = Field<EstimateBackgroundService>(main, "_estimateService");
-                Assert.Equal(2, estimateService.PendingEstimates);
+                Assert.True(SpinWait.SpinUntil(() => estimateService.PendingEstimates == 2, TimeSpan.FromSeconds(10)));
                 Assert.Same(planControl, planTable.Controls[0]);
 
                 // Simulate queued idle estimates whose rows become active jobs
@@ -194,6 +194,10 @@ public sealed class QueueEstimateOwnershipTests
         Assert.True(gotResult, "The unrelated idle estimate did not complete.");
         Assert.True(activeChecked.Wait(TimeSpan.FromSeconds(10)), "The active source was not checked by the worker eligibility gate.");
         Assert.Equal(Path.GetFullPath(idlePath), Path.GetFullPath(result.Path));
+        EstimateBackgroundService.SmartEstimateResult advice = default;
+        Assert.True(SpinWait.SpinUntil(() => service.TryDequeueSmart(out advice), TimeSpan.FromSeconds(10)));
+        Assert.True(advice.RecommendationOnly);
+        Assert.Equal(idlePath, advice.Path);
         Assert.False(service.TryDequeueSmart(out _));
         Assert.True(SpinWait.SpinUntil(() => service.PendingEstimates == 0, TimeSpan.FromSeconds(10)));
     }

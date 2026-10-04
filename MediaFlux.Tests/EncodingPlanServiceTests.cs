@@ -7,6 +7,17 @@ namespace MediaFlux.Tests;
 public sealed class EncodingPlanServiceTests
 {
     [Fact]
+    public void DeterministicPlanHasNoHistoricalPredictionDependency()
+    {
+        var context = Context(OutputContainerSelection.Matroska, ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 }) with { TargetMb = null };
+        var plan = EncodingPlanService.Create(context);
+        Assert.True(plan.IsAvailable);
+        Assert.Null(plan.Estimates!.HistoricalPrediction);
+        Assert.Equal(context.QualityValue, EncodingPlanService.GetExecutionValues(plan).QualityResolution.EffectiveQuality);
+        Assert.Null(plan.AdaptiveSelection);
+    }
+    [Fact]
     public void RecommendationFailureDoesNotPreventPlanCreation()
     {
         EncodingPlan plan = EncodingPlanService.Create(

@@ -150,6 +150,10 @@ public sealed class QueueFilteringUiTests
                 Assert.Equal(SmartEncodeRecommendationKind.Skip, MetaRecommendation(main, skip).Kind);
                 Assert.Equal(SmartEncodeRecommendationKind.Review, MetaRecommendation(main, review).Kind);
                 Assert.Equal(SmartEncodeRecommendationKind.Unavailable, MetaRecommendation(main, unavailable).Kind);
+                // The configured warning cannot gate ordinary Review, Unavailable,
+                // or unfinished recommendation results.
+                Assert.Equal("EncodeAll", Invoke(main, "ReviewRecommendationsBeforeStart",
+                    (object)new DataGridViewRow[] { review, unavailable, pending })!.ToString());
                 Assert.Equal("Encode", Invoke(main, "GetQueueWorkspaceRecommendationText", encode));
                 Assert.Equal("Skip", Invoke(main, "GetQueueWorkspaceRecommendationText", skip));
                 Assert.Equal("Review", Invoke(main, "GetQueueWorkspaceRecommendationText", review));

@@ -165,7 +165,7 @@ public sealed class SmartEncodeDecisionServiceTests
     {
         const double durationSeconds = 3_600;
         const int totalKbps = 3_940;
-        double sourceMb = totalKbps * durationSeconds / 8192d;
+        double sourceMb = totalKbps * durationSeconds / 8388.608d;
         SizeEstimateBreakdown estimate =
             SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
                 sourceMb,

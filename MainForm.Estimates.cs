@@ -95,6 +95,16 @@ namespace MediaFlux
                     {
                         try
                         {
+                            if (item.RecommendationOnly)
+                            {
+                                if (resultMeta.AdaptiveQualitySelectionPending &&
+                                    item.Recommendation is { Kind: not SmartEncodeRecommendationKind.Unavailable })
+                                    SetSmartRecommendationPending(row);
+                                else
+                                    ApplySmartRecommendation(row, item.Recommendation);
+                                applied++;
+                                continue;
+                            }
                             if (item.EmpiricalPreview is { SourceWriteUtcTicks: > 0 } binding)
                             {
                                 var source = new FileInfo(item.Path);
@@ -234,11 +244,11 @@ namespace MediaFlux
                                 item.Recommendation is { Kind: not SmartEncodeRecommendationKind.Unavailable };
                             if (recommendationPending)
                                 SetSmartRecommendationPending(row);
-                            else
+                            else if (item.Recommendation is not null)
                                 ApplySmartRecommendation(row, item.Recommendation);
                             UpdateRowCustomFlag(row);
                             RestoreQueuedStateAfterEstimate(row);
-                            System.Diagnostics.Debug.WriteLine(
+                            CriticalPathTiming.WriteLine(
                                 $"[CriticalPathTiming] stage=estimate-visible item={item.QueueItemId:N} " +
                                 $"source={Path.GetFileName(item.Path)} sinceAcceptedMs={(DateTime.UtcNow - item.QueueAcceptedUtc).TotalMilliseconds:0}" +
                                 (item.QualityChangeStartedUtc is { } changedUtc
@@ -309,11 +319,11 @@ namespace MediaFlux
             if (qualityChanged)
             {
                 _qualityChangeEstimateRefreshUtc = DateTime.UtcNow;
-                System.Diagnostics.Debug.WriteLine(
+                CriticalPathTiming.WriteLine(
                     $"[CriticalPathTiming] stage=quality-change-initiated utc={_qualityChangeEstimateRefreshUtc:O} queueCount={dgvEncodeQueue.Rows.Count}");
             }
 
-            _estimateRefreshTimer ??= new System.Windows.Forms.Timer { Interval = 250 };
+            _estimateRefreshTimer ??= new System.Windows.Forms.Timer { Interval = 75 };
             _estimateRefreshTimer.Stop();
             _estimateRefreshTimer.Tick -= EstimateRefreshTimer_Tick;
             _estimateRefreshTimer.Tick += EstimateRefreshTimer_Tick;
@@ -386,7 +396,6 @@ namespace MediaFlux
             bool useProfileEstimate = SizeEstimateService.ShouldUseProfileEstimate(
                 autoRequested,
                 manualTargetMb);
-            var previewSettings = CaptureEncodeExecutionSnapshotSettings(GetSelectedOutputContainer());
 
             int queued = 0;
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
@@ -466,7 +475,7 @@ namespace MediaFlux
                     continue;
                 }
 
-                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                if (string.IsNullOrWhiteSpace(path) || (qualityChangeStartedUtc is null && !File.Exists(path)))
                 {
                     row.Cells["colEstimatedSize"].Value = "";
                     SetRecommendationUnavailable(
@@ -521,18 +530,7 @@ namespace MediaFlux
                     encoderSettings.Preset,
                     encoderSettings.TenBit ? 10 : 8,
                     encoderSettings.ConcurrentEncoderSessions,
-                    previewSettings,
-                    new EncodeExecutionSnapshotItem
-                    {
-                        SourceFilePath = path, LogicalSourcePath = path,
-                        CustomCompressionProfile = estimateMeta.CustomCompressionProfile,
-                        CustomTargetMb = estimateMeta.CustomTargetMb,
-                        PredictionShadowExperimentAssignment = estimateMeta.PredictionShadowExperimentAssignment,
-                        LibraryPolicyIntent = estimateMeta.LibraryPolicyIntent,
-                        PolicyEncodingPreset = string.IsNullOrWhiteSpace(estimateMeta.LibraryPolicyIntent?.EncodingPresetName)
-                            ? null : _presetService.LoadAll().FirstOrDefault(preset => preset.Name.Equals(
-                                estimateMeta.LibraryPolicyIntent.EncodingPresetName, StringComparison.OrdinalIgnoreCase))
-                    },
+                    null, null,
                     estimateMeta.EstimateAuthorityRevision,
                     qualityChangeStartedUtc);
                 queued++;
@@ -647,17 +645,6 @@ namespace MediaFlux
                 estimateAuthorityRevision,
                 queueAcceptedUtc: queueAcceptedUtc,
                 qualityChangeStartedUtc: qualityChangeStartedUtc);
-        }
-
-        private static string PreviewToolIdentity(string? configuredPath)
-        {
-            var tools = FfmpegToolResolver.Resolve(AppPaths.InstallDirectory, configuredPath);
-            try
-            {
-                var file = new FileInfo(tools.FfmpegPath);
-                return $"{file.FullName}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
-            }
-            catch { return tools.FfmpegPath; }
         }
 
         private bool IsEstimateSourceOwnedByActiveEncode(string path)

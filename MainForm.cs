@@ -76,7 +76,6 @@ namespace MediaFlux
         private Label? lblEncodingSpeed;
         private System.Windows.Forms.Timer? _estSmartUiTimer;
         private System.Windows.Forms.Timer? _estimateRefreshTimer;
-        private int _qualityPreviewGeneration;
 
         private SplitContainer? _encodeQueueSplit;
         private Control? _encodeInfoHeader;
@@ -128,11 +127,7 @@ namespace MediaFlux
         private bool _applyingEncodeInfoSplitterState;
         private bool _mp4CompatibilityConfirmedForRun;
         private OutputContainerSelection _activeOutputContainer = OutputContainerSelection.Mp4;
-        private int _outputContainerPreviewGeneration;
         private OutputContainerSelection _configuredOutputContainer = OutputContainerSelection.Mp4;
-        private string? _autoContainerPredictionPath;
-        private string? _autoContainerPredictionFormat;
-        private OutputContainerDecision? _autoContainerPrediction;
 
         private const int MinimumEncodeInfoHeight = 150;
         private const int MinimumEncodeQueueHeight = 160;
@@ -2046,25 +2041,16 @@ namespace MediaFlux
             }
         }
 
-        private enum PreviewMetadataMode
-        {
-            AllowProbe,
-            CacheOnly
-        }
-
-        private void UpdateEncodePreview(bool invalidateEncodingPlan = true) =>
-            UpdateEncodePreview(invalidateEncodingPlan, PreviewMetadataMode.AllowProbe);
-
-        private void UpdateQueueSelectionPreview() =>
-            UpdateEncodePreview(invalidateEncodingPlan: false, PreviewMetadataMode.CacheOnly);
-
-        private void UpdateEncodePreview(bool invalidateEncodingPlan, PreviewMetadataMode metadataMode)
+        private void UpdateEncodePreview(bool invalidateEncodingPlan = true)
         {
             using (BeginPlanAndAnalysisLayoutUpdate(_encodingPlanGroup, _encodePreviewGroup))
-                UpdateEncodePreviewCore(invalidateEncodingPlan, metadataMode);
+                UpdateEncodePreviewCore(invalidateEncodingPlan);
         }
 
-        private void UpdateEncodePreviewCore(bool invalidateEncodingPlan, PreviewMetadataMode metadataMode)
+        private void UpdateQueueSelectionPreview() =>
+            UpdateEncodePreview(invalidateEncodingPlan: false);
+
+        private void UpdateEncodePreviewCore(bool invalidateEncodingPlan)
         {
             if (invalidateEncodingPlan)
                 InvalidateEncodingPlansForConfigurationChange();
@@ -2084,7 +2070,6 @@ namespace MediaFlux
             double estimatedMb = 0;
             RowMeta? previewMeta = row?.Tag as RowMeta;
             EncodingPlanSource? retainedSource = previewMeta?.IntelligencePlan?.Source;
-            bool activeSource = row != null && IsQueueRowActivelyEncoding(row);
 
             if (row != null)
             {
@@ -2119,7 +2104,6 @@ namespace MediaFlux
                 estimatedMb = ParseSizeToMb(row.Cells["colEstimatedSize"].Value?.ToString());
             }
 
-            if (metadataMode == PreviewMetadataMode.CacheOnly)
             {
                 MediaInfoService.MediaInfo cachedInfo = new();
                 bool hasCachedMetadata = _mediaInfoService != null &&
@@ -2138,40 +2122,6 @@ namespace MediaFlux
                         fps = cachedInfo.Fps.Value;
                 }
             }
-            else if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
-            {
-                MediaInfoService.MediaInfo cachedInfo = new();
-                bool hasCachedMetadata = _mediaInfoService != null &&
-                    _mediaInfoService.TryGetCachedInfo(path, out cachedInfo);
-                if (hasCachedMetadata)
-                {
-                    if (durationSec <= 0 && cachedInfo.DurationSeconds is > 0)
-                        durationSec = cachedInfo.DurationSeconds.Value;
-                    if ((width <= 0 || height <= 0) && cachedInfo.Width is > 0 && cachedInfo.Height is > 0)
-                    {
-                        width = cachedInfo.Width.Value;
-                        height = cachedInfo.Height.Value;
-                    }
-                    if (fps <= 0 && cachedInfo.Fps is > 0)
-                        fps = cachedInfo.Fps.Value;
-                }
-
-                if (!activeSource)
-                {
-                    if (durationSec <= 0)
-                        durationSec = ProbeDurationSeconds(path);
-                    if (width <= 0 || height <= 0)
-                    {
-                        var dimensions = ProbeResolutionPixels(path);
-                        width = dimensions.w;
-                        height = dimensions.h;
-                    }
-                    if (fps <= 0)
-                        fps = ProbeFps(path);
-                }
-
-            }
-
             if (estimatedMb <= 0 && !string.IsNullOrWhiteSpace(path) &&
                 _estimatedSizeMap.TryGetValue(path, out var mappedEstimate))
             {
@@ -2180,7 +2130,7 @@ namespace MediaFlux
 
             var outputDimensions = GetPreviewOutputDimensions(width, height);
             var bitrateKbps = durationSec > 0 && estimatedMb > 0
-                ? (estimatedMb * 8192.0) / durationSec
+                ? (estimatedMb * 8388.608) / durationSec
                 : 0;
             int audioBitrate = EstimatePreviewAudioBitrateKbps();
             int dataRate = bitrateKbps > 0
@@ -2193,8 +2143,6 @@ namespace MediaFlux
             string codec =
                 encoderSettings.Resolved.Selection.FfmpegCodec;
             string formatText = comboVideoFormat?.Text ?? string.Empty;
-            if (metadataMode == PreviewMetadataMode.CacheOnly)
-                InvalidateStaleAutoContainerPrediction(path, formatText);
             if (encoderSettings.TenBit)
             {
                 codec += " 10-bit";
@@ -2215,17 +2163,16 @@ namespace MediaFlux
                     outputFolder = Path.GetDirectoryName(path) ?? "";
 
                 OutputContainerSelection container = GetSelectedOutputContainer();
-                OutputContainerDecision? currentAutoPrediction =
-                    IsAutoContainerPredictionFor(path, formatText) ? _autoContainerPrediction : null;
                 OutputContainer? effective = container == OutputContainerSelection.Auto
-                    ? currentAutoPrediction?.Resolved
+                    ? null
                     : container == OutputContainerSelection.Matroska
                         ? OutputContainer.Matroska
                         : OutputContainer.Mp4;
                 string extension = (effective ?? OutputContainer.Mp4) == OutputContainer.Matroska ? ".mkv" : ".mp4";
-                outputPreview = Path.Combine(
-                    outputFolder,
-                    Path.GetFileNameWithoutExtension(path) + BuildOutputSuffix(formatText) + extension);
+                string outputName = Path.GetFileNameWithoutExtension(path) + BuildOutputSuffix(formatText);
+                outputPreview = container == OutputContainerSelection.Auto
+                    ? $"{Path.Combine(outputFolder, outputName)} (extension resolved before start)"
+                    : Path.Combine(outputFolder, outputName + extension);
                 if (lblOutputContainerReason != null)
                 {
                     string reason = container switch
@@ -2234,8 +2181,6 @@ namespace MediaFlux
                         OutputContainerSelection.Matroska => "MKV preserves compatible subtitle, attachment, and data streams.",
                         _ => "MP4 favors compatibility; unsupported preserved streams require confirmation."
                     };
-                    if (container == OutputContainerSelection.Auto && currentAutoPrediction != null)
-                        reason = currentAutoPrediction.Reason;
                     if (!string.Equals(lblOutputContainerReason.Text, reason, StringComparison.Ordinal))
                         lblOutputContainerReason.Text = reason;
                 }
@@ -2258,14 +2203,6 @@ namespace MediaFlux
             SetPreviewValue("Bit rate", audioBitrate > 0 ? $"{audioBitrate:0}kbps" : "Keep source");
             SetPreviewValue("Channels", GetPreviewAudioChannelsText());
             SetPreviewValue("Audio sample rate", "Keep source");
-            if (metadataMode == PreviewMetadataMode.AllowProbe &&
-                GetSelectedOutputContainer() == OutputContainerSelection.Auto &&
-                !string.IsNullOrWhiteSpace(path) && File.Exists(path) &&
-                !IsEstimateSourceOwnedByActiveEncode(path))
-            {
-                RequestAutoContainerPrediction(path, formatText);
-            }
-
             SmartEncodeRecommendation? recommendation =
                 (row?.Tag as RowMeta)?.EncodeRecommendation;
             SetPreviewValue(
@@ -2359,9 +2296,6 @@ namespace MediaFlux
                 return;
             OutputContainerSelection configured = OutputContainerPolicy.ParseSelection(value);
             _configuredOutputContainer = configured;
-            _autoContainerPrediction = null;
-            _autoContainerPredictionPath = null;
-            _autoContainerPredictionFormat = null;
             int selectedIndex = configured switch
             {
                 OutputContainerSelection.Auto => 0,
@@ -2370,74 +2304,6 @@ namespace MediaFlux
             };
             if (comboOutputContainer.SelectedIndex != selectedIndex)
                 comboOutputContainer.SelectedIndex = selectedIndex;
-        }
-
-        private void RequestAutoContainerPrediction(string path, string formatText)
-        {
-            if (string.Equals(_autoContainerPredictionPath, path, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(_autoContainerPredictionFormat, formatText, StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            _autoContainerPredictionPath = path;
-            _autoContainerPredictionFormat = formatText;
-            _autoContainerPrediction = null;
-            int generation = Interlocked.Increment(ref _outputContainerPreviewGeneration);
-            _ = UpdateAutoContainerPredictionAsync(path, formatText, generation);
-        }
-
-        private bool IsAutoContainerPredictionFor(string? path, string formatText) =>
-            _autoContainerPrediction != null &&
-            string.Equals(_autoContainerPredictionPath, path, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(_autoContainerPredictionFormat, formatText, StringComparison.Ordinal);
-
-        private void InvalidateStaleAutoContainerPrediction(string? path, string formatText)
-        {
-            if (_autoContainerPredictionPath == null ||
-                (string.Equals(_autoContainerPredictionPath, path, StringComparison.OrdinalIgnoreCase) &&
-                 string.Equals(_autoContainerPredictionFormat, formatText, StringComparison.Ordinal)))
-            {
-                return;
-            }
-
-            Interlocked.Increment(ref _outputContainerPreviewGeneration);
-            _autoContainerPrediction = null;
-            _autoContainerPredictionPath = null;
-            _autoContainerPredictionFormat = null;
-        }
-
-        private async Task UpdateAutoContainerPredictionAsync(string path, string formatText, int generation)
-        {
-            try
-            {
-                var probeService = new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath);
-                MediaProbeResult probe = await probeService.ProbeAsync(path);
-                if (!probe.Success || generation != _outputContainerPreviewGeneration || IsDisposed ||
-                    GetSelectedOutputContainer() != OutputContainerSelection.Auto ||
-                    !string.Equals(_autoContainerPredictionPath, path, StringComparison.OrdinalIgnoreCase) ||
-                    !string.Equals(_autoContainerPredictionFormat, formatText, StringComparison.Ordinal))
-                    return;
-                OutputContainerDecision decision = OutputContainerPolicy.Decide(
-                    OutputContainerSelection.Auto,
-                    probe,
-                    EncodingInputSource.FromFile(path),
-                    EncodingService.StreamMapMode.KeepAll);
-                _autoContainerPrediction = decision;
-                string outputFolder = cmbEncodeOutput?.Text ?? "";
-                if (string.IsNullOrWhiteSpace(outputFolder))
-                    outputFolder = Path.GetDirectoryName(path) ?? "";
-                SetPreviewValue("Output", Path.Combine(
-                    outputFolder,
-                    Path.GetFileNameWithoutExtension(path) + BuildOutputSuffix(formatText) + decision.Extension));
-                if (lblOutputContainerReason != null &&
-                    !string.Equals(lblOutputContainerReason.Text, decision.Reason, StringComparison.Ordinal))
-                    lblOutputContainerReason.Text = decision.Reason;
-            }
-            catch
-            {
-                // Preview prediction is advisory; encode-time policy remains authoritative.
-            }
         }
 
         private (int width, int height) GetPreviewOutputDimensions(int sourceWidth, int sourceHeight)
@@ -2664,7 +2530,6 @@ namespace MediaFlux
             public EncodingExecutionOutcome? IntelligenceOutcome;
             public PredictionShadowExperimentAssignmentBinding? PredictionShadowExperimentAssignment;
             public EncodingQualityResolution? QualityPreview;
-            public int QualityPreviewRequestGeneration = int.MinValue;
             public EncodingSizePredictionCalibration? SizePredictionCalibration;
 
             public void AppendInspectorLogLine(string line)
@@ -3469,15 +3334,7 @@ namespace MediaFlux
             comboOutputContainer.SelectedIndexChanged += (_, __) =>
             {
                 OutputContainerSelection selected = OutputContainerSelectionFromIndex(comboOutputContainer.SelectedIndex);
-                bool changed = _configuredOutputContainer != selected;
                 _configuredOutputContainer = selected;
-                if (changed)
-                {
-                    Interlocked.Increment(ref _outputContainerPreviewGeneration);
-                    _autoContainerPrediction = null;
-                    _autoContainerPredictionPath = null;
-                    _autoContainerPredictionFormat = null;
-                }
                 if (!_applyingEncodeDropdownSettings)
                 {
                     _config.LastOutputContainer = selected.ToString();
@@ -5471,11 +5328,7 @@ namespace MediaFlux
             _estimateService = new EstimateBackgroundService(
                 _mediaInfoService,
                 _encodingStatisticsService,
-                IsEstimateSourceOwnedByActiveEncode,
-                _encodingService,
-                new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath),
-                _encodeExecutionSnapshotBuilder,
-                PreviewToolIdentity(_config.FfmpegPath));
+                IsEstimateSourceOwnedByActiveEncode);
             _duplicateDetectionService = new DuplicateDetectionService(
                 _mediaInfoService,
                 AppPaths.InstallDirectory,
@@ -6026,7 +5879,7 @@ namespace MediaFlux
             queueMeta.Path = path;
             queueMeta.SourceSizeBytes = fi.Length;
             queueMeta.QueueAcceptedUtc = DateTime.UtcNow;
-            System.Diagnostics.Debug.WriteLine(
+            CriticalPathTiming.WriteLine(
                 $"[CriticalPathTiming] stage=queue-file-accepted item={queueMeta.QueueItemId:N} " +
                 $"source={fi.Name} utc={queueMeta.QueueAcceptedUtc:O}");
             _rowsByPath[path] = r;

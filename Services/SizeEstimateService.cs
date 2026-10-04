@@ -252,7 +252,7 @@ namespace MediaFlux.Services
             // File size divided by duration is the most reliable total bitrate
             // because it includes every stream and the container. The ffprobe format
             // bitrate is retained in diagnostics as a useful cross-check.
-            double sourceTotalKbps = srcMb * 8192.0 / durationSec;
+            double sourceTotalKbps = srcMb * 8388.608 / durationSec;
             double measuredAudioKbps = sourceAudioBitrateKbps > 0
                 ? Math.Min(sourceAudioBitrateKbps, sourceTotalKbps)
                 : 0;
@@ -412,7 +412,7 @@ namespace MediaFlux.Services
             double targetTotalKbps = CalculateTargetTotalBitrateKbps(
                 targetVideoKbps,
                 plannedMappedKbps);
-            double estimateMb = targetTotalKbps * durationSec / 8192.0;
+            double estimateMb = targetTotalKbps * durationSec / 8388.608;
             // Keep the projection honest when the selected settings are not
             // expected to save space. Smart Encode can then recommend Skip or
             // Review instead of turning a no-benefit encode into an artificial
@@ -483,7 +483,7 @@ namespace MediaFlux.Services
             double totalKbps = CalculateTargetTotalBitrateKbps(videoKbps, mappedKbps);
             return new SizeEstimateBreakdown
             {
-                EstimatedOutputMb = Math.Max(0.1, totalKbps * durationSeconds / 8192d),
+                EstimatedOutputMb = Math.Max(0.1, totalKbps * durationSeconds / 8388.608d),
                 SourceTotalBitrateKbps = baseline.SourceTotalBitrateKbps,
                 SourceVideoBitrateKbps = baseline.SourceVideoBitrateKbps,
                 PlannedAudioBitrateKbps = baseline.PlannedAudioBitrateKbps,
@@ -492,7 +492,7 @@ namespace MediaFlux.Services
                 TargetTotalBitrateKbps = totalKbps,
                 UsedMeasuredVideoBitrate = baseline.UsedMeasuredVideoBitrate,
                 Diagnostic = $"Historical Direct video={videoKbps:0} kbps; mapped={mappedKbps:0} kbps; " +
-                    $"container included; output={totalKbps * durationSeconds / 8192d:0.##} MiB."
+                    $"container included; output={totalKbps * durationSeconds / 8388.608d:0.##} MiB."
             };
         }
 

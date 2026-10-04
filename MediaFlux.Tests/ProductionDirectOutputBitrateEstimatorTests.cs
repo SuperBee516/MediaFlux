@@ -189,7 +189,7 @@ public sealed class ProductionDirectOutputBitrateEstimatorTests
         Assert.Equal(192, direct.PlannedAudioBitrateKbps);
         Assert.Equal(8, direct.PlannedMappedAncillaryBitrateKbps);
         Assert.True(direct.TargetTotalBitrateKbps > 9600);
-        Assert.Equal(direct.TargetTotalBitrateKbps * durationSeconds / 8192,
+        Assert.Equal(direct.TargetTotalBitrateKbps * durationSeconds / 8388.608,
             direct.EstimatedOutputMb, 8);
         Assert.Same(generic, ProductionDirectOutputBitrateEstimator.SelectSizeBreakdown(
             generic, durationSeconds, Estimator.Predict(Target(), [Record(0)])));

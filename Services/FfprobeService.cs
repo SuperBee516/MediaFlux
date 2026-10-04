@@ -70,6 +70,8 @@ namespace MediaFlux.Services
             MediaToolProcessResult processResult;
             try
             {
+                CriticalPathTiming.WriteLine(
+                    $"[CriticalPathTiming] stage=structured-ffprobe-start source={Path.GetFileName(path)} utc={DateTime.UtcNow:O}");
                 processResult = await _processRunner.RunAsync(
                     new MediaToolProcessRequest
                     {
@@ -88,6 +90,8 @@ namespace MediaFlux.Services
                         }
                     },
                     cancellationToken).ConfigureAwait(false);
+                CriticalPathTiming.WriteLine(
+                    $"[CriticalPathTiming] stage=structured-ffprobe-end source={Path.GetFileName(path)} exit={processResult.ExitCode} utc={DateTime.UtcNow:O}");
             }
             catch (OperationCanceledException)
             {

@@ -624,7 +624,7 @@ public partial class MainForm
         string path = GetFullPathFromRow(row) ?? meta.Path;
         MediaInfoService.MediaInfo? cached = null;
         if (_mediaInfoService != null && !string.IsNullOrWhiteSpace(path) &&
-            _mediaInfoService.TryGetCachedInfoSnapshot(path, out MediaInfoService.MediaInfo cachedInfo))
+            _mediaInfoService.TryGetCachedInfo(path, out MediaInfoService.MediaInfo cachedInfo))
         {
             cached = cachedInfo;
         }

@@ -91,7 +91,7 @@ public sealed class SizeEstimateServiceTests
         const int videoKbps = 1_500;
         const int audioKbps = 192;
         double sourceMb =
-            (videoKbps + audioKbps) * durationSeconds / 8192d;
+            (videoKbps + audioKbps) * durationSeconds / 8388.608d;
 
         SizeEstimateBreakdown estimate =
             SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
@@ -194,7 +194,7 @@ public sealed class SizeEstimateServiceTests
         const int videoKbps = 5_000;
         const int audioKbps = 192;
         double sourceMb =
-            (videoKbps + audioKbps) * durationSeconds / 8192d;
+            (videoKbps + audioKbps) * durationSeconds / 8388.608d;
 
         SizeEstimateBreakdown estimate =
             SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
@@ -225,7 +225,7 @@ public sealed class SizeEstimateServiceTests
         const double durationSeconds = 3_600;
         const int videoKbps = 4_300;
         const int audioKbps = 192;
-        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8388.608d;
 
         SizeEstimateBreakdown estimate =
             SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
@@ -255,7 +255,7 @@ public sealed class SizeEstimateServiceTests
         const double durationSeconds = 3_600;
         const int videoKbps = 1_500;
         const int audioKbps = 192;
-        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8388.608d;
 
         SizeEstimateBreakdown estimate =
             SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
@@ -282,7 +282,7 @@ public sealed class SizeEstimateServiceTests
         const double durationSeconds = 1_800;
         const int videoKbps = 600;
         const int audioKbps = 160;
-        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8388.608d;
 
         SizeEstimateBreakdown estimate = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
             sourceMb, durationSeconds, 1920, 1080, 30, videoKbps, "hevc",
@@ -301,7 +301,7 @@ public sealed class SizeEstimateServiceTests
         const double durationSeconds = 1_800;
         const int videoKbps = 8_000;
         const int audioKbps = 192;
-        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8388.608d;
 
         SizeEstimateBreakdown estimate = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
             sourceMb, durationSeconds, 1920, 1080, 30, videoKbps, "hevc",
@@ -320,7 +320,7 @@ public sealed class SizeEstimateServiceTests
         const double durationSeconds = 1_800;
         const int videoKbps = 600;
         const int audioKbps = 800;
-        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8192d;
+        double sourceMb = (videoKbps + audioKbps) * durationSeconds / 8388.608d;
 
         SizeEstimateBreakdown estimate = SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
             sourceMb, durationSeconds, 1280, 720, 30, videoKbps, "hevc",
@@ -374,7 +374,7 @@ public sealed class SizeEstimateServiceTests
         const int audioKbps = 900;
         const int containerKbps = 40;
         const int totalKbps = derivedVideoKbps + audioKbps + containerKbps;
-        double sourceMb = totalKbps * durationSeconds / 8192d;
+        double sourceMb = totalKbps * durationSeconds / 8388.608d;
 
         SizeEstimateBreakdown missingVideoBitrate =
             SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
@@ -410,7 +410,7 @@ public sealed class SizeEstimateServiceTests
         const int videoKbps = 2_600;
         const int audioKbps = 1_200;
         double sourceMb =
-            (videoKbps + audioKbps) * durationSeconds / 8192d;
+            (videoKbps + audioKbps) * durationSeconds / 8388.608d;
 
         SizeEstimateBreakdown estimate =
             SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
@@ -438,7 +438,7 @@ public sealed class SizeEstimateServiceTests
     {
         const double durationSeconds = 3_600;
         const int totalKbps = 4_000;
-        double sourceMb = totalKbps * durationSeconds / 8192d;
+        double sourceMb = totalKbps * durationSeconds / 8388.608d;
         long attachmentBytes =
             (long)Math.Round(100d * 1000d * durationSeconds / 8d);
 

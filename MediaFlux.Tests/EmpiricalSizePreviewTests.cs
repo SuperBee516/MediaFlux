@@ -98,19 +98,108 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
     }
 
     private void Queue(EstimateBackgroundService service, int quality = 24, double target = 0, long authorityRevision = 0,
-        bool empiricalPreviewEnabled = false)
+        bool empiricalPreviewEnabled = false, DateTime? qualityChanged = null,
+        EncodingQualityIntent? qualityIntent = null, bool historicalCalibration = true,
+        Guid queueItemId = default)
     {
         service.QueueSmartEstimate(_source, target <= 0, "Medium", target,
             new(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"), quality, null, null, false, true, 10, new(),
+            qualityIntent: qualityIntent, historicalCalibrationEnabled: historicalCalibration,
             previewSettings: EncodeExecutionSnapshotBuilderTests.Settings() with { NumericQualityValue = quality,
                 TargetSizeText = target > 0 ? target.ToString(System.Globalization.CultureInfo.CurrentCulture) : "" },
             previewItem: new() { SourceFilePath = _source, LogicalSourcePath = _source },
-            estimateAuthorityRevision: authorityRevision,
-            empiricalPreviewEnabled: empiricalPreviewEnabled);
+            estimateAuthorityRevision: authorityRevision, queueItemId: queueItemId,
+            empiricalPreviewEnabled: empiricalPreviewEnabled, qualityChangeStartedUtc: qualityChanged);
+    }
+
+    [Fact]
+    public async Task FirstEstimateIsPublishedBeforeBlockedRecommendationAndWithoutHistory()
+    {
+        using var media = new DisposableMediaInfo();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        using var service = new EstimateBackgroundService(media.Value, Provider(new Samples((_, _) =>
+            throw new InvalidOperationException("Sampling is not permitted"))), Metadata,
+            recommendationEvaluator: (_, _) =>
+            {
+                entered.SetResult();
+                release.Wait();
+                throw new IOException("Optional recommendation/history unavailable");
+            });
+        try
+        {
+            Queue(service, historicalCalibration: true);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(service.TryDequeueSmart(out var first));
+            Assert.True(first.EstimatedMb > 0);
+            Assert.Null(first.Recommendation);
+            Assert.False(first.SizeCalibration!.Applied);
+            Assert.Equal(0, first.SizeCalibration.SampleCount);
+            Assert.Contains("optional history is not queried", first.SizeCalibration.Reason);
+        }
+        finally { release.Set(); }
+        await FinishWorkers(service);
+        Assert.True(service.TryDequeueSmart(out var advice));
+        Assert.True(advice.RecommendationOnly);
+        Assert.Equal(SmartEncodeRecommendationKind.Unavailable, advice.Recommendation!.Kind);
+        Assert.True(advice.EstimatedMb > 0);
+    }
+
+    [Theory]
+    [InlineData(QualityTarget.SmallerFile)]
+    [InlineData(QualityTarget.Efficient)]
+    [InlineData(QualityTarget.Balanced)]
+    [InlineData(QualityTarget.HighQuality)]
+    [InlineData(QualityTarget.MaximumQuality)]
+    public async Task WarmQualityRefreshUsesCapturedMetadataEvenWhenSourceCannotBeRead(QualityTarget target)
+    {
+        using var media = new DisposableMediaInfo();
+        int metadataCalls = 0;
+        var samples = new Samples((_, _) => throw new InvalidOperationException("No samples"));
+        using var service = new EstimateBackgroundService(media.Value, Provider(samples), path =>
+        {
+            if (++metadataCalls > 1) throw new InvalidOperationException("Metadata must not be reread");
+            return Metadata(path);
+        });
+        Queue(service);
+        await FinishWorkers(service);
+        service.ResetAndCancel();
+        File.Delete(_source); // A settings-only estimate may use the captured snapshot; Start still validates the source.
+        Queue(service, qualityChanged: DateTime.UtcNow, qualityIntent: EncodingQualityIntent.Automatic(target));
+        await FinishWorkers(service);
+        Assert.True(service.TryDequeueSmart(out var result));
+        Assert.True(result.EstimatedMb > 0);
+        Assert.Equal(target, result.QualityResolution!.Intent.Target);
+        Assert.Equal(1, metadataCalls);
+        Assert.Empty(samples.Qualities);
+        Assert.Null(result.Recommendation);
+        Assert.Equal(0, result.SizeCalibration!.SampleCount);
     }
 
     private static MediaInfoService.MediaInfo Metadata(string _) => new()
     { Width = 1920, Height = 1080, Fps = 30, VideoCodec = "h264", DurationSeconds = 100, BitrateKbps = 4000, VideoStreamCount = 1 };
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CapturedMetadataCannotBeReusedByAnotherRowOrProductionRevision(bool replaceRow)
+    {
+        using var media = new DisposableMediaInfo();
+        int reads = 0;
+        using var service = new EstimateBackgroundService(media.Value,
+            Provider(new Samples((_, _) => throw new InvalidOperationException("No samples"))),
+            path => { reads++; return Metadata(path); });
+        Guid firstId = Guid.NewGuid();
+        Queue(service, queueItemId: firstId);
+        await FinishWorkers(service);
+        service.ResetAndCancel();
+        Queue(service, queueItemId: replaceRow ? Guid.NewGuid() : firstId,
+            authorityRevision: replaceRow ? 0 : 1, qualityChanged: DateTime.UtcNow);
+        await FinishWorkers(service);
+        Assert.True(service.TryDequeueSmart(out var result));
+        Assert.True(result.EstimatedMb > 0);
+        Assert.Equal(2, reads);
+    }
 
     [Fact]
     public async Task BackgroundUsesEmpiricalAuthorityAndFailureUsesVisibleGenericFallback()
@@ -168,6 +257,9 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
 
         Assert.True(service.TryDequeueSmart(out var result));
         Assert.True(result.EstimatedMb > 0);
+        Assert.Null(result.Recommendation);
+        Assert.True(service.TryDequeueSmart(out result));
+        Assert.True(result.RecommendationOnly);
         Assert.Equal(SmartEncodeRecommendationKind.Unavailable, result.Recommendation!.Kind);
         Assert.Contains("estimate remains valid", result.Recommendation.PrimaryReason, StringComparison.OrdinalIgnoreCase);
     }
@@ -218,6 +310,8 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
         Assert.True(service.TryDequeueSmart(out var result));
         Assert.Equal(service.CurrentGeneration, result.Generation);
         Assert.Equal(25, result.EmpiricalPreview!.DisplayQuality);
+        Assert.True(service.TryDequeueSmart(out result));
+        Assert.True(result.RecommendationOnly);
         Assert.False(service.TryDequeueSmart(out _));
     }
 
