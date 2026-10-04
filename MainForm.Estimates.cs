@@ -12,6 +12,7 @@ namespace MediaFlux
 {
     public partial class MainForm : MediaFluxForm
     {
+        private DateTime? _qualityChangeEstimateRefreshUtc;
         private const string ProvisionalAdaptiveEstimateTooltip =
             "Provisional output-size estimate with low confidence before sampling. Estimated savings are advisory; Source Adaptive may revise the effective quality after representative sampling.";
 
@@ -237,6 +238,12 @@ namespace MediaFlux
                                 ApplySmartRecommendation(row, item.Recommendation);
                             UpdateRowCustomFlag(row);
                             RestoreQueuedStateAfterEstimate(row);
+                            System.Diagnostics.Debug.WriteLine(
+                                $"[CriticalPathTiming] stage=estimate-visible item={item.QueueItemId:N} " +
+                                $"source={Path.GetFileName(item.Path)} sinceAcceptedMs={(DateTime.UtcNow - item.QueueAcceptedUtc).TotalMilliseconds:0}" +
+                                (item.QualityChangeStartedUtc is { } changedUtc
+                                    ? $" sinceQualityChangeMs={(DateTime.UtcNow - changedUtc).TotalMilliseconds:0}"
+                                    : string.Empty));
                             applied++;
                         }
                         catch (Exception ex)
@@ -294,10 +301,17 @@ namespace MediaFlux
             RunEstimatePass();
         }
 
-        private void ScheduleEstimateRefresh()
+        private void ScheduleEstimateRefresh(bool qualityChanged = false)
         {
             if (IsDisposed || dgvEncodeQueue == null || dgvEncodeQueue.Rows.Count == 0)
                 return;
+
+            if (qualityChanged)
+            {
+                _qualityChangeEstimateRefreshUtc = DateTime.UtcNow;
+                System.Diagnostics.Debug.WriteLine(
+                    $"[CriticalPathTiming] stage=quality-change-initiated utc={_qualityChangeEstimateRefreshUtc:O} queueCount={dgvEncodeQueue.Rows.Count}");
+            }
 
             _estimateRefreshTimer ??= new System.Windows.Forms.Timer { Interval = 250 };
             _estimateRefreshTimer.Stop();
@@ -319,6 +333,8 @@ namespace MediaFlux
 
         private void RunEstimatePass(bool force)
         {
+            DateTime? qualityChangeStartedUtc = _qualityChangeEstimateRefreshUtc;
+            _qualityChangeEstimateRefreshUtc = null;
             _estimateService.ResetAndCancel();
 
             if (dgvEncodeQueue.Rows.Count == 0)
@@ -501,6 +517,7 @@ namespace MediaFlux
                     isCustom ? null : automaticQualityIntent,
                     sourceAdaptiveCeilingEligible,
                     estimateMeta.QueueItemId,
+                    estimateMeta.QueueAcceptedUtc,
                     encoderSettings.Preset,
                     encoderSettings.TenBit ? 10 : 8,
                     encoderSettings.ConcurrentEncoderSessions,
@@ -516,7 +533,8 @@ namespace MediaFlux
                             ? null : _presetService.LoadAll().FirstOrDefault(preset => preset.Name.Equals(
                                 estimateMeta.LibraryPolicyIntent.EncodingPresetName, StringComparison.OrdinalIgnoreCase))
                     },
-                    estimateMeta.EstimateAuthorityRevision);
+                    estimateMeta.EstimateAuthorityRevision,
+                    qualityChangeStartedUtc);
                 queued++;
             }
 
@@ -595,12 +613,14 @@ namespace MediaFlux
             EncodingQualityIntent? qualityIntent,
             bool sourceAdaptiveCeilingEligible,
             Guid queueItemId,
+            DateTime queueAcceptedUtc,
             string encoderPreset,
             int outputBitDepth,
             bool concurrentEncoderSessions,
             EncodeExecutionSnapshotSettings? previewSettings = null,
             EncodeExecutionSnapshotItem? previewItem = null,
-            long estimateAuthorityRevision = 0)
+            long estimateAuthorityRevision = 0,
+            DateTime? qualityChangeStartedUtc = null)
         {
             _estimateService.QueueSmartEstimate(
                 path,
@@ -617,14 +637,16 @@ namespace MediaFlux
                 storageSavings,
                 qualityIntent,
                 sourceAdaptiveCeilingEligible,
-                _config.UseHistoricalSizePredictionCalibration,
+                _config.UseHistoricalSizePredictionCalibration && qualityChangeStartedUtc is null,
                 queueItemId,
                 encoderPreset,
                 outputBitDepth,
                 concurrentEncoderSessions,
                 previewSettings,
                 previewItem,
-                estimateAuthorityRevision);
+                estimateAuthorityRevision,
+                queueAcceptedUtc: queueAcceptedUtc,
+                qualityChangeStartedUtc: qualityChangeStartedUtc);
         }
 
         private static string PreviewToolIdentity(string? configuredPath)

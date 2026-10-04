@@ -149,7 +149,16 @@ public sealed class EncodeExecutionAttempt
     {
         Snapshot = snapshot.CopyForExecution();
         if (Snapshot.AdaptivePreAttemptResearchCapture.Enabled)
-            PreAttemptSource = CaptureSourceIdentity(Snapshot);
+        {
+            try
+            {
+                PreAttemptSource = CaptureSourceIdentity(Snapshot);
+            }
+            catch (Exception ex) when (!RequiresDurablePreAttemptCapture)
+            {
+                PreAttemptCaptureFailure = ex.Message;
+            }
+        }
     }
 
     private static AdaptivePreAttemptSourceIdentity CaptureSourceIdentity(EncodeExecutionSnapshot snapshot)
@@ -172,6 +181,10 @@ public sealed class EncodeExecutionAttempt
 
     internal EncodeExecutionSnapshot Snapshot { get; }
     internal AdaptivePreAttemptSourceIdentity? PreAttemptSource { get; }
+    internal string? PreAttemptCaptureFailure { get; }
+    internal bool RequiresDurablePreAttemptCapture =>
+        Snapshot.PredictionShadowExperimentAssignment is not null ||
+        !string.IsNullOrWhiteSpace(Snapshot.AdaptivePreAttemptResearchCapture.Source?.CampaignCaseId);
     public EncodingPlan? Plan { get; internal set; }
     public EncodingExecutionOutcome? ExecutionOutcome { get; internal set; }
     public EncodingQualityResolution? QualityResolution { get; internal set; }
@@ -394,6 +407,8 @@ public sealed class EncodeExecutionOrchestrator
             token.ThrowIfCancellationRequested();
             if (!attempt.TryStartAdaptiveCapture())
                 throw new InvalidOperationException("Duplicate pre-attempt capture for this logical operation.");
+            if (attempt.PreAttemptCaptureFailure is { } identityFailure)
+                throw new InvalidOperationException(identityFailure);
             var snapshot = attempt.Snapshot;
             var options = snapshot.AdaptivePreAttemptResearchCapture;
             var request = observation.SelectionRequest ?? throw new InvalidOperationException("No frozen adaptive request is available.");
@@ -427,6 +442,16 @@ public sealed class EncodeExecutionOrchestrator
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
+            if (!attempt.RequiresDurablePreAttemptCapture)
+            {
+                try
+                {
+                    callbacks.Diagnostic?.Invoke(
+                        $"[AdaptivePreAttemptEvidence] Optional capture failed; ordinary encoding continues without research evidence: {ex.Message}");
+                }
+                catch { }
+                return;
+            }
             attempt.ExecutionOutcome = new(observation.Plan.PlanId, [], [], TerminalResult: EncodingTerminalResult.NotRun, ProductionEncodeCount: 0);
             try { callbacks.ExecutionOutcome?.Invoke(attempt.ExecutionOutcome); } catch { }
             if (ex is AdaptivePreAttemptEvidenceCaptureException) throw;

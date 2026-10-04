@@ -156,6 +156,31 @@ public sealed class AdaptiveStorageSavingsTests
     }
 
     [Fact]
+    public async Task SamplingInfrastructureFailureRetainsPreferredQualityForDeterministicPlan()
+    {
+        AdaptiveQualitySelectionRequest request = Request();
+        AdaptiveQualitySelectionEvidence result = await new StorageSavingsSampleSelector(new ThrowingSampleRunner())
+            .SelectAsync(request, null, CancellationToken.None);
+
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
+        Assert.Equal(request.Envelope.PreferredQuality, result.SelectedQuality);
+        Assert.Empty(result.Candidates);
+        Assert.Contains("ordinary video tool failure", result.Reason);
+
+        EncodingDecisionContext context = Context() with { Input = request.Input };
+        EncodingPlan original = EncodingPlanService.Create(context);
+        EncodingPlan plan = EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(
+            original, result);
+        Assert.Equal(request.Envelope.PreferredQuality, plan.Quality!.EffectiveQuality);
+        Assert.Equal(original.Quality!.EffectiveQuality, plan.Quality.EffectiveQuality);
+        Assert.Same(original.Recovery, plan.Recovery);
+        Assert.Same(original.RecoveryCapabilities, plan.RecoveryCapabilities);
+        Assert.Same(original.Estimates, plan.Estimates);
+        Assert.Same(original.Recommendation, plan.Recommendation);
+        Assert.Same(result, plan.AdaptiveSelection);
+    }
+
+    [Fact]
     public async Task AncillaryAllowanceChangesCandidateRelationshipWithoutAuthorizingOutput()
     {
         AdaptiveQualitySelectionRequest request = Request() with { Ancillary = new(500_000, 0, 0, 0) };
@@ -335,5 +360,12 @@ public sealed class AdaptiveStorageSavingsTests
             int position = Calls.Count(c => c.Quality == quality) - 1;
             return Task.FromResult(new RepresentativeSampleEvidence(sample, (long)(rate(quality, position) * sample.Duration.TotalSeconds), sample.Duration.TotalSeconds));
         }
+    }
+
+    private sealed class ThrowingSampleRunner : IAdaptiveVideoSampleRunner
+    {
+        public Task<RepresentativeSampleEvidence> MeasureAsync(AdaptiveQualitySelectionRequest request, int quality,
+            RepresentativeSample sample, CancellationToken cancellationToken) =>
+            throw new IOException("ordinary video tool failure");
     }
 }

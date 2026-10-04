@@ -189,6 +189,36 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
     }
 
     [Fact]
+    public async Task OptionalUnassignedResearchCaptureFailureDoesNotBlockOrdinaryEncoding()
+    {
+        var fixture = await FixtureAsync();
+        var executor = new SimulatedExecutor(fixture.Observation);
+        var orchestrator = Orchestrator(executor, new ThrowingSink());
+        EncodeExecutionSnapshot baseSnapshot = Snapshot();
+        EncodeExecutionSnapshot snapshot = baseSnapshot with
+        {
+            AdaptivePreAttemptResearchCapture = baseSnapshot.AdaptivePreAttemptResearchCapture with
+            {
+                Source = baseSnapshot.AdaptivePreAttemptResearchCapture.Source! with
+                {
+                    CampaignCaseId = null,
+                    StableSourceId = null,
+                    Sha256 = null
+                }
+            }
+        };
+        var diagnostics = new List<string>();
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(snapshot);
+
+        await orchestrator.ExecuteAsync(attempt,
+            new EncodeExecutionCallbacks { Diagnostic = diagnostics.Add }, null, CancellationToken.None);
+
+        Assert.Equal(1, executor.LaunchCount);
+        Assert.Null(attempt.PreAttemptCapture);
+        Assert.Contains(diagnostics, line => line.Contains("ordinary encoding continues", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task SameOperationCannotOverwriteAndFailedPublicationLeavesNoTemporaryFile()
     {
         var fixture = await FixtureAsync();
@@ -258,11 +288,13 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public async Task RealEncodingServiceAwaitsGateAfterFrozenCallbacksBeforeProductionRunner(bool failCapture, bool skipped)
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, true)]
+    public async Task RealEncodingServiceAwaitsGateAfterFrozenCallbacksBeforeProductionRunner(
+        bool failCapture, bool skipped, bool samplingFailure)
     {
         var events = new List<string>();
         int launches = 0;
@@ -272,7 +304,9 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
             Path.Combine(_root, "ffprobe.exe"), overwrite: true);
         var service = new EncodingService(_root, _ => { }, null,
             Path.Combine(_root, "ffmpeg.exe"), Path.Combine(_root, "ffprobe.exe"), null,
-            new AdaptiveStorageSavingsTests.FakeSamples((_, _) => skipped ? 50_000 : 10),
+            new AdaptiveStorageSavingsTests.FakeSamples((_, _) => samplingFailure
+                ? throw new IOException("synthetic optional sampling failure")
+                : skipped ? 50_000 : 10),
             (_, _, _, _) =>
             {
                 events.Add("production");
@@ -313,6 +347,12 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
             await Assert.ThrowsAsync<ProductionBoundaryException>(() => service.EncodeWithResultAsync(request));
         Assert.Equal(failCapture || skipped ? 0 : 1, launches);
         Assert.Equal(failCapture ? ["selection", "plan", "capture"] : skipped ? ["selection", "plan", "capture", "acknowledged"] : new[] { "selection", "plan", "capture", "acknowledged", "production" }, events);
+        if (samplingFailure)
+        {
+            Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, selection!.Disposition);
+            Assert.Equal(selection.PreferredQuality, frozen!.Plan.Quality!.EffectiveQuality);
+            Assert.True(frozen.Plan.Recovery!.TolerantRecoveryPermitted);
+        }
     }
 
     [Fact]

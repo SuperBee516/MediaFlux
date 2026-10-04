@@ -30,8 +30,14 @@ public static class EncodingPlanService
     /// use it to choose or alter an execution path.
     /// </summary>
     public static EncodingPlan Create(EncodingDecisionContext context)
+        => Create(context, EncodingRecommendationService.Evaluate);
+
+    internal static EncodingPlan Create(
+        EncodingDecisionContext context,
+        Func<EncodingPlan, EncodingRecommendation> evaluateRecommendation)
     {
         ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(evaluateRecommendation);
         MediaProbeStreamInfo? sourceVideo = context.Source.Streams.FirstOrDefault(stream =>
             stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
         VideoOutputGeometryPlan? geometry = null;
@@ -187,7 +193,16 @@ public static class EncodingPlanService
                 context.AudioChannels, context.MapMode, container.CopySubtitles,
                 container.CopyDataStreams, container.CopyAttachments)
         };
-        plan.Recommendation = EncodingRecommendationService.Evaluate(plan);
+        try
+        {
+            plan.Recommendation = evaluateRecommendation(plan);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            plan.Recommendation = null;
+            System.Diagnostics.Debug.WriteLine(
+                $"[EncodingPlan] Optional recommendation failed; the plan remains available. {ex}");
+        }
         return plan;
     }
 
@@ -197,6 +212,8 @@ public static class EncodingPlanService
 
     internal static EncodingPlan FreezeAdaptiveSelection(EncodingPlan plan, AdaptiveQualitySelectionEvidence evidence)
     {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(evidence);
         if (evidence.Candidates.Any(c => c.Samples.Any(s => s.Purpose != VideoSamplePurpose.ProductionAcceptance)))
             throw new InvalidDataException("Preview evidence cannot be frozen as production selection.");
         EncodingPlanExecutionValues execution = GetExecutionValues(plan);
@@ -230,6 +247,57 @@ public static class EncodingPlanService
             DecisionReasons = Array.AsReadOnly(plan.DecisionReasons.Where(reason => reason.Code != EncodingDecisionReasonCode.IntelligentRecoveryAvailable).ToArray()),
             Sections = plan.Sections,
             ExecutionValues = execution with { QualityResolution = quality }
+        };
+    }
+
+    internal static EncodingPlan PreserveConfiguredQualityAfterAdaptiveAbstention(
+        EncodingPlan plan, AdaptiveQualitySelectionEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(evidence);
+        if (evidence.Disposition != AdaptiveSelectionDisposition.NotSuitable ||
+            evidence.SelectedQuality != evidence.PreferredQuality)
+            throw new InvalidOperationException("Adaptive abstention must retain the configured preferred quality.");
+        if (evidence.Candidates.Any(candidate => candidate.Samples.Any(sample =>
+                sample.Purpose != VideoSamplePurpose.ProductionAcceptance)))
+            throw new InvalidDataException("Preview evidence cannot be attached to a production plan.");
+
+        EncodingPlanExecutionValues execution = GetExecutionValues(plan);
+        if (!plan.IsAvailable || plan.AdaptiveSelection is not null || plan.Quality is null ||
+            plan.Quality.EffectiveQuality != evidence.PreferredQuality ||
+            execution.QualityResolution.EffectiveQuality != evidence.PreferredQuality)
+            throw new InvalidOperationException("The configured execution plan does not match the adaptive abstention quality.");
+
+        // Abstention is observational. Keep the configured plan, estimates,
+        // recommendation, and recovery policy intact while retaining its evidence.
+        return new EncodingPlan
+        {
+            IsAvailable = plan.IsAvailable,
+            UnavailableReason = plan.UnavailableReason,
+            PlanId = plan.PlanId,
+            Source = plan.Source,
+            SourceHealth = plan.SourceHealth,
+            Video = plan.Video,
+            Audio = plan.Audio,
+            Subtitles = plan.Subtitles,
+            Container = plan.Container,
+            Hardware = plan.Hardware,
+            Recovery = plan.Recovery,
+            Preflight = plan.Preflight,
+            RecoveryCapabilities = plan.RecoveryCapabilities,
+            ValidationIntent = plan.ValidationIntent,
+            FinalizationIntent = plan.FinalizationIntent,
+            Validation = plan.Validation,
+            Quality = plan.Quality,
+            AdaptiveSelection = evidence,
+            SourceAdaptiveShadow = plan.SourceAdaptiveShadow,
+            Estimates = plan.Estimates,
+            SizePredictionCalibration = plan.SizePredictionCalibration,
+            Recommendation = plan.Recommendation,
+            Risks = plan.Risks,
+            DecisionReasons = plan.DecisionReasons,
+            Sections = plan.Sections,
+            ExecutionValues = execution
         };
     }
 

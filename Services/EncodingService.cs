@@ -883,9 +883,24 @@ namespace MediaFlux.Services
             // Initial adaptive samples only reproduce the ordinary strict path.
             bool ordinaryAdaptiveInput = sourceTimelineRepairPath is null && !requireRegeneratedOutputTimeline &&
                 sourceDecodeMode == FfmpegSourceDecodeMode.Strict && sampleStart is null && sampleDuration is null;
-            if (AdaptiveStorageSavingsPolicy.TryCreateRequest(adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput, concurrentEncoderSessions,
-                storageSavingsContract ?? StorageSavingsContract.Disabled, planContext, shadowPlan,
-                out AdaptiveQualitySelectionRequest? selectionRequest, out string adaptiveReason))
+            AdaptiveQualitySelectionRequest? selectionRequest = null;
+            string adaptiveReason = string.Empty;
+            bool adaptiveSelectionAvailable;
+            try
+            {
+                adaptiveSelectionAvailable = AdaptiveStorageSavingsPolicy.TryCreateRequest(
+                    adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput, concurrentEncoderSessions,
+                    storageSavingsContract ?? StorageSavingsContract.Disabled, planContext, shadowPlan,
+                    out selectionRequest, out adaptiveReason);
+            }
+            catch (Exception ex)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                adaptiveSelectionAvailable = false;
+                adaptiveReason = $"Adaptive selection setup failed; configured quality will be used: {ex.Message}";
+                _log?.Invoke("[AdaptiveStorageSavings] " + adaptiveReason);
+            }
+            if (adaptiveSelectionAvailable)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 callback("Analyzing compression…");
@@ -904,11 +919,28 @@ namespace MediaFlux.Services
                             restoration: restoration, plannedVideoGeometry: values.Geometry, videoOnly: true);
                     });
                 var samplingWatch = Stopwatch.StartNew();
-                AdaptiveQualitySelectionEvidence selection = await new StorageSavingsSampleSelector(selectionRunner)
-                    .SelectAsync(selectionRequest!, callback, cancellationToken).ConfigureAwait(false);
+                AdaptiveQualitySelectionEvidence selection;
+                try
+                {
+                    selection = await new StorageSavingsSampleSelector(selectionRunner)
+                        .SelectAsync(selectionRequest!, callback, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    selection = StorageSavingsSampleSelector.PreservePreferredQuality(selectionRequest!, ex.Message);
+                    _log?.Invoke($"[AdaptiveStorageSavings] Sampling failed; configured quality will be used. {ex.Message}");
+                }
                 selection = selection with { SamplingSeconds = samplingWatch.Elapsed.TotalSeconds };
                 cancellationToken.ThrowIfCancellationRequested();
-                shadowPlan = EncodingPlanService.FreezeAdaptiveSelection(shadowPlan, selection);
+                bool adaptiveQualitySelected = selection.Disposition == AdaptiveSelectionDisposition.Selected;
+                shadowPlan = selection.Disposition == AdaptiveSelectionDisposition.NotSuitable
+                    ? EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(shadowPlan, selection)
+                    : EncodingPlanService.FreezeAdaptiveSelection(shadowPlan, selection);
                 adaptiveSelectionCallback?.Invoke(selection);
                 if (selection.Disposition == AdaptiveSelectionDisposition.Skipped)
                 {
@@ -918,10 +950,17 @@ namespace MediaFlux.Services
                             restoration?.Clone() ?? new()), cancellationToken).ConfigureAwait(false);
                     throw new AdaptiveStorageSavingsSkippedException(selection);
                 }
-                callback($"Encoding at {(selection.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF")} {selection.SelectedQuality}");
-                // Phase 2 owns one full-file attempt. Existing output validation and
-                // actual-byte rejection stay authoritative, with no automatic retry.
-                disableAutomaticFfmpegRecovery = true;
+                if (adaptiveQualitySelected)
+                {
+                    callback($"Encoding at {(selection.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF")} {selection.SelectedQuality}");
+                    // A selected adaptive quality owns one full-file attempt.
+                    // Existing output validation and actual-byte rejection stay authoritative.
+                    disableAutomaticFfmpegRecovery = true;
+                }
+                else
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavings] Sampling was unsuitable; using configured quality {selection.PreferredQuality} with the existing recovery policy. {selection.Reason}");
+                }
             }
             else if (adaptiveStorageSavingsEnabled)
                 _log?.Invoke("[AdaptiveStorageSavings] " + adaptiveReason);
@@ -3166,8 +3205,14 @@ namespace MediaFlux.Services
 
             try
             {
+                Stopwatch processStartWatch = Stopwatch.StartNew();
                 proc.Start();
-                processStartedCallback?.Invoke(DateTimeOffset.UtcNow);
+                DateTimeOffset processStartedUtc = DateTimeOffset.UtcNow;
+                processStartWatch.Stop();
+                Debug.WriteLine(
+                    $"[CriticalPathTiming] stage=ffmpeg-process-start utc={processStartedUtc:O} " +
+                    $"attempt={attempt} launchMs={processStartWatch.Elapsed.TotalMilliseconds:0}");
+                processStartedCallback?.Invoke(processStartedUtc);
                 lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FfmpegStart);
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();

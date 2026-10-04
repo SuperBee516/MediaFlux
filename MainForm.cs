@@ -379,11 +379,11 @@ namespace MediaFlux
             if (chkTenBit != null)
                 chkTenBit.CheckedChanged += (_, __) => ScheduleEstimateRefresh();
             txtTargetSize.TextChanged += (_, __) => ScheduleEstimateRefresh();
-            nudAutoQuality!.ValueChanged += (_, __) => ScheduleEstimateRefresh();
+            nudAutoQuality!.ValueChanged += (_, __) => ScheduleEstimateRefresh(qualityChanged: true);
             if (comboQualityMode != null)
-                comboQualityMode.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+                comboQualityMode.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh(qualityChanged: true);
             if (trkQualityTarget != null)
-                trkQualityTarget.ValueChanged += (_, __) => ScheduleEstimateRefresh();
+                trkQualityTarget.ValueChanged += (_, __) => ScheduleEstimateRefresh(qualityChanged: true);
 
             chkIncludeSubfolders.CheckedChanged += (s, e) =>
             {
@@ -2620,6 +2620,7 @@ namespace MediaFlux
             private int _inspectorLogCharacters;
 
             public Guid QueueItemId = Guid.NewGuid();
+            public DateTime QueueAcceptedUtc = DateTime.UtcNow;
             public long EstimateAuthorityRevision;
             public long QueueSequence;
             public string Path = "";
@@ -6024,6 +6025,10 @@ namespace MediaFlux
             RowMeta queueMeta = EnsureRowMeta(r);
             queueMeta.Path = path;
             queueMeta.SourceSizeBytes = fi.Length;
+            queueMeta.QueueAcceptedUtc = DateTime.UtcNow;
+            System.Diagnostics.Debug.WriteLine(
+                $"[CriticalPathTiming] stage=queue-file-accepted item={queueMeta.QueueItemId:N} " +
+                $"source={fi.Name} utc={queueMeta.QueueAcceptedUtc:O}");
             _rowsByPath[path] = r;
             _queueSourceSizeMap[path] = sourceMb;
             _queueTotalSourceMb += sourceMb;

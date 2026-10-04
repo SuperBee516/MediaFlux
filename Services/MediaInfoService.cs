@@ -60,7 +60,21 @@ namespace MediaFlux.Services
                 return cached.Info;
             }
 
-            var info = Probe(path);
+            Stopwatch probeWatch = Stopwatch.StartNew();
+            Debug.WriteLine(
+                $"[CriticalPathTiming] stage=ffprobe-start source={Path.GetFileName(path)} utc={DateTime.UtcNow:O}");
+            MediaInfo info;
+            try
+            {
+                info = Probe(path);
+            }
+            finally
+            {
+                probeWatch.Stop();
+                Debug.WriteLine(
+                    $"[CriticalPathTiming] stage=ffprobe-end source={Path.GetFileName(path)} " +
+                    $"elapsedMs={probeWatch.Elapsed.TotalMilliseconds:0} utc={DateTime.UtcNow:O}");
+            }
 
             // A failed probe is often a file that another encode is still writing.
             // Never preserve that failure, and tie successful results to the exact
@@ -154,7 +168,21 @@ namespace MediaFlux.Services
             // a usable duration. A partially populated MediaInfo result may also be
             // cached, so explicitly retry the duration-only probe before reporting
             // that target-size estimation is unavailable.
-            double durationSeconds = ProbeDurationSeconds(path);
+            Stopwatch probeWatch = Stopwatch.StartNew();
+            Debug.WriteLine(
+                $"[CriticalPathTiming] stage=ffprobe-duration-only-start source={Path.GetFileName(path)} utc={DateTime.UtcNow:O}");
+            double durationSeconds;
+            try
+            {
+                durationSeconds = ProbeDurationSeconds(path);
+            }
+            finally
+            {
+                probeWatch.Stop();
+                Debug.WriteLine(
+                    $"[CriticalPathTiming] stage=ffprobe-duration-only-end source={Path.GetFileName(path)} " +
+                    $"elapsedMs={probeWatch.Elapsed.TotalMilliseconds:0} utc={DateTime.UtcNow:O}");
+            }
             if (durationSeconds <= 0)
                 return 0;
 

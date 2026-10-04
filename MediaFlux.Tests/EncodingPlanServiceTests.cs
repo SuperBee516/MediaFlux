@@ -7,6 +7,22 @@ namespace MediaFlux.Tests;
 public sealed class EncodingPlanServiceTests
 {
     [Fact]
+    public void RecommendationFailureDoesNotPreventPlanCreation()
+    {
+        EncodingPlan plan = EncodingPlanService.Create(
+            Context(
+                OutputContainerSelection.Matroska,
+                ContainerCompatibilityPolicy.Intelligent,
+                new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 }),
+            _ => throw new InvalidOperationException("synthetic recommendation failure"));
+
+        Assert.True(plan.IsAvailable);
+        Assert.Null(plan.Recommendation);
+        Assert.NotNull(plan.Quality);
+        Assert.NotNull(EncodingPlanService.GetExecutionValues(plan));
+    }
+
+    [Fact]
     public void ShadowPlanKeepsConfiguredAutoSeparateFromEffectiveMkvAndRecordsReasons()
     {
         EncodingPlan plan = EncodingPlanService.Create(Context(

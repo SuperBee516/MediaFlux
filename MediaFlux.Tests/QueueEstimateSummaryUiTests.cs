@@ -128,9 +128,10 @@ public sealed class QueueEstimateSummaryUiTests
             Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual • Legacy Numeric";
             Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
             Field<CheckBox>(main, "chkAutoTargetSize").Checked = true;
+            var samples = new AuthoritySamples();
             var provider = new QueueEmpiricalPreviewProvider(new EncodingService(Path.GetTempPath(), _ => { }),
                 new AuthorityProbe(), new EncodeExecutionSnapshotBuilder(), "test-tools",
-                (_, _, _) => new AuthoritySamples(), _ => "test-video", new PreviewSamplingCoordinator());
+                (_, _, _) => samples, _ => "test-video", new PreviewSamplingCoordinator());
             var service = new EstimateBackgroundService(Field<MediaInfoService>(main, "_mediaInfoService"), provider,
                 _ => new() { Width = 1920, Height = 1080, Fps = 30, DurationSeconds = 100, VideoCodec = "h264", BitrateKbps = 4000 });
             previousService.Dispose();
@@ -147,9 +148,10 @@ public sealed class QueueEstimateSummaryUiTests
                 work.GetType().GetMethod("CompleteAdding")!.Invoke(work, null);
                 await Task.WhenAll(Field<Task[]>(service, "_workers")).WaitAsync(TimeSpan.FromSeconds(10));
                 Invoke(main, "ApplySmartEstimateResultsBatch");
-                Assert.NotNull(Field<EmpiricalPreviewResult?>(meta, "EmpiricalPreview"));
-                Assert.Equal(700000 / 1048576d, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path], 8);
-                Assert.Equal(EmpiricalPreviewResult.ModelId, Field<EncodingSizePredictionCalibration>(meta, "SizePredictionCalibration").EstimateModelId);
+                Assert.Null(Field<EmpiricalPreviewResult?>(meta, "EmpiricalPreview"));
+                Assert.True(Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path] > 0);
+                Assert.Equal("BitrateArithmetic", Field<EncodingSizePredictionCalibration>(meta, "SizePredictionCalibration").EstimateModelId);
+                Assert.Equal(0, samples.Calls);
                 Assert.Equal(1, Field<long>(meta, "EstimateAuthorityRevision"));
             }
             finally { service.ResetAndCancel(); File.Delete(path); }
@@ -203,9 +205,15 @@ public sealed class QueueEstimateSummaryUiTests
 
     private sealed class AuthoritySamples : IAdaptiveVideoSampleRunner
     {
+        public int Calls { get; private set; }
+
         public Task<RepresentativeSampleEvidence> MeasureAsync(AdaptiveQualitySelectionRequest request, int quality,
-            RepresentativeSample sample, CancellationToken cancellationToken) => Task.FromResult(
+            RepresentativeSample sample, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(
                 new RepresentativeSampleEvidence(sample, 25000, 5) { Purpose = VideoSamplePurpose.PreviewEstimation });
+        }
     }
 
     private static void ReleaseProductionOwnership(MainForm main, DataGridViewRow row) =>

@@ -26,6 +26,12 @@ public sealed class StorageSavingsSampleSelector
     private readonly IAdaptiveVideoSampleRunner _runner;
     public StorageSavingsSampleSelector(IAdaptiveVideoSampleRunner runner) => _runner = runner;
 
+    internal static AdaptiveQualitySelectionEvidence PreservePreferredQuality(
+        AdaptiveQualitySelectionRequest request,
+        string reason) =>
+        Result(request, AdaptiveSelectionDisposition.NotSuitable, request.Envelope.PreferredQuality, [],
+            "Adaptive optimization is unavailable; preserve preferred quality and use actual-byte validation. " + reason);
+
     public async Task<AdaptiveQualitySelectionEvidence> SelectAsync(AdaptiveQualitySelectionRequest request,
         Action<string>? progress, CancellationToken cancellationToken)
     {
@@ -44,15 +50,22 @@ public sealed class StorageSavingsSampleSelector
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 RepresentativeSampleEvidence measured;
-                try { measured = await _runner.MeasureAsync(request, quality, position, cancellationToken).ConfigureAwait(false); }
-                catch (InvalidDataException ex)
+                try
+                {
+                    measured = await _runner.MeasureAsync(request, quality, position, cancellationToken).ConfigureAwait(false);
+                    if (measured.Purpose != VideoSamplePurpose.ProductionAcceptance)
+                        throw new InvalidDataException("Preview evidence cannot authorize production adaptive selection.");
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     return Result(request, AdaptiveSelectionDisposition.NotSuitable, request.Envelope.PreferredQuality, evidence,
-                        "Sample evidence is unavailable; preserve preferred quality and use actual-byte validation. " + ex.Message);
+                        "Sample optimization is unavailable; preserve preferred quality and use actual-byte validation. " + ex.Message);
                 }
-                if (measured.Purpose != VideoSamplePurpose.ProductionAcceptance)
-                    throw new InvalidDataException("Preview evidence cannot authorize production adaptive selection.");
                 if (measured.VideoBytes <= 0 || !double.IsFinite(measured.MeasuredSeconds) || measured.MeasuredSeconds <= 0)
                     return Result(request, AdaptiveSelectionDisposition.NotSuitable, request.Envelope.PreferredQuality, evidence,
                         "Sample evidence has no usable bytes/duration; preserve preferred quality and use actual-byte validation.");

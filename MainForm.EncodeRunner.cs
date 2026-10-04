@@ -47,6 +47,9 @@ namespace MediaFlux
 
         private async Task<EncodeQueueStartOutcome> StartEncodeAsync(bool? processAllOverride = null)
         {
+            DateTime startEncodeUtc = DateTime.UtcNow;
+            System.Diagnostics.Debug.WriteLine(
+                $"[CriticalPathTiming] stage=start-encode utc={startEncodeUtc:O} queueCount={dgvEncodeQueue.Rows.Count}");
             // prevent re-entry
             if (_encodingActive)
                 return EncodeQueueStartOutcome.NotStarted;
@@ -773,6 +776,10 @@ namespace MediaFlux
                     ContainerDecision = decision => appliedContainerDecision = decision,
                     PlanSnapshot = snapshot =>
                     {
+                        System.Diagnostics.Debug.WriteLine(
+                            $"[CriticalPathTiming] stage=encode-plan-ready item={meta.QueueItemId:N} " +
+                            $"elapsedMs={(DateTime.UtcNow - jobStartUtc).TotalMilliseconds:0} " +
+                            $"available={snapshot.Plan.IsAvailable} utc={DateTime.UtcNow:O}");
                         meta.IntelligencePlan = snapshot.Plan;
                         if (snapshot.Plan.AdaptiveSelection is { } adaptiveSelection)
                         {

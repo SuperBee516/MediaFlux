@@ -97,14 +97,16 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
         await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(10));
     }
 
-    private void Queue(EstimateBackgroundService service, int quality = 24, double target = 0, long authorityRevision = 0)
+    private void Queue(EstimateBackgroundService service, int quality = 24, double target = 0, long authorityRevision = 0,
+        bool empiricalPreviewEnabled = false)
     {
         service.QueueSmartEstimate(_source, target <= 0, "Medium", target,
             new(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"), quality, null, null, false, true, 10, new(),
             previewSettings: EncodeExecutionSnapshotBuilderTests.Settings() with { NumericQualityValue = quality,
                 TargetSizeText = target > 0 ? target.ToString(System.Globalization.CultureInfo.CurrentCulture) : "" },
             previewItem: new() { SourceFilePath = _source, LogicalSourcePath = _source },
-            estimateAuthorityRevision: authorityRevision);
+            estimateAuthorityRevision: authorityRevision,
+            empiricalPreviewEnabled: empiricalPreviewEnabled);
     }
 
     private static MediaInfoService.MediaInfo Metadata(string _) => new()
@@ -116,7 +118,7 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
         using var media = new DisposableMediaInfo();
         using (var service = new EstimateBackgroundService(media.Value, Provider(new Samples((_, _) => 5000)), Metadata))
         {
-            Queue(service);
+            Queue(service, empiricalPreviewEnabled: true);
             await FinishWorkers(service);
             Assert.True(service.TryDequeueSmart(out var result));
             Assert.Equal(EmpiricalPreviewResult.ModelId, result.SizeCalibration!.EstimateModelId);
@@ -126,7 +128,7 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
         using (var service = new EstimateBackgroundService(media.Value, Provider(new CallbackSamples((_, _, _, _) =>
                    throw new InvalidDataException("sample failure"))), Metadata))
         {
-            Queue(service);
+            Queue(service, empiricalPreviewEnabled: true);
             await FinishWorkers(service);
             Assert.True(service.TryDequeueSmart(out var result));
             Assert.Equal("GenericBppV1", result.SizeCalibration!.EstimateModelId);
@@ -134,6 +136,40 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
             Assert.Contains("low confidence", result.EstimateDiagnostic);
             Assert.Equal(SmartEncodeConfidence.Low, SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(result.SizeCalibration));
         }
+    }
+
+    [Fact]
+    public async Task OrdinaryQueueEstimateDoesNotWaitForEmpiricalSampling()
+    {
+        using var media = new DisposableMediaInfo();
+        var samples = new Samples((_, _) => 5000);
+        using var service = new EstimateBackgroundService(media.Value, Provider(samples), Metadata);
+
+        Queue(service);
+        await FinishWorkers(service);
+
+        Assert.True(service.TryDequeueSmart(out var result));
+        Assert.True(result.EstimatedMb > 0);
+        Assert.Null(result.EmpiricalPreview);
+        Assert.Equal("BitrateArithmetic", result.SizeCalibration!.EstimateModelId);
+        Assert.Empty(samples.Qualities);
+        Assert.DoesNotContain("PreviewUnavailable", result.EstimateDiagnostic, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RecommendationFailureKeepsDeterministicEstimateAvailable()
+    {
+        using var media = new DisposableMediaInfo();
+        using var service = new EstimateBackgroundService(media.Value, Provider(new Samples((_, _) => 5000)), Metadata,
+            recommendationEvaluator: (_, _) => throw new InvalidOperationException("synthetic recommendation failure"));
+
+        Queue(service, empiricalPreviewEnabled: false);
+        await FinishWorkers(service);
+
+        Assert.True(service.TryDequeueSmart(out var result));
+        Assert.True(result.EstimatedMb > 0);
+        Assert.Equal(SmartEncodeRecommendationKind.Unavailable, result.Recommendation!.Kind);
+        Assert.Contains("estimate remains valid", result.Recommendation.PrimaryReason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -146,7 +182,7 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
             ? new CallbackSamples((_, _, _, _) => throw new InvalidDataException("sample unavailable"))
             : new Samples((_, _) => 5000);
         using var service = new EstimateBackgroundService(media.Value, Provider(runner), Metadata);
-        Queue(service, authorityRevision: 7);
+        Queue(service, authorityRevision: 7, empiricalPreviewEnabled: true);
         await FinishWorkers(service);
         Assert.True(service.TryDequeueSmart(out var result));
         Assert.Equal(7, result.EstimateAuthorityRevision);
@@ -172,11 +208,11 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
             return new(sample, quality == 24 ? 50000 : 25000, 5) { Purpose = VideoSamplePurpose.PreviewEstimation };
         });
         using var service = new EstimateBackgroundService(media.Value, Provider(runner), Metadata);
-        Queue(service, 24);
+        Queue(service, 24, empiricalPreviewEnabled: true);
         await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
         service.ResetAndCancel();
         await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        Queue(service, 25);
+        Queue(service, 25, empiricalPreviewEnabled: true);
         release.SetResult();
         await FinishWorkers(service);
         Assert.True(service.TryDequeueSmart(out var result));
@@ -192,7 +228,7 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
         var runner = new Samples((_, _) => 5000);
         using (var service = new EstimateBackgroundService(media.Value, Provider(runner), Metadata, _ => true))
         {
-            Queue(service);
+            Queue(service, empiricalPreviewEnabled: true);
             await FinishWorkers(service);
             Assert.False(service.TryDequeueSmart(out _));
             Assert.Empty(runner.Qualities);
@@ -353,8 +389,11 @@ public sealed class EmpiricalSizePreviewTests : IDisposable
     public async Task PreviewEvidenceCannotBeUsedByProductionSelectorOrFrozenPlan()
     {
         var request = Request();
-        await Assert.ThrowsAsync<InvalidDataException>(() => new StorageSavingsSampleSelector(new Samples((_, _) => 5000))
-            .SelectAsync(request, null, default));
+        AdaptiveQualitySelectionEvidence fallback = await new StorageSavingsSampleSelector(new Samples((_, _) => 5000))
+            .SelectAsync(request, null, default);
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, fallback.Disposition);
+        Assert.Equal(request.Envelope.PreferredQuality, fallback.SelectedQuality);
+        Assert.Empty(fallback.Candidates);
         var measured = new RepresentativeSampleEvidence(new("preview", TimeSpan.Zero, TimeSpan.FromSeconds(5)), 1000, 5)
             { Purpose = VideoSamplePurpose.PreviewEstimation };
         Assert.Throws<InvalidDataException>(() => StorageSavingsSampleSelector.ProjectCandidate(request, 24, [measured]));
