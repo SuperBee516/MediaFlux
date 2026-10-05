@@ -6,7 +6,7 @@ using MediaFlux.Services;
 
 namespace MediaFlux.Services.EncodingV2;
 
-public enum EncodingV2HeadlessOperation { Probe, Plan, Run, RunQueue, CertifyQueue }
+public enum EncodingV2HeadlessOperation { Probe, Plan, Run, RunQueue, CertifyQueue, Estimate, EstimateQualitySet, BenchmarkEstimates }
 
 /// <summary>Versioned JSON request client for the same V2 core used by future GUI clients.</summary>
 public static class EncodingV2HeadlessCommand
@@ -14,7 +14,8 @@ public static class EncodingV2HeadlessCommand
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
 
     public static bool IsRequested(string[] args) => args.Length > 0 && args[0] is
-        "--v2-probe" or "--v2-plan" or "--v2-run" or "--v2-run-queue" or "--v2-run-queue-certification";
+        "--v2-probe" or "--v2-plan" or "--v2-run" or "--v2-run-queue" or "--v2-run-queue-certification" or
+        "--v2-estimate" or "--v2-estimate-quality-set" or "--v2-benchmark-estimates";
 
     public static bool TryParse(string[] args, out EncodingV2HeadlessOperation operation,
         out string requestPath, out string error)
@@ -22,7 +23,7 @@ public static class EncodingV2HeadlessCommand
         operation = default;
         requestPath = "";
         error = "";
-        if (!IsRequested(args)) { error = "Expected --v2-probe, --v2-plan, --v2-run, or --v2-run-queue."; return false; }
+        if (!IsRequested(args)) { error = "Expected a supported --v2-* command and one request JSON path."; return false; }
         if (args.Length != 2 || string.IsNullOrWhiteSpace(args[1]))
         {
             error = "Expected exactly one request JSON path after the V2 command.";
@@ -34,6 +35,9 @@ public static class EncodingV2HeadlessCommand
             "--v2-plan" => EncodingV2HeadlessOperation.Plan,
             "--v2-run" => EncodingV2HeadlessOperation.Run,
             "--v2-run-queue" => EncodingV2HeadlessOperation.RunQueue,
+            "--v2-estimate" => EncodingV2HeadlessOperation.Estimate,
+            "--v2-estimate-quality-set" => EncodingV2HeadlessOperation.EstimateQualitySet,
+            "--v2-benchmark-estimates" => EncodingV2HeadlessOperation.BenchmarkEstimates,
             _ => EncodingV2HeadlessOperation.CertifyQueue
         };
         requestPath = args[1];
@@ -96,6 +100,9 @@ public static class EncodingV2HeadlessCommand
     {
         ArgumentNullException.ThrowIfNull(standardOutput);
         ArgumentNullException.ThrowIfNull(standardError);
+        if (operation is EncodingV2HeadlessOperation.Estimate or EncodingV2HeadlessOperation.EstimateQualitySet or EncodingV2HeadlessOperation.BenchmarkEstimates)
+            return await RunEstimateAsync(operation, requestPath, standardOutput, standardError, cancellationToken)
+                .ConfigureAwait(false);
         if (operation is EncodingV2HeadlessOperation.RunQueue or EncodingV2HeadlessOperation.CertifyQueue)
             return await RunQueueAsync(operation, requestPath, standardOutput, standardError, cancellationToken)
                 .ConfigureAwait(false);
@@ -242,6 +249,196 @@ public static class EncodingV2HeadlessCommand
             return 2;
         }
     }
+
+    private static async Task<int> RunEstimateAsync(
+        EncodingV2HeadlessOperation operation,
+        string requestPath,
+        TextWriter standardOutput,
+        TextWriter standardError,
+        CancellationToken cancellationToken)
+    {
+        long totalStarted = Stopwatch.GetTimestamp();
+        try
+        {
+            string jsonPath = Path.GetFullPath(requestPath);
+            string json = await File.ReadAllTextAsync(jsonPath, cancellationToken).ConfigureAwait(false);
+            V2FastEstimateCommandRequest request = JsonSerializer.Deserialize<V2FastEstimateCommandRequest>(json, JsonOptions)
+                ?? throw new JsonException("The estimate request document was empty.");
+            if (request.SchemaVersion != 1)
+                throw new V2PlanningException("UnsupportedSchema", $"Unsupported V2 estimate request schema version {request.SchemaVersion}.");
+
+            if (operation == EncodingV2HeadlessOperation.EstimateQualitySet &&
+                (request.QualityValues is null || request.QualityValues.Length == 0))
+                throw new V2PlanningException("QualityValuesRequired", "qualityValues must contain at least one value for --v2-estimate-quality-set.");
+            if (operation == EncodingV2HeadlessOperation.BenchmarkEstimates &&
+                (request.Repetitions is < 2 or > 10000))
+                throw new V2PlanningException("InvalidRepetitions", "benchmark repetitions must be between 2 and 10000.");
+            if (request.QualityValues is { Length: > 100 })
+                throw new V2PlanningException("TooManyQualityValues", "qualityValues may contain at most 100 values.");
+
+            IV2SourceMetadataProvider? metadata = null;
+            if (request.SourceFacts is null)
+            {
+                // This branch creates an FFprobe-only provider. The estimator never resolves,
+                // starts, or passes an FFmpeg executable to the process runner.
+                metadata = new V2SourceMetadataProvider(new FfprobeService(
+                    AppContext.BaseDirectory, request.FfprobePath, new MediaToolProcessRunner()));
+            }
+
+            if (operation == EncodingV2HeadlessOperation.EstimateQualitySet)
+            {
+                (V2FastEstimateResolvedSource source, IReadOnlyList<V2FastEstimateResult> results) =
+                    await V2FastEstimateService.EstimateQualitySetAsync(request, request.QualityValues!, metadata, cancellationToken)
+                        .ConfigureAwait(false);
+                await WriteJsonAsync(standardOutput, new
+                {
+                    schemaVersion = 1,
+                    operation = "estimateQualitySet",
+                    status = "completed",
+                    source = PublicEstimateSource(source.Facts),
+                    sourceFactsOrigin = source.ProbeOccurred ? "ffprobe" : "supplied",
+                    probeOccurred = source.ProbeOccurred,
+                    probeMilliseconds = source.ProbeMilliseconds,
+                    ffprobeInvocationCount = source.ProbeOccurred ? 1 : 0,
+                    ffmpegProductionInvocationCount = 0,
+                    ffmpegSampleInvocationCount = 0,
+                    adaptiveCandidateGenerationCount = 0,
+                    estimates = results,
+                    timings = new
+                    {
+                        calculationMilliseconds = results.Sum(result => result.CalculationMilliseconds),
+                        totalMilliseconds = Stopwatch.GetElapsedTime(totalStarted).TotalMilliseconds
+                    }
+                }).ConfigureAwait(false);
+                return 0;
+            }
+
+            V2FastEstimateResolvedSource resolved = await V2FastEstimateService.ResolveSourceFactsAsync(
+                request, metadata, cancellationToken).ConfigureAwait(false);
+            if (operation == EncodingV2HeadlessOperation.Estimate)
+            {
+                V2FastEstimateResult result = V2FastEstimateService.Estimate(
+                    V2FastEstimateService.CreateRequest(request, resolved.Facts));
+                await WriteJsonAsync(standardOutput, new
+                {
+                    schemaVersion = 1,
+                    operation = "estimate",
+                    status = "completed",
+                    source = PublicEstimateSource(resolved.Facts),
+                    sourceFactsOrigin = resolved.ProbeOccurred ? "ffprobe" : "supplied",
+                    probeOccurred = resolved.ProbeOccurred,
+                    probeMilliseconds = resolved.ProbeMilliseconds,
+                    ffprobeInvocationCount = resolved.ProbeOccurred ? 1 : 0,
+                    ffmpegProductionInvocationCount = 0,
+                    ffmpegSampleInvocationCount = 0,
+                    adaptiveCandidateGenerationCount = 0,
+                    estimate = result,
+                    timings = new
+                    {
+                        calculationMilliseconds = result.CalculationMilliseconds,
+                        totalMilliseconds = Stopwatch.GetElapsedTime(totalStarted).TotalMilliseconds
+                    }
+                }).ConfigureAwait(false);
+                return 0;
+            }
+
+            double[] qualities = request.QualityValues is { Length: > 0 }
+                ? request.QualityValues
+                : [request.QualityValue];
+            if (request.Repetitions > 10000)
+                throw new V2PlanningException("InvalidRepetitions", "benchmark repetitions may not exceed 10000.");
+            var estimates = new List<V2FastEstimateResult>(request.Repetitions);
+            for (int index = 0; index < request.Repetitions; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                double quality = qualities[index % qualities.Length];
+                estimates.Add(V2FastEstimateService.Estimate(
+                    V2FastEstimateService.CreateRequest(request, resolved.Facts, quality)));
+            }
+            double firstEstimateMs = estimates[0].CalculationMilliseconds;
+            double[] warm = estimates.Skip(1).Select(result => result.CalculationMilliseconds).ToArray();
+            var benchmark = new V2FastEstimateBenchmarkResult(
+                resolved.ProbeMilliseconds,
+                request.SourceFacts is not null,
+                firstEstimateMs,
+                Array.AsReadOnly(warm),
+                V2FastEstimateService.Percentile(warm, 50),
+                V2FastEstimateService.Percentile(warm, 95),
+                warm.Length == 0 ? 0 : warm.Max(),
+                estimates.Count,
+                0,
+                Array.AsReadOnly(qualities),
+                estimates[0]);
+            await WriteJsonAsync(standardOutput, new
+            {
+                schemaVersion = 1,
+                operation = "benchmarkEstimates",
+                status = "completed",
+                source = PublicEstimateSource(resolved.Facts),
+                sourceFactsOrigin = resolved.ProbeOccurred ? "ffprobe" : "supplied",
+                probeOccurred = resolved.ProbeOccurred,
+                ffprobeInvocationCount = resolved.ProbeOccurred ? 1 : 0,
+                ffmpegProductionInvocationCount = 0,
+                ffmpegSampleInvocationCount = 0,
+                adaptiveCandidateGenerationCount = 0,
+                benchmark,
+                timings = new
+                {
+                    totalCalculationMilliseconds = estimates.Sum(result => result.CalculationMilliseconds),
+                    totalMilliseconds = Stopwatch.GetElapsedTime(totalStarted).TotalMilliseconds
+                }
+            }).ConfigureAwait(false);
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await WriteJsonAsync(standardOutput, new
+            {
+                schemaVersion = 1,
+                operation = EstimateOperationName(operation),
+                status = "canceled",
+                ffmpegProductionInvocationCount = 0,
+                failure = new V2Failure("Canceled", "The V2 fast-estimate operation was canceled.")
+            }).ConfigureAwait(false);
+            return 130;
+        }
+        catch (Exception ex)
+        {
+            string code = ex is V2PlanningException planning ? planning.Code :
+                ex is JsonException ? "InvalidEstimateRequestJson" : "EstimateHeadlessOperationFailed";
+            try { standardError.WriteLine("V2 fast estimate failed: " + ex.Message); } catch { }
+            await WriteJsonAsync(standardOutput, new
+            {
+                schemaVersion = 1,
+                operation = EstimateOperationName(operation),
+                status = "failed",
+                ffmpegProductionInvocationCount = 0,
+                failure = new V2Failure(code, ex.Message),
+                timings = new { totalMilliseconds = Stopwatch.GetElapsedTime(totalStarted).TotalMilliseconds }
+            }).ConfigureAwait(false);
+            return 2;
+        }
+    }
+
+    private static string EstimateOperationName(EncodingV2HeadlessOperation operation) => operation switch
+    {
+        EncodingV2HeadlessOperation.Estimate => "estimate",
+        EncodingV2HeadlessOperation.EstimateQualitySet => "estimateQualitySet",
+        _ => "benchmarkEstimates"
+    };
+
+    private static object PublicEstimateSource(V2FastEstimateSourceFacts facts) => new
+    {
+        sourceIdentity = facts.SourcePath,
+        sourceSizeBytes = facts.SourceSizeBytes,
+        durationSeconds = facts.DurationSeconds,
+        videoCodec = facts.VideoCodec,
+        width = facts.Width,
+        height = facts.Height,
+        frameRate = facts.FrameRate,
+        videoBitrateKbps = facts.VideoBitrateKbps,
+        audioStreamCount = facts.AudioStreams.Count
+    };
 
     private static async Task<int> RunQueueAsync(
         EncodingV2HeadlessOperation operation,

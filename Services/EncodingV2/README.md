@@ -57,3 +57,15 @@ Fixture facts recorded with FFprobe:
 | SHA-256 | `771882048F062AB5668D34A2F1383A9D59B3BD87EE9247E5DA6DD2D68F1F3236` |
 
 The Phase 1 certification request used a frozen `libx264` CRF 28 / `ultrafast` plan, MP4, 640×360 `yuv420p`, AAC stereo at 128 kb/s, and no subtitles. Expected output is H.264/AAC MP4 near 52 seconds. The local run produced 52.00 seconds at 640×360; V2 stream, duration, container, and decode-integrity validation passed. For Delete Source ON, copy the fixture to a disposable file in the same ignored directory and point that request's `sourcePath` at the copy.
+
+## Phase 3 fast estimates
+
+Phase 3 adds estimate-only commands that accept the same V2 encoder/quality/geometry/audio intent. They use supplied `sourceFacts` directly or probe once with FFprobe, then return estimate, savings classification, confidence, and timing JSON. The estimate commands never launch production or sample FFmpeg and do not integrate queue skipping or GUI state.
+
+```powershell
+MediaFlux.exe --v2-estimate request.json
+MediaFlux.exe --v2-estimate-quality-set request.json
+MediaFlux.exe --v2-benchmark-estimates request.json
+```
+
+See [Encoding Engine V2 Phase 3 fast estimates](../Documentation/EncodingEngineV2Phase3FastEstimates.md) for the request shape, model, dependency audit, and validation results.

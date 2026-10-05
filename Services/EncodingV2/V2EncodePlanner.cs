@@ -312,7 +312,7 @@ public sealed class V2EncodePlanner
         return (width, height, $"scale={width}:{height}:flags=lanczos");
     }
 
-    private static void ValidateEncoderCodec(string encoder, string codec)
+    internal static void ValidateEncoderCodec(string encoder, string codec)
     {
         string expected = encoder switch
         {
@@ -325,7 +325,7 @@ public sealed class V2EncodePlanner
             throw new V2PlanningException("CodecEncoderMismatch", $"Encoder '{encoder}' produces '{expected}', not '{codec}'.");
     }
 
-    private static void ValidateQuality(string encoder, string mode, double value)
+    internal static void ValidateQuality(string encoder, string mode, double value)
     {
         if (!double.IsFinite(value) || value < 0 || value > (encoder == "libsvtav1" ? 63 : 51))
             throw new V2PlanningException("InvalidQuality", "qualityValue is outside the supported 0–51/63 range.");
@@ -336,7 +336,7 @@ public sealed class V2EncodePlanner
             throw new V2PlanningException("InvalidQualityMode", "Software Phase 1 encoders require qualityMode crf.");
     }
 
-    private static string NormalizePreset(string encoder, string preset)
+    internal static string NormalizePreset(string encoder, string preset)
     {
         string value = string.IsNullOrWhiteSpace(preset)
             ? encoder switch
