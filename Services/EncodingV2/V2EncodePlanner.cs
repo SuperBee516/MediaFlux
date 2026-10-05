@@ -14,6 +14,13 @@ public interface IV2ProductionExecutor
         FrozenEncodePlan plan,
         Action<TimeSpan>? processStarted = null,
         CancellationToken cancellationToken = default);
+
+    Task<V2ProcessOutcome> ExecuteWithProgressAsync(
+        FrozenEncodePlan plan,
+        Action<TimeSpan>? processStarted,
+        Action<V2FfmpegProgress>? progressUpdated,
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync(plan, processStarted, cancellationToken);
 }
 
 public interface IV2CandidateValidator
@@ -28,6 +35,66 @@ public interface IV2CandidateValidator
 public interface IV2OutputPromoter
 {
     void Promote(string stagingPath, string outputPath);
+}
+
+/// <summary>Final source removal remains inside the trusted single-item V2 lifecycle.</summary>
+public interface IV2SourceDeletionService
+{
+    bool TryDelete(FrozenEncodePlan plan, V2ValidationOutcome validation,
+        CancellationToken cancellationToken, out string message);
+}
+
+public sealed class V2SafeSourceDeletionService : IV2SourceDeletionService
+{
+    public bool TryDelete(FrozenEncodePlan plan, V2ValidationOutcome validation,
+        CancellationToken cancellationToken, out string message)
+    {
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            FileInfo promoted = new(plan.OutputPath);
+            if (!promoted.Exists || (promoted.Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0 ||
+                promoted.Length != validation.OutputLength || promoted.LastWriteTimeUtc.Ticks != validation.OutputLastWriteUtcTicks)
+            {
+                message = "Source was retained because the promoted output could not be verified.";
+                return false;
+            }
+            FileInfo source = new(plan.SourcePath);
+            if (!source.Exists)
+            {
+                message = "Source deletion was requested, but the source no longer exists.";
+                return false;
+            }
+            if (source.Length != plan.SourceLength || source.LastWriteTimeUtc.Ticks != plan.SourceLastWriteUtcTicks)
+            {
+                message = "Source was retained because it changed after planning.";
+                return false;
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.Equals(Path.GetFullPath(plan.SourcePath), Path.GetFullPath(plan.OutputPath), StringComparison.OrdinalIgnoreCase))
+            {
+                message = "Source was retained because the final output resolves to the source path.";
+                return false;
+            }
+            File.Delete(plan.SourcePath);
+            if (File.Exists(plan.SourcePath))
+            {
+                message = "Source deletion was requested, but the source still exists.";
+                return false;
+            }
+            message = "Source deleted after validated promotion and final-output verification.";
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            message = "Valid output was retained; source deletion did not complete: " + ex.Message;
+            return false;
+        }
+    }
 }
 
 public sealed record V2ProcessOutcome(
@@ -198,7 +265,8 @@ public sealed class V2EncodePlanner
     {
         var args = new List<string>
         {
-            "-y", "-hide_banner", "-nostdin", "-v", "error", "-xerror", "-i", sourcePath,
+            "-y", "-hide_banner", "-nostdin", "-v", "error", "-xerror",
+            "-progress", "pipe:2", "-stats_period", "1", "-i", sourcePath,
             "-map", "0:v:0"
         };
         if (audioMode == "none") args.Add("-an");

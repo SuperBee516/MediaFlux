@@ -198,7 +198,19 @@ public sealed record V2LifecycleEvent(
     string? StagingPath = null,
     string? Encoder = null,
     string? QualityMode = null,
-    double? QualityValue = null);
+    double? QualityValue = null,
+    V2FfmpegProgress? FfmpegProgress = null);
+
+/// <summary>Parsed FFmpeg statistics; it is advisory progress and never changes the frozen plan or acceptance.</summary>
+public sealed record V2FfmpegProgress(
+    long? Frame,
+    double? FramesPerSecond,
+    double? Quantizer,
+    string? OutputSize,
+    double? OutputTimeSeconds,
+    double? BitrateKbps,
+    double? SpeedMultiplier,
+    double? PercentComplete);
 
 public sealed record V2Failure(string Code, string Message, int? ProcessExitCode = null);
 

@@ -6,14 +6,15 @@ using MediaFlux.Services;
 
 namespace MediaFlux.Services.EncodingV2;
 
-public enum EncodingV2HeadlessOperation { Probe, Plan, Run }
+public enum EncodingV2HeadlessOperation { Probe, Plan, Run, RunQueue, CertifyQueue }
 
 /// <summary>Versioned JSON request client for the same V2 core used by future GUI clients.</summary>
 public static class EncodingV2HeadlessCommand
 {
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
 
-    public static bool IsRequested(string[] args) => args.Length > 0 && args[0] is "--v2-probe" or "--v2-plan" or "--v2-run";
+    public static bool IsRequested(string[] args) => args.Length > 0 && args[0] is
+        "--v2-probe" or "--v2-plan" or "--v2-run" or "--v2-run-queue" or "--v2-run-queue-certification";
 
     public static bool TryParse(string[] args, out EncodingV2HeadlessOperation operation,
         out string requestPath, out string error)
@@ -21,7 +22,7 @@ public static class EncodingV2HeadlessCommand
         operation = default;
         requestPath = "";
         error = "";
-        if (!IsRequested(args)) { error = "Expected --v2-probe, --v2-plan, or --v2-run."; return false; }
+        if (!IsRequested(args)) { error = "Expected --v2-probe, --v2-plan, --v2-run, or --v2-run-queue."; return false; }
         if (args.Length != 2 || string.IsNullOrWhiteSpace(args[1]))
         {
             error = "Expected exactly one request JSON path after the V2 command.";
@@ -31,7 +32,9 @@ public static class EncodingV2HeadlessCommand
         {
             "--v2-probe" => EncodingV2HeadlessOperation.Probe,
             "--v2-plan" => EncodingV2HeadlessOperation.Plan,
-            _ => EncodingV2HeadlessOperation.Run
+            "--v2-run" => EncodingV2HeadlessOperation.Run,
+            "--v2-run-queue" => EncodingV2HeadlessOperation.RunQueue,
+            _ => EncodingV2HeadlessOperation.CertifyQueue
         };
         requestPath = args[1];
         return true;
@@ -60,7 +63,7 @@ public static class EncodingV2HeadlessCommand
         Console.CancelKeyPress += cancelHandler;
         try
         {
-            if (operation == EncodingV2HeadlessOperation.Run)
+            if (operation is EncodingV2HeadlessOperation.Run or EncodingV2HeadlessOperation.RunQueue or EncodingV2HeadlessOperation.CertifyQueue)
             {
                 using var primaryMutex = new Mutex(true, @"Local\Encode.ExplorerQueue.Primary", out bool isPrimary);
                 if (!isPrimary)
@@ -93,6 +96,10 @@ public static class EncodingV2HeadlessCommand
     {
         ArgumentNullException.ThrowIfNull(standardOutput);
         ArgumentNullException.ThrowIfNull(standardError);
+        if (operation is EncodingV2HeadlessOperation.RunQueue or EncodingV2HeadlessOperation.CertifyQueue)
+            return await RunQueueAsync(operation, requestPath, standardOutput, standardError, cancellationToken)
+                .ConfigureAwait(false);
+
         EncodingV2Request? request = null;
         try
         {
@@ -236,6 +243,129 @@ public static class EncodingV2HeadlessCommand
         }
     }
 
+    private static async Task<int> RunQueueAsync(
+        EncodingV2HeadlessOperation operation,
+        string requestPath,
+        TextWriter standardOutput,
+        TextWriter standardError,
+        CancellationToken cancellationToken)
+    {
+        V2EncodingQueueRequest? queueRequest = null;
+        V2JsonLineQueueEventLog? eventLog = null;
+        try
+        {
+            string jsonPath = Path.GetFullPath(requestPath);
+            string json = await File.ReadAllTextAsync(jsonPath, cancellationToken).ConfigureAwait(false);
+            queueRequest = JsonSerializer.Deserialize<V2EncodingQueueRequest>(json, JsonOptions)
+                ?? throw new JsonException("The queue request document was empty.");
+            if (queueRequest.SchemaVersion != 1)
+                throw new V2PlanningException("UnsupportedQueueSchema", $"Unsupported V2 queue schema version {queueRequest.SchemaVersion}.");
+            if (operation == EncodingV2HeadlessOperation.RunQueue && queueRequest.Certification is not null)
+                throw new V2PlanningException("CertificationRequiresExplicitCommand",
+                    "Failure injection data is accepted only by --v2-run-queue-certification.");
+            if (operation == EncodingV2HeadlessOperation.CertifyQueue && queueRequest.Certification is null)
+                throw new V2PlanningException("CertificationRequestRequired",
+                    "The certification command requires an explicit certification object, even when it contains no injections.");
+
+            ValidateQueueEventLogPath(queueRequest, jsonPath);
+            if (!string.IsNullOrWhiteSpace(queueRequest.EventLogPath))
+                eventLog = new V2JsonLineQueueEventLog(queueRequest.EventLogPath, JsonOptions);
+
+            var itemExecutor = new V2CoreQueueItemExecutor((itemRequest, injection, injectionTriggered) =>
+            {
+                var processRunner = new MediaToolProcessRunner();
+                FfmpegToolPaths tools = FfmpegToolResolver.Resolve(AppContext.BaseDirectory,
+                    itemRequest.FfmpegPath, itemRequest.FfprobePath);
+                if (!tools.AreAllAvailable)
+                    throw new V2PlanningException("MediaToolsUnavailable",
+                        "A matching FFmpeg and FFprobe executable pair could not be resolved for this item.");
+                var metadata = new V2SourceMetadataProvider(new FfprobeService(tools.FfprobePath, processRunner));
+                if (injection is null)
+                    return CreateCore(tools, metadata, processRunner);
+                return V2QueueCertificationCoreFactory.Create(metadata, new V2EncodePlanner(),
+                    new V2ProductionExecutor(processRunner),
+                    new V2OutputValidator(metadata,
+                        new FfmpegDecodeIntegritySpotCheckService(tools.FfmpegPath, processRunner)),
+                    new V2FileOutputPromoter(), tools.FfmpegPath, injection, injectionTriggered);
+            });
+
+            void Observe(V2EncodingQueueEvent item)
+            {
+                string line = JsonSerializer.Serialize(item, JsonOptions);
+                try { standardError.WriteLine(line); standardError.Flush(); } catch { }
+                try { eventLog?.Write(item); } catch (Exception ex)
+                {
+                    try { standardError.WriteLine("V2 queue event log write failed: " + ex.Message); } catch { }
+                }
+            }
+
+            V2EncodingQueueResult result = await new V2EncodingQueueRunner(itemExecutor)
+                .RunAsync(queueRequest, Observe, cancellationToken,
+                    allowCertificationInjection: operation == EncodingV2HeadlessOperation.CertifyQueue).ConfigureAwait(false);
+            await WriteJsonAsync(standardOutput, result).ConfigureAwait(false);
+            return result.State switch
+            {
+                V2EncodingQueueState.Completed => 0,
+                V2EncodingQueueState.CompletedWithFailures => 1,
+                V2EncodingQueueState.Canceled => 130,
+                _ => 2
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await WriteJsonAsync(standardOutput, new
+            {
+                schemaVersion = 1,
+                operation = "runQueue",
+                queueId = queueRequest?.QueueId,
+                status = "canceled",
+                failure = new V2Failure("Canceled", "The V2 queue request was canceled before execution completed.")
+            }).ConfigureAwait(false);
+            return 130;
+        }
+        catch (Exception ex)
+        {
+            string code = ex is V2PlanningException planning ? planning.Code :
+                ex is JsonException ? "InvalidQueueRequestJson" : "QueueHeadlessOperationFailed";
+            await WriteJsonAsync(standardOutput, new
+            {
+                schemaVersion = 1,
+                operation = "runQueue",
+                queueId = queueRequest?.QueueId,
+                status = "failed",
+                failure = new V2Failure(code, ex.Message)
+            }).ConfigureAwait(false);
+            return 2;
+        }
+        finally { eventLog?.Dispose(); }
+    }
+
+    private static void ValidateQueueEventLogPath(V2EncodingQueueRequest request, string requestPath)
+    {
+        if (string.IsNullOrWhiteSpace(request.EventLogPath)) return;
+        if (!Path.IsPathFullyQualified(request.EventLogPath))
+            throw new V2PlanningException("InvalidEventLogPath", "eventLogPath must be a fully qualified path.");
+        string eventLogPath;
+        try { eventLogPath = Path.GetFullPath(request.EventLogPath); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        { throw new V2PlanningException("InvalidEventLogPath", ex.Message); }
+        if (string.Equals(eventLogPath, Path.GetFullPath(requestPath), StringComparison.OrdinalIgnoreCase))
+            throw new V2PlanningException("InvalidEventLogPath", "eventLogPath must differ from the queue request document.");
+        foreach (V2EncodingQueueItemRequest item in request.Items ?? [])
+        {
+            string[] mediaPaths = [item.Request?.SourcePath ?? "", item.Request?.OutputPath ?? ""];
+            foreach (string mediaPath in mediaPaths.Where(path => !string.IsNullOrWhiteSpace(path)))
+            {
+                string fullMediaPath;
+                try { fullMediaPath = Path.GetFullPath(mediaPath); }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                { continue; } // The item itself will report its request error without queue-wide probing.
+                if (string.Equals(eventLogPath, fullMediaPath, StringComparison.OrdinalIgnoreCase))
+                    throw new V2PlanningException("InvalidEventLogPath", "eventLogPath must differ from every queue source and output path.");
+            }
+        }
+    }
+
     private static V2EncodingCore CreateCore(FfmpegToolPaths tools, V2SourceMetadataProvider metadata,
         IMediaToolProcessRunner processRunner) => new(
         metadata,
@@ -327,6 +457,28 @@ public static class EncodingV2HeadlessCommand
             _options = options;
         }
         public void Write(V2LifecycleEvent item)
+        {
+            _writer.WriteLine(JsonSerializer.Serialize(item, _options));
+            _writer.Flush();
+        }
+        public void Dispose() => _writer.Dispose();
+    }
+
+    private sealed class V2JsonLineQueueEventLog : IDisposable
+    {
+        private readonly StreamWriter _writer;
+        private readonly JsonSerializerOptions _options;
+        public V2JsonLineQueueEventLog(string path, JsonSerializerOptions options)
+        {
+            string fullPath = Path.GetFullPath(path);
+            string? directory = Path.GetDirectoryName(fullPath);
+            if (directory is null || !Directory.Exists(directory))
+                throw new V2PlanningException("EventLogDirectoryMissing", "The queue event log directory must already exist.");
+            _writer = new StreamWriter(new FileStream(fullPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            _options = options;
+        }
+        public void Write(V2EncodingQueueEvent item)
         {
             _writer.WriteLine(JsonSerializer.Serialize(item, _options));
             _writer.Flush();

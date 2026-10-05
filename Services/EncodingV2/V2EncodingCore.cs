@@ -11,6 +11,7 @@ public sealed class V2EncodingCore
     private readonly IV2ProductionExecutor _executor;
     private readonly IV2CandidateValidator _validator;
     private readonly IV2OutputPromoter _promoter;
+    private readonly IV2SourceDeletionService _sourceDeletion;
     private readonly string _ffmpegPath;
 
     public V2EncodingCore(
@@ -19,13 +20,15 @@ public sealed class V2EncodingCore
         IV2ProductionExecutor executor,
         IV2CandidateValidator validator,
         IV2OutputPromoter promoter,
-        string ffmpegPath)
+        string ffmpegPath,
+        IV2SourceDeletionService? sourceDeletion = null)
     {
         _metadataProvider = metadataProvider ?? throw new ArgumentNullException(nameof(metadataProvider));
         _planner = planner ?? throw new ArgumentNullException(nameof(planner));
         _executor = executor ?? throw new ArgumentNullException(nameof(executor));
         _validator = validator ?? throw new ArgumentNullException(nameof(validator));
         _promoter = promoter ?? throw new ArgumentNullException(nameof(promoter));
+        _sourceDeletion = sourceDeletion ?? new V2SafeSourceDeletionService();
         _ffmpegPath = ffmpegPath ?? throw new ArgumentNullException(nameof(ffmpegPath));
     }
 
@@ -77,7 +80,7 @@ public sealed class V2EncodingCore
         bool? sourceDeleted = null;
 
         void Emit(V2LifecycleState state, string stage, string message, double? elapsedMs = null,
-            int? exitCode = null, string? failureCode = null)
+            int? exitCode = null, string? failureCode = null, V2FfmpegProgress? ffmpegProgress = null)
         {
             currentState = state;
             var item = new V2LifecycleEvent(1, jobId, ++sequence, DateTime.UtcNow,
@@ -87,7 +90,8 @@ public sealed class V2EncodingCore
                 plan?.StagingPath,
                 plan?.Encoder ?? runRequest.Encoder,
                 plan?.QualityMode ?? runRequest.QualityMode,
-                plan?.QualityValue ?? runRequest.QualityValue);
+                plan?.QualityValue ?? runRequest.QualityValue,
+                ffmpegProgress);
             events.Add(item);
             try { eventObserver?.Invoke(item); }
             catch { /* Lifecycle observers cannot make or change production decisions. */ }
@@ -122,11 +126,12 @@ public sealed class V2EncodingCore
             Emit(V2LifecycleState.Encoding, "ffmpeg.process.launching", "Starting the single production FFmpeg invocation.");
             productionAttempts = 1;
             long encodeStartedAt = Stopwatch.GetTimestamp();
-            V2ProcessOutcome process = await _executor.ExecuteAsync(plan, started =>
+            V2ProcessOutcome process = await _executor.ExecuteWithProgressAsync(plan, started =>
             {
                 executeRequestToStart = started;
                 Emit(V2LifecycleState.Encoding, "ffmpeg.process.started", "Production FFmpeg process started.", started.TotalMilliseconds);
-            }, cancellationToken).ConfigureAwait(false);
+            }, progress => Emit(V2LifecycleState.Encoding, "ffmpeg.progress.updated", "Production FFmpeg progress updated.",
+                ffmpegProgress: progress), cancellationToken).ConfigureAwait(false);
             encodeTime = Stopwatch.GetElapsedTime(encodeStartedAt);
             executeRequestToStart = process.ExecuteRequestToProcessStart;
             ffmpegExit = process.ExitCode;
@@ -183,7 +188,7 @@ public sealed class V2EncodingCore
             if (plan.DeleteSourceOnSuccess)
             {
                 Emit(V2LifecycleState.Promoting, "source.deletion.requested", "Source deletion was requested after successful validation and promotion.");
-                sourceDeleted = TryDeleteSourceAfterPromotion(plan, validation, cancellationToken, out string deletionMessage);
+                sourceDeleted = _sourceDeletion.TryDelete(plan, validation, cancellationToken, out string deletionMessage);
                 if (!sourceDeleted.Value) warnings.Add(deletionMessage);
                 Emit(V2LifecycleState.Promoting,
                     sourceDeleted.Value ? "source.deletion.completed" : "source.deletion.warning",
@@ -290,50 +295,6 @@ public sealed class V2EncodingCore
             file.Length != validation.OutputLength ||
             file.LastWriteTimeUtc.Ticks != validation.OutputLastWriteUtcTicks)
             throw new V2ExecutionException("PromotedOutputChanged", "The final output could not be confirmed after promotion; the source was retained.");
-    }
-
-    private static bool TryDeleteSourceAfterPromotion(FrozenEncodePlan plan,
-        V2ValidationOutcome validation, CancellationToken cancellationToken, out string message)
-    {
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            EnsurePromotedOutputIdentity(plan.OutputPath, validation);
-            FileInfo source = new(plan.SourcePath);
-            if (!source.Exists)
-            {
-                message = "Source deletion was requested, but the source no longer exists.";
-                return false;
-            }
-            if (source.Length != plan.SourceLength || source.LastWriteTimeUtc.Ticks != plan.SourceLastWriteUtcTicks)
-            {
-                message = "Source was retained because it changed after planning.";
-                return false;
-            }
-            cancellationToken.ThrowIfCancellationRequested();
-            if (string.Equals(Path.GetFullPath(plan.SourcePath), Path.GetFullPath(plan.OutputPath), StringComparison.OrdinalIgnoreCase))
-            {
-                message = "Source was retained because the final output resolves to the source path.";
-                return false;
-            }
-            File.Delete(plan.SourcePath);
-            if (File.Exists(plan.SourcePath))
-            {
-                message = "Source deletion was requested, but the source still exists.";
-                return false;
-            }
-            message = "Source deleted after validated promotion and final-output verification.";
-            return true;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            message = "Valid output was retained; source deletion did not complete: " + ex.Message;
-            return false;
-        }
     }
 
     private static TimeSpan CleanupOwnedStage(FrozenEncodePlan? plan, bool stageOwned, List<string> warnings)

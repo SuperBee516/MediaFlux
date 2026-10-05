@@ -247,6 +247,24 @@ namespace MediaFlux
         {
             if (!AttachConsole(AttachParentProcess))
                 AllocConsole();
+
+            // WinExe apphosts may cache null standard streams before attaching to a console.
+            // Reopen them after attachment so redirected headless JSON output is preserved.
+            try
+            {
+                Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false))
+                {
+                    AutoFlush = true
+                });
+                Console.SetError(new StreamWriter(Console.OpenStandardError(), new System.Text.UTF8Encoding(false))
+                {
+                    AutoFlush = true
+                });
+            }
+            catch
+            {
+                // Headless requests still run if a console stream is unavailable; their event log remains independent.
+            }
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]

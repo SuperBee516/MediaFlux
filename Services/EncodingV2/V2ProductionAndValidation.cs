@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using MediaFlux.Models;
 using MediaFlux.Services;
 
@@ -12,12 +14,20 @@ public sealed class V2ProductionExecutor(IMediaToolProcessRunner processRunner) 
     public async Task<V2ProcessOutcome> ExecuteAsync(
         FrozenEncodePlan plan,
         Action<TimeSpan>? processStarted = null,
+        CancellationToken cancellationToken = default) =>
+        await ExecuteWithProgressAsync(plan, processStarted, null, cancellationToken).ConfigureAwait(false);
+
+    public async Task<V2ProcessOutcome> ExecuteWithProgressAsync(
+        FrozenEncodePlan plan,
+        Action<TimeSpan>? processStarted,
+        Action<V2FfmpegProgress>? progressUpdated,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
         plan.EnsureExecutable();
         long executeRequestedAt = Stopwatch.GetTimestamp();
         TimeSpan requestToStart = TimeSpan.Zero;
+        var progressParser = new V2FfmpegProgressParser(plan.SourceDurationSeconds);
         MediaToolProcessResult result = await _processRunner.RunAsync(new MediaToolProcessRequest
         {
             FileName = plan.FfmpegPath,
@@ -25,6 +35,11 @@ public sealed class V2ProductionExecutor(IMediaToolProcessRunner processRunner) 
             Timeout = TimeSpan.FromHours(12),
             SendQuitOnCancellation = true,
             DiagnosticComponent = FfmpegDiagnosticComponent.Ffmpeg,
+            StandardErrorLineCallback = line =>
+            {
+                if (!progressParser.TryObserveLine(line, out V2FfmpegProgress? progress) || progress is null) return;
+                try { progressUpdated?.Invoke(progress); } catch { /* Progress observers cannot affect the encode. */ }
+            },
             ProcessStartedCallback = _ =>
             {
                 requestToStart = Stopwatch.GetElapsedTime(executeRequestedAt);
@@ -40,6 +55,130 @@ public sealed class V2ProductionExecutor(IMediaToolProcessRunner processRunner) 
             result.ProcessLaunchElapsed,
             result.StandardError,
             result.StandardOutput);
+    }
+}
+
+internal sealed class V2FfmpegProgressParser(double? sourceDurationSeconds)
+{
+    private static readonly Regex HumanStatistics = new(
+        @"(?<key>frame|fps|q|size|time|bitrate|speed)=\s*(?<value>\S+)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    private long? _frame;
+    private double? _fps, _quantizer, _outputSeconds, _bitrate, _speed;
+    private string? _outputSize;
+    private bool _hasFields;
+
+    public bool TryObserveLine(string line, out V2FfmpegProgress? progress)
+    {
+        progress = null;
+        if (string.IsNullOrWhiteSpace(line)) return false;
+        int separator = line.IndexOf('=');
+        if (separator > 0 && line.IndexOf('=', separator + 1) < 0)
+        {
+            string key = line[..separator].Trim().ToLowerInvariant();
+            string value = line[(separator + 1)..].Trim();
+            switch (key)
+            {
+                case "frame":
+                case "fps":
+                case "q":
+                case "total_size":
+                case "size":
+                case "time":
+                case "out_time":
+                case "out_time_us":
+                case "out_time_ms":
+                case "bitrate":
+                case "speed":
+                    ObserveMachineField(key, value);
+                    return false;
+                case "progress":
+                    if (!_hasFields || !(value.Equals("continue", StringComparison.OrdinalIgnoreCase) ||
+                                          value.Equals("end", StringComparison.OrdinalIgnoreCase))) return false;
+                    progress = Snapshot();
+                    _hasFields = false;
+                    return true;
+            }
+        }
+
+        bool found = false;
+        foreach (Match match in HumanStatistics.Matches(line))
+        {
+            string key = match.Groups["key"].Value.ToLowerInvariant();
+            string value = match.Groups["value"].Value;
+            switch (key)
+            {
+                case "frame":
+                    if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long frameValue)) { _frame = frameValue; found = true; }
+                    break;
+                case "fps":
+                    _fps = ParseNumber(value); found |= _fps.HasValue; break;
+                case "q":
+                    _quantizer = ParseNumber(value); found |= _quantizer.HasValue; break;
+                case "size":
+                    _outputSize = value; found = true; break;
+                case "time":
+                    if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out TimeSpan time))
+                    { _outputSeconds = Math.Max(0, time.TotalSeconds); found = true; }
+                    break;
+                case "bitrate":
+                    _bitrate = ParseNumber(value); found |= _bitrate.HasValue; break;
+                case "speed":
+                    _speed = ParseNumber(value); found |= _speed.HasValue; break;
+            }
+        }
+        if (!found) return false;
+        progress = Snapshot();
+        return true;
+    }
+
+    private void ObserveMachineField(string key, string value)
+    {
+        switch (key)
+        {
+            case "frame":
+                if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long frame)) _frame = frame;
+                else return;
+                break;
+            case "fps": _fps = ParseNumber(value); break;
+            case "q": _quantizer = ParseNumber(value); break;
+            case "total_size":
+                if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long size) && size >= 0)
+                    _outputSize = size.ToString(CultureInfo.InvariantCulture) + " bytes";
+                else return;
+                break;
+            case "size": _outputSize = value; break;
+            case "time":
+            case "out_time":
+                if (!TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out TimeSpan time)) return;
+                _outputSeconds = Math.Max(0, time.TotalSeconds);
+                break;
+            case "out_time_ms":
+            case "out_time_us":
+                if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long micros) || micros < 0) return;
+                _outputSeconds = micros / 1_000_000d;
+                break;
+            case "bitrate": _bitrate = ParseNumber(value); break;
+            case "speed": _speed = ParseNumber(value); break;
+        }
+        _hasFields = true;
+    }
+
+    private V2FfmpegProgress Snapshot()
+    {
+        double? percent = sourceDurationSeconds is > 0 && _outputSeconds.HasValue
+            ? Math.Clamp(_outputSeconds.Value / sourceDurationSeconds.Value * 100d, 0d, 100d)
+            : null;
+        return new V2FfmpegProgress(_frame, _fps, _quantizer, _outputSize,
+            _outputSeconds, _bitrate, _speed, percent);
+    }
+
+    private static double? ParseNumber(string value)
+    {
+        int length = 0;
+        while (length < value.Length && (char.IsAsciiDigit(value[length]) || value[length] is '.' or '+' or '-')) length++;
+        return length > 0 && double.TryParse(value.AsSpan(0, length), NumberStyles.Float,
+            CultureInfo.InvariantCulture, out double number) && double.IsFinite(number) ? number : null;
     }
 }
 
