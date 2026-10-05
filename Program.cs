@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using System.Runtime.Versioning;
 using System.Runtime.InteropServices;
 using MediaFlux.Services;
+using MediaFlux.Services.EncodingV2;
 using MediaFlux.Models;
 using Velopack;
 
@@ -18,6 +19,12 @@ namespace MediaFlux
         [STAThread]
         static int Main(string[] args)
         {
+            if (EncodingV2HeadlessCommand.IsRequested(args))
+            {
+                HeadlessConsole.AttachToParent();
+                return EncodingV2HeadlessCommand.Run(args);
+            }
+
             if (HeadlessEncodeBatchCommand.IsRequested(args))
             {
                 HeadlessConsole.AttachToParent();
