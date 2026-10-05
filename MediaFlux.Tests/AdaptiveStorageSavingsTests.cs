@@ -117,16 +117,43 @@ public sealed class AdaptiveStorageSavingsTests
     }
 
     [Fact]
-    public async Task AllMissReturnsTypedPolicyEvidenceWithoutExtrapolating()
+    public async Task AllMissFallsBackToConfiguredQualityWithoutExtrapolating()
     {
         var runner = new FakeSamples((_, _) => 10_000);
         var result = await Select(runner);
-        Assert.Equal(AdaptiveSelectionDisposition.Skipped, result.Disposition);
-        Assert.Null(result.SelectedQuality);
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
+        Assert.Equal(result.PreferredQuality, result.SelectedQuality);
         Assert.Equal(new[] { 24, 25, 26, 27 }, result.Candidates.Select(c => c.Quality));
         Assert.All(result.Candidates, c => Assert.Equal(AdaptiveSampleClassification.ClearlyMisses, c.Classification));
-        Assert.False(EncodingRetryPolicy.AllowsAutomaticRetry(EncodingTerminalResult.AdaptiveStorageSavingsSkipped));
-        Assert.Contains("acceptable quality", new AdaptiveStorageSavingsSkippedException(result).Message);
+        Assert.Contains("Preserve configured quality", result.Reason);
+
+        EncodingPlan initial = EncodingPlanService.Create(Context());
+        EncodingPlan fallback = EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(initial, result);
+        Assert.Equal(initial.Quality!.EffectiveQuality, fallback.Quality!.EffectiveQuality);
+        Assert.Same(initial.Recovery, fallback.Recovery);
+        Assert.Same(initial.RecoveryCapabilities, fallback.RecoveryCapabilities);
+        Assert.Equal(StorageSavingsAcceptance.Rejected,
+            StorageSavingsContractService.Evaluate(Contract, Contract.MaximumAcceptedOutputBytes!.Value + 1).Acceptance);
+        Assert.Equal(StorageSavingsAcceptance.Accepted,
+            StorageSavingsContractService.Evaluate(Contract, Contract.MaximumAcceptedOutputBytes.Value).Acceptance);
+    }
+
+    [Fact]
+    public async Task LegacySkippedProjectionIsNormalizedToConfiguredQuality()
+    {
+        AdaptiveQualitySelectionEvidence selected = await Select(new FakeSamples((_, _) => 10_000));
+        AdaptiveQualitySelectionEvidence legacySkip = selected with
+        {
+            Disposition = AdaptiveSelectionDisposition.Skipped,
+            SelectedQuality = null
+        };
+
+        AdaptiveQualitySelectionEvidence fallback = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(legacySkip);
+
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, fallback.Disposition);
+        Assert.Equal(legacySkip.PreferredQuality, fallback.SelectedQuality);
+        Assert.Contains("preserve configured quality", fallback.Reason);
+        Assert.Equal(legacySkip.Candidates, fallback.Candidates);
     }
 
     [Fact]
@@ -185,7 +212,8 @@ public sealed class AdaptiveStorageSavingsTests
     {
         AdaptiveQualitySelectionRequest request = Request() with { Ancillary = new(500_000, 0, 0, 0) };
         var result = await Select(new FakeSamples((_, _) => 5_000), request);
-        Assert.Equal(AdaptiveSelectionDisposition.Skipped, result.Disposition);
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
+        Assert.Equal(result.PreferredQuality, result.SelectedQuality);
         Assert.All(result.Candidates, c => Assert.Equal(AdaptiveSampleClassification.Borderline, c.Classification));
         Assert.Equal(StorageSavingsAcceptance.Rejected, StorageSavingsContractService.Evaluate(Contract, 900_001).Acceptance);
         Assert.Equal(StorageSavingsAcceptance.Accepted, StorageSavingsContractService.Evaluate(Contract, 900_000).Acceptance);
@@ -223,13 +251,30 @@ public sealed class AdaptiveStorageSavingsTests
         Assert.Null(final.SourceAdaptiveShadow);
         Assert.Null(final.Estimates.HistoricalPrediction);
         Assert.Null(final.SizePredictionCalibration);
-        Assert.False(final.Recovery!.TolerantRecoveryPermitted);
-        Assert.Equal(0, final.Recovery.MaximumRetryCount);
-        Assert.All(final.RecoveryCapabilities!.Items, capability =>
+        Assert.Same(initial.Recovery, final.Recovery);
+        Assert.NotSame(initial.RecoveryCapabilities, final.RecoveryCapabilities);
+        Assert.All(final.RecoveryCapabilities!.Items.Where(capability => capability.Kind is not
+            (EncodingRecoveryKind.SourceContainerRemux or EncodingRecoveryKind.TolerantDecodeReencode)), capability =>
         {
             Assert.False(capability.Permitted);
             Assert.Equal(0, capability.MaximumAttempts);
         });
+        Assert.All(final.RecoveryCapabilities.Items.Where(capability => capability.Kind is
+            (EncodingRecoveryKind.SourceContainerRemux or EncodingRecoveryKind.TolerantDecodeReencode)), capability =>
+        {
+            Assert.True(capability.Permitted);
+            Assert.Equal(1, capability.MaximumAttempts);
+        });
+        const string corruptedSourceDiagnostics =
+            "[h264] Invalid NAL unit size\n[h264] missing picture in access unit\n" +
+            "Error splitting the input into NAL units\n" +
+            "Error submitting packet to decoder: Invalid data found when processing input";
+        FfmpegSourceDecodeCorruption sourceCorruption = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            corruptedSourceDiagnostics);
+        Assert.True(sourceCorruption.IsStrongSourceIntegrityEvidence);
+        Assert.True(FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
+            automaticRecoveryDisabled: false, isFileInput: true, cancellationRequested: false,
+            strongSourceIntegrityEvidence: sourceCorruption.IsStrongSourceIntegrityEvidence));
         AdaptiveQualitySelectionEvidence? roundTrip = JsonSerializer.Deserialize<AdaptiveQualitySelectionEvidence>(JsonSerializer.Serialize(selected));
         Assert.Equal(selected.SelectedQuality, roundTrip!.SelectedQuality);
         Assert.Equal(selected.Candidates[0].Samples[0], roundTrip.Candidates[0].Samples[0]);
@@ -274,7 +319,11 @@ public sealed class AdaptiveStorageSavingsTests
     [Fact]
     public async Task StatisticsCannotCoerceSkippedSampleEvidenceIntoSuccessfulOutput()
     {
-        var evidence = await Select(new FakeSamples((_, _) => 10_000));
+        var evidence = (await Select(new FakeSamples((_, _) => 10_000))) with
+        {
+            Disposition = AdaptiveSelectionDisposition.Skipped,
+            SelectedQuality = null
+        };
         string root = Path.Combine(Path.GetTempPath(), "MediaFluxAdaptiveStatisticsTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try

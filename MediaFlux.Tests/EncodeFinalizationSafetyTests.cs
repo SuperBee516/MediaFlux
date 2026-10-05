@@ -290,6 +290,20 @@ public sealed class EncodeFinalizationSafetyTests : IDisposable
         Assert.Contains("matched", message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task CleanupNeverDeletesValidatedPromotedOutput()
+    {
+        string source = CreateFile("cleanup-promoted-source.mkv", 4096);
+        string promoted = CreateFile("cleanup-promoted-output.mp4", 8192);
+
+        string message = await IncompleteEncodeOutputCleanupService.CleanupAsync(
+            source, promoted, cleanupEnabled: true, outcome: "failed", protectedPromotedOutputPath: promoted);
+
+        Assert.True(File.Exists(source));
+        Assert.True(File.Exists(promoted));
+        Assert.Contains("validated promoted", message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData(".mp4")]
     [InlineData(".mkv")]

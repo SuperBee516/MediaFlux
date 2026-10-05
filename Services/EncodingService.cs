@@ -937,24 +937,23 @@ namespace MediaFlux.Services
                 }
                 selection = selection with { SamplingSeconds = samplingWatch.Elapsed.TotalSeconds };
                 cancellationToken.ThrowIfCancellationRequested();
+                bool adaptiveProjectionSkipped = selection.Disposition == AdaptiveSelectionDisposition.Skipped;
+                selection = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(selection);
+                if (adaptiveProjectionSkipped)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavings] No candidate selected; configured quality {selection.PreferredQuality} will be used. Actual-byte validation remains authoritative. {selection.Reason}");
+                }
                 bool adaptiveQualitySelected = selection.Disposition == AdaptiveSelectionDisposition.Selected;
                 shadowPlan = selection.Disposition == AdaptiveSelectionDisposition.NotSuitable
                     ? EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(shadowPlan, selection)
                     : EncodingPlanService.FreezeAdaptiveSelection(shadowPlan, selection);
                 adaptiveSelectionCallback?.Invoke(selection);
-                if (selection.Disposition == AdaptiveSelectionDisposition.Skipped)
-                {
-                    encodingPlanSnapshotCallback?.Invoke(new(shadowPlan.PlanId, shadowPlan));
-                    if (adaptivePreAttemptCaptureCallback is not null)
-                        await adaptivePreAttemptCaptureCallback(new(new(shadowPlan.PlanId, shadowPlan), selectionRequest,
-                            restoration?.Clone() ?? new()), cancellationToken).ConfigureAwait(false);
-                    throw new AdaptiveStorageSavingsSkippedException(selection);
-                }
                 if (adaptiveQualitySelected)
                 {
                     callback($"Encoding at {(selection.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF")} {selection.SelectedQuality}");
-                    // A selected adaptive quality owns one full-file attempt.
-                    // Existing output validation and actual-byte rejection stay authoritative.
+                    // Keep the selected-quality attempt isolated from unrelated
+                    // automatic fallbacks and Policy C. Strong source-corruption
+                    // evidence still uses its separate bounded remux/salvage path.
                     disableAutomaticFfmpegRecovery = true;
                 }
                 else
@@ -1437,12 +1436,16 @@ namespace MediaFlux.Services
             bool strongInitialSourceCorruption =
                 FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
                     initialSourceCorruption, runResult.DiagnosticSummary, runResult.StandardError);
+            bool adaptiveSourceRecoveryPermitted =
+                shadowPlan.AdaptiveSelection is { Disposition: AdaptiveSelectionDisposition.Selected } && ordinaryAdaptiveInput &&
+                compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent;
+            bool disableSourceCorruptionRecovery = disableAutomaticFfmpegRecovery && !adaptiveSourceRecoveryPermitted;
             bool sourceRecoveryEligible = FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
-                disableAutomaticFfmpegRecovery,
+                disableSourceCorruptionRecovery,
                 inputSource.Kind == EncodingInputKind.File,
                 cancellationToken.IsCancellationRequested,
                 strongInitialSourceCorruption);
-            string sourceRecoveryDecisionReason = disableAutomaticFfmpegRecovery
+            string sourceRecoveryDecisionReason = disableSourceCorruptionRecovery
                 ? "automatic-recovery-disabled"
                 : inputSource.Kind != EncodingInputKind.File
                     ? "input-is-not-a-file"

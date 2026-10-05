@@ -733,7 +733,7 @@ namespace MediaFlux.Services
                         $"output {type} {plan.OutputTypeOrdinal?.ToString(CultureInfo.InvariantCulture) ?? index.ToString(CultureInfo.InvariantCulture)} " +
                         $"reported '{DescribeLanguage(stream.Language)}' (normalized '{DescribeLanguage(LanguageMetadataNormalizer.Normalize(stream.Language))}').";
                 if (!string.IsNullOrWhiteSpace(plan.Title) &&
-                    (!stream.Tags.TryGetValue("title", out string? title) || !string.Equals(plan.Title, title, StringComparison.Ordinal)))
+                    !PreservesPlannedTitle(type, plan.Title, stream, request, output))
                     return $"{type} stream {index + 1} title metadata was not preserved from planned stream {plan.StreamIndex}.";
                 foreach (string disposition in new[] { "default", "forced" }.Where(plan.IsDispositionSet))
                     if (!stream.Dispositions.TryGetValue(disposition, out bool set) || !set)
@@ -741,6 +741,26 @@ namespace MediaFlux.Services
             }
 
             return "";
+        }
+
+        private static bool PreservesPlannedTitle(
+            string type,
+            string plannedTitle,
+            MediaProbeStreamInfo stream,
+            EncodeOutputValidationRequest request,
+            MediaProbeResult output)
+        {
+            // FFprobe exposes an MP4 track title written by FFmpeg as the
+            // stream-level `name` tag. A present `title` remains authoritative
+            // so a conflicting value cannot be hidden by the container alias.
+            if (stream.Tags.TryGetValue("title", out string? title))
+                return string.Equals(plannedTitle, title, StringComparison.Ordinal);
+
+            return type.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                request.ContainerDecision.Resolved == OutputContainer.Mp4 &&
+                IsExpectedContainer(output.FormatName, OutputContainer.Mp4) &&
+                stream.Tags.TryGetValue("name", out string? mp4Name) &&
+                string.Equals(plannedTitle, mp4Name, StringComparison.Ordinal);
         }
 
         internal static string NormalizeUnspecifiedLanguage(string? language) =>

@@ -29,14 +29,15 @@ namespace MediaFlux
 
         private volatile bool _cancelEncode = false;
         private HistoryService _historyService;
+        private readonly object _historyLock = new();
         private EncodingPresetService _presetService;
         private ToolStripMenuItem? _applyPresetToolStripMenuItem;
-        private readonly object _historyLock = new();
         private readonly Dictionary<string, double> _estimatedSizeMap = new();
 
         private readonly Dictionary<string, double> _etaSpeedState = new();
         private EncodingService _encodingService = null!;
         private EncodeExecutionOrchestrator _encodeExecutionOrchestrator = null!;
+        private EncodeExecutionLifecycleService _encodeExecutionLifecycleService = null!;
         private EncodeExecutionSnapshotBuilder _encodeExecutionSnapshotBuilder = null!;
         private AudioService _audioService = null!;
         private MediaInfoService _mediaInfoService = null!;
@@ -5360,6 +5361,11 @@ namespace MediaFlux
                 _predictionShadowService,
                 _encodingStatisticsService,
                 () => Ui(RefreshEncodingStatistics));
+            _encodeExecutionLifecycleService = new EncodeExecutionLifecycleService(
+                _encodeExecutionOrchestrator,
+                () => _historyService,
+                message => Debug.WriteLine("[EncodeLifecycle] " + message),
+                _historyLock);
 
             _audioService = new AudioService(
                 AppPaths.InstallDirectory,

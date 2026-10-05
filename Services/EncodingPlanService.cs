@@ -219,14 +219,18 @@ public static class EncodingPlanService
             IsAvailable = plan.IsAvailable, UnavailableReason = plan.UnavailableReason, PlanId = plan.PlanId,
             Source = plan.Source, SourceHealth = plan.SourceHealth, Video = plan.Video,
             Audio = plan.Audio, Subtitles = plan.Subtitles, Container = plan.Container, Hardware = plan.Hardware,
-            Recovery = plan.Recovery is null ? null : plan.Recovery with { TolerantRecoveryPermitted = false, MaximumRetryCount = 0 },
+            Recovery = plan.Recovery,
             Preflight = plan.Preflight,
             RecoveryCapabilities = plan.RecoveryCapabilities is null ? null : new(
-                Array.AsReadOnly(plan.RecoveryCapabilities.Items.Select(capability => capability with
-                {
-                    Permitted = false, MaximumAttempts = 0,
-                    Reason = "Adaptive storage-savings selection permits at most one full-file encode."
-                }).ToArray())),
+                Array.AsReadOnly(plan.RecoveryCapabilities.Items.Select(capability =>
+                    capability.Kind is EncodingRecoveryKind.SourceContainerRemux or EncodingRecoveryKind.TolerantDecodeReencode
+                        ? capability
+                        : capability with
+                        {
+                            Permitted = false,
+                            MaximumAttempts = 0,
+                            Reason = "Adaptive selection permits only the existing evidence-gated source-corruption recovery path."
+                        }).ToArray())),
             ValidationIntent = plan.ValidationIntent, FinalizationIntent = plan.FinalizationIntent, Validation = plan.Validation,
             // Do not carry the preferred-quality recommendation forward; its size
             // evidence is invalidated below and it may no longer describe execution.
@@ -234,8 +238,8 @@ public static class EncodingPlanService
             // Preferred-quality predictions/calibration are no longer comparable.
             // Sample selection never enters research or successful prediction evidence.
             SourceAdaptiveShadow = null, Estimates = new(null, null, null), SizePredictionCalibration = null,
-            Risks = Array.AsReadOnly(plan.Risks.Where(risk => risk.Code != "conditional-video-recovery").ToArray()),
-            DecisionReasons = Array.AsReadOnly(plan.DecisionReasons.Where(reason => reason.Code != EncodingDecisionReasonCode.IntelligentRecoveryAvailable).ToArray()),
+            Risks = plan.Risks,
+            DecisionReasons = plan.DecisionReasons,
             Sections = plan.Sections,
             ExecutionValues = execution with { QualityResolution = quality }
         };
@@ -331,13 +335,15 @@ public static class EncodingPlanService
 
         EncodingPlanExecutionValues execution = GetExecutionValues(plan);
         if (execution.QualityResolution.EffectiveQuality != selectedQuality ||
-            plan.Recovery?.TolerantRecoveryPermitted != false || plan.Recovery.MaximumRetryCount != 0 ||
-            plan.RecoveryCapabilities is null || plan.RecoveryCapabilities.Items.Any(item => item.Permitted || item.MaximumAttempts != 0) ||
+            plan.Recovery is null || plan.RecoveryCapabilities is null ||
+            plan.RecoveryCapabilities.Items.Any(item => item.Permitted &&
+                (item.Kind is not (EncodingRecoveryKind.SourceContainerRemux or EncodingRecoveryKind.TolerantDecodeReencode) ||
+                 item.MaximumAttempts != 1)) ||
             plan.SourceAdaptiveShadow is not null || plan.SizePredictionCalibration is not null ||
             plan.Estimates.TargetTotalBitrateKbps is not null || plan.Estimates.EstimatedOutputSizeMb is not null ||
             plan.Estimates.EstimatedCompressionRatio is not null || plan.Estimates.HistoricalPrediction is not null ||
             plan.Estimates.ProductionPredictedOutputSizeMb is not null)
-            throw new InvalidOperationException("The original adaptive plan is not frozen with recovery disabled.");
+            throw new InvalidOperationException("The original adaptive plan has unsupported recovery authority or unfrozen prediction evidence.");
 
         const string retryReason = "Policy C attempt 2 of 2; initial candidate rejected by Phase 1.";
         EncodingQualityResolution quality = execution.QualityResolution with
@@ -351,12 +357,26 @@ public static class EncodingPlanService
             IsAvailable = plan.IsAvailable, UnavailableReason = plan.UnavailableReason, PlanId = plan.PlanId,
             Source = plan.Source, SourceHealth = plan.SourceHealth, Video = plan.Video,
             Audio = plan.Audio, Subtitles = plan.Subtitles, Container = plan.Container, Hardware = plan.Hardware,
-            Recovery = plan.Recovery, Preflight = plan.Preflight, RecoveryCapabilities = plan.RecoveryCapabilities,
+            Recovery = plan.Recovery with
+            {
+                TolerantRecoveryPermitted = false,
+                MaximumRetryCount = 0
+            },
+            Preflight = plan.Preflight,
+            RecoveryCapabilities = new EncodingPlanRecoveryCapabilities(
+                Array.AsReadOnly(plan.RecoveryCapabilities.Items.Select(item => item with
+                {
+                    Permitted = false,
+                    MaximumAttempts = 0,
+                    Reason = "Policy C attempt 2 is a single frozen-quality encode; automatic recovery is disabled."
+                }).ToArray())),
             ValidationIntent = plan.ValidationIntent, FinalizationIntent = plan.FinalizationIntent, Validation = plan.Validation,
             Quality = quality, AdaptiveSelection = plan.AdaptiveSelection,
             SourceAdaptiveShadow = plan.SourceAdaptiveShadow, Estimates = plan.Estimates,
             SizePredictionCalibration = plan.SizePredictionCalibration, Recommendation = plan.Recommendation,
-            Risks = plan.Risks, DecisionReasons = plan.DecisionReasons, Sections = plan.Sections,
+            Risks = Array.AsReadOnly(plan.Risks.Where(risk => risk.Code != "conditional-video-recovery").ToArray()),
+            DecisionReasons = Array.AsReadOnly(plan.DecisionReasons.Where(reason => reason.Code != EncodingDecisionReasonCode.IntelligentRecoveryAvailable).ToArray()),
+            Sections = plan.Sections,
             ExecutionValues = execution with { QualityResolution = quality }
         };
     }

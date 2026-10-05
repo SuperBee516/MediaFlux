@@ -9,6 +9,56 @@ namespace MediaFlux.Tests;
 
 public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
 {
+    [Fact]
+    public void ApplicationToolsFallBackToTheInstalledLauncherWhenBuildOutputHasNoPair()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-HeadlessToolResolution", Guid.NewGuid().ToString("N"));
+        string build = Path.Combine(root, "build");
+        string installed = Path.Combine(root, "installed");
+        Directory.CreateDirectory(build);
+        Directory.CreateDirectory(installed);
+        try
+        {
+            File.WriteAllText(Path.Combine(installed, "ffmpeg.exe"), "fixture");
+            File.WriteAllText(Path.Combine(installed, "ffprobe.exe"), "fixture");
+            string launcher = Path.Combine(installed, "MediaFlux.exe");
+            File.WriteAllText(launcher, "fixture");
+
+            string resolved = HeadlessSavedJobEnvironment.ResolveApplicationDirectory(build, launcher, new Config());
+
+            Assert.Equal(installed, resolved);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApplicationToolsFallBackToTheConventionalPerUserInstallWhenLauncherIsTheBuildOutput()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-HeadlessToolResolution", Guid.NewGuid().ToString("N"));
+        string build = Path.Combine(root, "build");
+        string installed = Path.Combine(root, "current");
+        Directory.CreateDirectory(build);
+        Directory.CreateDirectory(installed);
+        try
+        {
+            File.WriteAllText(Path.Combine(installed, "ffmpeg.exe"), "fixture");
+            File.WriteAllText(Path.Combine(installed, "ffprobe.exe"), "fixture");
+            string launcher = Path.Combine(build, "MediaFlux.exe");
+            File.WriteAllText(launcher, "fixture");
+
+            string resolved = HeadlessSavedJobEnvironment.ResolveApplicationDirectory(build, launcher, new Config(), installed);
+
+            Assert.Equal(installed, resolved);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private readonly string _fixture = Path.Combine(Path.GetTempPath(), "MediaFlux-headless-environment", Guid.NewGuid().ToString("N"));
     private readonly string _isolated;
     private readonly MediaFluxStoragePathService _normal;
@@ -228,7 +278,7 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
     [InlineData(HeadlessSavedJobMode.Preflight, "accepted", 0, HeadlessSavedJobExitCode.Success)]
     [InlineData(HeadlessSavedJobMode.Run, "accepted", 1, HeadlessSavedJobExitCode.Success)]
     [InlineData(HeadlessSavedJobMode.Run, "rejected", 1, HeadlessSavedJobExitCode.StoragePolicyRejected)]
-    [InlineData(HeadlessSavedJobMode.Run, "skipped", 0, HeadlessSavedJobExitCode.AdaptiveStorageSavingsSkipped)]
+    [InlineData(HeadlessSavedJobMode.Run, "projection-miss", 1, HeadlessSavedJobExitCode.Success)]
     public async Task BothModesUseTheSameIsolatedSnapshotAndSharedGuardrails(
         HeadlessSavedJobMode mode, string outcome, int fullEncodeCount, HeadlessSavedJobExitCode expected)
     {
@@ -259,8 +309,10 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
                 {
                     "accepted" => EncodingStatisticsOutcome.Success,
                     "rejected" => EncodingStatisticsOutcome.StoragePolicyRejected,
-                    _ => EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped
+                    _ => EncodingStatisticsOutcome.Success
                 }, record.Outcome);
+                if (outcome == "projection-miss")
+                    Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, record.AdaptiveSelection!.Disposition);
             }
             Assert.False(File.Exists(AppPaths.PredictionShadowObservationsFile));
             Assert.Equal(1_000_000, new FileInfo(snapshot.SourceFilePath).Length);
@@ -446,13 +498,14 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
             var context = AdaptiveStorageSavingsTests.Context() with { Input = request.Input };
             var plan = EncodingPlanService.Create(context);
             Assert.True(AdaptiveStorageSavingsPolicy.TryCreateRequest(true, false, request.StorageSavingsContract, context, plan, out var sampling, out _));
-            var selection = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((_, _) => outcome == "skipped" ? 10_000 : 4_000))
+            var selection = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((_, _) => outcome == "projection-miss" ? 10_000 : 4_000))
                 .SelectAsync(sampling!, null, request.CancellationToken);
-            plan = EncodingPlanService.FreezeAdaptiveSelection(plan, selection);
+            selection = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(selection);
+            plan = selection.Disposition == AdaptiveSelectionDisposition.NotSuitable
+                ? EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(plan, selection)
+                : EncodingPlanService.FreezeAdaptiveSelection(plan, selection);
             request.EncodingPlanSnapshotCallback?.Invoke(new(plan.PlanId, plan));
             request.AdaptiveSelectionCallback?.Invoke(selection);
-            if (selection.Disposition == AdaptiveSelectionDisposition.Skipped)
-                throw new AdaptiveStorageSavingsSkippedException(selection);
             FullEncodeCount++;
             long bytes = outcome == "rejected" ? request.StorageSavingsContract.MaximumAcceptedOutputBytes!.Value + 1 : 800_000;
             var actual = StorageSavingsContractService.Evaluate(request.StorageSavingsContract, bytes);

@@ -8,6 +8,40 @@ internal sealed record HeadlessSavedJobEnvironment(
     Config Config,
     IReadOnlyList<EncodeJob> Jobs)
 {
+    internal static string ResolveApplicationDirectory(
+        string currentApplicationDirectory,
+        string launcherExecutablePath,
+        Config config,
+        string? conventionalInstallDirectory = null)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        string current = Path.GetFullPath(currentApplicationDirectory);
+        if (FfmpegToolResolver.Resolve(current, config.FfmpegPath, config.FfprobePath).AreAllAvailable)
+            return current;
+
+        string? launcherDirectory = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(launcherExecutablePath))
+                launcherDirectory = Path.GetDirectoryName(Path.GetFullPath(launcherExecutablePath));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { }
+
+        foreach (string? candidate in new[] { launcherDirectory, conventionalInstallDirectory })
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+            string normalizedCandidate;
+            try { normalizedCandidate = Path.GetFullPath(candidate); }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { continue; }
+            if (!MediaFluxStoragePathService.Same(current, normalizedCandidate) &&
+                FfmpegToolResolver.Resolve(normalizedCandidate, config.FfmpegPath, config.FfprobePath).AreAllAvailable)
+                return normalizedCandidate;
+        }
+
+        return current;
+    }
+
     internal static MediaFluxStoragePathService ResolvePaths(
         HeadlessSavedJobCommand command, MediaFluxStoragePathService normalPaths) =>
         command.UserDataRoot is null

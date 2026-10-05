@@ -18,6 +18,12 @@ namespace MediaFlux
         [STAThread]
         static int Main(string[] args)
         {
+            if (HeadlessEncodeBatchCommand.IsRequested(args))
+            {
+                HeadlessConsole.AttachToParent();
+                return RunHeadlessEncodeBatchCommand(args);
+            }
+
             if (IsHeadlessSavedJobCommand(args))
             {
                 HeadlessConsole.AttachToParent();
@@ -80,6 +86,65 @@ namespace MediaFlux
 
         private static bool IsHeadlessSavedJobCommand(string[] args) =>
             HeadlessSavedJobCommand.IsRequested(args);
+
+        private static int RunHeadlessEncodeBatchCommand(string[] args)
+        {
+            DateTime startedUtc = DateTime.UtcNow;
+            if (!HeadlessEncodeBatchCommand.TryParse(args, out HeadlessEncodeBatchCommand? command, out string parseError))
+            {
+                Console.Error.WriteLine("Headless encode command rejected: " + parseError);
+                var rejected = new HeadlessEncodeBatchResult(1, "CommandRejected", 2, startedUtc, DateTime.UtcNow,
+                    Array.Empty<HeadlessEncodeJobResult>(), parseError);
+                Console.Out.WriteLine(rejected.ToJson());
+                return rejected.ExitCode;
+            }
+
+            using var cancellation = new CancellationTokenSource();
+            ConsoleCancelEventHandler cancel = (_, eventArgs) =>
+            {
+                eventArgs.Cancel = true;
+                cancellation.Cancel();
+                Console.Error.WriteLine("Cancellation requested; waiting for the active operation to stop safely.");
+            };
+            Console.CancelKeyPress += cancel;
+            try
+            {
+                using var primaryMutex = new Mutex(true, @"Local\Encode.ExplorerQueue.Primary", out bool isPrimary);
+                if (!isPrimary)
+                    throw new HeadlessEncodeFatalException("MediaFlux is already running. Close the GUI instance before starting headless execution to prevent overlapping source/output work.");
+                if (command!.OutputDirectory is { } outputDirectory && !Directory.Exists(outputDirectory))
+                    throw new HeadlessEncodeFatalException("The explicit output directory must already exist; headless execution will not create it.");
+
+                // Resolve the regular UserData pointer and load config without GUI startup,
+                // migrations, saved-job loading, or writes to saved-job definitions.
+                MediaFluxStoragePathService paths = AppPaths.StoragePaths;
+                Config config = Config.Load(paths.Config);
+                string applicationDirectory = HeadlessSavedJobEnvironment.ResolveApplicationDirectory(
+                    AppPaths.InstallDirectory,
+                    AppPaths.LauncherExecutablePath,
+                    config,
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaFlux", "current"));
+                Console.Error.WriteLine("Headless media-tool base: " + applicationDirectory);
+                var pipeline = new HeadlessSavedJobItemPipeline(config, paths.Root, applicationDirectory);
+                HeadlessEncodeBatchResult result = HeadlessEncodeBatchRunner.RunAsync(
+                    command,
+                    pipeline,
+                    cancellation.Token,
+                    line => Console.Error.WriteLine(line))
+                    .GetAwaiter().GetResult();
+                Console.Out.WriteLine(result.ToJson());
+                return result.ExitCode;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Headless encode batch stopped: " + ex.Message);
+                var failed = new HeadlessEncodeBatchResult(1, "FatalFailure", 8, startedUtc, DateTime.UtcNow,
+                    Array.Empty<HeadlessEncodeJobResult>(), ex.Message);
+                Console.Out.WriteLine(failed.ToJson());
+                return failed.ExitCode;
+            }
+            finally { Console.CancelKeyPress -= cancel; }
+        }
 
         private static int RunHeadlessSavedJobCommand(string[] args)
         {

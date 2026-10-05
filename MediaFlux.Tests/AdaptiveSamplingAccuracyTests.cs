@@ -33,7 +33,8 @@ public sealed class AdaptiveSamplingAccuracyTests
         // Six previously unobserved regions carry 1500 B/s.
         var runner = new AdaptiveStorageSavingsTests.FakeSamples((_, i) => i is 0 or 4 or 8 ? 500 : 1500);
         var result = await new StorageSavingsSampleSelector(runner).SelectAsync(request, null, CancellationToken.None);
-        Assert.Equal(AdaptiveSelectionDisposition.Skipped, result.Disposition);
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
+        Assert.Equal(result.PreferredQuality, result.SelectedQuality);
         Assert.All(result.Candidates, c =>
         {
             Assert.Equal(AdaptiveSampleClassification.Borderline, c.Classification);

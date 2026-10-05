@@ -65,16 +65,24 @@ public sealed class AdaptiveStorageSavingsRetryModelTests
         Assert.Equal(original.Subtitles, retry.Subtitles);
         Assert.Equal(original.Container, retry.Container);
         Assert.Equal(original.Hardware, retry.Hardware);
-        Assert.Same(original.Recovery, retry.Recovery);
-        Assert.Same(original.RecoveryCapabilities, retry.RecoveryCapabilities);
+        Assert.NotSame(original.Recovery, retry.Recovery);
+        Assert.False(retry.Recovery!.TolerantRecoveryPermitted);
+        Assert.Equal(0, retry.Recovery.MaximumRetryCount);
+        Assert.NotSame(original.RecoveryCapabilities, retry.RecoveryCapabilities);
+        Assert.All(retry.RecoveryCapabilities!.Items, capability =>
+        {
+            Assert.False(capability.Permitted);
+            Assert.Equal(0, capability.MaximumAttempts);
+        });
         Assert.Same(original.ValidationIntent, retry.ValidationIntent);
         Assert.Same(original.FinalizationIntent, retry.FinalizationIntent);
         Assert.Same(original.Validation, retry.Validation);
         Assert.Same(original.SourceAdaptiveShadow, retry.SourceAdaptiveShadow);
         Assert.Same(original.Estimates, retry.Estimates);
         Assert.Same(original.SizePredictionCalibration, retry.SizePredictionCalibration);
-        Assert.Same(original.Risks, retry.Risks);
-        Assert.Same(original.DecisionReasons, retry.DecisionReasons);
+        Assert.DoesNotContain(retry.Risks, risk => risk.Code == "conditional-video-recovery");
+        Assert.DoesNotContain(retry.DecisionReasons,
+            reason => reason.Code == EncodingDecisionReasonCode.IntelligentRecoveryAvailable);
         Assert.Equal(25, original.AdaptiveSelection!.PreferredQuality);
         Assert.Equal(27, original.AdaptiveSelection.WorstAcceptableQuality);
         Assert.Null(retry.SourceAdaptiveShadow);

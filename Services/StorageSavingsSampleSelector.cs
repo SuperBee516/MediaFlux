@@ -32,6 +32,20 @@ public sealed class StorageSavingsSampleSelector
         Result(request, AdaptiveSelectionDisposition.NotSuitable, request.Envelope.PreferredQuality, [],
             "Adaptive optimization is unavailable; preserve preferred quality and use actual-byte validation. " + reason);
 
+    internal static AdaptiveQualitySelectionEvidence PreserveConfiguredQualityAfterSkip(
+        AdaptiveQualitySelectionEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        return evidence.Disposition != AdaptiveSelectionDisposition.Skipped
+            ? evidence
+            : evidence with
+            {
+                Disposition = AdaptiveSelectionDisposition.NotSuitable,
+                SelectedQuality = evidence.PreferredQuality,
+                Reason = "Adaptive projection did not select a candidate; preserve configured quality and use actual-byte validation. " + evidence.Reason
+            };
+    }
+
     public async Task<AdaptiveQualitySelectionEvidence> SelectAsync(AdaptiveQualitySelectionRequest request,
         Action<string>? progress, CancellationToken cancellationToken)
     {
@@ -86,10 +100,11 @@ public sealed class StorageSavingsSampleSelector
         return borderline is not null
             ? Result(request, AdaptiveSelectionDisposition.Selected, borderline.Quality, evidence,
                 "Sample evidence is borderline and its typical temporal projection meets the objective; attempt one full encode at the highest-quality eligible candidate, protected by actual-byte validation.")
-            : Result(request, AdaptiveSelectionDisposition.Skipped, null, evidence,
-                evidence.All(e => e.Classification == AdaptiveSampleClassification.ClearlyMisses)
+            : Result(request, AdaptiveSelectionDisposition.NotSuitable, request.Envelope.PreferredQuality, evidence,
+                (evidence.All(e => e.Classification == AdaptiveSampleClassification.ClearlyMisses)
                     ? "Every tested acceptable candidate clearly misses the projected storage objective."
-                    : "No tested acceptable candidate has a typical temporal projection meeting the storage objective; an optimistic minimum scene rate does not justify a full encode.");
+                    : "No tested acceptable candidate has a typical temporal projection meeting the storage objective; an optimistic minimum scene rate does not justify a full encode.") +
+                " Preserve configured quality; actual-byte validation remains authoritative.");
     }
 
     internal static bool IsEligibleBorderline(AdaptiveCandidateEvidence candidate, long maximumBytes) =>

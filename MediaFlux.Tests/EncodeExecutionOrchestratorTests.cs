@@ -63,6 +63,55 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public void HeadlessStructuredResultProjectsSuccessfulEvidenceFromExecutionOutcome()
+    {
+        string source = CreateFile("headless-result-projection.mp4");
+        long sourceBytes = new FileInfo(source).Length;
+        long outputBytes = sourceBytes - 4;
+        var contract = new StorageSavingsContract(
+            true, sourceBytes, 10, null, sourceBytes - 2, "Synthetic accepted storage contract.");
+        StorageSavingsEvaluation accepted = StorageSavingsContractService.Evaluate(contract, outputBytes);
+        var orchestrator = CreateOrchestrator(
+            new SyntheticExecutor(MakePlan()),
+            new PredictionShadowObservationJournal(Path.Combine(_root, "result-projection-research.jsonl")),
+            new EncodingStatisticsService(Path.Combine(_root, "result-projection-statistics.jsonl")));
+        EncodeExecutionSnapshot snapshot = Snapshot(source, null) with { StorageSavingsContract = contract };
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(snapshot);
+        attempt.ExecutionOutcome = new EncodingExecutionOutcome(
+            Guid.NewGuid(), [], [],
+            new EncodingValidationOutcome(
+                EncodingLifecycleStatus.Passed,
+                EncodingLifecycleStatus.Passed,
+                EncodingLifecycleStatus.Passed,
+                EncodingLifecycleStatus.Passed,
+                EncodingLifecycleStatus.Passed,
+                EncodingLifecycleStatus.Passed),
+            TerminalResult: EncodingTerminalResult.Completed,
+            StorageSavings: accepted,
+            ProductionEncodeCount: 1);
+        attempt.EncodeResult = new EncodingService.EncodeResult(
+            success: true,
+            outputPath: Path.Combine(_root, "headless-result-projection-output.mp4"),
+            finalizationSucceeded: true,
+            finalOutputSizeBytes: outputBytes,
+            storageSavingsContract: contract,
+            storageSavings: accepted);
+
+        HeadlessEncodeJobResult result = HeadlessSavedJobItemPipeline.CreateStructuredResult(
+            1, snapshot, attempt, HeadlessEncodeJobStatus.Success,
+            Now, Now.AddSeconds(1), new EncodeExecutionLifecycleCompletion(true, true),
+            "not applicable; encode succeeded.", "Source retained.", null, ffmpegExitCode: 0);
+
+        Assert.True(result.FfprobeValidated);
+        Assert.True(result.DecodeIntegrityValidated);
+        Assert.True(result.MetadataValidated);
+        Assert.True(result.StorageContractAccepted);
+        Assert.Equal("Accepted", result.StorageContractResult);
+        Assert.True(result.Promoted);
+        Assert.Equal(outputBytes, result.OutputBytes);
+    }
+
+    [Fact]
     public async Task ExperimentalPolicyCRetryGateIsForwardedOnlyForOrdinaryAdaptiveExecution()
     {
         string source = CreateFile("policy-c-gate.mp4");
@@ -106,6 +155,177 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.All(events, entry => Assert.Null(entry.Frozen?.ExperimentAssignment ?? entry.Outcome?.ExperimentAssignment));
         Assert.Equal(EncodingStatisticsOutcome.Success, Assert.Single(statistics.GetAll()).Outcome);
         Assert.Equal(new[] { "plan", "capture", "encode" }, executor.Events);
+    }
+
+    [Fact]
+    public async Task SharedLifecycleWritesRecoveredProductionHistoryAndStatistics()
+    {
+        string source = CreateFile("lifecycle-recovered-source.mp4");
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "lifecycle-success-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(
+            new SyntheticExecutor(MakePlan(), reportRecoveredOutcome: true),
+            new PredictionShadowObservationJournal(Path.Combine(_root, "lifecycle-success-research.jsonl")),
+            statistics);
+        EncodeExecutionSnapshot snapshot = Snapshot(source, null);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(snapshot);
+        await orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
+        var lifecycle = new EncodeExecutionLifecycleService(
+            orchestrator,
+            () => new HistoryService(Path.Combine(_root, "history-success", "history.json")));
+        var record = new JobHistoryRecord { Id = snapshot.OperationId, Type = JobType.Encode, Log = "captured log" };
+
+        EncodeExecutionLifecycleCompletion completion = lifecycle.CompleteSuccessfulExecution(
+            attempt, Now, attempt.EncodeResult!.FinalOutputSizeBytes, 42.5, "Recovered and finalized.",
+            null, recoveredSuccessful: true, null, record);
+
+        Assert.True(completion.HistoryRecorded);
+        Assert.True(completion.StatisticsRecorded);
+        JobHistoryRecord history = Assert.Single(new HistoryService(Path.Combine(_root, "history-success", "history.json")).LoadAll());
+        Assert.Equal(JobStatus.Success, history.Status);
+        Assert.Equal(snapshot.OperationId, history.Id);
+        Assert.Equal(source, history.SourcePath);
+        Assert.Equal(attempt.EncodeResult.OutputPath, history.OutputPath);
+        Assert.Equal(EncodingTerminalResult.CompletedAfterRecovery, history.TerminalResult);
+        EncodingStatisticsRecord statisticsRecord = Assert.Single(statistics.GetAll());
+        Assert.Equal(source, statisticsRecord.SourcePath);
+        Assert.True(statisticsRecord.RecoveredSuccessful);
+    }
+
+    [Theory]
+    [InlineData(false, JobStatus.Failed, EncodingStatisticsOutcome.Failed)]
+    [InlineData(true, JobStatus.Canceled, EncodingStatisticsOutcome.Cancelled)]
+    public async Task SharedFailureLifecycleCleansOnlyStagingAndRecordsFailureWithoutDeletingSource(
+        bool canceled,
+        JobStatus expectedHistoryStatus,
+        EncodingStatisticsOutcome expectedStatisticsOutcome)
+    {
+        string source = CreateFile("lifecycle-failed-source.mp4");
+        string staging = Path.Combine(_root, "lifecycle-failed.partial");
+        string recoverable = Path.Combine(_root, "lifecycle-recoverable.partial");
+        File.WriteAllBytes(staging, new byte[4096]);
+        File.WriteAllBytes(recoverable, new byte[2048]);
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "lifecycle-failure-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(
+            new SyntheticExecutor(MakePlan(), canceled
+                ? new OperationCanceledException("synthetic cancellation")
+                : new InvalidOperationException("synthetic encoder failure")),
+            new PredictionShadowObservationJournal(Path.Combine(_root, "lifecycle-failure-research.jsonl")),
+            statistics);
+        EncodeExecutionSnapshot snapshot = Snapshot(source, null);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(snapshot);
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None));
+        attempt.AttemptedOutputPath = staging;
+        attempt.StagedOutputPath = staging;
+        var lifecycle = new EncodeExecutionLifecycleService(
+            orchestrator,
+            () => new HistoryService(Path.Combine(_root, "history-failure", "history.json")));
+        var record = new JobHistoryRecord { Id = snapshot.OperationId, Type = JobType.Encode, ErrorSummary = "synthetic encoder failure" };
+
+        EncodeExecutionLifecycleCompletion completion = await lifecycle.CompleteFailedExecutionAsync(
+            attempt, record, Now, isCanceled: canceled, isStoragePolicyRejected: false,
+            cleanupEnabled: true, source, staging, staging, recoverable, 3.5, null, null,
+            retryQueued: false, "synthetic encoder failure");
+
+        Assert.True(completion.HistoryRecorded);
+        Assert.True(completion.StatisticsRecorded);
+        Assert.True(File.Exists(staging));
+        Assert.False(File.Exists(recoverable));
+        Assert.True(File.Exists(source));
+        JobHistoryRecord history = Assert.Single(new HistoryService(Path.Combine(_root, "history-failure", "history.json")).LoadAll());
+        Assert.Equal(expectedHistoryStatus, history.Status);
+        Assert.Contains("deleted", history.Notes, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(source, history.SourcePath);
+        Assert.Equal(expectedStatisticsOutcome, Assert.Single(statistics.GetAll()).Outcome);
+    }
+
+    [Fact]
+    public async Task SharedFailureLifecycleProtectsAValidatedPromotedOutput()
+    {
+        string source = CreateFile("lifecycle-promoted-source.mp4");
+        string promoted = CreateFile("lifecycle-promoted-output.mp4");
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "lifecycle-promoted-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(
+            new SyntheticExecutor(MakePlan()),
+            new PredictionShadowObservationJournal(Path.Combine(_root, "lifecycle-promoted-research.jsonl")),
+            statistics);
+        EncodeExecutionSnapshot snapshot = Snapshot(source, null);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(snapshot);
+        attempt.EncodeResult = new EncodingService.EncodeResult(
+            success: true, outputPath: promoted, finalizationSucceeded: true, finalOutputSizeBytes: new FileInfo(promoted).Length);
+        attempt.FinalizationResult = new EncodeFinalizationResult
+        {
+            Success = true,
+            FinalOutputPath = promoted,
+            RecoverableOutputPath = promoted
+        };
+        attempt.AttemptedOutputPath = promoted;
+        var lifecycle = new EncodeExecutionLifecycleService(
+            orchestrator,
+            () => new HistoryService(Path.Combine(_root, "history-promoted", "history.json")));
+
+        EncodeExecutionLifecycleCompletion completion = await lifecycle.CompleteFailedExecutionAsync(
+            attempt,
+            new JobHistoryRecord { Id = snapshot.OperationId, Type = JobType.Encode },
+            Now,
+            isCanceled: false,
+            isStoragePolicyRejected: false,
+            cleanupEnabled: true,
+            sourcePath: source,
+            attemptedOutputPath: promoted,
+            stagedOutputPath: promoted,
+            recoverableOutputPath: promoted,
+            processingSeconds: 1,
+            diagnosticSummary: null,
+            finalizationFailureKind: EncodeFinalizationFailureKind.Promotion,
+            retryQueued: false,
+            errorMessage: "A later lifecycle error occurred.");
+
+        Assert.Contains("validated promoted output", completion.CleanupResult, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(promoted));
+        Assert.True(File.Exists(source));
+        JobHistoryRecord history = Assert.Single(new HistoryService(Path.Combine(_root, "history-promoted", "history.json")).LoadAll());
+        Assert.Contains("had already been promoted", history.SourceDeletionResult, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CleanupErrorIsRecordedWithoutMaskingTheOriginalFailureOrSource()
+    {
+        string source = CreateFile("lifecycle-cleanup-error-source.mp4");
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "lifecycle-cleanup-error-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(
+            new SyntheticExecutor(MakePlan()),
+            new PredictionShadowObservationJournal(Path.Combine(_root, "lifecycle-cleanup-error-research.jsonl")),
+            statistics);
+        EncodeExecutionSnapshot snapshot = Snapshot(source, null);
+        EncodeExecutionAttempt attempt = orchestrator.CreateAttempt(snapshot);
+        const string originalFailure = "original encoder failure";
+        var lifecycle = new EncodeExecutionLifecycleService(
+            orchestrator,
+            () => new HistoryService(Path.Combine(_root, "history-cleanup-error", "history.json")));
+
+        EncodeExecutionLifecycleCompletion completion = await lifecycle.CompleteFailedExecutionAsync(
+            attempt,
+            new JobHistoryRecord { Id = snapshot.OperationId, Type = JobType.Encode, ErrorSummary = originalFailure },
+            Now,
+            isCanceled: false,
+            isStoragePolicyRejected: false,
+            cleanupEnabled: true,
+            sourcePath: source,
+            attemptedOutputPath: "\0",
+            stagedOutputPath: "\0",
+            recoverableOutputPath: "\0",
+            processingSeconds: 1,
+            diagnosticSummary: null,
+            finalizationFailureKind: null,
+            retryQueued: false,
+            errorMessage: originalFailure);
+
+        Assert.Contains("invalid", completion.CleanupResult, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(source));
+        JobHistoryRecord history = Assert.Single(new HistoryService(Path.Combine(_root, "history-cleanup-error", "history.json")).LoadAll());
+        Assert.Equal(originalFailure, history.ErrorSummary);
+        Assert.Contains(completion.CleanupResult, history.Notes, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -399,70 +619,58 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
     }
 
     [Fact]
-    public async Task AdaptivePolicySkipPreservesSourceContinuesQueueAndRecordsNoResearchOrSuccessfulSample()
+    public async Task ProjectionMissEncodesAtConfiguredQualityAndContinuesQueue()
     {
         string source = CreateFile("adaptive-source.mp4");
         File.WriteAllBytes(source, new byte[1_000_000]);
         var evidence = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((_, _) => 10_000))
             .SelectAsync(AdaptiveStorageSavingsTests.Request(), null, CancellationToken.None);
-        EncodingPlan frozen = EncodingPlanService.FreezeAdaptiveSelection(EncodingPlanService.Create(AdaptiveStorageSavingsTests.Context()), evidence);
-        var skipped = new SyntheticExecutor(new(frozen.PlanId, frozen), adaptive: evidence, skipBeforeEncode: true);
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, evidence.Disposition);
+        EncodingPlan initial = EncodingPlanService.Create(AdaptiveStorageSavingsTests.Context());
+        EncodingPlan fallback = EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(initial, evidence);
+        Assert.Equal(initial.Quality!.EffectiveQuality, fallback.Quality!.EffectiveQuality);
+        StorageSavingsEvaluation accepted = StorageSavingsContractService.Evaluate(AdaptiveStorageSavingsTests.Contract, 800_000);
+        var firstExecutor = new SyntheticExecutor(new(fallback.PlanId, fallback), storageSavings: accepted, adaptive: evidence);
         var next = new SyntheticExecutor(MakePlan());
         var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "adaptive-research.jsonl"));
         var statistics = new EncodingStatisticsService(Path.Combine(_root, "adaptive-statistics.jsonl"));
         var history = new HistoryService(Path.Combine(_root, "adaptive-history.json"));
-        var orchestrator = CreateOrchestrator(new SequentialExecutor(skipped, next), journal, statistics);
-        EncodingExecutionOutcome? publishedOutcome = null;
-        var callbacks = new EncodeExecutionCallbacks { ExecutionOutcome = outcome => publishedOutcome = outcome };
+        var orchestrator = CreateOrchestrator(new SequentialExecutor(firstExecutor, next), journal, statistics);
+        var callbacks = new EncodeExecutionCallbacks();
         var first = orchestrator.CreateAttempt(Snapshot(source, null) with
-        { AdaptiveStorageSavingsEnabled = true, StorageSavingsContract = AdaptiveStorageSavingsTests.Contract, DeleteSourceAfterCompression = true });
+        { AdaptiveStorageSavingsEnabled = true, StorageSavingsContract = AdaptiveStorageSavingsTests.Contract, DeleteSourceAfterCompression = false });
         var second = orchestrator.CreateAttempt(Snapshot(source, null) with { OperationId = "next-adaptive-job" });
         await new EncodeQueueRunner().RunAsync(new[] { first, second }, async attempt =>
         {
-            try
-            {
-                await orchestrator.ExecuteAsync(attempt, callbacks, null, CancellationToken.None);
-                orchestrator.RecordSuccessfulExecution(attempt, Now, 123_456_789, 10, "success", null, false, null);
-            }
-            catch (AdaptiveStorageSavingsSkippedException ex)
-            {
-                Assert.True(orchestrator.RecordFailedExecution(attempt, Now, false, null, "", 12, ex.Message, null, retryQueued: true));
-                Assert.Empty(journal.ReadEvents());
-            }
+            await orchestrator.ExecuteAsync(attempt, callbacks, null, CancellationToken.None);
+            Assert.True(orchestrator.RecordSuccessfulExecution(attempt, Now, 800_000, 10, "success", null, false, null));
         }, 1, () => false, () => false);
-        Assert.True(skipped.Request!.AdaptiveStorageSavingsEnabled);
-        Assert.DoesNotContain("encode", skipped.Events);
-        Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped, publishedOutcome?.TerminalResult);
-        Assert.Equal(0, publishedOutcome?.ProductionEncodeCount);
-        Assert.Equal(publishedOutcome, first.ExecutionOutcome);
+        Assert.True(firstExecutor.Request!.AdaptiveStorageSavingsEnabled);
+        Assert.Contains("encode", firstExecutor.Events);
         Assert.Equal(1, next.Events.Count(e => e == "encode"));
         Assert.Equal(1_000_000, new FileInfo(source).Length);
-        EncodingStatisticsRecord record = Assert.Single(statistics.GetAll(), r => r.Outcome == EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped);
-        Assert.Equal(0, record.ProductionEncodeCount);
-        Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped.ToString(), record.TerminalResult);
-        Assert.Null(record.OutputSizeBytes);
-        Assert.Null(record.SourceAdaptiveShadow);
-        Assert.Equal(0, record.ProcessingSeconds);
+        EncodingStatisticsRecord record = Assert.Single(statistics.GetAll(), r => r.Id == first.Snapshot.OperationId);
+        Assert.Equal(EncodingStatisticsOutcome.Success, record.Outcome);
+        Assert.Equal(1, record.ProductionEncodeCount);
+        Assert.Equal(800_000, record.OutputSizeBytes);
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, record.AdaptiveSelection!.Disposition);
         Assert.Equal(evidence.PreferredQuality, record.AdaptiveSelection!.PreferredQuality);
         var totals = EncodingStatisticsCalculator.Aggregate(statistics.GetAll());
-        Assert.Equal(1, totals.Skipped);
+        Assert.Equal(0, totals.Skipped);
         Assert.Equal(0, totals.Failed);
-        Assert.Equal(1, totals.Successful);
+        Assert.Equal(2, totals.Successful);
+        Assert.Equal(new[] { "Frozen", "Outcome" }, journal.ReadEvents().Select(e => e.EventType));
 
         history.AppendEncodingOutcome(new JobHistoryRecord
         {
             Id = first.Snapshot.OperationId,
-            Status = JobStatus.Skipped,
-            TerminalResult = EncodingTerminalResult.AdaptiveStorageSavingsSkipped,
-            FinalizationOutcome = MainForm.ResolveFailureHistoryFinalizationOutcome(
-                null, assignmentValidationFailed: false, researchEvidenceFailed: false,
-                adaptivePolicySkipped: true, isCanceled: false)
+            Status = JobStatus.Success,
+            TerminalResult = EncodingTerminalResult.Completed
         }, first.ExecutionOutcome);
         JobHistoryRecord historyRecord = Assert.Single(new HistoryService(Path.Combine(_root, "adaptive-history.json")).LoadAll());
-        Assert.Equal(JobStatus.Skipped, historyRecord.Status);
-        Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped, historyRecord.TerminalResult);
-        Assert.Equal(0, historyRecord.ProductionEncodeCount);
-        Assert.Equal(nameof(EncodingLifecycleStatus.NotRun), historyRecord.FinalizationOutcome);
+        Assert.Equal(JobStatus.Success, historyRecord.Status);
+        Assert.Equal(EncodingTerminalResult.Completed, historyRecord.TerminalResult);
+        Assert.Equal(1, historyRecord.ProductionEncodeCount);
     }
 
     [Fact]

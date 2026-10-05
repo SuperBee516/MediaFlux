@@ -366,6 +366,58 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
         Assert.Contains("requires 'aac'", error, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void PlannedMp4AudioTitleAcceptsExactFfprobeNameAlias()
+    {
+        const string title = "для Sosalkino";
+        string error = EncodeOutputValidationService.ValidateProbe(
+            PlannedAudioRequest(OutputContainer.Mp4),
+            PlannedAudioProbe(output: false, "aac", "eng", title, defaultDisposition: false),
+            PlannedAudioProbeWithTags("mov,mp4,m4a,3gp,3g2,mj2", new Dictionary<string, string> { ["name"] = title }));
+
+        Assert.Equal("", error);
+    }
+
+    [Fact]
+    public void PlannedMp4AudioTitleRejectsMismatchedFfprobeNameAlias()
+    {
+        const string title = "для Sosalkino";
+        string error = EncodeOutputValidationService.ValidateProbe(
+            PlannedAudioRequest(OutputContainer.Mp4),
+            PlannedAudioProbe(output: false, "aac", "eng", title, defaultDisposition: false),
+            PlannedAudioProbeWithTags("mov,mp4,m4a,3gp,3g2,mj2", new Dictionary<string, string> { ["name"] = "different" }));
+
+        Assert.Contains("title metadata was not preserved", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Mp4NameAliasDoesNotHideConflictingTitleTag()
+    {
+        const string title = "для Sosalkino";
+        string error = EncodeOutputValidationService.ValidateProbe(
+            PlannedAudioRequest(OutputContainer.Mp4),
+            PlannedAudioProbe(output: false, "aac", "eng", title, defaultDisposition: false),
+            PlannedAudioProbeWithTags("mov,mp4,m4a,3gp,3g2,mj2", new Dictionary<string, string>
+            {
+                ["title"] = "different",
+                ["name"] = title
+            }));
+
+        Assert.Contains("title metadata was not preserved", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MatroskaAudioTitleDoesNotAcceptMp4NameAlias()
+    {
+        const string title = "для Sosalkino";
+        string error = EncodeOutputValidationService.ValidateProbe(
+            PlannedAudioRequest(OutputContainer.Matroska),
+            PlannedAudioProbe(output: false, "aac", "eng", title, defaultDisposition: false),
+            PlannedAudioProbeWithTags("matroska,webm", new Dictionary<string, string> { ["name"] = title }));
+
+        Assert.Contains("title metadata was not preserved", error, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("und", "und", true)]
     [InlineData("und", null, true)]
@@ -1082,6 +1134,50 @@ public sealed class EncodeOutputValidationServiceTests : IDisposable
             new MediaProbeStreamInfo { Index = 4, CodecType = "audio", CodecName = codec, Channels = 2, DurationSeconds = 100, Language = language, Tags = new Dictionary<string, string> { ["title"] = title }, Dispositions = new Dictionary<string, bool> { ["default"] = defaultDisposition } }
         }
     };
+
+    private static EncodeOutputValidationRequest PlannedAudioRequest(OutputContainer container)
+    {
+        OutputContainerSelection requested = container == OutputContainer.Mp4
+            ? OutputContainerSelection.Mp4
+            : OutputContainerSelection.Matroska;
+        OutputContainerDecision decision = new()
+        {
+            Requested = requested,
+            Resolved = container,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(4, "audio", "aac", StreamCompatibilityAction.Copy, "test", "aac",
+                    Language: "eng", Title: "для Sosalkino", OutputTypeOrdinal: 0)
+            }
+        };
+        return FrameRequest(3000, FrameCountProvenance.Measured, containerDecision: decision);
+    }
+
+    private static MediaProbeResult PlannedAudioProbeWithTags(string format, IReadOnlyDictionary<string, string> tags)
+    {
+        MediaProbeResult basis = PlannedAudioProbe(output: true, "aac", "eng", "", defaultDisposition: false);
+        MediaProbeStreamInfo[] streams = basis.Streams.Select(stream => stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase)
+            ? new MediaProbeStreamInfo
+            {
+                Index = stream.Index,
+                CodecType = stream.CodecType,
+                CodecName = stream.CodecName,
+                Channels = stream.Channels,
+                DurationSeconds = stream.DurationSeconds,
+                Language = stream.Language,
+                Tags = tags,
+                Dispositions = stream.Dispositions
+            }
+            : stream).ToArray();
+        return new MediaProbeResult
+        {
+            Success = true,
+            FormatName = format,
+            DurationSeconds = basis.DurationSeconds,
+            Streams = streams
+        };
+    }
 
     private static MediaProbeResult FrameProbe(double duration, long frames, double fps, bool output = false, double? averageFps = null, double? nominalFps = null, double? startTime = null) => new()
     {

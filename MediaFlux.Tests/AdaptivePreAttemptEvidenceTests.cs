@@ -294,7 +294,7 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
     [InlineData(true, true, false)]
     [InlineData(false, false, true)]
     public async Task RealEncodingServiceAwaitsGateAfterFrozenCallbacksBeforeProductionRunner(
-        bool failCapture, bool skipped, bool samplingFailure)
+        bool failCapture, bool projectedMiss, bool samplingFailure)
     {
         var events = new List<string>();
         int launches = 0;
@@ -306,7 +306,7 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
             Path.Combine(_root, "ffmpeg.exe"), Path.Combine(_root, "ffprobe.exe"), null,
             new AdaptiveStorageSavingsTests.FakeSamples((_, _) => samplingFailure
                 ? throw new IOException("synthetic optional sampling failure")
-                : skipped ? 50_000 : 10),
+                : projectedMiss ? 50_000 : 10),
             (_, _, _, _) =>
             {
                 events.Add("production");
@@ -341,12 +341,16 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
         };
         if (failCapture)
             await Assert.ThrowsAsync<AdaptivePreAttemptEvidenceCaptureException>(() => service.EncodeWithResultAsync(request));
-        else if (skipped)
-            await Assert.ThrowsAsync<AdaptiveStorageSavingsSkippedException>(() => service.EncodeWithResultAsync(request));
         else
             await Assert.ThrowsAsync<ProductionBoundaryException>(() => service.EncodeWithResultAsync(request));
-        Assert.Equal(failCapture || skipped ? 0 : 1, launches);
-        Assert.Equal(failCapture ? ["selection", "plan", "capture"] : skipped ? ["selection", "plan", "capture", "acknowledged"] : new[] { "selection", "plan", "capture", "acknowledged", "production" }, events);
+        Assert.Equal(failCapture ? 0 : 1, launches);
+        Assert.Equal(failCapture ? ["selection", "plan", "capture"] : new[] { "selection", "plan", "capture", "acknowledged", "production" }, events);
+        if (projectedMiss)
+        {
+            Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, selection!.Disposition);
+            Assert.Equal(selection.PreferredQuality, selection.SelectedQuality);
+            Assert.Equal(selection.PreferredQuality, frozen!.Plan.Quality!.EffectiveQuality);
+        }
         if (samplingFailure)
         {
             Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, selection!.Disposition);

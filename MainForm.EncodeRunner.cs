@@ -30,15 +30,12 @@ namespace MediaFlux
             bool assignmentValidationFailed,
             bool researchEvidenceFailed,
             bool adaptivePolicySkipped,
-            bool isCanceled) =>
-            finalizationResult?.FailureKind.ToString() ??
-            (assignmentValidationFailed
-                ? "ExperimentAssignmentValidationFailed"
-                : researchEvidenceFailed
-                    ? "ResearchEvidenceCaptureFailed"
-                    : adaptivePolicySkipped
-                        ? EncodingLifecycleStatus.NotRun.ToString()
-                        : isCanceled ? "Canceled" : "FfmpegFailed");
+            bool isCanceled) => EncodeExecutionLifecycleService.ResolveFailureFinalizationOutcome(
+                finalizationResult,
+                assignmentValidationFailed,
+                researchEvidenceFailed,
+                adaptivePolicySkipped,
+                isCanceled);
         private async void btnStartEncode_Click(object? sender, EventArgs e)
         {
             await StartEncodeAsync();
@@ -714,7 +711,7 @@ namespace MediaFlux
                     _encodingDiagnosticsService.UpdateProgress(meta.StatisticsOperationId, line, durationSec > 0 ? durationSec : null);
                 };
 
-                executionAttempt = _encodeExecutionOrchestrator.CreateAttempt(builtSnapshot);
+                executionAttempt = _encodeExecutionLifecycleService.CreateAttempt(builtSnapshot);
                 var executionCallbacks = new EncodeExecutionCallbacks
                 {
                     Progress = jobCallback,
@@ -832,7 +829,7 @@ namespace MediaFlux
                               "Visual quality may be reduced.");
                 }
 
-                EncodeExecutionResult executionResult = await _encodeExecutionOrchestrator.ExecuteAsync(
+                EncodeExecutionResult executionResult = await _encodeExecutionLifecycleService.ExecuteAsync(
                     executionAttempt,
                     executionCallbacks,
                     lifecycle,
@@ -893,65 +890,25 @@ namespace MediaFlux
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (jobEndUtc - jobStartUtc).TotalSeconds);
 
-                // append success to history – never let this kill the job
-                try
+                JobHistoryRecord successHistoryRecord = new()
                 {
-                    lock (_historyLock)
-                    {
-                        _historyService.AppendEncodingOutcome(new JobHistoryRecord
-                        {
-                            Id = meta.StatisticsOperationId,
-                            Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
-                            Status = JobStatus.Success,
-                            StartUtc = jobStartUtc,
-                            EndUtc = jobEndUtc,
-                            SourcePath = logicalSourcePath,
-                            OutputPath = result.OutputPath,
-                            EncoderMode = encoderText,
-                            TargetMb = targetMb,
-                            DurationSec = durationSec,
-                            Log = isDvdEncode
-                                ? $"FFmpeg arguments: {result.DiagnosticArguments}{Environment.NewLine}" +
-                                  jobLog
-                                : jobLog.ToString(),
-                            Notes = isDvdEncode
-                                ? $"Codec={videoCodec}; TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
-                                  $"Segments={dvdOptions.Candidate.Segments.Count}; " +
-                                  $"Recommended={dvdOptions.Candidate.IsLikelyMainFeature}; " +
-                                  $"Validated and finalized; {sourceDeletion.Message}"
-                                : $"Codec={videoCodec}; Validated and finalized; {sourceDeletion.Message}",
-                            DvdTitleSet = isDvdEncode
-                                ? dvdOptions!.Candidate.TitleSetId
-                                : null,
-                            DvdSegmentCount = isDvdEncode
-                                ? dvdOptions!.Candidate.Segments.Count
-                                : null,
-                            DvdOutputMode = isDvdEncode
-                                ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
-                                : null,
-                            SourceSizeBytes = sourceSizeBytes,
-                            OutputSizeBytes = outputSizeBytes,
-                            WasRecommendedDvdTitle = isDvdEncode
-                                ? dvdOptions!.Candidate.IsLikelyMainFeature
-                                : null,
-                            FinalizationOutcome = "ValidatedAndFinalized",
-                            StagingPath = result.StagingPath,
-                            SourceDeletionResult = sourceDeletion.Message,
-                            RequestedOutputContainer = result.RequestedOutputContainer.ToString(),
-                            ResolvedOutputContainer = result.ResolvedOutputContainer.ToString(),
-                            ContainerDecisionReason = result.ContainerDecisionReason,
-                            DiagnosticSummary = diagnosticSummary,
-                            StorageSavings = result.StorageSavings,
-                            AdaptiveSelection = executionAttempt?.AdaptiveSelection,
-                            TerminalResult = meta.IntelligenceOutcome?.TerminalResult ?? EncodingTerminalResult.Completed
-                        }, executionAttempt?.ExecutionOutcome ?? meta.IntelligenceOutcome);
-                    }
-                }
-                catch (Exception logEx)
-                {
-                    Debug.WriteLine($"History append (success) failed: {logEx}");
-                    // We ignore this; the encode itself succeeded.
-                }
+                    Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
+                    Log = isDvdEncode
+                        ? $"FFmpeg arguments: {result.DiagnosticArguments}{Environment.NewLine}" + jobLog
+                        : jobLog.ToString(),
+                    Notes = isDvdEncode
+                        ? $"Codec={videoCodec}; TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
+                          $"Segments={dvdOptions.Candidate.Segments.Count}; " +
+                          $"Recommended={dvdOptions.Candidate.IsLikelyMainFeature}; " +
+                          $"Validated and finalized; {sourceDeletion.Message}"
+                        : $"Codec={videoCodec}; Validated and finalized; {sourceDeletion.Message}",
+                    DvdTitleSet = isDvdEncode ? dvdOptions!.Candidate.TitleSetId : null,
+                    DvdSegmentCount = isDvdEncode ? dvdOptions!.Candidate.Segments.Count : null,
+                    DvdOutputMode = isDvdEncode ? DvdOutputMode.EncodeUsingCurrentSettings.ToString() : null,
+                    SourceSizeBytes = sourceSizeBytes,
+                    OutputSizeBytes = outputSizeBytes,
+                    WasRecommendedDvdTitle = isDvdEncode ? dvdOptions!.Candidate.IsLikelyMainFeature : null
+                };
 
                 if (meta.IntelligencePlan?.SourceAdaptiveShadow is { } shadowDecision)
                 {
@@ -959,7 +916,7 @@ namespace MediaFlux
                         shadowDecision, result.FinalOutputProbe, outputSizeBytes).Describe());
                 }
 
-                _encodeExecutionOrchestrator.RecordSuccessfulExecution(
+                EncodeExecutionLifecycleCompletion lifecycleCompletion = _encodeExecutionLifecycleService.CompleteSuccessfulExecution(
                     executionAttempt ?? throw new InvalidOperationException("The completed encode has no execution attempt snapshot."),
                     jobEndUtc,
                     outputSizeBytes,
@@ -967,7 +924,10 @@ namespace MediaFlux
                     $"Validated and finalized. {sourceDeletion.Message}",
                     diagnosticSummary: diagnosticSummary,
                     recoveredSuccessful: jobLog.ToString().Contains("Result=Succeeded", StringComparison.Ordinal),
-                    finalOutputProbe: result.FinalOutputProbe);
+                    finalOutputProbe: result.FinalOutputProbe,
+                    historyRecord: successHistoryRecord);
+                if (!lifecycleCompletion.HistoryRecorded || !lifecycleCompletion.StatisticsRecorded)
+                    Debug.WriteLine("[EncodeLifecycle] The encode completed, but one or more durable outcome records could not be confirmed.");
 
                 try
                 {
@@ -1062,95 +1022,72 @@ namespace MediaFlux
                     ? "Cancelled by user."
                     : JobHistoryPresentation.SummaryFor(terminalResult, ex.Message);
 
-                bool cleanupEnabled = isCanceled
-                    ? true
-                    : _config.DeleteFailedEncodeOutputs;
+                bool cleanupEnabled = _config.DeleteFailedEncodeOutputs;
                 string recoverableOutputPath =
                     finalizationResult?.RecoverableOutputPath ?? "";
-                string incompleteOutputPath =
-                    !string.IsNullOrWhiteSpace(recoverableOutputPath)
-                        ? recoverableOutputPath
-                        : stagedOutputPath;
-                string cleanupResult =
-                    await IncompleteEncodeOutputCleanupService.CleanupAsync(
-                    logicalSourcePath,
-                    incompleteOutputPath,
-                    cleanupEnabled,
-                    isCanceled ? "canceled" : "failed");
-                string sourceRetention =
-                    assignmentValidationFailure != null
-                        ? "Original source retained because assigned experiment validation failed before encode execution."
-                        : "Original source retained because validated finalization did not complete.";
-                string historyNotes =
-                    $"{notes} {sourceRetention} Incomplete output cleanup: {cleanupResult}";
-                if (isDvdEncode)
+                JobHistoryRecord failureHistoryRecord = new()
                 {
-                    historyNotes +=
-                        $" TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
-                        $"Segments={dvdOptions.Candidate.Segments.Count}; " +
-                        "Source deletion disabled.";
+                    Id = meta.StatisticsOperationId,
+                    Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
+                    StartUtc = jobStartUtc,
+                    SourcePath = logicalSourcePath,
+                    EncoderMode = encoderText,
+                    TargetMb = targetMb,
+                    DurationSec = durationSec,
+                    Log = !isCanceled && !string.IsNullOrWhiteSpace(meta.CuratedFailureDiagnosticReport)
+                        ? meta.CuratedFailureDiagnosticReport
+                        : jobLog.ToString(),
+                    Notes = isDvdEncode
+                        ? $"{notes} TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
+                          $"Segments={dvdOptions.Candidate.Segments.Count}; Source deletion disabled."
+                        : notes,
+                    DvdTitleSet = isDvdEncode ? dvdOptions!.Candidate.TitleSetId : null,
+                    DvdSegmentCount = isDvdEncode ? dvdOptions!.Candidate.Segments.Count : null,
+                    DvdOutputMode = isDvdEncode ? DvdOutputMode.EncodeUsingCurrentSettings.ToString() : null,
+                    SourceSizeBytes = sourceSizeBytes,
+                    WasRecommendedDvdTitle = isDvdEncode ? dvdOptions!.Candidate.IsLikelyMainFeature : null,
+                    ErrorSummary = notes,
+                    RequestedOutputContainer = requestedOutputContainer.ToString(),
+                    ResolvedOutputContainer = appliedContainerDecision?.Resolved.ToString(),
+                    ContainerDecisionReason = appliedContainerDecision?.Reason,
+                    DiagnosticSummary = diagnosticSummary,
+                    TerminalResult = isCanceled ? EncodingTerminalResult.Canceled : terminalResult ?? EncodingTerminalResult.EncodeFailed
+                };
+
+                bool retryQueued = false;
+                if (!isCanceled)
+                {
+                    retryQueued = !researchEvidenceFailed && executionAttempt?.AdaptiveSelection is null && EncodingRetryPolicy.AllowsAutomaticRetry(
+                            terminalResult, meta.PredictionShadowExperimentAssignment is not null) &&
+                        TryQueueFailedRowForAutoRetry(row);
+                    if (storagePolicyRejected)
+                        System.Threading.Interlocked.Increment(ref _encodeStorageRejectedCount);
+                    else if (!retryQueued)
+                        System.Threading.Interlocked.Increment(ref _encodeFailedCount);
                 }
 
-                try
-                {
-                    lock (_historyLock)
-                    {
-                        _historyService.AppendEncodingOutcome(new JobHistoryRecord
-                        {
-                            Id = meta.StatisticsOperationId,
-                            Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
-                            Status = isCanceled
-                                ? JobStatus.Canceled
-                                : storagePolicyRejected ? JobStatus.Skipped : JobStatus.Failed,
-                            StartUtc = jobStartUtc,
-                            EndUtc = DateTime.UtcNow,
-                            SourcePath = logicalSourcePath,
-                            OutputPath = attemptedOutputPath,
-                            EncoderMode = encoderText,
-                            TargetMb = targetMb,
-                            DurationSec = durationSec,
-                            Log = !isCanceled && !string.IsNullOrWhiteSpace(meta.CuratedFailureDiagnosticReport)
-                                ? meta.CuratedFailureDiagnosticReport
-                                : jobLog.ToString(),
-                            Notes = historyNotes,
-                            DvdTitleSet = isDvdEncode
-                                ? dvdOptions!.Candidate.TitleSetId
-                                : null,
-                            DvdSegmentCount = isDvdEncode
-                                ? dvdOptions!.Candidate.Segments.Count
-                                : null,
-                            DvdOutputMode = isDvdEncode
-                                ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
-                                : null,
-                            SourceSizeBytes = sourceSizeBytes,
-                            OutputSizeBytes = adaptivePolicySkipped ? null : TryGetFileSizeBytes(incompleteOutputPath),
-                            WasRecommendedDvdTitle = isDvdEncode
-                                ? dvdOptions!.Candidate.IsLikelyMainFeature
-                                : null,
-                            ErrorSummary = notes,
-                            StorageSavings = isCanceled ? null : finalizationResult?.StorageSavings,
-                            AdaptiveSelection = executionAttempt?.AdaptiveSelection,
-                            FinalizationOutcome = ResolveFailureHistoryFinalizationOutcome(
-                                finalizationResult,
-                                assignmentValidationFailure != null,
-                                researchEvidenceFailed,
-                                adaptivePolicySkipped,
-                                isCanceled),
-                            StagingPath = stagedOutputPath,
-                            SourceDeletionResult = sourceRetention,
-                            RequestedOutputContainer = requestedOutputContainer.ToString(),
-                            ResolvedOutputContainer = appliedContainerDecision?.Resolved.ToString(),
-                            ContainerDecisionReason = appliedContainerDecision?.Reason,
-                            DiagnosticSummary = diagnosticSummary,
-                            TerminalResult = isCanceled ? EncodingTerminalResult.Canceled : terminalResult ?? EncodingTerminalResult.EncodeFailed
-                        }, executionAttempt?.ExecutionOutcome ?? meta.IntelligenceOutcome);
-                    }
-                }
-                catch (Exception logEx)
-                {
-                    Debug.WriteLine($"History append (failure) failed: {logEx}");
-                    // Don't let logging errors mask the *real* encode error.
-                }
+                DateTime statisticsEndUtc = DateTime.UtcNow;
+                EncodeExecutionLifecycleCompletion lifecycleCompletion =
+                    await _encodeExecutionLifecycleService.CompleteFailedExecutionAsync(
+                        executionAttempt,
+                        failureHistoryRecord,
+                        statisticsEndUtc,
+                        isCanceled,
+                        storagePolicyRejected,
+                        cleanupEnabled,
+                        logicalSourcePath,
+                        attemptedOutputPath,
+                        stagedOutputPath,
+                        recoverableOutputPath,
+                        meta.StatisticsProcessingSeconds,
+                        diagnosticSummary,
+                        finalizationFailure?.Result.FailureKind ??
+                            (assignmentValidationFailure != null ? EncodeFinalizationFailureKind.Validation : null),
+                        retryQueued,
+                        ex.Message);
+                string cleanupResult = lifecycleCompletion.CleanupResult;
+                string sourceRetention = lifecycleCompletion.SourceRetentionResult;
+                string historyNotes = failureHistoryRecord.Notes;
 
                 var centralLogPath = ErrorLogService.Append(
                     Application.StartupPath,
@@ -1168,34 +1105,7 @@ namespace MediaFlux
                     "Captured Job Log:" + Environment.NewLine +
                     jobLog);
 
-                bool retryQueued = false;
-                if (!isCanceled)
-                {
-                    retryQueued = !researchEvidenceFailed && executionAttempt?.AdaptiveSelection is null && EncodingRetryPolicy.AllowsAutomaticRetry(
-                            terminalResult, meta.PredictionShadowExperimentAssignment is not null) &&
-                        TryQueueFailedRowForAutoRetry(row);
-                    if (storagePolicyRejected)
-                        System.Threading.Interlocked.Increment(ref _encodeStorageRejectedCount);
-                    else if (!retryQueued)
-                        System.Threading.Interlocked.Increment(ref _encodeFailedCount);
-                }
-
-                DateTime statisticsEndUtc = DateTime.UtcNow;
-                if (executionAttempt is not null)
-                {
-                    _encodeExecutionOrchestrator.RecordFailedExecution(
-                        executionAttempt,
-                        statisticsEndUtc,
-                        isCanceled,
-                        finalizationFailure?.Result.FailureKind ??
-                            (assignmentValidationFailure != null ? EncodeFinalizationFailureKind.Validation : null),
-                        attemptedOutputPath,
-                        meta.StatisticsProcessingSeconds,
-                        historyNotes,
-                        diagnosticSummary,
-                        retryQueued);
-                }
-                else if (isCanceled || !retryQueued)
+                if (executionAttempt is null && (isCanceled || !retryQueued))
                 {
                     RecordEncodingStatistics(
                         meta.StatisticsOperationId,

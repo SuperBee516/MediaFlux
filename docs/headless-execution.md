@@ -76,7 +76,7 @@ path conventions.
 | Source Adaptive prediction/calibration | Reads isolated statistics through both the pipeline and static `EncodingPlanService` fallback; no normal-history seeding. |
 | Prediction-shadow research | Isolated `data/prediction-shadow-observations.jsonl`, its `.oldN` generations, and isolated statistics generations. Existing adaptive-selection research exclusions are unchanged. |
 | Assigned experiment freezes | Isolated `data/research-experiment-freezes`; normal immutable-validation and assignment rules still apply. No freezes are copied or manufactured at startup. |
-| History | `AppPaths.HistoryFile` resolves to isolated `data/history.json`; the current headless pipeline does not instantiate `HistoryService` or append job history. If used, its JSONL and history logs resolve under isolated `data`. |
+| History | Saved-job and transient execution append normal `JobHistoryRecord` entries through `HistoryService`; for an isolated saved-job run, JSONL and history logs resolve under that isolated `data` directory. Transient batch execution uses normal configured UserData. |
 | Diagnostics | Central error logs and failure artifacts resolve under isolated `data/logs`; existing stdout/stderr diagnostics remain available. |
 | Sample temporary files | Isolated `temp/AdaptiveSamples` and `temp/PredictionShadow`; owned operation directories keep existing cleanup behavior. Ordinary runs retain their OS-temp locations. |
 | AI restoration | Isolated `data/ai-intermediates`, `data/tensorrt-engines`, `data/ncnn-performance-tuning.json` and `data/ai-benchmarks.db`, plus other existing `AppPaths` runtime paths. |
@@ -184,3 +184,27 @@ recorded file state, prepare this one-item tree, and preserve the existing campa
 report. After the separately authorized run, inspect isolated statistics/adaptive
 evidence, output bytes, source preservation, sample cleanup and full-encode count.
 This infrastructure change does not itself authorize or perform that campaign run.
+## Transient sequential encoding
+
+The saved-job commands above remain available. For explicit source paths that do not exist in a saved-job store, use:
+
+```text
+MediaFlux.exe --headless-encode --source <absolute-file-path> [--source <absolute-file-path> ...] [--output-directory <absolute-existing-directory>] [--quality-mode Automatic|Manual] [--storage-savings] [--delete-source]
+```
+
+Sources execute in command-line order, one at a time. No permanent saved job is created or updated. The command reads normal config from the active UserData root and uses the production snapshot builder, `EncodePlan`, orchestrator, and `EncodingService`. Without `--output-directory`, each output uses its source directory, matching normal GUI behavior. An explicit destination must already exist; output naming remains collision-safe.
+
+`Automatic` uses the configured quality target and ordinary Source Adaptive sampling/selection. `Manual` uses the configured numeric quality. Transient mode disables the experimental Policy C retry gate and keeps normal validation and actual-byte acceptance. `--storage-savings` enables the actual-byte contract for this run in memory and does not save a config change. Source deletion is off unless `--delete-source` is supplied, and the normal orchestrator deletion gates still apply.
+
+Standard output contains one versioned JSON result after the batch settles; progress and diagnostics go to standard error. `schemaVersion` is `1`, job results preserve input order, and enum statuses use camel-case strings. Each result includes operation identity, source measurements, selected mode, adaptive selection, resolved quality, final plan, FFmpeg exit when available, recovery, FFprobe/decode/metadata validation, output bytes, explicit storage-contract acceptance state, promotion, cleanup and source-retention results, history/statistics persistence, and terminal status.
+
+| Exit code | Meaning |
+| ---: | --- |
+| 0 | All jobs succeeded or recovered successfully. |
+| 2 | Invalid command line. |
+| 4 | One or more ordinary per-file failures; independent jobs continue. |
+| 5 | Cancellation; later jobs do not start. |
+| 6 | One or more rejections or policy skips, with no failure or cancellation. |
+| 8 | Fatal process/environment failure; later jobs do not start. |
+
+Per-file rejection, policy skip, and ordinary encode failure are recorded and do not block independent later sources. Cancellation and fatal environment failures stop the batch. Failed-output cleanup uses the shared `IncompleteEncodeOutputCleanupService`; a validated promoted output is protected, and cleanup does not delete the source.
