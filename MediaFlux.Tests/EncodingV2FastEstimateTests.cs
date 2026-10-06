@@ -398,7 +398,7 @@ public sealed class EncodingV2FastEstimateTests : IDisposable
     {
         var encoder = new VideoEncoderSelection("test", family, ffmpegCodec);
         bool mapped = V2QueueEstimateRequestMapper.TryCreate(
-            Path.Combine(_root, "mapping.mkv"), encoder, 27, "medium",
+            Path.Combine(_root, "mapping.mkv"), encoder, 27, "Medium Quality (Default)", "medium",
             OutputContainerSelection.Auto, 720, audioChannels: null, tenBit: false,
             adaptiveQuality: false, targetSize: false, customSettings: false,
             restorationEnabled: false, out V2FastEstimateCommandRequest? request, out string reason);
@@ -407,8 +407,38 @@ public sealed class EncodingV2FastEstimateTests : IDisposable
         Assert.Equal(qualityMode, request.QualityMode);
         Assert.Equal("mkv", request.Container);
         Assert.Equal("fitBox", request.GeometryMode);
-        Assert.Equal(27, request.QualityValue);
+        Assert.Equal(27d, request.QualityValue);
         Assert.Equal("copy", request.AudioMode);
+    }
+
+    [Theory]
+    [InlineData("Very High Quality (Largest File)")]
+    [InlineData("High Quality")]
+    [InlineData("Medium Quality (Default)")]
+    [InlineData("Low Quality (Smaller File)")]
+    [InlineData("Very Low Quality (Smallest File)")]
+    public void QueueMapperUsesExistingFileSizeProfileAsEstimateOnlyQualityOffset(string profile)
+    {
+        string path = Path.Combine(_root, "profile-mapping.mp4");
+        var encoder = new VideoEncoderSelection("test", VideoCodecFamily.H264, "libx264");
+        bool mapped = V2QueueEstimateRequestMapper.TryCreate(
+            path, encoder, 24, profile, "medium", OutputContainerSelection.Mp4,
+            null, null, tenBit: false, adaptiveQuality: false, targetSize: false,
+            customSettings: false, restorationEnabled: false,
+            out V2FastEstimateCommandRequest? request, out string reason);
+
+        Assert.True(mapped, reason);
+        Assert.NotNull(request);
+
+        double scale = SizeEstimateService.GetCompressionMultiplier(profile);
+        double defaultScale = SizeEstimateService.GetCompressionMultiplier("Medium Quality (Default)");
+        double expectedEstimateQuality = 24 - 6d * Math.Log2(scale / defaultScale);
+        Assert.Equal(expectedEstimateQuality, request.QualityValue, 10);
+
+        V2FastEstimateSourceFacts facts = Facts() with { SourcePath = path };
+        V2FastEstimateResult result = V2FastEstimateService.Estimate(
+            V2FastEstimateService.CreateRequest(request, facts));
+        Assert.Equal(expectedEstimateQuality, result.QualityValue, 10);
     }
 
     [Fact]
@@ -416,7 +446,7 @@ public sealed class EncodingV2FastEstimateTests : IDisposable
     {
         var h264 = new VideoEncoderSelection("libx264", VideoCodecFamily.H264, "libx264");
         bool mapped = V2QueueEstimateRequestMapper.TryCreate(
-            Path.Combine(_root, "source.mp4"), h264, 24, "medium", OutputContainerSelection.Mp4,
+            Path.Combine(_root, "source.mp4"), h264, 24, "Medium Quality (Default)", "medium", OutputContainerSelection.Mp4,
             null, null, false, adaptiveQuality: true, targetSize: false,
             customSettings: false, restorationEnabled: false, out _, out string reason);
         Assert.False(mapped);
@@ -424,7 +454,7 @@ public sealed class EncodingV2FastEstimateTests : IDisposable
 
         var qsv = new VideoEncoderSelection("qsv", VideoCodecFamily.H264, "h264_qsv");
         mapped = V2QueueEstimateRequestMapper.TryCreate(
-            Path.Combine(_root, "source.mp4"), qsv, 24, "medium", OutputContainerSelection.Mp4,
+            Path.Combine(_root, "source.mp4"), qsv, 24, "Medium Quality (Default)", "medium", OutputContainerSelection.Mp4,
             null, null, false, adaptiveQuality: false, targetSize: false,
             customSettings: false, restorationEnabled: false, out _, out _);
         Assert.False(mapped);

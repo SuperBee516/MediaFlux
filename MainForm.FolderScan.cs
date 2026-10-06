@@ -244,7 +244,12 @@ namespace MediaFlux
                             SetEncodeRowState(addedRow,
                                 requestedCodecFilter ? "Checking codec" : "Preparing",
                                 "", "", "Queue admission checks are running; this row is not yet eligible to encode.");
-                            _ = TryQueueV2Estimate(addedRow, addedMeta, file.Path, qualityChangeStartedUtc: null);
+                            _ = TryQueueV2Estimate(
+                                addedRow,
+                                addedMeta,
+                                file.Path,
+                                qualityChangeStartedUtc: null,
+                                comboCompressionProfile.SelectedItem?.ToString() ?? "Medium Quality (Default)");
                             _lastImportAddedCount = added;
                         }
                         else if (_rowsByPath.TryGetValue(file.Path, out DataGridViewRow? existingRow) &&

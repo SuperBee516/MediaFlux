@@ -425,7 +425,8 @@ namespace MediaFlux
             DataGridViewRow row,
             RowMeta meta,
             string path,
-            DateTime? qualityChangeStartedUtc)
+            DateTime? qualityChangeStartedUtc,
+            string estimateProfile)
         {
             V2EstimateRefreshCoordinator? coordinator = _v2EstimateCoordinator;
             if (coordinator == null || row.IsNewRow || IsQueueRowActivelyEncoding(row))
@@ -449,6 +450,7 @@ namespace MediaFlux
                     path,
                     settings.Resolved.Selection,
                     settings.QualityValue,
+                    estimateProfile,
                     settings.Preset,
                     GetSelectedOutputContainer(),
                     GetEstimateTargetHeight(),
@@ -473,6 +475,13 @@ namespace MediaFlux
                 V2EstimateRefreshTicket ticket = coordinator.Request(
                     meta.QueueItemId, identity, request!);
                 meta.V2EstimateGeneration = ticket.Generation;
+                CriticalPathTiming.WriteLine(
+                    $"[CriticalPathTiming] stage=v2-estimate-requested item={meta.QueueItemId:N} " +
+                    $"generation={ticket.Generation} profile={estimateProfile} quality={request!.QualityValue:0.###} " +
+                    $"sourceFacts={(cachedFacts ? "cached" : "pending-probe")}" +
+                    (qualityChangeStartedUtc is { } changedUtc
+                        ? $" sinceEstimateInputChangeMs={(DateTime.UtcNow - changedUtc).TotalMilliseconds:0.##}"
+                        : string.Empty));
                 row.Cells["colEstimatedSize"].Value = cachedFacts ? "Calculating…" : "Probing…";
                 row.Cells["colEstimatedSize"].Tag = null;
                 row.Cells["colEstimatedSize"].ToolTipText = cachedFacts
@@ -747,7 +756,7 @@ namespace MediaFlux
                 if (string.IsNullOrWhiteSpace(estimateMeta.Path))
                     estimateMeta.Path = path;
 
-                if (TryQueueV2Estimate(row, estimateMeta, path, qualityChangeStartedUtc))
+                if (TryQueueV2Estimate(row, estimateMeta, path, qualityChangeStartedUtc, rowProfile))
                     continue;
 
                 if (estimateMeta.QueueAdmissionPending)

@@ -1,4 +1,5 @@
 using MediaFlux.Models;
+using MediaFlux.Services;
 using MediaFlux.Services.Encoders;
 
 namespace MediaFlux.Services.EncodingV2;
@@ -13,6 +14,7 @@ public static class V2QueueEstimateRequestMapper
         string sourcePath,
         VideoEncoderSelection encoder,
         int qualityValue,
+        string compressionProfile,
         string preset,
         OutputContainerSelection containerSelection,
         int? targetHeight,
@@ -77,6 +79,17 @@ public static class V2QueueEstimateRequestMapper
         if (container.Length == 0)
             return Reject("The selected output container is unsupported.", out reason);
 
+        // Preserve the legacy File-size estimate choices as estimate-only offsets.
+        // The existing profile multiplier expresses a relative bitrate scale against
+        // Medium; V2's CQ/CRF model changes bitrate by 2x for every 6 quality steps.
+        // This value is used only by the fast estimate request, never the encode plan.
+        double profileScale = SizeEstimateService.GetCompressionMultiplier(compressionProfile);
+        double defaultProfileScale = SizeEstimateService.GetCompressionMultiplier("Medium Quality (Default)");
+        double estimateQualityValue = Math.Clamp(
+            qualityValue - 6d * Math.Log2(profileScale / defaultProfileScale),
+            0d,
+            encoderName == "libsvtav1" ? 63d : 51d);
+
         request = new V2FastEstimateCommandRequest
         {
             SourcePath = Path.GetFullPath(sourcePath),
@@ -84,7 +97,7 @@ public static class V2QueueEstimateRequestMapper
             Codec = codec,
             Container = container,
             QualityMode = nvenc ? "cq" : "crf",
-            QualityValue = qualityValue,
+            QualityValue = estimateQualityValue,
             Preset = preset ?? "",
             GeometryMode = targetHeight.HasValue ? "fitBox" : "source",
             MaxWidth = targetHeight.HasValue ? 8192 : null,

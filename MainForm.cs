@@ -367,7 +367,7 @@ namespace MediaFlux
             };
 
             chkAutoTargetSize.CheckedChanged += (_, __) => ScheduleEstimateRefresh();
-            comboCompressionProfile.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
+            comboCompressionProfile.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh(qualityChanged: true);
             comboVideoFormat.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
             comboEncoderMode.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh();
             // Resolution is optional and is not created by every UI layout/version.
