@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 using MediaFlux.Models;
 using MediaFlux.Services;
+using MediaFlux.Services.EncodingV2;
 using MediaFlux.Services.Encoders;
 
 namespace MediaFlux
@@ -109,6 +110,20 @@ namespace MediaFlux
                 _estSmartUiTimer.Tick += EstSmartUiTimer_Tick;
                 _estSmartUiTimer.Start();
             }
+
+        }
+
+        private void StartV2EstimateUiPump()
+        {
+            if (IsDisposed || !IsHandleCreated)
+                return;
+            if (_v2EstimateUiTimer == null)
+            {
+                _v2EstimateUiTimer = new System.Windows.Forms.Timer { Interval = 16 };
+                _v2EstimateUiTimer.Tick += V2EstimateUiTimer_Tick;
+            }
+            if (!_v2EstimateUiTimer.Enabled)
+                _v2EstimateUiTimer.Start();
         }
 
         private void EstSmartUiTimer_Tick(object? sender, EventArgs e)
@@ -116,10 +131,19 @@ namespace MediaFlux
             ApplySmartEstimateResultsBatch();
         }
 
+        private void V2EstimateUiTimer_Tick(object? sender, EventArgs e)
+        {
+            ApplyV2EstimateResultsBatch();
+            if (_v2EstimateCoordinator?.PendingWorkCount == 0)
+                _v2EstimateUiTimer?.Stop();
+        }
+
         private void StopEstimateUiPump()
         {
             // Cancel workers and clear queues
             _estimateService.ResetAndCancel();
+            _v2EstimateCoordinator?.Dispose();
+            _v2EstimateCoordinator = null;
 
             if (_estimateRefreshTimer != null)
             {
@@ -135,6 +159,14 @@ namespace MediaFlux
                 _estSmartUiTimer.Tick -= EstSmartUiTimer_Tick;
                 _estSmartUiTimer.Dispose();
                 _estSmartUiTimer = null;
+            }
+
+            if (_v2EstimateUiTimer != null)
+            {
+                _v2EstimateUiTimer.Stop();
+                _v2EstimateUiTimer.Tick -= V2EstimateUiTimer_Tick;
+                _v2EstimateUiTimer.Dispose();
+                _v2EstimateUiTimer = null;
             }
         }
 
@@ -375,7 +407,8 @@ namespace MediaFlux
                     $"[CriticalPathTiming] stage=quality-change-initiated utc={_qualityChangeEstimateRefreshUtc:O} queueCount={dgvEncodeQueue.Rows.Count}");
             }
 
-            _estimateRefreshTimer ??= new System.Windows.Forms.Timer { Interval = 75 };
+            _estimateRefreshTimer ??= new System.Windows.Forms.Timer();
+            _estimateRefreshTimer.Interval = qualityChanged ? 25 : 75;
             _estimateRefreshTimer.Stop();
             _estimateRefreshTimer.Tick -= EstimateRefreshTimer_Tick;
             _estimateRefreshTimer.Tick += EstimateRefreshTimer_Tick;
@@ -386,6 +419,179 @@ namespace MediaFlux
         {
             _estimateRefreshTimer?.Stop();
             SafeRefreshEstimates();
+        }
+
+        private bool TryQueueV2Estimate(
+            DataGridViewRow row,
+            RowMeta meta,
+            string path,
+            DateTime? qualityChangeStartedUtc)
+        {
+            V2EstimateRefreshCoordinator? coordinator = _v2EstimateCoordinator;
+            if (coordinator == null || row.IsNewRow || IsQueueRowActivelyEncoding(row))
+                return false;
+
+            double? manualTargetMb = EncodingTargetSizeResolver.ResolveConfiguredManualTargetMb(
+                chkAutoTargetSize.Checked, txtTargetSize.Text);
+            bool custom = RowHasCustomSettings(meta);
+            VideoRestorationPipelinePlan restoration = VideoRestorationPipeline.BuildPlan(
+                _config.VideoRestoration, GetSelectedScaleMode());
+            bool restorationEnabled = restoration.UsesAi ||
+                !string.IsNullOrWhiteSpace(restoration.ConventionalFilterChain) ||
+                !string.IsNullOrWhiteSpace(restoration.PreAiFilterChain) ||
+                !string.IsNullOrWhiteSpace(restoration.PostAiFilterChain);
+
+            try
+            {
+                ValidatedEncoderSettings settings = GetValidatedEncoderSettingsFromUi(
+                    includeConcurrentSessions: false);
+                if (!V2QueueEstimateRequestMapper.TryCreate(
+                    path,
+                    settings.Resolved.Selection,
+                    settings.QualityValue,
+                    settings.Preset,
+                    GetSelectedOutputContainer(),
+                    GetEstimateTargetHeight(),
+                    GetSelectedAudioChannels(),
+                    settings.TenBit,
+                    adaptiveQuality: IsAutomaticQualitySelected(),
+                    targetSize: manualTargetMb is > 0 || meta.CustomTargetMb is > 0,
+                    customSettings: custom,
+                    restorationEnabled: restorationEnabled,
+                    out V2FastEstimateCommandRequest? request,
+                    out _))
+                {
+                    coordinator.Forget(meta.QueueItemId);
+                    return false;
+                }
+
+                V2SourceFileIdentity identity = V2SourceFileIdentity.Capture(path);
+                bool cachedFacts = coordinator.TryGetCachedSourceFacts(identity, out _);
+                meta.V2SourceIdentity = identity;
+                meta.V2EstimateResult = null;
+                meta.V2QualityChangeStartedUtc = qualityChangeStartedUtc;
+                V2EstimateRefreshTicket ticket = coordinator.Request(
+                    meta.QueueItemId, identity, request!);
+                meta.V2EstimateGeneration = ticket.Generation;
+                row.Cells["colEstimatedSize"].Value = cachedFacts ? "Calculating…" : "Probing…";
+                row.Cells["colEstimatedSize"].Tag = null;
+                row.Cells["colEstimatedSize"].ToolTipText = cachedFacts
+                    ? "V2 fast estimate is recalculating from cached source facts. The result is advisory."
+                    : "V2 fast estimate is reading source facts once. The result is advisory.";
+                if (!meta.QueueAdmissionPending &&
+                    row.Cells["colStatus"].Value?.ToString() is not "Encoding" and not "Done" and not "Failed" and not "Canceled" and not "Retry Queued")
+                    SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
+                StartV2EstimateUiPump();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                coordinator.Forget(meta.QueueItemId);
+                System.Diagnostics.Debug.WriteLine($"V2 estimate request was not scheduled for {Path.GetFileName(path)}: {ex.Message}");
+                return false;
+            }
+        }
+
+        private void ApplyV2EstimateResultsBatch()
+        {
+            V2EstimateRefreshCoordinator? coordinator = _v2EstimateCoordinator;
+            if (coordinator == null || IsDisposed || !IsHandleCreated)
+                return;
+
+            int applied = 0;
+            dgvEncodeQueue.SuspendLayout();
+            try
+            {
+                while (applied < 128 && coordinator.TryDequeueCompleted(out V2EstimateRefreshResult result))
+                {
+                    if (result.IsStale ||
+                        !_rowsByPath.TryGetValue(result.SourceIdentity.FullPath, out DataGridViewRow? row) ||
+                        row == null || row.DataGridView != dgvEncodeQueue ||
+                        row.Tag is not RowMeta meta || meta.QueueItemId != result.QueueItemId ||
+                        meta.ExcludedFromEncodeAsDuplicate ||
+                        meta.V2EstimateGeneration != result.Generation ||
+                        !PathsIdentifySameSource(meta.Path, result.SourceIdentity.FullPath) ||
+                        IsQueueRowActivelyEncoding(row))
+                        continue;
+
+                    if (result.Estimate is not { } estimate || result.SourceFacts is not { } facts)
+                    {
+                        meta.V2EstimateResult = null;
+                        row.Cells["colEstimatedSize"].Value = "Unavailable";
+                        row.Cells["colEstimatedSize"].Tag = null;
+                        row.Cells["colEstimatedSize"].ToolTipText =
+                            $"V2 estimate unavailable: {result.ErrorMessage ?? "source facts could not be read"}";
+                        if (!meta.QueueAdmissionPending)
+                            RestoreQueuedStateAfterEstimate(row);
+                        applied++;
+                        continue;
+                    }
+
+                    long uiApplyStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                    double sourceMb = facts.SourceSizeBytes / (1024d * 1024d);
+                    double estimateMb = estimate.EstimatedTotalBytes / (1024d * 1024d);
+                    meta.V2SourceIdentity = result.SourceIdentity;
+                    meta.V2SourceFacts = facts;
+                    meta.V2EstimateResult = estimate;
+                    meta.SourceSizeBytes = facts.SourceSizeBytes;
+                    meta.SrcMb = sourceMb;
+                    meta.DurationSec = facts.DurationSeconds;
+                    meta.VideoCodec = facts.VideoCodec;
+                    meta.Resolution = $"{facts.Width}x{facts.Height}";
+                    meta.Fps = facts.FrameRate is > 0 ? (int)Math.Round(facts.FrameRate.Value) : 0;
+
+                    row.Cells["colSize"].Value = FormatSize(sourceMb);
+                    row.Cells["colEstimatedSize"].Value = FormatSize(estimateMb);
+                    row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(sourceMb, estimateMb);
+                    row.Cells["colEstimatedSize"].ToolTipText = BuildV2EstimateTooltip(
+                        estimate, facts, result.SourceFactsReused, result.ProbeMilliseconds);
+
+                    _queueSourceSizeMap[result.SourceIdentity.FullPath] = sourceMb;
+                    _estimatedSizeMap[result.SourceIdentity.FullPath] = estimateMb;
+                    TrackCodecFilterCount(result.SourceIdentity.FullPath, facts.VideoCodec);
+                    MarkQueueTotalsDirty();
+                    if (!meta.QueueAdmissionPending)
+                        RestoreQueuedStateAfterEstimate(row);
+
+                    DateTime now = DateTime.UtcNow;
+                    CriticalPathTiming.WriteLine(
+                        $"[CriticalPathTiming] stage=v2-estimate-visible item={result.QueueItemId:N} " +
+                        $"source={Path.GetFileName(meta.Path)} sourceFacts={(result.SourceFactsReused ? "reused" : "probed")}" +
+                        $" probeMs={result.ProbeMilliseconds:0.##} calculateMs={estimate.CalculationMilliseconds:0.###}" +
+                        $" queueWaitMs={result.QueueWaitMilliseconds:0.##} totalMs={result.TotalMilliseconds:0.##}" +
+                        $" readyToUiMs={(now - result.CompletedUtc).TotalMilliseconds:0.##}" +
+                        $" uiApplyMs={System.Diagnostics.Stopwatch.GetElapsedTime(uiApplyStarted).TotalMilliseconds:0.###}" +
+                        (meta.V2QualityChangeStartedUtc is { } changedUtc
+                            ? $" sinceQualityChangeMs={(now - changedUtc).TotalMilliseconds:0.##}"
+                            : $" sinceRowVisibleMs={(now - meta.QueueRowCreatedUtc).TotalMilliseconds:0.##}"));
+                    meta.V2QualityChangeStartedUtc = null;
+                    applied++;
+                }
+            }
+            finally
+            {
+                dgvEncodeQueue.ResumeLayout();
+                if (applied > 0)
+                {
+                    dgvEncodeQueue.Invalidate();
+                    UpdateSizeTotals(force: true);
+                }
+            }
+        }
+
+        private static string BuildV2EstimateTooltip(
+            V2FastEstimateResult estimate,
+            V2FastEstimateSourceFacts facts,
+            bool sourceFactsReused,
+            double probeMilliseconds)
+        {
+            string saved = FormatSize(estimate.EstimatedSavingsBytes);
+            return $"V2 fast estimate · advisory" + Environment.NewLine +
+                   $"Estimated savings: {saved} ({estimate.EstimatedSavingsPercent:0.0}%)" + Environment.NewLine +
+                   $"Savings class: {estimate.SavingsClassification.Kind} (advisory)" + Environment.NewLine +
+                   $"Confidence: {estimate.Confidence}; {estimate.EstimateBasis}" + Environment.NewLine +
+                   $"Source facts: {(sourceFactsReused ? "reused" : "probed")}; probe {probeMilliseconds:0.##} ms" + Environment.NewLine +
+                   $"Calculation: {estimate.CalculationMilliseconds:0.###} ms; {facts.Width}x{facts.Height}";
         }
 
         private void RunEstimatePass()
@@ -403,13 +609,13 @@ namespace MediaFlux
                 return;
 
             _largeQueueModeActive = dgvEncodeQueue.Rows.Count >= GetLargeQueueThreshold();
-            if (_largeQueueModeActive && !_config.AutoAnalyzeLargeQueues && !force)
+            bool deferLegacyForLargeQueue = _largeQueueModeActive && !_config.AutoAnalyzeLargeQueues && !force;
+            if (deferLegacyForLargeQueue)
             {
                 _estimatesDeferredForLargeQueue = true;
                 UpdateAnalyzeQueueButtonState();
                 toolStripStatusLabel1.Text = $"Large queue mode: {dgvEncodeQueue.Rows.Count:N0} files loaded. Use Analyze Queue to estimate sizes.";
                 UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
-                return;
             }
 
             bool autoRequested = chkAutoTargetSize.Checked;
@@ -541,6 +747,15 @@ namespace MediaFlux
                 if (string.IsNullOrWhiteSpace(estimateMeta.Path))
                     estimateMeta.Path = path;
 
+                if (TryQueueV2Estimate(row, estimateMeta, path, qualityChangeStartedUtc))
+                    continue;
+
+                if (estimateMeta.QueueAdmissionPending)
+                    continue;
+
+                if (deferLegacyForLargeQueue)
+                    continue;
+
                 // Keep the path → row map in sync for the UI pump
                 _rowsByPath[path] = row;
                 _estimatedSizeMap.Remove(path);
@@ -587,7 +802,7 @@ namespace MediaFlux
             }
 
             _lastEstimateQueuedCount = queued;
-            _estimatesDeferredForLargeQueue = false;
+            _estimatesDeferredForLargeQueue = deferLegacyForLargeQueue;
             MarkQueueTotalsDirty();
             UpdateSizeTotals(force: true);
             if (queued > 0)

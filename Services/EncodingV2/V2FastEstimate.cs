@@ -81,6 +81,10 @@ public sealed record V2FastEstimateCommandRequest
     public string? FfprobePath { get; init; }
     public double[]? QualityValues { get; init; }
     public int Repetitions { get; init; } = 100;
+    /// <summary>Optional rapid UI-like quality changes for coordinator certification.</summary>
+    public double[]? RefreshQualitySequence { get; init; }
+    /// <summary>Optional cached-facts bulk refresh count for application-layer certification.</summary>
+    public int BulkItemCount { get; init; }
 }
 
 public sealed record V2FastEstimateRequest

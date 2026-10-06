@@ -69,3 +69,27 @@ MediaFlux.exe --v2-benchmark-estimates request.json
 ```
 
 See [Encoding Engine V2 Phase 3 fast estimates](../Documentation/EncodingEngineV2Phase3FastEstimates.md) for the request shape, model, dependency audit, and validation results.
+
+## Phase 4 queue estimates and refresh certification
+
+The queue uses the V2 application coordinator for supported fixed CQ/CRF estimates. A bounded source-facts cache is keyed by normalized path, file size, and last-write UTC ticks; quality changes reuse those facts. Only the newest generation for a queue item reaches the grid. Estimates and savings classes are advisory and do not change queue execution.
+
+Folder imports stream discovered paths through a bounded channel and add provisional rows before codec or duplicate analysis. Provisional rows cannot enter the encode runner until those checks finish. Where the selected fixed configuration can use V2, the same source-facts probe supplies both the codec filter and estimate. Source Adaptive, target-size, custom, restoration, ten-bit, and unsupported encoder requests stay on the existing V1 estimate path.
+
+The existing benchmark request can optionally exercise the application coordinator. For example:
+
+```json
+{
+  "schemaVersion": 1,
+  "sourcePath": "C:\\media\\sample.mp4",
+  "sourceFacts": { "sourcePath": "C:\\media\\sample.mp4", "sourceSizeBytes": 1234567, "durationSeconds": 30, "videoCodec": "h264", "width": 1920, "height": 1080 },
+  "encoder": "libx264",
+  "codec": "h264",
+  "qualityMode": "crf",
+  "qualityValue": 24,
+  "refreshQualitySequence": [18, 22, 29, 34],
+  "bulkItemCount": 100
+}
+```
+
+`applicationRefresh` reports initial and final estimates, requested/applied quality updates, stale results, source-facts probe/cache-hit counts, 100-item bulk calculation and elapsed timing percentiles, and explicit zero production/sample FFmpeg invocation counts. `uiMarshalingMeasured` is false because this command does not measure WinForms dispatch. Omit the two optional fields to retain the Phase 3 benchmark contract.

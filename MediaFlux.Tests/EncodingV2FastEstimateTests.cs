@@ -304,6 +304,168 @@ public sealed class EncodingV2FastEstimateTests : IDisposable
     }
 
     [Fact]
+    public async Task CoordinatorReusesSourceFactsForQualityRefreshAndInvalidatesChangedIdentity()
+    {
+        string path = Path.Combine(_root, "cached-source.mp4");
+        await File.WriteAllBytesAsync(path, Enumerable.Range(0, 4096).Select(value => (byte)value).ToArray());
+        int probes = 0;
+        using var coordinator = new V2EstimateRefreshCoordinator(new V2SourceFactsCache((sourcePath, _) =>
+        {
+            Interlocked.Increment(ref probes);
+            var info = new FileInfo(sourcePath);
+            return Task.FromResult(Facts(info.Length) with { SourcePath = sourcePath });
+        }));
+
+        V2SourceFileIdentity firstIdentity = V2SourceFileIdentity.Capture(path);
+        V2FastEstimateCommandRequest request = Command(Facts(new FileInfo(path).Length)) with
+        {
+            SourcePath = path,
+            SourceFacts = null,
+            QualityValue = 20
+        };
+        V2EstimateRefreshResult first = await coordinator.Request(Guid.NewGuid(), firstIdentity, request).Completion;
+        Assert.NotNull(first.Estimate);
+        Assert.False(first.SourceFactsReused);
+
+        Guid queueItemId = Guid.NewGuid();
+        V2EstimateRefreshResult refreshed = await coordinator.Request(queueItemId, firstIdentity,
+            request with { QualityValue = 32 }).Completion;
+        Assert.NotNull(refreshed.Estimate);
+        Assert.True(refreshed.SourceFactsReused);
+        Assert.Equal(1, probes);
+
+        DateTime changedWrite = File.GetLastWriteTimeUtc(path).AddSeconds(5);
+        await using (var append = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None))
+            await append.WriteAsync(new byte[] { 1, 2, 3, 4 });
+        File.SetLastWriteTimeUtc(path, changedWrite);
+        V2SourceFileIdentity changedIdentity = V2SourceFileIdentity.Capture(path);
+        V2EstimateRefreshResult afterChange = await coordinator.Request(queueItemId, changedIdentity,
+            request with { SourcePath = changedIdentity.FullPath, QualityValue = 24 }).Completion;
+        Assert.NotNull(afterChange.Estimate);
+        Assert.False(afterChange.SourceFactsReused);
+        Assert.Equal(2, probes);
+    }
+
+    [Fact]
+    public async Task CoordinatorSuppressesStaleRapidQualityResultsAndKeepsNewestValue()
+    {
+        string path = Path.Combine(_root, "racing-source.mp4");
+        await File.WriteAllBytesAsync(path, [1, 2, 3, 4, 5]);
+        var probeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseProbe = new TaskCompletionSource<V2FastEstimateSourceFacts>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var coordinator = new V2EstimateRefreshCoordinator(new V2SourceFactsCache((_, _) =>
+        {
+            probeStarted.TrySetResult();
+            return releaseProbe.Task;
+        }));
+
+        V2SourceFileIdentity identity = V2SourceFileIdentity.Capture(path);
+        V2FastEstimateCommandRequest request = Command(Facts(identity.SourceSizeBytes)) with
+        {
+            SourcePath = path,
+            SourceFacts = null,
+            QualityValue = 18
+        };
+        Guid queueItemId = Guid.NewGuid();
+        V2EstimateRefreshTicket old = coordinator.Request(queueItemId, identity, request);
+        await probeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        V2FastEstimateSourceFacts suppliedFacts = Facts(identity.SourceSizeBytes) with { SourcePath = path };
+        V2EstimateRefreshTicket middle = coordinator.Request(queueItemId, identity,
+            request with { SourceFacts = suppliedFacts, QualityValue = 26 });
+        V2EstimateRefreshTicket newest = coordinator.Request(queueItemId, identity,
+            request with { SourceFacts = suppliedFacts, QualityValue = 34 });
+        releaseProbe.TrySetResult(suppliedFacts);
+
+        V2EstimateRefreshResult[] results = await Task.WhenAll(
+            old.Completion, middle.Completion, newest.Completion).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(results[0].IsStale);
+        Assert.True(results[1].IsStale);
+        Assert.False(results[2].IsStale);
+        Assert.Equal(34, results[2].Estimate!.QualityValue);
+        Assert.Equal(2, coordinator.StaleSuppressedCount);
+        Assert.Equal(1, coordinator.SourceProbeCount);
+    }
+
+    [Theory]
+    [InlineData("libx264", VideoCodecFamily.H264, "crf")]
+    [InlineData("libx265", VideoCodecFamily.Hevc, "crf")]
+    [InlineData("libsvtav1", VideoCodecFamily.Av1, "crf")]
+    [InlineData("h264_nvenc", VideoCodecFamily.H264, "cq")]
+    [InlineData("hevc_nvenc", VideoCodecFamily.Hevc, "cq")]
+    [InlineData("av1_nvenc", VideoCodecFamily.Av1, "cq")]
+    public void QueueMapperResolvesSupportedFixedQualityPairs(string ffmpegCodec, VideoCodecFamily family, string qualityMode)
+    {
+        var encoder = new VideoEncoderSelection("test", family, ffmpegCodec);
+        bool mapped = V2QueueEstimateRequestMapper.TryCreate(
+            Path.Combine(_root, "mapping.mkv"), encoder, 27, "medium",
+            OutputContainerSelection.Auto, 720, audioChannels: null, tenBit: false,
+            adaptiveQuality: false, targetSize: false, customSettings: false,
+            restorationEnabled: false, out V2FastEstimateCommandRequest? request, out string reason);
+        Assert.True(mapped, reason);
+        Assert.NotNull(request);
+        Assert.Equal(qualityMode, request.QualityMode);
+        Assert.Equal("mkv", request.Container);
+        Assert.Equal("fitBox", request.GeometryMode);
+        Assert.Equal(27, request.QualityValue);
+        Assert.Equal("copy", request.AudioMode);
+    }
+
+    [Fact]
+    public void QueueMapperKeepsAdaptiveAndUnsupportedConfigurationsOnExistingPath()
+    {
+        var h264 = new VideoEncoderSelection("libx264", VideoCodecFamily.H264, "libx264");
+        bool mapped = V2QueueEstimateRequestMapper.TryCreate(
+            Path.Combine(_root, "source.mp4"), h264, 24, "medium", OutputContainerSelection.Mp4,
+            null, null, false, adaptiveQuality: true, targetSize: false,
+            customSettings: false, restorationEnabled: false, out _, out string reason);
+        Assert.False(mapped);
+        Assert.Contains("Source Adaptive", reason, StringComparison.Ordinal);
+
+        var qsv = new VideoEncoderSelection("qsv", VideoCodecFamily.H264, "h264_qsv");
+        mapped = V2QueueEstimateRequestMapper.TryCreate(
+            Path.Combine(_root, "source.mp4"), qsv, 24, "medium", OutputContainerSelection.Mp4,
+            null, null, false, adaptiveQuality: false, targetSize: false,
+            customSettings: false, restorationEnabled: false, out _, out _);
+        Assert.False(mapped);
+    }
+
+    [Fact]
+    public async Task HeadlessBenchmarkExercisesCoordinatorQualityAndHundredItemRefresh()
+    {
+        string requestPath = Path.Combine(_root, "application-refresh.json");
+        V2FastEstimateCommandRequest command = Command(Facts()) with
+        {
+            QualityValues = [20, 24, 28],
+            Repetitions = 10,
+            RefreshQualitySequence = [18, 22, 29, 34],
+            BulkItemCount = 100
+        };
+        await File.WriteAllTextAsync(requestPath, JsonSerializer.Serialize(command, JsonOptions));
+        using var output = new StringWriter();
+        int exit = await EncodingV2HeadlessCommand.RunAsync(EncodingV2HeadlessOperation.BenchmarkEstimates,
+            requestPath, output, new StringWriter());
+        Assert.Equal(0, exit);
+
+        using JsonDocument document = JsonDocument.Parse(output.ToString());
+        JsonElement root = document.RootElement;
+        JsonElement refresh = root.GetProperty("applicationRefresh");
+        Assert.Equal(100, refresh.GetProperty("bulkItemCount").GetInt32());
+        Assert.Equal(100, refresh.GetProperty("bulkCalculationCount").GetInt32());
+        Assert.Equal(34, refresh.GetProperty("finalSelectedQuality").GetDouble());
+        Assert.True(refresh.GetProperty("bulkRefreshElapsedMilliseconds").GetDouble() < 1000);
+        Assert.True(refresh.GetProperty("bulkCalculationTotalMilliseconds").GetDouble() >= 0);
+        Assert.True(refresh.GetProperty("bulkCalculationP95Milliseconds").GetDouble() >= 0);
+        Assert.True(refresh.GetProperty("bulkQueueWaitP95Milliseconds").GetDouble() >= 0);
+        Assert.True(refresh.GetProperty("bulkNonCalculationElapsedMilliseconds").GetDouble() >= 0);
+        Assert.True(refresh.GetProperty("sourceFactsCacheHitCount").GetInt64() >= 100);
+        Assert.Equal(0, refresh.GetProperty("sourceFactsProbeCount").GetInt64());
+        Assert.Equal(0, refresh.GetProperty("ffmpegProductionInvocationCount").GetInt32());
+        Assert.Equal(0, refresh.GetProperty("ffmpegSampleInvocationCount").GetInt32());
+        Assert.False(refresh.GetProperty("uiMarshalingMeasured").GetBoolean());
+    }
+
+    [Fact]
     public void EstimateAndOneHundredRowRefreshMeetResponsivenessSanity()
     {
         V2FastEstimateRequest request = Request(Facts());

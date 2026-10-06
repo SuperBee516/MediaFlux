@@ -1,5 +1,6 @@
 using MediaFlux.Models;
 using MediaFlux.Services;
+using MediaFlux.Services.EncodingV2;
 using MediaFlux.Services.Encoders;
 using System;
 using System.Collections.Concurrent;
@@ -45,6 +46,7 @@ namespace MediaFlux
 
         private SizeEstimateService _sizeEstimateService = null!;
         private EstimateBackgroundService _estimateService = null!;
+        private V2EstimateRefreshCoordinator? _v2EstimateCoordinator;
         private CancellationTokenSource? _duplicateScanCts;
         private DuplicateScanResult? _lastDuplicateScanResult;
         private readonly EncodeQueueRunner _encodeQueueRunner;
@@ -76,6 +78,7 @@ namespace MediaFlux
         private Label[] _qualityTargetLabels = Array.Empty<Label>();
         private Label? lblEncodingSpeed;
         private System.Windows.Forms.Timer? _estSmartUiTimer;
+        private System.Windows.Forms.Timer? _v2EstimateUiTimer;
         private System.Windows.Forms.Timer? _estimateRefreshTimer;
 
         private SplitContainer? _encodeQueueSplit;
@@ -2488,6 +2491,8 @@ namespace MediaFlux
 
             public Guid QueueItemId = Guid.NewGuid();
             public DateTime QueueAcceptedUtc = DateTime.UtcNow;
+            public DateTime QueueRowCreatedUtc = DateTime.UtcNow;
+            public DateTime QueueDiscoveredUtc = DateTime.UtcNow;
             public long EstimateAuthorityRevision;
             public long QueueSequence;
             public string Path = "";
@@ -2532,6 +2537,13 @@ namespace MediaFlux
             public PredictionShadowExperimentAssignmentBinding? PredictionShadowExperimentAssignment;
             public EncodingQualityResolution? QualityPreview;
             public EncodingSizePredictionCalibration? SizePredictionCalibration;
+            public bool QueueAdmissionPending;
+            public int QueueAdmissionGeneration = -1;
+            public V2SourceFileIdentity? V2SourceIdentity;
+            public V2FastEstimateSourceFacts? V2SourceFacts;
+            public V2FastEstimateResult? V2EstimateResult;
+            public long V2EstimateGeneration;
+            public DateTime? V2QualityChangeStartedUtc;
 
             public void AppendInspectorLogLine(string line)
             {
@@ -4797,6 +4809,8 @@ namespace MediaFlux
             var path = GetPathFromRow(row);
             if (!string.IsNullOrWhiteSpace(path))
             {
+                if (row.Tag is RowMeta removedMeta)
+                    _v2EstimateCoordinator?.Forget(removedMeta.QueueItemId);
                 _rowsByPath.TryRemove(path, out _);
                 _estimatedSizeMap.Remove(path);
                 _queueSourceSizeMap.Remove(path);
@@ -4983,7 +4997,8 @@ namespace MediaFlux
         private IEnumerable<DataGridViewRow> GetEligibleEncodeRowsInExecutionOrder()
         {
             return GetEncodeRowsInExecutionOrder()
-                .Where(row => row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true });
+                .Where(row => row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true } &&
+                              row.Tag is not RowMeta { QueueAdmissionPending: true });
         }
 
         private void UpdateSelectionSizeTotals()
@@ -5347,6 +5362,8 @@ namespace MediaFlux
         private void RecreateMediaServices()
         {
             _estimateService?.Dispose();
+            _v2EstimateCoordinator?.Dispose();
+            _v2EstimateCoordinator = null;
             _duplicateScanCts?.Cancel();
             _mediaInfoService?.FlushCache();
 
@@ -5386,6 +5403,15 @@ namespace MediaFlux
                 _mediaInfoService,
                 _encodingStatisticsService,
                 IsEstimateSourceOwnedByActiveEncode);
+            var v2Metadata = new V2SourceMetadataProvider(
+                new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath));
+            _v2EstimateCoordinator = new V2EstimateRefreshCoordinator(
+                new V2SourceFactsCache(async (path, cancellationToken) =>
+                {
+                    V2MediaFacts mediaFacts = await v2Metadata.ProbeAsync(path, cancellationToken)
+                        .ConfigureAwait(false);
+                    return V2FastEstimateSourceFacts.FromMediaFacts(mediaFacts);
+                }));
             _duplicateDetectionService = new DuplicateDetectionService(
                 _mediaInfoService,
                 AppPaths.InstallDirectory,
@@ -5880,7 +5906,19 @@ namespace MediaFlux
         private bool AddEncodeItemIfNotPresent(
             string path,
             bool refreshEstimates = true,
-            bool appendToActiveQueue = true)
+            bool appendToActiveQueue = true) =>
+            AddEncodeItemCore(path, refreshEstimates, appendToActiveQueue, discoveredUtc: null);
+
+        private bool AddDiscoveredEncodeItemIfNotPresent(
+            string path,
+            DateTime discoveredUtc) =>
+            AddEncodeItemCore(path, refreshEstimates: false, appendToActiveQueue: false, discoveredUtc);
+
+        private bool AddEncodeItemCore(
+            string path,
+            bool refreshEstimates,
+            bool appendToActiveQueue,
+            DateTime? discoveredUtc)
         {
             if (_rowsByPath.ContainsKey(path))
                 return false;
@@ -5936,9 +5974,14 @@ namespace MediaFlux
             queueMeta.Path = path;
             queueMeta.SourceSizeBytes = fi.Length;
             queueMeta.QueueAcceptedUtc = DateTime.UtcNow;
+            queueMeta.QueueDiscoveredUtc = discoveredUtc ?? queueMeta.QueueAcceptedUtc;
+            queueMeta.QueueRowCreatedUtc = DateTime.UtcNow;
             CriticalPathTiming.WriteLine(
                 $"[CriticalPathTiming] stage=queue-file-accepted item={queueMeta.QueueItemId:N} " +
                 $"source={fi.Name} utc={queueMeta.QueueAcceptedUtc:O}");
+            CriticalPathTiming.WriteLine(
+                $"[CriticalPathTiming] stage=queue-row-visible item={queueMeta.QueueItemId:N} " +
+                $"source={fi.Name} discoveryToRowMs={(queueMeta.QueueRowCreatedUtc - queueMeta.QueueDiscoveredUtc).TotalMilliseconds:0.##}");
             _rowsByPath[path] = r;
             _queueSourceSizeMap[path] = sourceMb;
             _queueTotalSourceMb += sourceMb;

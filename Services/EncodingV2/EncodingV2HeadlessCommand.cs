@@ -275,6 +275,9 @@ public static class EncodingV2HeadlessCommand
                 throw new V2PlanningException("InvalidRepetitions", "benchmark repetitions must be between 2 and 10000.");
             if (request.QualityValues is { Length: > 100 })
                 throw new V2PlanningException("TooManyQualityValues", "qualityValues may contain at most 100 values.");
+            if (operation == EncodingV2HeadlessOperation.BenchmarkEstimates &&
+                (request.BulkItemCount is < 0 or > 1000 || request.RefreshQualitySequence is { Length: > 1000 }))
+                throw new V2PlanningException("InvalidRefreshCertification", "BulkItemCount and refreshQualitySequence may not exceed 1000 items.");
 
             IV2SourceMetadataProvider? metadata = null;
             if (request.SourceFacts is null)
@@ -369,6 +372,102 @@ public static class EncodingV2HeadlessCommand
                 0,
                 Array.AsReadOnly(qualities),
                 estimates[0]);
+
+            V2SourceFileIdentity identity = V2SourceFileIdentity.FromFacts(resolved.Facts);
+            var coordinatorCache = new V2SourceFactsCache(async (path, token) =>
+            {
+                if (metadata is null)
+                    throw new V2PlanningException("SourceFactsUnavailable", "The estimate coordinator has no FFprobe provider for missing source facts.");
+                V2MediaFacts mediaFacts = await metadata.ProbeAsync(path, token).ConfigureAwait(false);
+                return V2FastEstimateSourceFacts.FromMediaFacts(mediaFacts);
+            });
+            using var coordinator = new V2EstimateRefreshCoordinator(coordinatorCache);
+            coordinator.SeedSourceFacts(identity, resolved.Facts);
+            Guid refreshItemId = Guid.NewGuid();
+            V2FastEstimateCommandRequest coordinatorRequest = request with
+            {
+                SourcePath = identity.FullPath,
+                SourceFacts = null
+            };
+            Stopwatch refreshTimer = Stopwatch.StartNew();
+            V2EstimateRefreshResult initialRefresh = await coordinator.Request(
+                refreshItemId, identity, coordinatorRequest).Completion.ConfigureAwait(false);
+
+            double[] refreshQualities = request.RefreshQualitySequence ?? Array.Empty<double>();
+            V2EstimateRefreshTicket[] qualityTickets = refreshQualities.Select(quality => coordinator.Request(
+                refreshItemId, identity, coordinatorRequest with { QualityValue = quality })).ToArray();
+            V2EstimateRefreshResult[] qualityResults = qualityTickets.Length == 0
+                ? Array.Empty<V2EstimateRefreshResult>()
+                : await Task.WhenAll(qualityTickets.Select(ticket => ticket.Completion)).ConfigureAwait(false);
+            V2EstimateRefreshResult? finalQualityResult = qualityResults.LastOrDefault(result => !result.IsStale && result.Estimate is not null);
+
+            V2EstimateRefreshResult[] bulkResults = Array.Empty<V2EstimateRefreshResult>();
+            double bulkRefreshElapsedMilliseconds = 0;
+            if (request.BulkItemCount > 0)
+            {
+                Stopwatch bulkTimer = Stopwatch.StartNew();
+                V2EstimateRefreshTicket[] bulkTickets = Enumerable.Range(0, request.BulkItemCount)
+                    .Select(index => coordinator.Request(
+                        Guid.NewGuid(),
+                        identity,
+                        coordinatorRequest with
+                        {
+                            QualityValue = qualities[index % qualities.Length]
+                        }))
+                    .ToArray();
+                bulkResults = await Task.WhenAll(bulkTickets.Select(ticket => ticket.Completion))
+                    .ConfigureAwait(false);
+                bulkTimer.Stop();
+                bulkRefreshElapsedMilliseconds = bulkTimer.Elapsed.TotalMilliseconds;
+            }
+            refreshTimer.Stop();
+            V2EstimateRefreshResult[] validBulkResults = bulkResults
+                .Where(result => !result.IsStale && result.Estimate is not null)
+                .ToArray();
+            double[] bulkElapsed = validBulkResults.Select(result => result.TotalMilliseconds).ToArray();
+            double[] bulkCalculationElapsed = validBulkResults
+                .Select(result => result.Estimate!.CalculationMilliseconds)
+                .ToArray();
+            double[] bulkQueueWaitElapsed = validBulkResults
+                .Select(result => result.QueueWaitMilliseconds)
+                .ToArray();
+            double[] qualityElapsed = qualityResults
+                .Where(result => !result.IsStale && result.Estimate is not null)
+                .Select(result => result.TotalMilliseconds)
+                .ToArray();
+            var applicationRefresh = new
+            {
+                queueItemCount = 1,
+                initialEstimate = initialRefresh.Estimate,
+                qualityRefreshRequestedCount = qualityTickets.Length,
+                qualityRefreshAppliedCount = qualityElapsed.Length,
+                qualityRefreshP50Milliseconds = V2FastEstimateService.Percentile(qualityElapsed, 50),
+                qualityRefreshP95Milliseconds = V2FastEstimateService.Percentile(qualityElapsed, 95),
+                qualityRefreshMaximumMilliseconds = qualityElapsed.Length == 0 ? 0 : qualityElapsed.Max(),
+                finalSelectedQuality = finalQualityResult?.Estimate?.QualityValue ?? initialRefresh.Estimate?.QualityValue,
+                finalEstimate = finalQualityResult?.Estimate ?? initialRefresh.Estimate,
+                bulkItemCount = request.BulkItemCount,
+                bulkCalculationCount = validBulkResults.Length,
+                bulkCalculationTotalMilliseconds = bulkCalculationElapsed.Sum(),
+                bulkCalculationP50Milliseconds = V2FastEstimateService.Percentile(bulkCalculationElapsed, 50),
+                bulkCalculationP95Milliseconds = V2FastEstimateService.Percentile(bulkCalculationElapsed, 95),
+                bulkCalculationMaximumMilliseconds = bulkCalculationElapsed.Length == 0 ? 0 : bulkCalculationElapsed.Max(),
+                bulkRefreshElapsedMilliseconds,
+                bulkNonCalculationElapsedMilliseconds = Math.Max(0, bulkRefreshElapsedMilliseconds - bulkCalculationElapsed.Sum()),
+                bulkQueueWaitP50Milliseconds = V2FastEstimateService.Percentile(bulkQueueWaitElapsed, 50),
+                bulkQueueWaitP95Milliseconds = V2FastEstimateService.Percentile(bulkQueueWaitElapsed, 95),
+                bulkQueueWaitMaximumMilliseconds = bulkQueueWaitElapsed.Length == 0 ? 0 : bulkQueueWaitElapsed.Max(),
+                bulkP50Milliseconds = V2FastEstimateService.Percentile(bulkElapsed, 50),
+                bulkP95Milliseconds = V2FastEstimateService.Percentile(bulkElapsed, 95),
+                bulkMaximumMilliseconds = bulkElapsed.Length == 0 ? 0 : bulkElapsed.Max(),
+                totalCoordinatorElapsedMilliseconds = refreshTimer.Elapsed.TotalMilliseconds,
+                sourceFactsProbeCount = coordinator.SourceProbeCount + (resolved.ProbeOccurred ? 1 : 0),
+                sourceFactsCacheHitCount = coordinator.SourceFactsCacheHitCount,
+                staleResultCount = coordinator.StaleSuppressedCount,
+                ffmpegProductionInvocationCount = 0,
+                ffmpegSampleInvocationCount = 0,
+                uiMarshalingMeasured = false
+            };
             await WriteJsonAsync(standardOutput, new
             {
                 schemaVersion = 1,
@@ -382,6 +481,7 @@ public static class EncodingV2HeadlessCommand
                 ffmpegSampleInvocationCount = 0,
                 adaptiveCandidateGenerationCount = 0,
                 benchmark,
+                applicationRefresh,
                 timings = new
                 {
                     totalCalculationMilliseconds = estimates.Sum(result => result.CalculationMilliseconds),

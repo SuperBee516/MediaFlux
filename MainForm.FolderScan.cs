@@ -1,10 +1,12 @@
 ﻿using MediaFlux.Services;
 using System;
 using MediaFlux.Models;
+using MediaFlux.Services.EncodingV2;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
 using System.Threading;
+using System.Threading.Channels;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -92,7 +94,6 @@ namespace MediaFlux
             bool allowAv1 = chkFilterAv1.Checked;
             bool allowOther = chkFilterOtherCodecs.Checked;
             bool requestedCodecFilter = applyCodecFilters;
-            bool requireCodecProbeDuringDiscovery = requestedCodecFilter && _encodingActive;
             _importCts?.Cancel();
             _importCts?.Dispose();
             var importCts = new CancellationTokenSource();
@@ -111,6 +112,7 @@ namespace MediaFlux
             int initialStepCount = duplicateWorkflowInitiallyEnabled ? 4 : 3;
             SetImportPipelineStatus(1, initialStepCount, "Discovering supported video files", 0, 0);
 
+            var provisionalImportedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 if (replaceExisting && !_encodingActive)
@@ -118,6 +120,7 @@ namespace MediaFlux
                     ClearDuplicateAnnotations();
                     ClearCompletedEncodePaths();
                     _estimateService.ResetAndCancel();
+                    _v2EstimateCoordinator?.CancelAll();
                     ResetCodecFilterCounts();
                     _rowsByPath.Clear();
                     _estimatedSizeMap.Clear();
@@ -144,92 +147,138 @@ namespace MediaFlux
                     }
                 }
 
-                var files = await Task.Run(() =>
-                {
-                    var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var root in roots)
+                var discoveredChannel = Channel.CreateBounded<(string Path, string Codec, DateTime DiscoveredUtc)>(
+                    new BoundedChannelOptions(64)
                     {
-                        try
+                        SingleReader = true,
+                        SingleWriter = true,
+                        FullMode = BoundedChannelFullMode.Wait
+                    });
+                var files = new List<KeyValuePair<string, string>>();
+                var importedPaths = provisionalImportedPaths;
+                int added = 0;
+                DateTime discoveryStartedUtc = DateTime.UtcNow;
+                Task discovery = Task.Run(async () =>
+                {
+                    var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    try
+                    {
+                        foreach (var root in roots)
                         {
-                            if (File.Exists(root))
+                            try
                             {
-                                AddIfSupported(root, found);
-                            }
-                            else if (Directory.Exists(root))
-                            {
-                                var option = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-                                foreach (var file in Directory.EnumerateFiles(root, "*.*", option))
+                                if (File.Exists(root))
                                 {
-                                    ct.ThrowIfCancellationRequested();
-                                    AddIfSupported(file, found);
+                                    await AddIfSupportedAsync(root).ConfigureAwait(false);
+                                }
+                                else if (Directory.Exists(root))
+                                {
+                                    var option = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+                                    foreach (var file in Directory.EnumerateFiles(root, "*.*", option))
+                                    {
+                                        ct.ThrowIfCancellationRequested();
+                                        await AddIfSupportedAsync(file).ConfigureAwait(false);
+                                    }
                                 }
                             }
-                        }
-                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                        {
-                            ErrorLogService.Append(
-                                Application.StartupPath,
-                                "Encode queue import could not read a path",
-                                root,
-                                ex);
+                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                            {
+                                ErrorLogService.Append(
+                                    Application.StartupPath,
+                                    "Encode queue import could not read a path",
+                                    root,
+                                    ex);
+                            }
                         }
                     }
+                    catch (Exception ex)
+                    {
+                        discoveredChannel.Writer.TryComplete(ex);
+                        return;
+                    }
+                    discoveredChannel.Writer.TryComplete();
 
-                    return found.ToList();
-
-                    void AddIfSupported(string file, Dictionary<string, string> destination)
+                    async Task AddIfSupportedAsync(string file)
                     {
                         ct.ThrowIfCancellationRequested();
                         string ext = Path.GetExtension(file);
-                        if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext))
+                        if (string.IsNullOrEmpty(ext) || !allowedExts.Contains(ext) || !found.Add(file))
                             return;
 
-                        string codec = "";
-                        if (requireCodecProbeDuringDiscovery)
-                        {
-                            bool activeSource = IsEstimateSourceOwnedByActiveEncode(file);
-                            if (activeSource)
-                            {
-                                // Keep active inputs in the scan without touching
-                                // their open source with an import-time probe.
-                                codec = string.Empty;
-                            }
-                            else
-                            {
-                                codec = GetVideoCodec(file);
-                            }
-
-                            if (!activeSource &&
-                                !PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther))
-                                return;
-                        }
-
-                        destination.TryAdd(file, codec);
                         int discovered = Interlocked.Increment(ref _lastImportDiscoveredCount);
+                        await discoveredChannel.Writer.WriteAsync((file, "", DateTime.UtcNow), ct)
+                            .ConfigureAwait(false);
                         if (discovered % 100 == 0)
-                            SafeQueueImportStatusUpdate($"Step 1 of {initialStepCount} — Discovering supported video files: {discovered:N0} found");
-                    }
-
-                    void SafeQueueImportStatusUpdate(string text)
-                    {
-                        try
-                        {
-                            if (!IsDisposed && IsHandleCreated)
-                            {
-                                BeginInvoke(new Action(() =>
-                                {
-                                    toolStripStatusLabel1.Text = text;
-                                    UpdateRelocatedEncodeStatus(text);
-                                    SetQueueProgress(_lastImportDiscoveredCount, Math.Max(_lastImportDiscoveredCount, 1), visible: true);
-                                }));
-                            }
-                        }
-                        catch
-                        {
-                            // The form may be closing while a background enumeration is winding down.
-                        }
+                            System.Diagnostics.Debug.WriteLine($"[QueueAdmission] import={importGeneration} discovered={discovered}");
                     }
                 }, ct);
+
+                int batchAdded = 0;
+                dgvEncodeQueue.SuspendLayout();
+                try
+                {
+                    await foreach (var file in discoveredChannel.Reader.ReadAllAsync(ct))
+                    {
+                        if (importGeneration != Volatile.Read(ref _folderImportGeneration))
+                            break;
+                        files.Add(new KeyValuePair<string, string>(file.Path, file.Codec));
+                        bool wasAdded = AddDiscoveredEncodeItemIfNotPresent(
+                            file.Path,
+                            file.DiscoveredUtc);
+                        if (wasAdded && _rowsByPath.TryGetValue(file.Path, out DataGridViewRow? addedRow) &&
+                            addedRow?.Tag is RowMeta addedMeta)
+                        {
+                            addedMeta.QueueAdmissionPending = true;
+                            addedMeta.QueueAdmissionGeneration = importGeneration;
+                            importedPaths.Add(file.Path);
+                            added++;
+                            PredictionShadowExperimentAssignmentBinding? assignment =
+                                PredictionShadowExperimentAssignmentPersistence.RestoreForQueueReconstruction(
+                                    preservedResearchAssignments, file.Path);
+                            if (assignment != null &&
+                                PredictionShadowExperimentAssignmentPersistence.MatchesSource(assignment, file.Path))
+                            {
+                                addedMeta.PredictionShadowExperimentAssignment = assignment;
+                                UpdateResearchExperimentAssignmentPresentation(addedRow);
+                            }
+                            SetEncodeRowState(addedRow,
+                                requestedCodecFilter ? "Checking codec" : "Preparing",
+                                "", "", "Queue admission checks are running; this row is not yet eligible to encode.");
+                            _ = TryQueueV2Estimate(addedRow, addedMeta, file.Path, qualityChangeStartedUtc: null);
+                            _lastImportAddedCount = added;
+                        }
+                        else if (_rowsByPath.TryGetValue(file.Path, out DataGridViewRow? existingRow) &&
+                                 existingRow?.Tag is RowMeta existingMeta && existingMeta.QueueAdmissionPending)
+                        {
+                            // A superseding import adopts an in-flight provisional row so
+                            // the canceled import cannot remove work now owned by this pass.
+                            existingMeta.QueueAdmissionGeneration = importGeneration;
+                            importedPaths.Add(file.Path);
+                        }
+
+                        batchAdded++;
+                        if (batchAdded >= 16)
+                        {
+                            dgvEncodeQueue.ResumeLayout();
+                            if (requestedCodecFilter && files.Count > 0)
+                            {
+                                toolStripStatusLabel1.Text = $"Discovering files and adding rows... {files.Count:N0} found";
+                                UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
+                            }
+                            await Task.Yield();
+                            dgvEncodeQueue.SuspendLayout();
+                            batchAdded = 0;
+                        }
+                    }
+                }
+                finally
+                {
+                    dgvEncodeQueue.ResumeLayout();
+                }
+                await discovery;
+                CriticalPathTiming.WriteLine(
+                    $"[CriticalPathTiming] stage=queue-discovery-complete import={importGeneration} " +
+                    $"files={files.Count} elapsedMs={(DateTime.UtcNow - discoveryStartedUtc).TotalMilliseconds:0.##}");
 
                 ct.ThrowIfCancellationRequested();
                 if (importGeneration != Volatile.Read(ref _folderImportGeneration))
@@ -260,69 +309,11 @@ namespace MediaFlux
                         return;
                 }
 
-                int added = 0;
                 bool largeQueue = files.Count >= GetLargeQueueThreshold();
-                bool progressiveCodecFilter = requestedCodecFilter && !_encodingActive && largeQueue;
+                bool progressiveCodecFilter = requestedCodecFilter;
                 int codecStep = duplicateWorkflowEnabled ? 3 : 2;
-                if (requestedCodecFilter && !_encodingActive && !progressiveCodecFilter)
-                    files = await FilterFilesByCodecAsync(
-                        files,
-                        allowH264,
-                        allowHevc,
-                        allowAv1,
-                        allowOther,
-                        codecStep,
-                        totalSteps,
-                        ct);
 
                 _largeQueueModeActive = largeQueue;
-                // Finalize the entire import (including any duplicate decision made
-                // while discovery is running) before exposing new rows to live workers.
-                bool holdActiveQueueAppend = _encodingActive;
-                var importedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                dgvEncodeQueue.SuspendLayout();
-                try
-                {
-                    foreach (var file in files)
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        if (AddEncodeItemIfNotPresent(
-                            file.Key,
-                            refreshEstimates: false,
-                            appendToActiveQueue: !holdActiveQueueAppend))
-                        {
-                            added++;
-                            importedPaths.Add(file.Key);
-                            PredictionShadowExperimentAssignmentBinding? assignment =
-                                PredictionShadowExperimentAssignmentPersistence.RestoreForQueueReconstruction(
-                                    preservedResearchAssignments, file.Key);
-                            if (assignment != null &&
-                                _rowsByPath.TryGetValue(file.Key, out DataGridViewRow? recreatedRow) &&
-                                recreatedRow != null && recreatedRow.Tag is RowMeta recreatedMeta &&
-                                PredictionShadowExperimentAssignmentPersistence.MatchesSource(assignment, file.Key))
-                            {
-                                recreatedMeta.PredictionShadowExperimentAssignment = assignment;
-                                UpdateResearchExperimentAssignmentPresentation(recreatedRow);
-                            }
-                            _lastImportAddedCount = added;
-                            if (requestedCodecFilter && !progressiveCodecFilter)
-                                TrackCodecFilterCount(file.Key, file.Value);
-                            if (progressiveCodecFilter && _rowsByPath.TryGetValue(file.Key, out var checkingRow))
-                                SetEncodeRowState(checkingRow, "Checking codec", "", "", "Checking video codec against current filters.");
-                            if (added % 100 == 0)
-                            {
-                                toolStripStatusLabel1.Text = $"Adding files to queue... {added:N0}/{files.Count:N0}";
-                                UpdateRelocatedEncodeStatus($"Adding files to queue... {added:N0}/{files.Count:N0}");
-                                SetQueueProgress(added, files.Count, visible: true);
-                            }
-                        }
-                    }
-                }
-                finally
-                {
-                    dgvEncodeQueue.ResumeLayout();
-                }
-
                 int removedByCodecFilter = 0;
                 if (progressiveCodecFilter && added > 0)
                 {
@@ -360,7 +351,31 @@ namespace MediaFlux
                 else if (!duplicateWorkflowEnabled)
                     ClearDuplicateAnnotations();
 
-                if (holdActiveQueueAppend)
+                foreach (string path in importedPaths)
+                {
+                    if (_rowsByPath.TryGetValue(path, out DataGridViewRow? admittedRow) &&
+                        admittedRow?.Tag is RowMeta admittedMeta &&
+                        admittedMeta.QueueAdmissionGeneration == importGeneration)
+                    {
+                        if (admittedMeta.ExcludedFromEncodeAsDuplicate)
+                        {
+                            _v2EstimateCoordinator?.Forget(admittedMeta.QueueItemId);
+                            _estimatedSizeMap.Remove(path);
+                            if (admittedRow.DataGridView == dgvEncodeQueue)
+                            {
+                                admittedRow.Cells["colEstimatedSize"].Value = "";
+                                admittedRow.Cells["colEstimatedSize"].Tag = null;
+                            }
+                        }
+                        admittedMeta.QueueAdmissionPending = false;
+                        admittedMeta.QueueAdmissionGeneration = -1;
+                        if (!admittedMeta.ExcludedFromEncodeAsDuplicate &&
+                            !IsQueueRowActivelyEncoding(admittedRow))
+                            SetEncodeRowState(admittedRow, "Queued", "", "", "Queue admission checks complete; ready to encode.");
+                    }
+                }
+
+                if (_encodingActive)
                     AppendEligibleImportedRowsToActiveQueue(importedPaths);
 
                 // Estimate independently eligible idle rows during parallel encoding;
@@ -387,7 +402,9 @@ namespace MediaFlux
                     ? $"Queue ready — {Math.Max(0, added - excluded):N0} eligible, {excluded:N0} exact duplicate(s) excluded" +
                       (reviewGroups > 0 ? $", {reviewGroups:N0} visual group(s) available for review" : "") +
                       (removedByCodecFilter > 0 ? $", {removedByCodecFilter:N0} codec mismatch(es) filtered" : "") +
-                      (largeQueue && !_config.AutoAnalyzeLargeQueues ? ". Estimates deferred until Analyze Queue." : ". Estimates continue in the background.")
+                      (largeQueue && !_config.AutoAnalyzeLargeQueues
+                          ? ". V2 fast estimates continue; remaining estimates are deferred until Analyze Queue."
+                          : ". Estimates continue in the background.")
                     : "Queue ready — no new supported video files were found.";
                 toolStripStatusLabel1.Text = completion;
                 UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
@@ -403,6 +420,7 @@ namespace MediaFlux
             }
             catch (Exception ex)
             {
+                importCts.Cancel();
                 UpdateDuplicateFinderUiState();
                 ErrorLogService.Append(
                     Application.StartupPath,
@@ -413,6 +431,16 @@ namespace MediaFlux
             }
             finally
             {
+                foreach (string path in provisionalImportedPaths)
+                {
+                    if (_rowsByPath.TryGetValue(path, out DataGridViewRow? pendingRow) &&
+                        pendingRow?.Tag is RowMeta pendingMeta &&
+                        pendingMeta.QueueAdmissionPending &&
+                        pendingMeta.QueueAdmissionGeneration == importGeneration)
+                    {
+                        RemoveCodecFilteredRow(pendingRow);
+                    }
+                }
                 _activityIndicator?.StopActivity(UiActivity.FolderScan);
                 Interlocked.Decrement(ref _pendingEncodeImports);
                 SetQueueWorkCancelVisible(_estimateService?.PendingEstimates > 0);
@@ -451,47 +479,6 @@ namespace MediaFlux
                 rememberRoots: false);
         }
 
-        private async Task<List<KeyValuePair<string, string>>> FilterFilesByCodecAsync(
-            List<KeyValuePair<string, string>> files,
-            bool allowH264,
-            bool allowHevc,
-            bool allowAv1,
-            bool allowOther,
-            int stepNumber,
-            int totalSteps,
-            CancellationToken ct)
-        {
-            if (files.Count == 0)
-                return files;
-
-            toolStripStatusLabel1.Text = $"Step {stepNumber} of {totalSteps} — Checking video codecs: 0/{files.Count:N0}";
-            UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
-            SetQueueProgress(0, files.Count, visible: true);
-
-            var filtered = new List<KeyValuePair<string, string>>(files.Count);
-            for (int i = 0; i < files.Count; i++)
-            {
-                ct.ThrowIfCancellationRequested();
-                string path = files[i].Key;
-                string codec = await Task.Run(() => GetVideoCodec(path), ct);
-                TrackCodecFilterCount(path, codec);
-                if (PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther))
-                {
-                    filtered.Add(new KeyValuePair<string, string>(path, codec));
-                }
-
-                int checkedCount = i + 1;
-                if (checkedCount % 25 == 0 || checkedCount == files.Count)
-                {
-                    toolStripStatusLabel1.Text = $"Step {stepNumber} of {totalSteps} — Checking video codecs: {checkedCount:N0}/{files.Count:N0}";
-                    UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
-                    SetQueueProgress(checkedCount, files.Count, visible: true);
-                }
-            }
-
-            return filtered;
-        }
-
         private async Task<int> ApplyProgressiveCodecFilterAsync(
             List<string> paths,
             bool allowH264,
@@ -514,25 +501,44 @@ namespace MediaFlux
             {
                 ct.ThrowIfCancellationRequested();
                 string path = paths[i];
-                string codec = await Task.Run(() => GetVideoCodec(path), ct);
-                bool keep = PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther);
+                if (!_rowsByPath.TryGetValue(path, out DataGridViewRow? row) || row?.DataGridView != dgvEncodeQueue)
+                    continue;
+                RowMeta meta = EnsureRowMeta(row);
+                if (meta.ExcludedFromEncodeAsDuplicate)
+                    continue;
+
+                string codec;
+                bool keep;
+                if (IsEstimateSourceOwnedByActiveEncode(path))
+                {
+                    codec = meta.VideoCodec;
+                    keep = true;
+                }
+                else if (meta.V2SourceIdentity is { } identity && _v2EstimateCoordinator is { } coordinator)
+                {
+                    V2SourceFactsCacheResolution facts = await coordinator.GetSourceFactsAsync(identity, ct);
+                    meta.V2SourceFacts = facts.Facts;
+                    codec = facts.Facts.VideoCodec;
+                    keep = PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther);
+                }
+                else
+                {
+                    codec = await Task.Run(() => GetVideoCodec(path), ct);
+                    keep = PassesCodecFilter(codec, allowH264, allowHevc, allowAv1, allowOther);
+                }
 
                 TrackCodecFilterCount(path, codec);
+                meta.VideoCodec = codec;
 
-                if (_rowsByPath.TryGetValue(path, out var row) && row?.DataGridView == dgvEncodeQueue)
+                if (keep)
                 {
-                    var meta = EnsureRowMeta(row);
-                    meta.VideoCodec = codec;
-
-                    if (keep)
-                    {
+                    if (!meta.QueueAdmissionPending)
                         SetEncodeRowState(row, "Queued", "", "", "Ready to encode.");
-                    }
-                    else
-                    {
-                        RemoveCodecFilteredRow(row);
-                        removed++;
-                    }
+                }
+                else
+                {
+                    RemoveCodecFilteredRow(row);
+                    removed++;
                 }
 
                 int checkedCount = i + 1;
@@ -592,6 +598,8 @@ namespace MediaFlux
             var path = GetPathFromRow(row);
             if (!string.IsNullOrWhiteSpace(path))
             {
+                if (row.Tag is RowMeta removedMeta)
+                    _v2EstimateCoordinator?.Forget(removedMeta.QueueItemId);
                 _rowsByPath.TryRemove(path, out _);
                 _estimatedSizeMap.Remove(path);
                 _queueSourceSizeMap.Remove(path);
