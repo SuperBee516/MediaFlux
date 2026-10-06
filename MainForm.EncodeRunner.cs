@@ -8,6 +8,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediaFlux.Models;
 using MediaFlux.Services.Encoders;
+using MediaFlux.Services.EncodingV2;
+using MediaFlux.Services.EncodingV2Gui;
 using static MediaFlux.Services.EncodingService;
 
 namespace MediaFlux
@@ -150,10 +152,22 @@ namespace MediaFlux
             // Snapshot the requested rows before a possible scheduled wait. An explicit
             // context-menu choice must not be changed by the persisted checkbox setting.
             var requestedRowSet = requestedRows.ToHashSet();
+            EncodeExecutionSnapshotSettings queueIntentSettings = CaptureEncodeExecutionSnapshotSettings(runOutputContainer);
+            bool queueMayUseV2 = V2GuiRequestMapper.GetIntentUnsupportedReason(new V2GuiEncodeIntent
+            {
+                SourcePath = "queue-preflight",
+                JobId = "queue-preflight",
+                Settings = queueIntentSettings
+            }) is null && requestedRows.Any(row =>
+            {
+                RowMeta rowMeta = EnsureRowMeta(row);
+                return !rowMeta.HasCustomSettings && !rowMeta.IsDvdEncode &&
+                    rowMeta.LibraryPolicyIntent is null && rowMeta.PredictionShadowExperimentAssignment is null;
+            });
 
-            int maxParallel = requestedRows.Any(row => row.Tag is RowMeta { LibraryPolicyIntent: not null })
+            int maxParallel = requestedRows.Any(row => row.Tag is RowMeta { LibraryPolicyIntent: not null }) || queueMayUseV2
                 ? 1
-                : GetMaxConcurrentEncodes(); // Policy rows use conservative isolated scheduling.
+                : GetMaxConcurrentEncodes(); // Policy rows and fixed-plan V2 candidates use sequential scheduling.
             _sequentialQueueTiming = maxParallel == 1;
             Interlocked.Exchange(ref _lastQueueCompletedTicks, 0);
 
@@ -588,6 +602,45 @@ namespace MediaFlux
             ContainerCompatibilityPolicy compatibilityPolicy = ContainerCompatibilityPolicy.Intelligent;
             try
             {
+                var v2Intent = new V2GuiEncodeIntent
+                {
+                    SourcePath = file,
+                    JobId = meta.StatisticsOperationId,
+                    Settings = executionSettings,
+                    HasCustomSettings = meta.HasCustomSettings,
+                    IsDvdEncode = isDvdEncode,
+                    IsLibraryPolicyItem = policyIntent is not null,
+                    HasPredictionShadowAssignment = meta.PredictionShadowExperimentAssignment is not null
+                };
+                string? earlyV2Decline = V2GuiRequestMapper.GetIntentUnsupportedReason(v2Intent);
+                V2GuiPreparationResult? v2Preparation = null;
+                if (earlyV2Decline is null)
+                {
+                    UiInvoke(() => SetEncodeRowState(row, "Probing", "0%", "--:--:--",
+                        "Checking whether this fixed-quality job fits the V2 production path."));
+                    v2Preparation = await _v2GuiProductionAdapter.PrepareAsync(v2Intent, cancellationToken);
+                }
+
+                if (v2Preparation is { Supported: true, Prepared: { } preparedV2 })
+                {
+                    AppendJobLog(
+                        $"[MediaFlux] Engine selected: V2 ({preparedV2.RouteReason}); source preflight {preparedV2.SourceProbeMilliseconds:0.##} ms.");
+                    AppendJobLog(
+                        $"[V2] Frozen request: encoder={preparedV2.PreflightPlan.Encoder}; codec={preparedV2.PreflightPlan.Codec}; " +
+                        $"quality={preparedV2.PreflightPlan.QualityMode} {preparedV2.PreflightPlan.QualityValue:0.###}; " +
+                        $"preset={preparedV2.PreflightPlan.Preset}; geometry={preparedV2.PreflightPlan.Width}x{preparedV2.PreflightPlan.Height}; " +
+                        $"pixelFormat={preparedV2.PreflightPlan.PixelFormat}; audio={preparedV2.PreflightPlan.AudioMode}; " +
+                        $"subtitles={preparedV2.PreflightPlan.SubtitleMode}; container={preparedV2.PreflightPlan.Container}; " +
+                        $"deleteSource={preparedV2.PreflightPlan.DeleteSourceOnSuccess}; output='{preparedV2.PreflightPlan.OutputPath}'.");
+                    await CompleteV2GuiEncodeAsync(
+                        row, meta, preparedV2, durationSec, displayName, sourceSizeBytes,
+                        jobStartUtc, jobLog, lifecycle, cancellationToken);
+                    return;
+                }
+
+                string v1Reason = earlyV2Decline ?? v2Preparation?.Reason ?? "V2 could not represent this complete job.";
+                AppendJobLog($"[MediaFlux] Engine selected: V1 (capability fallback: {v1Reason}).");
+
                 EncodingInputSource? preparedInput = null;
                 EncodeExecutionDvdFacts? dvdFacts = null;
                 EncodeExecutionSourceMeasurements? sourceMeasurements = null;

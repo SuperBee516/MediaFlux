@@ -1,6 +1,7 @@
 using MediaFlux.Models;
 using MediaFlux.Services;
 using MediaFlux.Services.EncodingV2;
+using MediaFlux.Services.EncodingV2Gui;
 using MediaFlux.Services.Encoders;
 using System;
 using System.Collections.Concurrent;
@@ -40,6 +41,7 @@ namespace MediaFlux
         private EncodeExecutionOrchestrator _encodeExecutionOrchestrator = null!;
         private EncodeExecutionLifecycleService _encodeExecutionLifecycleService = null!;
         private EncodeExecutionSnapshotBuilder _encodeExecutionSnapshotBuilder = null!;
+        private V2GuiProductionAdapter _v2GuiProductionAdapter = null!;
         private AudioService _audioService = null!;
         private MediaInfoService _mediaInfoService = null!;
         private DuplicateDetectionService _duplicateDetectionService = null!;
@@ -5399,6 +5401,10 @@ namespace MediaFlux
             _encodeExecutionSnapshotBuilder = new EncodeExecutionSnapshotBuilder(
                 _sizeEstimateService,
                 _mediaInfoService.GetBitrateKbps);
+            _v2GuiProductionAdapter = new V2GuiProductionAdapter(
+                AppPaths.InstallDirectory,
+                _config.FfmpegPath,
+                _config.FfprobePath);
             _estimateService = new EstimateBackgroundService(
                 _mediaInfoService,
                 _encodingStatisticsService,
