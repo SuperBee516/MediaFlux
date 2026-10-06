@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Windows.Forms;
 using MediaFlux.Models;
+using MediaFlux.Services;
 using MediaFlux.Services.EncodingV2;
 using Xunit;
 
@@ -155,7 +157,7 @@ public sealed class EncodingV2QueueAdmissionUiTests
     }
 
     [Fact]
-    public void FileSizePresetChangeRefreshesV2EstimateFromCachedFactsWithoutChangingManualQuality()
+    public void LiveSelectedIndexChangedRefreshesManualV2EstimateForEveryPreset()
     {
         if (!OperatingSystem.IsWindows())
             return;
@@ -236,38 +238,81 @@ public sealed class EncodingV2QueueAdmissionUiTests
                 Assert.NotNull(initial);
                 Assert.Equal(24d, initial.QualityValue);
                 double initialOutputMb = Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path];
-                long initialGeneration = (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)!;
+                long previousGeneration = (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)!;
                 Assert.Equal(1, Volatile.Read(ref probeCount));
 
                 ComboBox profile = Field<ComboBox>(main, "comboCompressionProfile");
-                profile.SelectedItem = "Very High Quality (Largest File)";
-                profile.SelectedItem = "Low Quality (Smaller File)";
-                profile.SelectedItem = "Very Low Quality (Smallest File)";
-                profile.SelectedItem = "High Quality";
-                System.Windows.Forms.Timer refreshTimer = Field<System.Windows.Forms.Timer>(main, "_estimateRefreshTimer");
-                Assert.True(refreshTimer.Enabled);
-                Invoke(main, "EstimateRefreshTimer_Tick", null, EventArgs.Empty);
+                string[] presets =
+                [
+                    "Very High Quality (Largest File)",
+                    "High Quality",
+                    "Medium Quality (Default)",
+                    "Low Quality (Smaller File)",
+                    "Very Low Quality (Smallest File)"
+                ];
+                double[] outputBytes = new double[presets.Length];
+                for (int index = 0; index < presets.Length; index++)
+                {
+                    string selectedPreset = presets[index];
+                    profile.SelectedItem = selectedPreset;
+                    double expectedEstimateQuality = ExpectedManualEstimateQuality(24, selectedPreset);
+                    PumpMainFormUntil(main, () =>
+                    {
+                        V2FastEstimateResult? current = (V2FastEstimateResult?)meta.GetType()
+                            .GetField("V2EstimateResult")!.GetValue(meta);
+                        return current?.QualityValue == expectedEstimateQuality &&
+                               (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)! > previousGeneration &&
+                               coordinator.PendingWorkCount == 0;
+                    }, $"Live estimate refresh did not settle for profile '{selectedPreset}'.");
 
-                WaitForEstimate(coordinator);
-                Invoke(main, "ApplyV2EstimateResultsBatch");
-                V2FastEstimateResult? refreshed = (V2FastEstimateResult?)meta.GetType()
-                    .GetField("V2EstimateResult")!.GetValue(meta);
-                Assert.NotNull(refreshed);
-                Assert.True(refreshed.QualityValue < initial.QualityValue);
-                Assert.True(refreshed.EstimatedTotalBytes > initial.EstimatedTotalBytes);
-                long refreshedGeneration = (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)!;
-                Assert.True(refreshedGeneration > initialGeneration);
+                    V2FastEstimateResult refreshed = (V2FastEstimateResult)meta.GetType()
+                        .GetField("V2EstimateResult")!.GetValue(meta)!;
+                    long refreshedGeneration = (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)!;
+                    Assert.True(refreshedGeneration > previousGeneration);
+                    previousGeneration = refreshedGeneration;
+                    Assert.Equal(expectedEstimateQuality, refreshed.QualityValue, 10);
+                    Assert.Equal(24, (int)Invoke(main, "GetDefaultQualityForSelection")!);
+                    Assert.Equal(productionQualityBefore, (int)Invoke(main, "GetDefaultQualityForSelection")!);
+                    Assert.Equal(1, Volatile.Read(ref probeCount));
+                    Assert.Equal(1, coordinator.SourceProbeCount);
+                    Assert.Contains("Source facts: reused", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.Ordinal);
+
+                    double estimateMb = refreshed.EstimatedTotalBytes / (1024d * 1024d);
+                    outputBytes[index] = refreshed.EstimatedTotalBytes;
+                    Assert.Equal(estimateMb, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path], 5);
+                    Assert.Matches(@"^\d+(\.\d+)? MB$", row.Cells["colEstimatedSize"].Value?.ToString() ?? "");
+                    Assert.Equal(estimateMb, Field<double>(main, "_queueTotalEstimatedMb"), 5);
+                    Assert.Equal(row.Cells["colEstimatedSize"].Value?.ToString(), Field<Label>(main, "_summaryNewSizeValue").Text);
+                }
+
+                Assert.Equal(24d, initial.QualityValue);
+                Assert.Equal(initialOutputMb, outputBytes[2] / (1024d * 1024d), 5);
+                Assert.True(outputBytes[0] > outputBytes[1]);
+                Assert.True(outputBytes[1] > outputBytes[2]);
+                Assert.True(outputBytes[2] > outputBytes[3]);
+                Assert.True(outputBytes[3] > outputBytes[4]);
+
+                // Several real combo changes before the WinForms timer fires must leave
+                // the row showing the last selected preset after the normal debounce.
+                long rapidChangeGeneration = previousGeneration;
+                profile.SelectedItem = presets[0];
+                profile.SelectedItem = presets[3];
+                profile.SelectedItem = presets[1];
+                profile.SelectedItem = presets[4];
+                PumpMainFormUntil(main, () =>
+                {
+                    V2FastEstimateResult? current = (V2FastEstimateResult?)meta.GetType()
+                        .GetField("V2EstimateResult")!.GetValue(meta);
+                    return current?.QualityValue == ExpectedManualEstimateQuality(24, presets[4]) &&
+                           (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)! > rapidChangeGeneration &&
+                           coordinator.PendingWorkCount == 0;
+                }, "Rapid preset changes did not settle on the final selected profile.");
+                Assert.Equal(ExpectedManualEstimateQuality(24, presets[4]),
+                    ((V2FastEstimateResult)meta.GetType().GetField("V2EstimateResult")!.GetValue(meta)!).QualityValue, 10);
                 Assert.Equal(24, (int)Invoke(main, "GetDefaultQualityForSelection")!);
-                Assert.Equal(productionQualityBefore, (int)Invoke(main, "GetDefaultQualityForSelection")!);
                 Assert.Equal(1, Volatile.Read(ref probeCount));
-                Assert.Contains("Source facts: reused", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.Ordinal);
-
-                double refreshedOutputMb = refreshed.EstimatedTotalBytes / (1024d * 1024d);
-                Assert.NotEqual(initialOutputMb, refreshedOutputMb);
-                Assert.Equal(refreshedOutputMb, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path], 5);
-                Assert.Matches(@"^\d+(\.\d+)? MB$", row.Cells["colEstimatedSize"].Value?.ToString() ?? "");
-                Assert.Equal(refreshedOutputMb, Field<double>(main, "_queueTotalEstimatedMb"), 5);
-                Assert.Equal(row.Cells["colEstimatedSize"].Value?.ToString(), Field<Label>(main, "_summaryNewSizeValue").Text);
+                Assert.Equal(1, coordinator.SourceProbeCount);
+                Assert.Equal(0, coordinator.StaleSuppressedCount);
             }
             catch (Exception ex)
             {
@@ -287,6 +332,25 @@ public sealed class EncodingV2QueueAdmissionUiTests
         Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "File-size estimate preset UI test timed out.");
         if (failure != null)
             throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    private static double ExpectedManualEstimateQuality(int productionQuality, string profile)
+    {
+        double profileScale = SizeEstimateService.GetCompressionMultiplier(profile);
+        double mediumScale = SizeEstimateService.GetCompressionMultiplier("Medium Quality (Default)");
+        return Math.Clamp(productionQuality - 6d * Math.Log2(profileScale / mediumScale), 0d, 51d);
+    }
+
+    private static void PumpMainFormUntil(MainForm main, Func<bool> condition, string failureMessage)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (!condition())
+        {
+            Application.DoEvents();
+            Thread.Yield();
+            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10), failureMessage);
+        }
+        Application.DoEvents();
     }
 
     private static void WaitForEstimate(V2EstimateRefreshCoordinator coordinator)
