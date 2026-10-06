@@ -781,6 +781,15 @@ namespace MediaFlux
                 // Queue estimate work; UI pump will apply results
                 StorageSavingsOptions rowStorageSavings =
                     _config.StorageSavings.CloneNormalized();
+                if (automaticQualityIntent is null && rowAuto)
+                {
+                    // Manual File-size estimate profiles own the estimate-only quality
+                    // offset. Storage Savings bitrate targets are an Automatic-mode
+                    // policy; leaving one enabled here makes the legacy fallback ignore
+                    // the selected profile. This is a clone used only by estimation and
+                    // does not change the frozen production encoding settings.
+                    rowStorageSavings.Enabled = false;
+                }
                 if (estimateMeta.CustomTargetMb is > 0 ||
                     !string.IsNullOrWhiteSpace(estimateMeta.CustomCompressionProfile))
                 {

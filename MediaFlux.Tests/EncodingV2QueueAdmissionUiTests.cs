@@ -334,6 +334,165 @@ public sealed class EncodingV2QueueAdmissionUiTests
             throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
+    [Fact]
+    public void LiveManualPresetRefreshUsesProfileWhenTenBitFallsBackToLegacyEstimate()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        Exception? failure = null;
+        MainForm? main = null;
+        string? configPath = null;
+        string? testRoot = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                main = new MainForm();
+                configPath = QueueWorkspaceTestSupport.UseIsolatedConfig(main);
+                main.Show();
+                Application.DoEvents();
+
+                Config config = Field<Config>(main, "_config");
+                config.StorageSavings.Enabled = true;
+                config.StorageSavings.TargetMode = StorageSavingsOptions.SourceBitrateTarget;
+                config.StorageSavings.SourceVideoBitratePercent = 50;
+                config.SmartRecommendationsEnabled = false;
+                config.VideoRestoration = new();
+
+                Invoke(main, "SelectEncoderById", VideoEncoderIds.Libx265);
+                Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.Hevc);
+                Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual • Legacy Numeric";
+                Field<NumericUpDown>(main, "nudAutoQuality").Value = 27;
+                Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
+                Field<CheckBox>(main, "chkAutoTargetSize").Checked = true;
+                Field<TextBox>(main, "txtTargetSize").Text = "";
+                Field<CheckBox>(main, "chkTenBit").Checked = true;
+
+                testRoot = Path.Combine(Path.GetTempPath(), "MediaFluxLegacyPresetRefresh-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(testRoot);
+                string path = Path.Combine(testRoot, "source.mp4");
+                using (var source = new FileStream(path, FileMode.CreateNew))
+                    source.SetLength(15_784_043);
+
+                int metadataReadCount = 0;
+                var sourceInfo = new MediaInfoService.MediaInfo
+                {
+                    FormatName = "mov,mp4,m4a,3gp,3g2,mj2",
+                    VideoCodec = "h264",
+                    Width = 608,
+                    Height = 1080,
+                    Fps = 30,
+                    DurationSeconds = 31.5,
+                    BitrateKbps = 4064,
+                    TotalBitrateKbps = 4195,
+                    AudioBitrateKbps = 129,
+                    AudioStreamCount = 1
+                };
+                var previousService = Field<EstimateBackgroundService>(main, "_estimateService");
+                var legacyService = new EstimateBackgroundService(
+                    Field<MediaInfoService>(main, "_mediaInfoService"),
+                    null!,
+                    _ =>
+                    {
+                        Interlocked.Increment(ref metadataReadCount);
+                        return sourceInfo;
+                    });
+                previousService.Dispose();
+                SetField(main, "_estimateService", legacyService);
+
+                DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+                SetField(main, "_suppressRowEvents", true);
+                DataGridViewRow row;
+                object meta;
+                try
+                {
+                    row = queue.Rows[queue.Rows.Add()];
+                    row.Tag = path;
+                    row.Cells["colName"].Value = Path.GetFileName(path);
+                    row.Cells["colStatus"].Value = "Queued";
+                    meta = Invoke(main, "EnsureRowMeta", row)!;
+                    SetMetaField(meta, "Path", path);
+                    Field<System.Collections.Concurrent.ConcurrentDictionary<string, DataGridViewRow>>(
+                        main, "_rowsByPath")[path] = row;
+                }
+                finally
+                {
+                    SetField(main, "_suppressRowEvents", false);
+                }
+
+                int productionQualityBefore = (int)Invoke(main, "GetDefaultQualityForSelection")!;
+                Invoke(main, "SafeRefreshEstimates");
+                PumpMainFormUntil(main, () =>
+                    Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path) &&
+                    legacyService.PendingEstimates == 0,
+                    "Initial legacy estimate did not reach the queue row.");
+
+                V2EstimateRefreshCoordinator coordinator = Field<V2EstimateRefreshCoordinator>(main, "_v2EstimateCoordinator");
+                Assert.Equal(0, coordinator.SourceProbeCount);
+                Assert.Null(meta.GetType().GetField("V2EstimateResult")!.GetValue(meta));
+
+                string[] presets =
+                [
+                    "Very High Quality (Largest File)",
+                    "High Quality",
+                    "Medium Quality (Default)",
+                    "Low Quality (Smaller File)",
+                    "Very Low Quality (Smallest File)"
+                ];
+                double[] estimatesMb = new double[presets.Length];
+                ComboBox profile = Field<ComboBox>(main, "comboCompressionProfile");
+                for (int index = 0; index < presets.Length; index++)
+                {
+                    double previousEstimate = Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path];
+                    profile.SelectedItem = presets[index];
+                    PumpMainFormUntil(main, () =>
+                    {
+                        Dictionary<string, double> map = Field<Dictionary<string, double>>(main, "_estimatedSizeMap");
+                        return map.TryGetValue(path, out double estimate) &&
+                               Math.Abs(estimate - previousEstimate) > 0.000001 &&
+                               legacyService.PendingEstimates == 0;
+                    }, $"Legacy estimate did not refresh for profile '{presets[index]}'.");
+
+                    estimatesMb[index] = Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path];
+                    Assert.Equal(estimatesMb[index], Field<double>(main, "_queueTotalEstimatedMb"), 5);
+                    Assert.Equal(FormatExpectedEstimate(estimatesMb[index]), row.Cells["colEstimatedSize"].Value?.ToString());
+                    Assert.Equal(productionQualityBefore, (int)Invoke(main, "GetDefaultQualityForSelection")!);
+                }
+
+                Assert.True(estimatesMb[0] > estimatesMb[1]);
+                Assert.True(estimatesMb[1] > estimatesMb[2]);
+                Assert.True(estimatesMb[2] > estimatesMb[3]);
+                Assert.True(estimatesMb[3] > estimatesMb[4]);
+                Assert.Equal(1, Volatile.Read(ref metadataReadCount));
+                Assert.Equal(0, coordinator.SourceProbeCount);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+            finally
+            {
+                if (main != null)
+                    WinFormsTestLifecycle.CloseAndDispose(main);
+                QueueWorkspaceTestSupport.DeleteIsolatedConfig(configPath);
+                if (testRoot != null && Directory.Exists(testRoot))
+                    Directory.Delete(testRoot, recursive: true);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Legacy file-size estimate preset test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    private static string FormatExpectedEstimate(double estimateMb) =>
+        estimateMb >= 1024
+            ? $"{estimateMb / 1024d:0.##} GB"
+            : $"{estimateMb:0.#} MB";
+
     private static double ExpectedManualEstimateQuality(int productionQuality, string profile)
     {
         double profileScale = SizeEstimateService.GetCompressionMultiplier(profile);
