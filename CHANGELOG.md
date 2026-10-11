@@ -5,19 +5,30 @@ All notable changes to MediaFlux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.1] - 2026-10-04
+## [1.9.0] - 2026-10-10
+
+### Added
+
+- Added a dedicated Encoding Options tab and a five-choice quality preference selector.
+- Routed supported fixed-quality saved jobs through Encoding Engine V2; adaptive and unsupported configurations continue to use V1.
 
 ### Improved
 
-- Restored fast queue estimate generation and removed expensive analysis from normal estimate refreshes, keeping quality changes more responsive.
-- Improved encode reliability and fallback behavior. Recommendations are advisory and no longer prevent starting an encode.
-- Simplified Estimated Output and Recommendation details in the queue, with technical estimate information available in Inspector.
-- Improved same-codec Source Adaptive estimate bounds and reduced unnecessary Inspector probing.
-- Added regression coverage for estimate ownership, queue presentation, quality changes, and encode lifecycle stability.
+- Consolidated queue output sizing into one Estimated Output presentation with savings information, and migrated saved layouts to the canonical column.
+- Kept Queue and Encoding Controls responsive across window sizes.
+- Restored fast estimate refreshes, refreshed estimates when quality or encoder presets change, and improved same-codec Source Adaptive estimate bounds while reducing unnecessary Inspector probing.
+- Clearly positive adaptive candidates can finish sampling after seven regions; non-positive or inconclusive cases retain full-nine evidence.
+- Improved encode fallback behavior. Recommendations remain advisory and do not prevent starting an encode.
+
+### Reliability
+
+- Corrected adaptive sample seeks for sources with a non-zero video start and added duration validation against the available source-video interval.
+- Require reliable complete evidence that all acceptable candidates miss the storage objective before skipping production encoding; actual output-size validation remains authoritative before promotion.
+- Persist V2 history and statistics through the shared lifecycle exactly once, and improve isolation and lifecycle handling for headless saved-job execution.
 
 ### Notes
 
-- Estimated output size is advisory and can vary materially with source complexity and encoder behavior.
+- Estimated output size is advisory and can vary with source complexity and encoder behavior.
 
 ## [1.8.0] - 2026-10-03
 
