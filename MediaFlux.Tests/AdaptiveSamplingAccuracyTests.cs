@@ -100,6 +100,6 @@ public sealed class AdaptiveSamplingAccuracyTests
                      "upperBytes=", "containerUpperBytes=", "maximumBytes=900000", "classification=ClearlyMeets", "disposition=Selected" })
             Assert.Contains(field, diagnostics);
         Assert.DoesNotContain(request.Input.SourcePath, diagnostics);
-        Assert.Equal(12, diagnostics.Split('\n').Length);
+        Assert.Equal(10, diagnostics.Split('\n').Length);
     }
 }

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace MediaFlux.Services;
 
 /// <summary>One advisory encoder slot. Production cancels and drains it before probing or encoding.</summary>
@@ -45,15 +47,39 @@ internal sealed class PreviewSamplingCoordinator
     internal async Task<IDisposable> EnterProductionAsync(CancellationToken token)
     {
         Task drain;
+        AutomaticEncodePerformanceInstrumentation? instrumentation = AutomaticEncodePerformanceInstrumentation.Current;
+        long drainStartedAt = instrumentation is null ? 0 : Stopwatch.GetTimestamp();
+        bool previewActive = false;
+        bool cancellationRequested = false;
         lock (_sync)
         {
             _production++;
-            _preview?.Cancel();
+            if (_preview is not null)
+            {
+                previewActive = true;
+                _preview.Cancel();
+                cancellationRequested = true;
+            }
             drain = _drained?.Task ?? Task.CompletedTask;
         }
         var lease = new ProductionLease(this);
-        try { await drain.WaitAsync(token).ConfigureAwait(false); return lease; }
-        catch { lease.Dispose(); throw; }
+        bool drained = false;
+        try
+        {
+            await drain.WaitAsync(token).ConfigureAwait(false);
+            drained = true;
+            return lease;
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
+        finally
+        {
+            if (instrumentation is not null)
+                instrumentation.RecordPreviewDrain(previewActive, cancellationRequested, drainStartedAt, drained);
+        }
     }
 
     private sealed class ProductionLease(PreviewSamplingCoordinator owner) : IDisposable

@@ -160,7 +160,8 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 Application.DoEvents();
 
                 Assert.Equal("Automatic • Source Adaptive", Field<ComboBox>(form, "comboQualityMode").Text);
-                Assert.Equal(2, Field<TrackBar>(form, "trkQualityTarget").Value);
+                Assert.Equal(QualityTarget.Balanced,
+                    Field<QualityTargetSegmentSelector>(form, "qualityTargetSelector").SelectedTarget);
                 Assert.True(Field<CheckBox>(form, "chkAutoTargetSize").Checked);
                 Assert.False(Field<CheckBox>(form, "chkProcessAll").Checked);
                 Assert.False(Field<CheckBox>(form, "chkRetryFailedJobs").Checked);
@@ -300,19 +301,17 @@ public sealed class UiConfigPersistenceTests : IDisposable
     }
 
     [Fact]
-    public void QualityTargetTrackPositionsUseThumbInsetAndRemainOrdered()
+    public void QualityTargetSegmentOrderingMatchesTheExistingQualityPreferences()
     {
-        const int trackWidth = 500;
-        const int thumbInset = 5;
-        int[] positions = Enumerable.Range(0, 5)
-            .Select(index => MainForm.GetQualityTrackPosition(trackWidth, thumbInset, index, 5))
-            .ToArray();
-
-        Assert.Equal(new[] { 5, 127, 250, 373, 495 }, positions);
-        Assert.Equal(250, positions[2]);
-        Assert.Equal(5, positions[0]);
-        Assert.Equal(495, positions[4]);
-        Assert.Equal(positions.OrderBy(value => value), positions);
+        Assert.Equal(
+            new[]
+            {
+                QualityTarget.SmallerFile, QualityTarget.Efficient, QualityTarget.Balanced,
+                QualityTarget.HighQuality, QualityTarget.MaximumQuality
+            },
+            QualityTargetSegmentSelector.Choices.Select(choice => choice.Target));
+        Assert.Equal(2, QualityTargetSegmentSelector.IndexOf(QualityTarget.Balanced));
+        Assert.Equal(QualityTarget.MaximumQuality, QualityTargetSegmentSelector.AtIndex(4));
     }
 
     [Fact]
@@ -336,23 +335,23 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Plan & Analysis");
                 Application.DoEvents();
                 ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
-                TrackBar target = Field<TrackBar>(form, "trkQualityTarget");
+                QualityTargetSegmentSelector target = Field<QualityTargetSegmentSelector>(form, "qualityTargetSelector");
                 NumericUpDown manual = Field<NumericUpDown>(form, "nudAutoQuality");
                 Label manualLabel = Field<Label>(form, "lblManualQuality");
-                Panel labels = Field<Panel>(form, "pnlQualityTargetLabels");
                 Panel qualityIntent = Field<Panel>(form, "pnlQualityIntent");
                 Label fileSizeEstimateLabel = Field<Label>(form, "lblCompressionProfile");
                 ComboBox fileSizeEstimate = Field<ComboBox>(form, "comboCompressionProfile");
                 Label selectedPreference = Field<Label>(form, "lblQualityTargetValue");
 
-                target.Value = 3;
+                target.SetSelectedTarget(QualityTarget.HighQuality);
                 manual.Value = 27;
                 fileSizeEstimate.SelectedItem = "Medium Quality (Default)";
                 mode.SelectedIndex = 0;
                 Application.DoEvents();
                 Assert.True(target.Visible);
-                Assert.True(labels.Visible);
-                Assert.Equal("High Quality  (4 of 5)", selectedPreference.Text);
+                Assert.Equal(5, target.Segments.Count);
+                Assert.All(target.Segments, segment => Assert.True(segment.Visible));
+                Assert.Equal("Quality: High Quality  (4 of 5)", selectedPreference.Text);
                 Assert.False(manual.Visible);
                 Assert.False(manualLabel.Visible);
                 Assert.False(fileSizeEstimateLabel.Visible);
@@ -362,7 +361,6 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 mode.SelectedIndex = 1;
                 Application.DoEvents();
                 Assert.False(target.Visible);
-                Assert.False(labels.Visible);
                 Assert.True(manual.Visible);
                 Assert.True(manualLabel.Visible);
                 Assert.True(fileSizeEstimateLabel.Visible);
@@ -372,7 +370,7 @@ public sealed class UiConfigPersistenceTests : IDisposable
 
                 mode.SelectedIndex = 0;
                 Application.DoEvents();
-                Assert.Equal(3, target.Value);
+                Assert.Equal(QualityTarget.HighQuality, target.SelectedTarget);
             }
             catch (Exception ex) { failure = ex; }
             finally { WinFormsTestLifecycle.CloseAndDispose(form); }
@@ -385,7 +383,7 @@ public sealed class UiConfigPersistenceTests : IDisposable
     }
 
     [Fact]
-    public void EncodingProfileUsesIndependentColumnsAndKeepsQualityRowTogether()
+    public void EncodingProfileFieldsRehomeIntoResponsiveEncodingControlsGrid()
     {
         if (!OperatingSystem.IsWindows())
             return;
@@ -402,20 +400,22 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 form.CreateControl();
                 form.Show();
                 Application.DoEvents();
-                TabControl tabs = Field<TabControl>(form, "_encodeInfoTabs");
-                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Plan & Analysis");
-                Application.DoEvents();
-
                 Label qualityLabel = Field<Label>(form, "lblCompressionProfile");
                 ComboBox quality = Field<ComboBox>(form, "comboCompressionProfile");
                 Label speedLabel = Field<Label>(form, "lblEncodingSpeed");
                 ComboBox speed = Field<ComboBox>(form, "comboEncoderPreset");
                 TableLayoutPanel profile = Field<TableLayoutPanel>(form, "tlEncodingProfileFields");
+                TableLayoutPanel encodingCard = Field<TableLayoutPanel>(form, "pnlEncodingProfileCard");
+                TabPage plan = Field<TabControl>(form, "_encodeInfoTabs").TabPages
+                    .Cast<TabPage>().Single(page => page.Text == "Plan & Analysis");
 
                 Assert.Same(qualityLabel.Parent, quality.Parent);
                 Assert.Same(speedLabel.Parent, speed.Parent);
-                Assert.Equal(2, profile.ColumnCount);
-                Assert.Equal(1, profile.RowCount);
+                Assert.Same(encodingCard, profile.Parent);
+                Assert.DoesNotContain(profile, Descendants(plan));
+                bool stacked = profile.ClientSize.Width < (int)Math.Round(620d * form.DeviceDpi / 96d);
+                Assert.Equal(stacked ? 2 : 4, profile.ColumnCount);
+                Assert.Equal(stacked ? 8 : 5, profile.RowCount);
                 Assert.True(Math.Abs(qualityLabel.Bounds.Top + qualityLabel.Height / 2 -
                     (quality.Bounds.Top + quality.Height / 2)) <= 8);
                 Assert.True(speed.Bounds.Top >= quality.Bounds.Bottom);
@@ -444,6 +444,16 @@ public sealed class UiConfigPersistenceTests : IDisposable
     private static T Field<T>(MainForm form, string name) where T : class =>
         (T)(typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(form)
             ?? throw new MissingFieldException(name));
+
+    private static IEnumerable<Control> Descendants(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (Control descendant in Descendants(child))
+                yield return descendant;
+        }
+    }
 
     [Fact]
     public void OlderConfigUsesDefaultSummaryPreviewHeight()

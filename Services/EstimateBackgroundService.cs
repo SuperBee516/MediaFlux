@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaFlux.Models;
+using MediaFlux.Services.EncodingV2;
 
 namespace MediaFlux.Services
 {
@@ -457,6 +458,14 @@ namespace MediaFlux.Services
                     info,
                     useProfileEstimate);
                 int estimateQuality = qualityResolution?.EffectiveQuality ?? item.Quality;
+                double manualNvencPresetRateMultiplier =
+                    item.QualityIntent is null &&
+                    !item.IsCustom &&
+                    item.Encoder.FfmpegCodec.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase)
+                        ? V2FastEstimateService.GetPresetRateMultiplier(
+                            item.Encoder.FfmpegCodec,
+                            item.EncoderPreset)
+                        : 1d;
                 SizeEstimateBreakdown? estimateBreakdown = useProfileEstimate
                     ? SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
                         srcMb,
@@ -487,7 +496,8 @@ namespace MediaFlux.Services
                             Intent: { Kind: EncodingQualityIntentKind.QualityTarget },
                             EffectiveQuality: not null,
                             IsSupersededByTargetSize: false
-                        })
+                        },
+                        presetRateMultiplier: manualNvencPresetRateMultiplier)
                     : null;
                 double estMb = estimateBreakdown?.EstimatedOutputMb ??
                     (item.ManualTargetMb > 0 ? item.ManualTargetMb : 0);

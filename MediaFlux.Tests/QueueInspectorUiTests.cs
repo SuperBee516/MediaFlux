@@ -12,7 +12,7 @@ namespace MediaFlux.Tests;
 public sealed class QueueInspectorUiTests
 {
     [Fact]
-    public void FourTabInspectorKeepsSelectionSummaryAndFrozenPlanStableAtSupportedSizes()
+    public void FiveTabInspectorKeepsSelectionSummaryAndFrozenPlanStableAtSupportedSizes()
     {
         if (!OperatingSystem.IsWindows()) return;
 
@@ -55,7 +55,7 @@ public sealed class QueueInspectorUiTests
                 Invoke(main, "UpdateContextualDetails");
 
                 TabControl tabs = Field<TabControl>(main, "_encodeInfoTabs");
-                Assert.Equal(new[] { "Summary", "Plan & Analysis", "Media", "Diagnostics & Logs" },
+                Assert.Equal(new[] { "Summary", "Plan & Analysis", "Encoding Options", "Media", "Diagnostics & Logs" },
                     tabs.TabPages.Cast<TabPage>().Select(page => page.Text));
                 Assert.True(tabs.TabStop);
                 Assert.Equal(tabs.TabPages.Cast<TabPage>().Select(page => page.Text),
@@ -88,7 +88,7 @@ public sealed class QueueInspectorUiTests
                 Assert.Same(retainedPlanControl, planTable.Controls[0]);
                 Assert.Equal(frozenDecisionUtc, plan.SizePredictionCalibration?.DecisionUtc);
 
-                foreach (string tabName in new[] { "Media", "Diagnostics & Logs", "Summary", "Plan & Analysis" })
+                foreach (string tabName in new[] { "Media", "Diagnostics & Logs", "Summary", "Plan & Analysis", "Encoding Options" })
                 {
                     tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == tabName);
                     Application.DoEvents();
@@ -180,6 +180,148 @@ public sealed class QueueInspectorUiTests
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Queue inspector UI test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void EncodingOptionsTabRehostsExistingControlsAndPreservesStateAcrossNavigationAndLayouts()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        string configPath = Path.Combine(Path.GetTempPath(), $"MediaFlux.EncodingOptionsTab.{Guid.NewGuid():N}.json");
+        Rectangle workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+        var savedBounds = new Rectangle(workingArea.Left + 20, workingArea.Top + 20, 1100, 760);
+        new Config
+        {
+            MainWindowX = savedBounds.X,
+            MainWindowY = savedBounds.Y,
+            MainWindowWidth = savedBounds.Width,
+            MainWindowHeight = savedBounds.Height,
+            EncodeDetailsTab = "Plan & Analysis",
+            LastChkProcessAll = false,
+            ShowX265Files = false
+        }.Save(configPath);
+
+        Exception? failure = null;
+        MainForm? main = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                main = new MainForm(configPath) { StartPosition = FormStartPosition.Manual };
+                main.Show();
+                Application.DoEvents();
+
+                TabControl tabs = Field<TabControl>(main, "_encodeInfoTabs");
+                Assert.Equal(new[] { "Summary", "Plan & Analysis", "Encoding Options", "Media", "Diagnostics & Logs" },
+                    tabs.TabPages.Cast<TabPage>().Select(page => page.Text));
+                TabPage plan = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Plan & Analysis");
+                TabPage options = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Encoding Options");
+                Assert.Equal("Encoding Options", options.AccessibleName);
+                Assert.Contains("codec filters", options.AccessibleDescription ?? "", StringComparison.OrdinalIgnoreCase);
+
+                TableLayoutPanel optionsGroup = Field<TableLayoutPanel>(main, "grpOptions");
+                Assert.Single(main.Controls.Find("grpOptions", true));
+                Assert.Contains(optionsGroup, Descendants(options));
+                Assert.DoesNotContain(optionsGroup, Descendants(plan));
+                Assert.NotSame(Field<TableLayoutPanel>(main, "tlEncode"), optionsGroup.Parent);
+                Panel scrollHost = Assert.IsType<Panel>(Assert.Single(options.Controls));
+                Assert.True(scrollHost.AutoScroll);
+                Assert.Same(scrollHost, optionsGroup.Parent?.Parent);
+
+                CheckBox processAll = Field<CheckBox>(main, "chkProcessAll");
+                CheckBox retryFailed = Field<CheckBox>(main, "chkRetryFailedJobs");
+                CheckBox filterX264 = Field<CheckBox>(main, "chkFilterX264");
+                CheckBox filterX265 = Field<CheckBox>(main, "chkFilterX265");
+                CheckBox filterAv1 = Field<CheckBox>(main, "chkFilterAv1");
+                CheckBox filterOther = Field<CheckBox>(main, "chkFilterOtherCodecs");
+                Assert.All(new[] { processAll, retryFailed, filterX264, filterX265, filterAv1, filterOther }, control =>
+                {
+                    Assert.Equal(1, Descendants(main).Count(descendant => ReferenceEquals(descendant, control)));
+                    Assert.True(control.TabStop);
+                });
+                Assert.False(processAll.Checked);
+                Assert.False(filterX265.Checked);
+
+                TableLayoutPanel behaviorCard = Field<TableLayoutPanel>(main, "pnlEncodingBehaviorCard");
+                TableLayoutPanel codecCard = Field<TableLayoutPanel>(main, "pnlCodecFiltersCard");
+                TableLayoutPanel optionsLayout = Field<TableLayoutPanel>(main, "tlEncodingOptions");
+                tabs.SelectedTab = options;
+                Application.DoEvents();
+                processAll.Checked = true;
+                filterX265.Checked = true;
+                Application.DoEvents();
+                Assert.True(Config.Load(configPath).LastChkProcessAll);
+                Assert.True(Config.Load(configPath).ShowX265Files);
+
+                Assert.True(processAll.Focus());
+                Assert.True(behaviorCard.SelectNextControl(processAll, true, true, true, false));
+                Assert.True(retryFailed.Focused, "Tab traversal from Process entire queue should reach Retry failed jobs.");
+
+                tabs.SelectedTab = plan;
+                Application.DoEvents();
+                Assert.Equal("Plan & Analysis", Config.Load(configPath).EncodeDetailsTab);
+                tabs.SelectedTab = options;
+                Application.DoEvents();
+                Assert.Same(optionsGroup, Field<TableLayoutPanel>(main, "grpOptions"));
+                Assert.True(processAll.Checked);
+                Assert.True(filterX265.Checked);
+                Assert.True(Config.Load(configPath).LastChkProcessAll);
+                Assert.True(Config.Load(configPath).ShowX265Files);
+
+                void AssertOptionsLayout()
+                {
+                    main.PerformLayout();
+                    tabs.PerformLayout();
+                    options.PerformLayout();
+                    scrollHost.PerformLayout();
+                    optionsGroup.PerformLayout();
+                    optionsLayout.PerformLayout();
+                    behaviorCard.PerformLayout();
+                    codecCard.PerformLayout();
+
+                    Assert.True(options.ClientSize.Width > 0 && options.ClientSize.Height > 0);
+                    Assert.True(scrollHost.ClientSize.Width > 0 && scrollHost.ClientSize.Height > 0);
+                    Assert.True(optionsGroup.ClientSize.Width > 0 && optionsGroup.ClientSize.Height > 0);
+                    Assert.True(optionsLayout.ClientSize.Width > 0 && optionsLayout.ClientSize.Height > 0);
+                    Assert.True(behaviorCard.Width > 0 && behaviorCard.Height > 0);
+                    Assert.True(codecCard.Width > 0 && codecCard.Height > 0);
+                    Assert.False(behaviorCard.Bounds.IntersectsWith(codecCard.Bounds));
+                    Assert.True(behaviorCard.Left >= 0 && behaviorCard.Right <= optionsLayout.ClientSize.Width);
+                    Assert.True(codecCard.Left >= 0 && codecCard.Right <= optionsLayout.ClientSize.Width);
+                    Assert.True(behaviorCard.Bottom <= optionsLayout.ClientSize.Height);
+                    Assert.True(codecCard.Bottom <= optionsLayout.ClientSize.Height);
+                    Assert.True(optionsGroup.Width <= optionsGroup.Parent!.ClientSize.Width);
+                }
+
+                AssertOptionsLayout(); // Restored window bounds.
+                main.WindowState = FormWindowState.Maximized;
+                Application.DoEvents();
+                AssertOptionsLayout();
+
+                main.WindowState = FormWindowState.Normal;
+                main.ClientSize = new Size(900, 650);
+                Application.DoEvents();
+                AssertOptionsLayout(); // Constrained supported window size.
+
+                Config config = Field<Config>(main, "_config");
+                config.EncodeDetailsTab = "encoding options";
+                Invoke(main, "ApplyRememberedEncodeDetailsState");
+                Assert.Same(options, tabs.SelectedTab);
+                Assert.Equal("Encoding Options", Config.Load(configPath).EncodeDetailsTab);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(main);
+                if (File.Exists(configPath))
+                    File.Delete(configPath);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Encoding Options tab UI test timed out.");
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
@@ -374,6 +516,16 @@ public sealed class QueueInspectorUiTests
     private static T Field<T>(MainForm main, string name) =>
         (T)(typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)
             ?? throw new MissingFieldException(name));
+
+    private static IEnumerable<Control> Descendants(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (Control descendant in Descendants(child))
+                yield return descendant;
+        }
+    }
 
     private static void SetField(MainForm main, string name, object value) =>
         (typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)

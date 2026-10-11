@@ -1,10 +1,13 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using MediaFlux.Models;
 using MediaFlux.Services.Encoders;
+using MediaFlux.Services.EncodingV2;
+using MediaFlux.Services.EncodingV2Gui;
 
 namespace MediaFlux.Services;
 
@@ -289,8 +292,14 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
     private readonly FfprobeService _ffprobe;
     private readonly EncodingStatisticsService _statistics;
     private readonly EncodeExecutionLifecycleService _lifecycle;
+    private readonly HeadlessSavedJobV2Router _v2Router;
+    private readonly ConcurrentDictionary<string, V2GuiEncodeIntent> _savedJobRouteIntents = new(StringComparer.Ordinal);
 
-    public HeadlessSavedJobItemPipeline(Config config, string userDataDirectory, string appDirectory)
+    public HeadlessSavedJobItemPipeline(
+        Config config,
+        string userDataDirectory,
+        string appDirectory,
+        IV2GuiProductionAdapter? v2Adapter = null)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _userDataDirectory = Path.GetFullPath(userDataDirectory);
@@ -313,16 +322,20 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             _orchestrator,
             () => new HistoryService(Path.Combine(_userDataDirectory, "data", "history.json")),
             message => Console.Error.WriteLine("[HeadlessLifecycle] " + message));
+        _v2Router = new HeadlessSavedJobV2Router(
+            v2Adapter ?? new V2GuiProductionAdapter(appDirectory, config.FfmpegPath, config.FfprobePath));
     }
 
     public Task<EncodeExecutionSnapshot> BuildSnapshotAsync(EncodeJob job, EncodeJobFile item, CancellationToken cancellationToken) =>
-        BuildSnapshotCoreAsync(job, item, disablePolicyCRetry: false, requireStorageSavingsContract: false, cancellationToken);
+        BuildSnapshotCoreAsync(job, item, disablePolicyCRetry: false, requireStorageSavingsContract: false,
+            captureSavedJobRouteIntent: true, cancellationToken: cancellationToken);
 
     private async Task<EncodeExecutionSnapshot> BuildSnapshotCoreAsync(
         EncodeJob job,
         EncodeJobFile item,
         bool disablePolicyCRetry,
         bool requireStorageSavingsContract,
+        bool captureSavedJobRouteIntent,
         CancellationToken cancellationToken)
     {
         if (!Path.IsPathFullyQualified(item.SourcePath))
@@ -348,6 +361,7 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             : Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
         var identity = new EncodeExecutionSnapshotIdentity
         {
+            SavedJobId = job.Id,
             OperationId = Guid.NewGuid().ToString("N"),
             StatisticsStartUtc = DateTime.UtcNow,
             MediaFluxVersion = appVersion,
@@ -410,7 +424,21 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         { throw new HeadlessSavedJobValidationException("Could not construct the production execution snapshot: " + ex.Message, ex); }
-        return built.Snapshot;
+        EncodeExecutionSnapshot snapshot = built.Snapshot;
+        if (captureSavedJobRouteIntent)
+        {
+            _savedJobRouteIntents[snapshot.OperationId] = new V2GuiEncodeIntent
+            {
+                SourcePath = item.SourcePath,
+                JobId = snapshot.OperationId,
+                Settings = settings,
+                HasCustomSettings = item.CustomTargetMb.HasValue || !string.IsNullOrWhiteSpace(item.CustomCompressionProfile),
+                IsDvdEncode = false,
+                IsLibraryPolicyItem = false,
+                HasPredictionShadowAssignment = item.PredictionShadowExperimentAssignment is not null
+            };
+        }
+        return snapshot;
 
     }
 
@@ -439,7 +467,8 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             new EncodeJobFile { SourcePath = sourcePath },
             disablePolicyCRetry: true,
             requireStorageSavingsContract,
-            cancellationToken);
+            captureSavedJobRouteIntent: false,
+            cancellationToken: cancellationToken);
     }
 
     internal static StorageSavingsOptions ResolveTransientStorageSavingsOptions(
@@ -739,6 +768,10 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
         Action<string>? progress)
     {
         DateTime startedUtc = DateTime.UtcNow;
+        string mode = qualityModeOverride ?? _config.LastQualityMode;
+        var performance = new AutomaticEncodePerformanceInstrumentation(mode, sourcePath, startedUtc);
+        using IDisposable performanceContext = performance.Activate();
+        performance.BeginSnapshotPreparation();
         var transientJob = new EncodeJob
         {
             Name = "Transient headless encode",
@@ -756,36 +789,67 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
                 deleteSourceAfterCompression,
                 requireStorageSavingsContract,
                 cancellationToken).ConfigureAwait(false);
+            performance.EndSnapshotPreparation();
+            performance.SetOperationId(snapshot.OperationId);
+            performance.SetMode(GetSelectedMode(snapshot));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            string id = RecordBeforeAttemptOutcome(transientJob, transientItem, JobStatus.Canceled,
-                startedUtc, DateTime.UtcNow, "Cancelled during source inspection or estimate preflight.");
-            return new(index, id, sourcePath, HeadlessEncodeJobStatus.Cancelled, startedUtc, DateTime.UtcNow,
+            performance.EndSnapshotPreparation();
+            performance.BeginHistoryStatisticsRecording();
+            string id;
+            try
+            {
+                id = RecordBeforeAttemptOutcome(transientJob, transientItem, JobStatus.Canceled,
+                    startedUtc, DateTime.UtcNow, "Cancelled during source inspection or estimate preflight.");
+            }
+            finally { performance.EndHistoryStatisticsRecording(); }
+            return AttachPerformance(new(index, id, sourcePath, HeadlessEncodeJobStatus.Cancelled, startedUtc, DateTime.UtcNow,
                 CleanupResult: "not applicable; no output was allocated.",
                 SourceDisposition: "retained; no production encode was started.",
-                HistoryRecorded: true, Error: "Cancelled during source inspection or estimate preflight.");
+                HistoryRecorded: true, Error: "Cancelled during source inspection or estimate preflight."), performance, progress);
         }
         catch (HeadlessSavedJobValidationException ex)
         {
-            string id = RecordBeforeAttemptOutcome(transientJob, transientItem, JobStatus.Skipped,
-                startedUtc, DateTime.UtcNow, ex.Message);
-            return new(index, id, sourcePath, HeadlessEncodeJobStatus.Rejected, startedUtc, DateTime.UtcNow,
+            performance.EndSnapshotPreparation();
+            performance.BeginHistoryStatisticsRecording();
+            string id;
+            try
+            {
+                id = RecordBeforeAttemptOutcome(transientJob, transientItem, JobStatus.Skipped,
+                    startedUtc, DateTime.UtcNow, ex.Message);
+            }
+            finally { performance.EndHistoryStatisticsRecording(); }
+            return AttachPerformance(new(index, id, sourcePath, HeadlessEncodeJobStatus.Rejected, startedUtc, DateTime.UtcNow,
                 CleanupResult: "not applicable; no output was allocated.",
                 SourceDisposition: "retained; no production encode was started.",
-                HistoryRecorded: true, Error: ex.Message);
+                HistoryRecorded: true, Error: ex.Message), performance, progress);
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
-            string id = RecordBeforeAttemptOutcome(transientJob, transientItem, JobStatus.Failed,
-                startedUtc, DateTime.UtcNow, ex.Message);
-            return new(index, id, sourcePath, HeadlessEncodeJobStatus.Failed, startedUtc, DateTime.UtcNow,
+            performance.EndSnapshotPreparation();
+            performance.BeginHistoryStatisticsRecording();
+            string id;
+            try
+            {
+                id = RecordBeforeAttemptOutcome(transientJob, transientItem, JobStatus.Failed,
+                    startedUtc, DateTime.UtcNow, ex.Message);
+            }
+            finally { performance.EndHistoryStatisticsRecording(); }
+            return AttachPerformance(new(index, id, sourcePath, HeadlessEncodeJobStatus.Failed, startedUtc, DateTime.UtcNow,
                 CleanupResult: "not applicable; no output was allocated.",
                 SourceDisposition: "retained; no production encode was started.",
-                HistoryRecorded: true, Error: ex.Message, FatalBatchFailure: true);
+                HistoryRecorded: true, Error: ex.Message, FatalBatchFailure: true), performance, progress);
+        }
+        catch (Exception ex)
+        {
+            performance.EndSnapshotPreparation();
+            performance.SetTerminalResult("PreflightFailed: " + ex.GetType().Name);
+            EmitPartialPerformance(performance, progress);
+            throw;
         }
 
-        return await ExecuteSnapshotAndCompleteAsync(snapshot, startedUtc, cancellationToken, progress, index)
+        return await ExecuteSnapshotAndCompleteAsync(snapshot, startedUtc, cancellationToken, progress, index, performance)
             .ConfigureAwait(false);
     }
 
@@ -794,13 +858,20 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
         DateTime startedUtc,
         CancellationToken cancellationToken,
         Action<string>? progress,
-        int batchIndex)
+        int batchIndex,
+        AutomaticEncodePerformanceInstrumentation? performance = null)
     {
+        bool ownsPerformanceContext = performance is null;
+        performance ??= new AutomaticEncodePerformanceInstrumentation(GetSelectedMode(snapshot), snapshot.LogicalSourcePath, startedUtc);
+        performance.SetOperationId(snapshot.OperationId);
+        performance.SetMode(GetSelectedMode(snapshot));
+        using IDisposable? performanceContext = ownsPerformanceContext ? performance.Activate() : null;
         var log = new StringBuilder();
         void Write(string line)
         {
             if (!string.IsNullOrWhiteSpace(line))
             {
+                performance.ObserveProgress(line);
                 if (log.Length < 512 * 1024)
                 {
                     int remaining = 512 * 1024 - log.Length;
@@ -823,10 +894,44 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             DurationSec = snapshot.MediaDurationSeconds
         };
         Stopwatch timer = Stopwatch.StartNew();
+        var lifecycleDiagnostics = new EncodeLifecycleDiagnostics();
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             ValidateContainerConsent(snapshot);
+            if (_savedJobRouteIntents.TryRemove(snapshot.OperationId, out V2GuiEncodeIntent? routeIntent))
+            {
+                HeadlessSavedJobV2RouteResult route = await _v2Router.ExecuteAsync(
+                    routeIntent,
+                    queueEvent =>
+                    {
+                        V2LifecycleEvent? itemEvent = queueEvent.ItemEvent;
+                        if (itemEvent is null) return;
+                        if (itemEvent.Stage.Equals("ffmpeg.process.started", StringComparison.Ordinal))
+                            performance.RecordProductionLifecycleEvent(EncodeLifecycleEvent.FfmpegStart);
+                        else if (itemEvent.Stage.Equals("ffmpeg.process.completed", StringComparison.Ordinal))
+                            performance.RecordProductionLifecycleEvent(EncodeLifecycleEvent.FfmpegExit);
+                        if (!itemEvent.Stage.Equals("ffmpeg.progress.updated", StringComparison.Ordinal))
+                            Write($"[V2] {itemEvent.Stage}: {itemEvent.Message}");
+                    },
+                    prepared =>
+                    {
+                        Write($"[MediaFlux] Engine selected: V2 ({prepared.RouteReason}); fixed quality {prepared.PreflightPlan.QualityMode} {prepared.PreflightPlan.QualityValue:0.###}.");
+                        Write($"[V2] Frozen request: encoder={prepared.PreflightPlan.Encoder}; codec={prepared.PreflightPlan.Codec}; " +
+                            $"preset={prepared.PreflightPlan.Preset}; geometry={prepared.PreflightPlan.Width}x{prepared.PreflightPlan.Height}; " +
+                            $"container={prepared.PreflightPlan.Container}; deleteSource={prepared.PreflightPlan.DeleteSourceOnSuccess}.");
+                    },
+                    cancellationToken).ConfigureAwait(false);
+                if (route.Prepared is { } prepared)
+                {
+                    return await ExecuteV2SnapshotAndCompleteAsync(
+                        snapshot, prepared, route.Run, route.ExecutionException, log, startedUtc, cancellationToken,
+                        Write, batchIndex, performance).ConfigureAwait(false);
+                }
+
+                Write("[MediaFlux] Engine selected: V1 (capability fallback: " +
+                    (string.IsNullOrWhiteSpace(route.FallbackReason) ? "V2 could not represent the complete saved-job item." : route.FallbackReason) + ").");
+            }
             attempt = _lifecycle.CreateAttempt(snapshot);
             EncodeExecutionResult result = await _lifecycle.ExecuteAsync(
                 attempt,
@@ -836,11 +941,15 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
                     OutputPathChanged = path => Write("Output: " + path),
                     StagingPathChanged = path => Write("Staging: " + path),
                     FinalizationStatusChanged = Write,
-                    QualityResolved = quality => Write($"Resolved quality: {quality.Mechanism} {quality.EffectiveQuality?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}"),
+                    QualityResolved = quality =>
+                    {
+                        performance.RecordQualityResolution(quality);
+                        Write($"Resolved quality: {quality.Mechanism} {quality.EffectiveQuality?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}");
+                    },
                     RecoveryStatus = update => Write("Recovery: " + update.Detail),
                     Diagnostic = message => Write("Diagnostic: " + message)
                 },
-                lifecycleDiagnostics: null,
+                lifecycleDiagnostics,
                 cancellationToken).ConfigureAwait(false);
             timer.Stop();
             DateTime endedUtc = DateTime.UtcNow;
@@ -852,24 +961,30 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             history.Log = log.ToString();
             history.Notes = $"Headless production encode completed and validated. {sourceDisposition}";
             history.SourceDeletionResult = sourceDisposition;
-            EncodeExecutionLifecycleCompletion completion = _lifecycle.CompleteSuccessfulExecution(
-                attempt,
-                endedUtc,
-                result.EncodedOutput.FinalOutputSizeBytes,
-                timer.Elapsed.TotalSeconds,
-                history.Notes,
-                diagnosticSummary: null,
-                recoveredSuccessful: IsRecovered(attempt),
-                finalOutputProbe: result.EncodedOutput.FinalOutputProbe,
-                historyRecord: history);
+            performance.BeginHistoryStatisticsRecording();
+            EncodeExecutionLifecycleCompletion completion;
+            try
+            {
+                completion = _lifecycle.CompleteSuccessfulExecution(
+                    attempt,
+                    endedUtc,
+                    result.EncodedOutput.FinalOutputSizeBytes,
+                    timer.Elapsed.TotalSeconds,
+                    history.Notes,
+                    diagnosticSummary: null,
+                    recoveredSuccessful: IsRecovered(attempt),
+                    finalOutputProbe: result.EncodedOutput.FinalOutputProbe,
+                    historyRecord: history);
+            }
+            finally { performance.EndHistoryStatisticsRecording(); }
 
             HeadlessEncodeJobStatus status = IsRecovered(attempt)
                 ? HeadlessEncodeJobStatus.RecoveredSuccess
                 : HeadlessEncodeJobStatus.Success;
-            return CreateStructuredResult(
+            return AttachPerformance(CreateStructuredResult(
                 batchIndex, snapshot, attempt, status, startedUtc, endedUtc,
                 completion, "not applicable; encode succeeded.", sourceDisposition, null,
-                ffmpegExitCode: 0);
+                ffmpegExitCode: 0), performance, progress);
         }
         catch (Exception ex)
         {
@@ -889,14 +1004,17 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
                 history.FinalizationOutcome = canceled ? "Canceled" : "PreflightRejected";
                 history.TerminalResult = canceled ? EncodingTerminalResult.Canceled : EncodingTerminalResult.ValidationFailed;
                 history.SourceDeletionResult = "Original source retained; no production encode was started.";
-                bool recorded = _lifecycle.RecordRejectedBeforeAttempt(history).HistoryRecorded;
-                return new(batchIndex, history.Id, snapshot.LogicalSourcePath,
+                performance.BeginHistoryStatisticsRecording();
+                bool recorded;
+                try { recorded = _lifecycle.RecordRejectedBeforeAttempt(history).HistoryRecorded; }
+                finally { performance.EndHistoryStatisticsRecording(); }
+                return AttachPerformance(new(batchIndex, history.Id, snapshot.LogicalSourcePath,
                     canceled ? HeadlessEncodeJobStatus.Cancelled : HeadlessEncodeJobStatus.Rejected,
                     startedUtc, endedUtc, SelectedMode: GetSelectedMode(snapshot),
                     AdaptiveSelection: null, FinalEncodePlan: null,
                     CleanupResult: "not applicable; no output was allocated.",
                     SourceDisposition: history.SourceDeletionResult,
-                    HistoryRecorded: recorded, StatisticsRecorded: false, Error: message);
+                    HistoryRecorded: recorded, StatisticsRecorded: false, Error: message), performance, progress);
             }
 
             string notes = storageRejected
@@ -905,36 +1023,241 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             history.Log = log.ToString();
             history.Notes = notes;
             history.ErrorSummary = message;
-            EncodeExecutionLifecycleCompletion failed = await _lifecycle.CompleteFailedExecutionAsync(
-                attempt,
-                history,
-                endedUtc,
-                canceled,
-                storageRejected,
-                _config.DeleteFailedEncodeOutputs,
-                snapshot.LogicalSourcePath,
-                attempt.AttemptedOutputPath,
-                attempt.StagedOutputPath,
-                (ex as EncodeFinalizationException)?.Result.RecoverableOutputPath ??
-                    (ex as EncodeFinalizationCanceledException)?.Result.RecoverableOutputPath ?? "",
-                timer.Elapsed.TotalSeconds,
-                diagnosticSummary: null,
-                finalizationFailureKind: (ex as EncodeFinalizationException)?.Result.FailureKind ??
-                    (ex as EncodeFinalizationCanceledException)?.Result.FailureKind,
-                retryQueued: false,
-                errorMessage: message).ConfigureAwait(false);
+            performance.BeginHistoryStatisticsRecording();
+            EncodeExecutionLifecycleCompletion failed;
+            try
+            {
+                failed = await _lifecycle.CompleteFailedExecutionAsync(
+                    attempt,
+                    history,
+                    endedUtc,
+                    canceled,
+                    storageRejected,
+                    _config.DeleteFailedEncodeOutputs,
+                    snapshot.LogicalSourcePath,
+                    attempt.AttemptedOutputPath,
+                    attempt.StagedOutputPath,
+                    (ex as EncodeFinalizationException)?.Result.RecoverableOutputPath ??
+                        (ex as EncodeFinalizationCanceledException)?.Result.RecoverableOutputPath ?? "",
+                    timer.Elapsed.TotalSeconds,
+                    diagnosticSummary: null,
+                    finalizationFailureKind: (ex as EncodeFinalizationException)?.Result.FailureKind ??
+                        (ex as EncodeFinalizationCanceledException)?.Result.FailureKind,
+                    retryQueued: false,
+                    errorMessage: message).ConfigureAwait(false);
+            }
+            finally { performance.EndHistoryStatisticsRecording(); }
             HeadlessEncodeJobStatus status = canceled
                 ? HeadlessEncodeJobStatus.Cancelled
                 : storageRejected ? HeadlessEncodeJobStatus.Skipped
                 : ex is HeadlessSavedJobValidationException or EncodeExecutionAssignmentValidationException
                     ? HeadlessEncodeJobStatus.Rejected
                     : HeadlessEncodeJobStatus.Failed;
-            return CreateStructuredResult(
+            return AttachPerformance(CreateStructuredResult(
                 batchIndex, snapshot, attempt, status, startedUtc, endedUtc,
                 failed, failed.CleanupResult, failed.SourceRetentionResult, message,
                 ParseFfmpegExitCode(message + Environment.NewLine + log),
-                fatalBatchFailure: ex is HeadlessEncodeFatalException or System.ComponentModel.Win32Exception);
+                fatalBatchFailure: ex is HeadlessEncodeFatalException or System.ComponentModel.Win32Exception), performance, progress);
         }
+    }
+
+    private Task<HeadlessEncodeJobResult> ExecuteV2SnapshotAndCompleteAsync(
+        EncodeExecutionSnapshot snapshot,
+        V2GuiPreparedEncode prepared,
+        V2GuiQueueItemResult? routeRun,
+        Exception? routeException,
+        StringBuilder log,
+        DateTime startedUtc,
+        CancellationToken cancellationToken,
+        Action<string> write,
+        int batchIndex,
+        AutomaticEncodePerformanceInstrumentation performance)
+    {
+        V2ExecutionResult execution = null!;
+        if (routeRun is not null)
+        {
+            execution = routeRun.Execution;
+            if (routeRun.Queue.ItemCount != 1 || routeRun.Queue.Items.Count != 1 ||
+                !string.Equals(routeRun.Queue.Items[0].ItemId, prepared.Request.JobId, StringComparison.OrdinalIgnoreCase))
+                routeException = new InvalidOperationException("V2 did not preserve the one-saved-item queue contract.");
+        }
+        if (routeRun is null || routeException is not null)
+        {
+            Exception ex = routeException ?? new InvalidOperationException("V2 did not return a terminal result for the selected saved-job item.");
+            bool canceled = ex is OperationCanceledException && cancellationToken.IsCancellationRequested;
+            execution = new V2ExecutionResult
+            {
+                JobId = prepared.Request.JobId ?? snapshot.OperationId,
+                State = canceled ? V2LifecycleState.Canceled : V2LifecycleState.Failed,
+                SourcePath = prepared.Request.SourcePath,
+                OutputPath = prepared.Request.OutputPath,
+                SourceDeletionRequested = false,
+                SourceDeleted = false,
+                ProductionAttemptCount = 0,
+                Failure = new V2Failure(canceled ? "Canceled" : "ExecutionFailed", ex.Message)
+            };
+            write($"[V2] Execution adapter failed; the item remains on V2 and will not fall through to V1: {ex.Message}");
+        }
+
+        DateTime endedUtc = DateTime.UtcNow;
+        double wallSeconds = Math.Max(0, (endedUtc - startedUtc).TotalSeconds);
+        bool completed = execution.State == V2LifecycleState.Completed && execution.OutputValidated && execution.OutputPromoted;
+        bool canceledResult = execution.State == V2LifecycleState.Canceled;
+        EncodingTerminalResult terminal = ResolveV2TerminalResult(execution, completed, canceledResult);
+        EncodingStatisticsOutcome statisticsOutcome = terminal switch
+        {
+            EncodingTerminalResult.Completed => EncodingStatisticsOutcome.Success,
+            EncodingTerminalResult.Canceled => EncodingStatisticsOutcome.Cancelled,
+            EncodingTerminalResult.ValidationFailed => EncodingStatisticsOutcome.ValidationFailed,
+            EncodingTerminalResult.FinalizationFailed when execution.Failure?.Code.Contains("Verification", StringComparison.OrdinalIgnoreCase) == true =>
+                EncodingStatisticsOutcome.FinalVerificationFailed,
+            EncodingTerminalResult.FinalizationFailed => EncodingStatisticsOutcome.PromotionFailed,
+            _ => EncodingStatisticsOutcome.Failed
+        };
+        long? durableOutputSize = execution.OutputPromoted ? execution.OutputSizeBytes : null;
+        string sourceDisposition = !execution.SourceDeletionRequested
+            ? "Source retained because deletion was not requested."
+            : execution.SourceDeleted == true
+                ? "Source deleted after validated output promotion."
+                : "Source retained because requested deletion did not complete.";
+        string summary = completed
+            ? execution.Warnings.Count == 0 ? "V2 output validated and promoted." : "V2 output validated and promoted with a warning."
+            : canceledResult ? "V2 job canceled; source retained." : execution.Failure?.Message ?? "V2 job failed.";
+        string stagingCleanup = !string.IsNullOrWhiteSpace(execution.StagingPath) && File.Exists(execution.StagingPath)
+            ? "V2 staging file remains after terminal execution."
+            : "V2 staging file absent after terminal execution.";
+        write($"[MediaFlux] V2 terminal: state={execution.State}; attempts={execution.ProductionAttemptCount}; " +
+            $"validated={execution.OutputValidated}; promoted={execution.OutputPromoted}; " +
+            $"ffmpegExit={execution.FfmpegExitCode?.ToString(CultureInfo.InvariantCulture) ?? "not-started"}; " +
+            $"wallSeconds={wallSeconds:0.###}; speed={FormatV2Speed(execution)}.");
+        foreach (string warning in execution.Warnings)
+            write("[V2] Warning: " + warning);
+
+        var historyRecord = new JobHistoryRecord
+        {
+            Id = snapshot.OperationId,
+            Type = JobType.Encode,
+            Status = completed ? JobStatus.Success : canceledResult ? JobStatus.Canceled : JobStatus.Failed,
+            StartUtc = snapshot.StatisticsStartUtc,
+            EndUtc = endedUtc,
+            SourcePath = snapshot.LogicalSourcePath,
+            OutputPath = prepared.Request.OutputPath,
+            EncoderMode = prepared.PreflightPlan.Encoder,
+            TargetMb = snapshot.TargetMb,
+            DurationSec = snapshot.MediaDurationSeconds,
+            Log = log.ToString(),
+            Notes = $"Engine=V2; {summary} {sourceDisposition} {stagingCleanup}",
+            SourceSizeBytes = snapshot.SourceSizeBytes ?? prepared.SourceFacts.SourceLength,
+            OutputSizeBytes = durableOutputSize,
+            ErrorSummary = completed ? null : execution.Failure?.Message,
+            FinalizationOutcome = completed ? "Promoted" : terminal.ToString(),
+            StagingPath = execution.StagingPath,
+            SourceDeletionResult = sourceDisposition,
+            RequestedOutputContainer = prepared.ContainerDecision.Requested.ToString(),
+            ResolvedOutputContainer = prepared.PreflightPlan.Container == "mkv" ? "Matroska" : "Mp4",
+            ContainerDecisionReason = prepared.ContainerDecision.Reason,
+            TerminalResult = terminal,
+            ProductionEncodeCount = execution.ProductionAttemptCount
+        };
+        var statisticsRecord = new EncodingStatisticsRecord
+        {
+            Id = snapshot.OperationId,
+            StartUtc = snapshot.StatisticsStartUtc,
+            EndUtc = endedUtc,
+            Outcome = statisticsOutcome,
+            SourcePath = snapshot.LogicalSourcePath,
+            OutputPath = prepared.Request.OutputPath,
+            Codec = prepared.PreflightPlan.Codec,
+            Encoder = prepared.PreflightPlan.Encoder,
+            SourceSizeBytes = snapshot.SourceSizeBytes ?? prepared.SourceFacts.SourceLength,
+            OutputSizeBytes = durableOutputSize,
+            MediaDurationSeconds = snapshot.MediaDurationSeconds ?? prepared.SourceFacts.Probe.DurationSeconds,
+            ProcessingSeconds = wallSeconds,
+            ProductionEncodeCount = execution.ProductionAttemptCount,
+            EncoderId = snapshot.Encoder.EncoderId,
+            EncoderPreset = prepared.PreflightPlan.Preset,
+            SourceResolutionTier = EncodingRuntimeEstimatorService.ResolutionTier(prepared.SourceFacts.SourceHeight),
+            OutputResolutionTier = EncodingRuntimeEstimatorService.ResolutionTier(prepared.PreflightPlan.Height),
+            OutputBitDepth = 8,
+            ScalingApplied = prepared.PreflightPlan.Width != prepared.SourceFacts.SourceWidth ||
+                prepared.PreflightPlan.Height != prepared.SourceFacts.SourceHeight,
+            TerminalResult = terminal.ToString(),
+            Notes = $"Engine=V2; saved-job; fixed-quality production. {summary}"
+        };
+        EncodeExecutionLifecycleCompletion persistence = _lifecycle.RecordExternalExecution(historyRecord, statisticsRecord);
+        if (!persistence.HistoryRecorded || !persistence.StatisticsRecorded)
+            write($"[V2] Outcome persistence incomplete: history={persistence.HistoryRecorded}; statistics={persistence.StatisticsRecorded}.");
+
+        HeadlessEncodeJobStatus status = completed
+            ? HeadlessEncodeJobStatus.Success
+            : canceledResult ? HeadlessEncodeJobStatus.Cancelled : HeadlessEncodeJobStatus.Failed;
+        var result = new HeadlessEncodeJobResult(
+            batchIndex,
+            snapshot.OperationId,
+            snapshot.LogicalSourcePath,
+            status,
+            startedUtc,
+            endedUtc,
+            OutputPath: prepared.Request.OutputPath,
+            SelectedMode: GetSelectedMode(snapshot),
+            ResolvedQuality: prepared.PreflightPlan.QualityValue.ToString(CultureInfo.InvariantCulture),
+            FinalEncodePlan: JsonSerializer.Serialize(new
+            {
+                route = "V2",
+                prepared.PreflightPlan.Encoder,
+                prepared.PreflightPlan.Codec,
+                prepared.PreflightPlan.QualityMode,
+                prepared.PreflightPlan.QualityValue,
+                prepared.PreflightPlan.Preset,
+                prepared.PreflightPlan.Width,
+                prepared.PreflightPlan.Height,
+                prepared.PreflightPlan.Container
+            }),
+            FfmpegExitCode: execution.FfmpegExitCode,
+            RecoveryOutcome: terminal.ToString(),
+            FfprobeValidated: execution.OutputValidated,
+            DecodeIntegrityValidated: execution.OutputValidated,
+            MetadataValidated: execution.OutputValidated,
+            OutputBytes: durableOutputSize,
+            Promoted: execution.OutputPromoted,
+            CleanupResult: stagingCleanup,
+            SourceDisposition: sourceDisposition,
+            HistoryRecorded: persistence.HistoryRecorded,
+            StatisticsRecorded: persistence.StatisticsRecorded,
+            Error: completed ? null : execution.Failure?.Message,
+            SourceSizeBytes: snapshot.SourceSizeBytes ?? prepared.SourceFacts.SourceLength,
+            SourceDurationSeconds: snapshot.MediaDurationSeconds ?? prepared.SourceFacts.Probe.DurationSeconds,
+            SourceVideoCodec: prepared.SourceFacts.PrimaryVideoCodec,
+            SourceWidth: prepared.SourceFacts.SourceWidth,
+            SourceHeight: prepared.SourceFacts.SourceHeight,
+            SourceFrameRate: prepared.SourceFacts.Probe.Streams.FirstOrDefault(stream =>
+                stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase))?.AverageFrameRate);
+        return Task.FromResult(AttachPerformance(result, performance, write));
+    }
+
+    private static EncodingTerminalResult ResolveV2TerminalResult(
+        V2ExecutionResult execution,
+        bool completed,
+        bool canceled)
+    {
+        if (completed) return EncodingTerminalResult.Completed;
+        if (canceled) return EncodingTerminalResult.Canceled;
+        string code = execution.Failure?.Code ?? string.Empty;
+        if (code.Contains("Validation", StringComparison.OrdinalIgnoreCase))
+            return EncodingTerminalResult.ValidationFailed;
+        if (code.Contains("Promotion", StringComparison.OrdinalIgnoreCase) ||
+            code.Contains("Finalization", StringComparison.OrdinalIgnoreCase) ||
+            code.Equals("DestinationExists", StringComparison.OrdinalIgnoreCase))
+            return EncodingTerminalResult.FinalizationFailed;
+        return EncodingTerminalResult.EncodeFailed;
+    }
+
+    private static string FormatV2Speed(V2ExecutionResult execution)
+    {
+        V2FfmpegProgress? progress = execution.Events.LastOrDefault(item => item.FfmpegProgress is not null)?.FfmpegProgress;
+        return progress?.SpeedMultiplier is double speed && double.IsFinite(speed) && speed > 0
+            ? speed.ToString("0.##", CultureInfo.InvariantCulture) + "x"
+            : "not-exposed";
     }
 
     internal static HeadlessEncodeJobResult CreateStructuredResult(
@@ -1005,6 +1328,59 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             SourceFrameRate: attempt.Plan?.Source?.FrameRate,
             FatalBatchFailure: fatalBatchFailure);
     }
+
+    private static HeadlessEncodeJobResult AttachPerformance(
+        HeadlessEncodeJobResult result,
+        AutomaticEncodePerformanceInstrumentation performance,
+        Action<string>? progress)
+    {
+        string terminalResult = result.RecoveryOutcome ?? result.Status.ToString();
+        performance.SetTerminalResult(terminalResult);
+        AutomaticEncodePerformanceDiagnostics report = performance.BuildReport(result.OperationId, terminalResult);
+        double? projectedTypicalBytes = report.SelectedQuality is int selectedQuality
+            ? report.Candidates.FirstOrDefault(candidate => candidate.Quality == selectedQuality)?.ProjectedTypicalBytes
+            : null;
+        double? projectedError = result.OutputBytes is > 0 && projectedTypicalBytes is > 0
+            ? (result.OutputBytes.Value - projectedTypicalBytes.Value) / projectedTypicalBytes.Value * 100d
+            : null;
+        report = report with
+        {
+            ActualOutputBytes = result.OutputBytes,
+            ProjectedTypicalOutputBytes = projectedTypicalBytes,
+            ProjectedTypicalOutputErrorPercent = projectedError,
+            StorageContractAccepted = result.StorageContractAccepted
+        };
+        string summary = AutomaticEncodePerformanceInstrumentation.FormatHumanReadable(report);
+        try { progress?.Invoke(FormatSampleDiagnostics(report)); } catch { }
+        try { progress?.Invoke(summary); } catch { }
+        return result with { Performance = report, PerformanceSummary = summary };
+    }
+
+    private static void EmitPartialPerformance(
+        AutomaticEncodePerformanceInstrumentation performance,
+        Action<string>? progress)
+    {
+        try
+        {
+            AutomaticEncodePerformanceDiagnostics report = performance.BuildReport();
+            progress?.Invoke(FormatSampleDiagnostics(report));
+            progress?.Invoke(AutomaticEncodePerformanceInstrumentation.FormatHumanReadable(report));
+        }
+        catch { }
+    }
+
+    private static string FormatSampleDiagnostics(AutomaticEncodePerformanceDiagnostics report) =>
+        "ADAPTIVE_SAMPLE_DIAGNOSTICS_JSON:" + JsonSerializer.Serialize(
+            new
+            {
+                schemaVersion = report.SchemaVersion,
+                operationId = report.OperationId,
+                sourcePath = report.SourcePath,
+                candidateCount = report.CandidateCount,
+                sampleCount = report.SampleCount,
+                samples = report.Samples
+            },
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
     private static bool? ValidationStatus(EncodingLifecycleStatus? status) => status switch
     {

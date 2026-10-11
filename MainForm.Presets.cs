@@ -192,8 +192,7 @@ namespace MediaFlux
                 }
                 if (comboQualityMode != null)
                     SelectQualityMode(comboQualityMode, preset.QualityMode);
-                if (trkQualityTarget != null)
-                    trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(preset.QualityTarget));
+                qualityTargetSelector?.SetSelectedTarget(ParseQualityTarget(preset.QualityTarget));
                 UpdateQualityIntentUi();
                 if (chkTenBit != null)
                     chkTenBit.Checked = preset.TenBit;

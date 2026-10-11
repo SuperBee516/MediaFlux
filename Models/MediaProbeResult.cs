@@ -8,6 +8,8 @@ namespace MediaFlux.Models
         public string ErrorMessage { get; init; } = "";
         public string FormatName { get; init; } = "";
         public long? SizeBytes { get; init; }
+        /// <summary>Start of the container timeline reported by FFprobe, when available.</summary>
+        public double? ContainerStartTimeSeconds { get; init; }
         public double? DurationSeconds { get; init; }
         public long? BitRate { get; init; }
         public IReadOnlyDictionary<string, string> FormatTags { get; init; } =

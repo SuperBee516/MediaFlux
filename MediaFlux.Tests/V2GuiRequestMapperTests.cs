@@ -109,6 +109,39 @@ public sealed class V2GuiRequestMapperTests : IDisposable
     }
 
     [Fact]
+    public async Task HeadlessSavedJobRouterUsesSharedV2BoundaryAndNeverFallsThroughAfterV2RunFailure()
+    {
+        V2GuiEncodeIntent fixedIntent = Intent(Settings());
+        V2GuiPreparationResult preparedResult = V2GuiRequestMapper.TryCreate(
+            fixedIntent, SourceFacts(1280, 720), _ffmpeg, _ffprobe, 1);
+        V2GuiPreparedEncode prepared = Assert.IsType<V2GuiPreparedEncode>(preparedResult.Prepared);
+        var adapter = new FakeV2Adapter(preparedResult)
+        {
+            RunException = new InvalidOperationException("synthetic V2 production failure")
+        };
+        var router = new HeadlessSavedJobV2Router(adapter);
+
+        HeadlessSavedJobV2RouteResult fixedRoute = await router.ExecuteAsync(
+            fixedIntent, null, null, CancellationToken.None);
+
+        Assert.Same(prepared, fixedRoute.Prepared);
+        Assert.Null(fixedRoute.Run);
+        Assert.Equal("synthetic V2 production failure", fixedRoute.ExecutionException!.Message);
+        Assert.Equal(1, adapter.PrepareCount);
+        Assert.Equal(1, adapter.RunCount);
+
+        V2GuiEncodeIntent adaptiveIntent = Intent(Settings() with { AutomaticQuality = true });
+        var adaptiveAdapter = new FakeV2Adapter(V2GuiPreparationResult.Unsupported("unused"));
+        HeadlessSavedJobV2RouteResult adaptiveRoute = await new HeadlessSavedJobV2Router(adaptiveAdapter)
+            .ExecuteAsync(adaptiveIntent, null, null, CancellationToken.None);
+
+        Assert.Null(adaptiveRoute.Prepared);
+        Assert.Contains("Source Adaptive", adaptiveRoute.FallbackReason);
+        Assert.Equal(0, adaptiveAdapter.PrepareCount);
+        Assert.Equal(0, adaptiveAdapter.RunCount);
+    }
+
+    [Fact]
     public void MixedAudioActionsRemainOnV1InsteadOfPartiallyMappingStreams()
     {
         V2GuiPreparationResult result = V2GuiRequestMapper.TryCreate(Intent(Settings()), SourceFacts(1280, 720,
@@ -265,6 +298,30 @@ public sealed class V2GuiRequestMapperTests : IDisposable
             AudioCodecs = audioCodecs ?? ["aac"],
             SubtitleCodecs = subtitleCodecs ?? []
         };
+    }
+
+    private sealed class FakeV2Adapter(V2GuiPreparationResult preparation) : IV2GuiProductionAdapter
+    {
+        public int PrepareCount { get; private set; }
+        public int RunCount { get; private set; }
+        public Exception? RunException { get; init; }
+
+        public Task<V2GuiPreparationResult> PrepareAsync(V2GuiEncodeIntent intent, CancellationToken cancellationToken)
+        {
+            PrepareCount++;
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(preparation);
+        }
+
+        public Task<V2GuiQueueItemResult> RunAsync(
+            V2GuiPreparedEncode prepared,
+            Action<V2EncodingQueueEvent>? eventObserver,
+            CancellationToken cancellationToken)
+        {
+            RunCount++;
+            if (RunException is not null) throw RunException;
+            throw new NotSupportedException("This test only exercises failure containment.");
+        }
     }
 
     public void Dispose()

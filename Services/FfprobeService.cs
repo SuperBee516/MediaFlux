@@ -140,6 +140,7 @@ namespace MediaFlux.Services
             var chapters = ParseChapters(root);
 
             string formatName = "";
+            double? containerStartTime = null;
             double? formatDuration = null;
             long? formatSize = null;
             long? formatBitRate = null;
@@ -148,6 +149,7 @@ namespace MediaFlux.Services
                 format.ValueKind == JsonValueKind.Object)
             {
                 formatName = GetString(format, "format_name");
+                containerStartTime = GetFiniteDouble(format, "start_time");
                 formatDuration = GetPositiveDouble(format, "duration");
                 formatSize = GetPositiveLong(format, "size");
                 formatBitRate = GetPositiveLong(format, "bit_rate");
@@ -203,6 +205,7 @@ namespace MediaFlux.Services
                     : probeError,
                 FormatName = formatName,
                 SizeBytes = size,
+                ContainerStartTimeSeconds = containerStartTime,
                 DurationSeconds = duration,
                 BitRate = formatBitRate,
                 FormatTags = formatTags,

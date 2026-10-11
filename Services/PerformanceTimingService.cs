@@ -436,18 +436,28 @@ public sealed class PerformanceTimingService
         private readonly PerformanceTimingService _owner;
         private readonly PerformanceTimingStage _stage;
         private readonly long _startedAt = Stopwatch.GetTimestamp();
+        private readonly AutomaticEncodePerformanceInstrumentation? _diagnosticInstrumentation;
+        private readonly IDisposable? _diagnosticStageScope;
         private int _disposed;
         private bool _completed;
 
         internal PerformanceScope(PerformanceTimingService owner, PerformanceTimingStage stage)
-        { _owner = owner; _stage = stage; }
+        {
+            _owner = owner;
+            _stage = stage;
+            _diagnosticInstrumentation = AutomaticEncodePerformanceInstrumentation.Current;
+            _diagnosticStageScope = _diagnosticInstrumentation?.EnterPerformanceStage(stage);
+        }
 
         public void Complete() => _completed = true;
 
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-            _owner.Record(_stage, Stopwatch.GetElapsedTime(_startedAt), _completed);
+            TimeSpan elapsed = Stopwatch.GetElapsedTime(_startedAt);
+            _owner.Record(_stage, elapsed, _completed);
+            _diagnosticInstrumentation?.RecordPerformanceStage(_stage, _startedAt, elapsed, _completed);
+            _diagnosticStageScope?.Dispose();
         }
     }
 }

@@ -93,6 +93,8 @@ namespace MediaFlux
         private TableLayoutPanel pnlQueueControlsCard;
         private FlowLayoutPanel pnlQueueBehavior;
         private FlowLayoutPanel pnlQueueActionButtons;
+        private FlowLayoutPanel pnlQueueSecondaryActions;
+        private FlowLayoutPanel pnlQueueComparisonActions;
         private TableLayoutPanel grpOptions;
         private TableLayoutPanel tlEncodingOptions;
         private TableLayoutPanel pnlEncodingBehaviorCard;
@@ -440,7 +442,7 @@ namespace MediaFlux
 
             this.pnlEncodingProfileCard = new TableLayoutPanel
             {
-                Name = "pnlEncodingProfileCard",
+                Name = "pnlEncodingControlsCard",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 BackColor = Color.FromArgb(248, 249, 251),
@@ -450,7 +452,7 @@ namespace MediaFlux
                 Dock = DockStyle.Fill,
                 GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
                 Margin = new Padding(0, 0, 0, 6),
-                Padding = new Padding(12, 10, 12, 10)
+                Padding = new Padding(8, 5, 8, 5)
             };
             pnlEncodingProfileCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             pnlEncodingProfileCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -458,7 +460,7 @@ namespace MediaFlux
 
             var lblEncodingProfileHeader = new Label
             {
-                Text = "Encoding Profile",
+                Text = "Encoding Controls",
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(45, 62, 80),
@@ -568,14 +570,14 @@ namespace MediaFlux
                 BackColor = Color.FromArgb(248, 249, 251),
                 BorderStyle = BorderStyle.FixedSingle,
                 ColumnCount = 1,
-                RowCount = 4,
+                RowCount = 5,
                 Dock = DockStyle.Top,
                 GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
                 Margin = new Padding(0, 0, 0, 6),
-                Padding = new Padding(12, 10, 12, 10)
+                Padding = new Padding(8, 4, 8, 4)
             };
             pnlQueueControlsCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            for (int row = 0; row < 4; row++)
+            for (int row = 0; row < 5; row++)
                 pnlQueueControlsCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             var lblQueueControlsHeader = new Label
@@ -584,7 +586,7 @@ namespace MediaFlux
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(45, 62, 80),
-                Margin = new Padding(0, 0, 0, 6)
+                Margin = new Padding(0, 0, 0, 3)
             };
             pnlQueueControlsCard.Controls.Add(lblQueueControlsHeader, 0, 0);
 
@@ -596,13 +598,13 @@ namespace MediaFlux
                 Dock = DockStyle.Top,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Margin = new Padding(0, 0, 0, 6)
+                Margin = new Padding(0, 0, 0, 4)
             };
 
             chkDeleteSource.Text = "Delete source file after compression";
             chkDeleteSource.AutoSize = true;
             chkDeleteSource.Checked = true;
-            chkDeleteSource.Margin = new Padding(0, 2, 28, 2);
+            chkDeleteSource.Margin = new Padding(0, 2, 12, 2);
             pnlQueueBehavior.Controls.Add(chkDeleteSource);
 
             chkIncludeSubfolders = new CheckBox();
@@ -651,26 +653,47 @@ namespace MediaFlux
                 WrapContents = false,
                 Margin = Padding.Empty
             };
+            this.pnlQueueSecondaryActions = new FlowLayoutPanel
+            {
+                Name = "pnlQueueSecondaryActions",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0, 1, 0, 0)
+            };
+            this.pnlQueueComparisonActions = new FlowLayoutPanel
+            {
+                Name = "pnlQueueComparisonActions",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0, 1, 0, 0)
+            };
             btnStartEncode.Margin = new Padding(0, 0, 8, 0);
-            btnSampleComparison.Margin = new Padding(0, 0, 8, 0);
-            btnCqSampleComparison.Margin = new Padding(0, 0, 8, 0);
             btnPauseQueue.Margin = new Padding(0, 0, 8, 0);
             btnStopEncode.Margin = new Padding(0, 0, 8, 0);
-            btnRefreshEncode.Margin = Padding.Empty;
+            btnRefreshEncode.Margin = new Padding(0, 0, 8, 0);
+            btnSampleComparison.Margin = new Padding(0, 0, 8, 0);
+            btnCqSampleComparison.Margin = Padding.Empty;
             pnlQueueActionButtons.Controls.Add(btnStartEncode);
-            pnlQueueActionButtons.Controls.Add(btnSampleComparison);
-            pnlQueueActionButtons.Controls.Add(btnCqSampleComparison);
             pnlQueueActionButtons.Controls.Add(btnPauseQueue);
             pnlQueueActionButtons.Controls.Add(btnStopEncode);
-            pnlQueueActionButtons.Controls.Add(btnRefreshEncode);
+            pnlQueueSecondaryActions.Controls.Add(btnRefreshEncode);
+            pnlQueueComparisonActions.Controls.Add(btnSampleComparison);
+            pnlQueueComparisonActions.Controls.Add(btnCqSampleComparison);
             pnlQueueControlsCard.Controls.Add(pnlQueueActionButtons, 0, 2);
+            pnlQueueControlsCard.Controls.Add(pnlQueueSecondaryActions, 0, 3);
+            pnlQueueControlsCard.Controls.Add(pnlQueueComparisonActions, 0, 4);
 
             lblEncodeStatus.Text = "";
             lblEncodeStatus.AutoSize = true;
             lblEncodeStatus.Anchor = AnchorStyles.Left;
             lblEncodeStatus.ForeColor = SystemColors.GrayText;
             lblEncodeStatus.Margin = new Padding(0, 5, 0, 0);
-            pnlQueueControlsCard.Controls.Add(lblEncodeStatus, 0, 3);
             pnlQueueControlsCard.SizeChanged += (_, __) => UpdateQueueControlsResponsiveLayout();
 
             tlEncode.Controls.Add(pnlQueueControlsCard, 0, 2);
@@ -948,10 +971,6 @@ namespace MediaFlux
             grpOptions.Controls.Add(encodingOptionsHeader, 0, 0);
             grpOptions.Controls.Add(tlEncodingOptions, 0, 1);
 
-            // place the group across all 4 columns on row 10
-            tlEncode.Controls.Add(grpOptions, 0, 10);
-            tlEncode.SetColumnSpan(grpOptions, 4);
-
             // Row 11: Duplicate Finder panel
             this.grpDuplicateFinder = new TableLayoutPanel
             {
@@ -1138,6 +1157,7 @@ namespace MediaFlux
                 Name = "colEstimatedSize",
                 HeaderText = "Estimated Output",
                 Width = 150,
+                SortMode = DataGridViewColumnSortMode.Automatic,
                 Resizable = DataGridViewTriState.True
             });
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn

@@ -94,6 +94,11 @@ namespace MediaFlux
         private static bool IsHeadlessSavedJobCommand(string[] args) =>
             HeadlessSavedJobCommand.IsRequested(args);
 
+        private static bool PathsOverlap(string first, string second) =>
+            MediaFluxStoragePathService.Same(first, second) ||
+            MediaFluxStoragePathService.IsWithin(first, second) ||
+            MediaFluxStoragePathService.IsWithin(second, first);
+
         private static int RunHeadlessEncodeBatchCommand(string[] args)
         {
             DateTime startedUtc = DateTime.UtcNow;
@@ -122,10 +127,24 @@ namespace MediaFlux
                 if (command!.OutputDirectory is { } outputDirectory && !Directory.Exists(outputDirectory))
                     throw new HeadlessEncodeFatalException("The explicit output directory must already exist; headless execution will not create it.");
 
-                // Resolve the regular UserData pointer and load config without GUI startup,
-                // migrations, saved-job loading, or writes to saved-job definitions.
-                MediaFluxStoragePathService paths = AppPaths.StoragePaths;
+                // Isolated campaign storage is prepared by the caller. Resolve the normal
+                // root read-only only to reject overlap; never write normal UserData state.
+                MediaFluxStoragePathService paths = command!.UserDataRoot is { } userDataRoot
+                    ? MediaFluxStoragePathService.ForIsolatedHeadlessRoot(userDataRoot)
+                    : AppPaths.StoragePaths;
+                MediaFluxStoragePathService normalPaths = AppPaths.StoragePaths;
+                if (paths.IsProcessScoped && PathsOverlap(paths.Root, normalPaths.Root))
+                    throw new HeadlessEncodeFatalException("The isolated UserData directory must not overlap normal UserData.");
+                if (paths.IsProcessScoped && command.OutputDirectory is { } isolatedOutput &&
+                    PathsOverlap(paths.Root, isolatedOutput))
+                    throw new HeadlessEncodeFatalException("The isolated output directory must not overlap isolated UserData.");
+                using IDisposable? isolatedStorage = paths.IsProcessScoped ? AppPaths.UseIsolatedHeadlessStorage(paths) : null;
+                if (paths.IsProcessScoped && !File.Exists(paths.Config))
+                    throw new HeadlessEncodeFatalException("The prepared isolated UserData directory must contain a config.json copy.");
+                // No GUI startup, migrations, saved-job loading, or writes to saved-job definitions.
                 Config config = Config.Load(paths.Config);
+                if (paths.IsProcessScoped)
+                    Console.Error.WriteLine("Headless UserData: " + paths.Root + " (isolated, process-scoped)");
                 string applicationDirectory = HeadlessSavedJobEnvironment.ResolveApplicationDirectory(
                     AppPaths.InstallDirectory,
                     AppPaths.LauncherExecutablePath,

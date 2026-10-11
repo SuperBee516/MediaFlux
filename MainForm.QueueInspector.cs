@@ -44,7 +44,7 @@ public partial class MainForm
             Margin = Padding.Empty,
             TabStop = true,
             AccessibleName = "Queue item inspector",
-            AccessibleDescription = "Summary, plan and analysis, cached media details, and diagnostics for selected queue items."
+            AccessibleDescription = "Summary, plan and analysis, encoding options, cached media details, and diagnostics for the encoding queue."
         };
 
         _encodeInfoTabs.TabPages.Add(CreateScrollableInfoTab("Summary", CreateQueueInspectorSummary()));
@@ -54,10 +54,16 @@ public partial class MainForm
         Control planAndAnalysis = CreateInspectorStack(
             CreateEncodingPlanGroup(),
             encodePreviewGroup,
-            CreateEncodingOptionsDetails(),
             CreateRestorationGroup());
         _queueInspectorPlanAnalysisTab = CreateScrollableInfoTab("Plan & Analysis", planAndAnalysis);
         _encodeInfoTabs.TabPages.Add(_queueInspectorPlanAnalysisTab);
+
+        // Keep the existing Encode options controls as one authoritative set, but give
+        // them a dedicated peer tab instead of embedding them in Plan & Analysis.
+        TabPage encodingOptionsTab = CreateScrollableInfoTab(
+            "Encoding Options",
+            CreateEncodingOptionsDetails());
+        _encodeInfoTabs.TabPages.Add(encodingOptionsTab);
 
         Control media = CreateInspectorStack(
             CreateQueueInspectorMediaGroup(),
@@ -75,7 +81,9 @@ public partial class MainForm
         foreach (TabPage page in _encodeInfoTabs.TabPages)
         {
             page.AccessibleName = page.Text;
-            page.AccessibleDescription = $"{page.Text} for the selected encoding queue item.";
+            page.AccessibleDescription = page.Text == "Encoding Options"
+                ? "Queue processing behavior and codec filters for encoding."
+                : $"{page.Text} for the selected encoding queue item.";
         }
 
         _encodeInfoTabs.SelectedIndexChanged += (_, __) =>
@@ -880,7 +888,8 @@ public partial class MainForm
 
     private static string NormalizeRememberedQueueInspectorTab(string? savedTab) => savedTab?.Trim().ToLowerInvariant() switch
     {
-        "plan & analysis" or "encoding plan" or "encoding options" or "restoration" => "Plan & Analysis",
+        "plan & analysis" or "encoding plan" or "restoration" => "Plan & Analysis",
+        "encoding options" => "Encoding Options",
         "media" or "streams" or "duplicates" => "Media",
         "diagnostics & logs" or "diagnostics" or "statistics" => "Diagnostics & Logs",
         _ => "Summary"

@@ -43,7 +43,7 @@ namespace MediaFlux.Services
         public long? SourceSizeBytes { get; set; }
         // Durable final output only. Rejected/failed candidate bytes live in the retry trace.
         public long? OutputSizeBytes { get; set; }
-        // Original frozen selection and full sample evidence; retry quality is separate.
+        // Original frozen selection and samples actually executed; retry quality is separate.
         public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; set; }
         public double? MediaDurationSeconds { get; set; }
         // Logical processing across attempts and validation/handoff, excluding sampling once.

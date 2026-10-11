@@ -13,7 +13,7 @@ public sealed class QueueColumnOrderingUiTests
     private static readonly string[] PhaseOneOrder =
     [
         "colOrder", "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
-        "colSourceEstimate", "colProgress", "colETA", "colSize", "colEstimatedSize",
+        "colEstimatedSize", "colProgress", "colETA", "colSize",
         "colCreated", "colCustom", "colDuplicate", "colDuplicateConfidence", "colDuplicateAction"
     ];
 
@@ -60,10 +60,10 @@ public sealed class QueueColumnOrderingUiTests
 
                 // Native DisplayIndex changes remain available with widths unlocked.
                 int plannedWidth = grid.Columns["colPlannedOutput"].Width;
-                grid.Columns["colSourceEstimate"].DisplayIndex = 3;
+                grid.Columns["colEstimatedSize"].DisplayIndex = 3;
                 Invoke(first, "DgvEncodeQueue_ColumnResizeMouseUp", grid,
                     new MouseEventArgs(MouseButtons.Left, 1, 0, 0, 0));
-                Assert.Equal("colSourceEstimate", Order(grid)[3]);
+                Assert.Equal("colEstimatedSize", Order(grid)[3]);
                 Assert.Equal(plannedWidth, grid.Columns["colPlannedOutput"].Width);
 
                 // Locking widths does not lock ordering.
@@ -266,7 +266,7 @@ public sealed class QueueColumnOrderingUiTests
                 isolatedConfigPath = QueueWorkspaceTestSupport.UseIsolatedConfig(main);
                 Config config = Field<Config>(main, "_config");
                 config.QueueWorkspaceLayoutInitialized = true;
-                config.EncodeGridColumnOrder = ["colETA", "colETA", "removedLegacy", "colName", ""];
+                config.EncodeGridColumnOrder = ["colETA", "colETA", "removedLegacy", "colSourceEstimate", "colEstimatedSize", "colName", ""];
                 main.Show();
                 Application.DoEvents();
                 DataGridView grid = Field<DataGridView>(main, "dgvEncodeQueue");
@@ -274,9 +274,20 @@ public sealed class QueueColumnOrderingUiTests
                 Assert.Equal(grid.Columns.Count, order.Length);
                 Assert.Equal(order.Length, order.Distinct(StringComparer.OrdinalIgnoreCase).Count());
                 Assert.Equal("colETA", order[0]);
-                Assert.Equal("colName", order[1]);
+                Assert.Equal("colEstimatedSize", order[1]);
+                Assert.Equal("colName", order[2]);
+                Assert.Single(order, name => name == "colEstimatedSize");
+                Assert.DoesNotContain("colSourceEstimate", order);
                 Assert.DoesNotContain("removedLegacy", order);
                 Assert.Equal(order, Field<Config>(main, "_config").EncodeGridColumnOrder);
+
+                var aliasOnly = (List<string>)Invoke(main, "NormalizeQueueColumnOrder", (object)new[]
+                {
+                    "colETA", "colSourceEstimate", "colName"
+                })!;
+                Assert.Equal("colEstimatedSize", aliasOnly[1]);
+                Assert.Single(aliasOnly, name => name == "colEstimatedSize");
+                Assert.DoesNotContain("colSourceEstimate", aliasOnly);
             }
             catch (Exception ex) { failure = ex; }
             finally

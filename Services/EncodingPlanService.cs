@@ -205,6 +205,7 @@ public static class EncodingPlanService
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(evidence);
+        using IDisposable? performanceScope = AutomaticEncodePerformanceInstrumentation.Current?.MeasurePlanFreeze();
         if (evidence.Candidates.Any(c => c.Samples.Any(s => s.Purpose != VideoSamplePurpose.ProductionAcceptance)))
             throw new InvalidDataException("Preview evidence cannot be frozen as production selection.");
         EncodingPlanExecutionValues execution = GetExecutionValues(plan);
@@ -250,6 +251,7 @@ public static class EncodingPlanService
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(evidence);
+        using IDisposable? performanceScope = AutomaticEncodePerformanceInstrumentation.Current?.MeasurePlanFreeze();
         if (evidence.Disposition != AdaptiveSelectionDisposition.NotSuitable ||
             evidence.SelectedQuality != evidence.PreferredQuality)
             throw new InvalidOperationException("Adaptive abstention must retain the configured preferred quality.");

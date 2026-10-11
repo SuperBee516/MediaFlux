@@ -598,6 +598,69 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task AdaptiveAllMissIsRecordedBeforeEncodeAndTheNextQueueJobContinues()
+    {
+        string source = CreateFile("adaptive-all-miss-source.mp4");
+        AdaptiveQualitySelectionEvidence evidence = AllMissEvidence();
+        EncodingPlan skippedPlan = new()
+        {
+            IsAvailable = true,
+            PlanId = Guid.NewGuid(),
+            Source = new EncodingPlanSource("h264", 1920, 1080, 29.97, 120),
+            Video = new EncodingPlanVideo("Reencode", "hevc_nvenc", VideoEncoderIds.Nvenc,
+                1920, 1080, 1920, 1080, "p010le"),
+            Validation = new EncodingPlanValidation("Production", true, false),
+            AdaptiveSelection = evidence
+        };
+        var rejectedExecutor = new SyntheticExecutor(
+            new EncodingPlanSnapshot(skippedPlan.PlanId, skippedPlan),
+            adaptive: evidence,
+            skipBeforeEncode: true);
+        var acceptedExecutor = new SyntheticExecutor(MakePlan());
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "adaptive-all-miss-statistics.jsonl"));
+        var journal = new PredictionShadowObservationJournal(Path.Combine(_root, "adaptive-all-miss-research.jsonl"));
+        var orchestrator = CreateOrchestrator(new SequentialExecutor(rejectedExecutor, acceptedExecutor), journal, statistics);
+        EncodeExecutionAttempt rejectedAttempt = orchestrator.CreateAttempt(Snapshot(source, null) with
+        {
+            OperationId = "adaptive-all-miss",
+            AdaptiveStorageSavingsEnabled = true
+        });
+        EncodeExecutionAttempt acceptedAttempt = orchestrator.CreateAttempt(
+            Snapshot(CreateFile("following-job.mp4"), null) with { OperationId = "following-job" });
+
+        await new EncodeQueueRunner().RunAsync([rejectedAttempt, acceptedAttempt], async attempt =>
+        {
+            try
+            {
+                await orchestrator.ExecuteAsync(attempt, new EncodeExecutionCallbacks(), null, CancellationToken.None);
+                orchestrator.RecordSuccessfulExecution(attempt, Now, 123_456_789, 42.5, "accepted", null, false, null);
+            }
+            catch (AdaptiveStorageSavingsSkippedException ex)
+            {
+                Assert.Equal(evidence, ex.Evidence);
+                orchestrator.RecordFailedExecution(attempt, Now, isCanceled: false,
+                    finalizationFailureKind: null, outputPath: "", processingSeconds: 0,
+                    notes: ex.Message, diagnosticSummary: null, retryQueued: false);
+            }
+        }, maxParallel: 1, () => false, () => false);
+
+        Assert.Equal(new[] { "plan" }, rejectedExecutor.Events);
+        Assert.Equal(new[] { "plan", "capture", "encode" }, acceptedExecutor.Events);
+        Assert.Equal(0, rejectedAttempt.ExecutionOutcome!.ProductionEncodeCount);
+        Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped, rejectedAttempt.ExecutionOutcome.TerminalResult);
+        Assert.Empty(rejectedAttempt.AttemptedOutputPath);
+        Assert.Empty(rejectedAttempt.StagedOutputPath);
+        Assert.True(File.Exists(source));
+
+        EncodingStatisticsRecord[] records = statistics.GetAll().OrderBy(record => record.StartUtc).ToArray();
+        EncodingStatisticsRecord skipped = Assert.Single(records, record => record.Outcome == EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped);
+        Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped.ToString(), skipped.TerminalResult);
+        Assert.Equal(evidence, skipped.AdaptiveSelection);
+        Assert.Null(skipped.OutputSizeBytes);
+        Assert.Single(records, record => record.Outcome == EncodingStatisticsOutcome.Success);
+    }
+
+    [Fact]
     public async Task ApplicableContractCannotBypassAcceptanceThroughExecutorSuccess()
     {
         string source = CreateFile("unaccepted-target.mp4");
@@ -619,13 +682,15 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
     }
 
     [Fact]
-    public async Task ProjectionMissEncodesAtConfiguredQualityAndContinuesQueue()
+    public async Task InconclusiveAdaptiveEvidenceFallsBackToConfiguredQualityAndContinuesQueue()
     {
         string source = CreateFile("adaptive-source.mp4");
         File.WriteAllBytes(source, new byte[1_000_000]);
-        var evidence = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((_, _) => 10_000))
+        var evidence = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((_, position) =>
+                position % 2 == 0 ? 8_000 : 12_000))
             .SelectAsync(AdaptiveStorageSavingsTests.Request(), null, CancellationToken.None);
         Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, evidence.Disposition);
+        Assert.All(evidence.Candidates, candidate => Assert.Equal(AdaptiveSampleClassification.Borderline, candidate.Classification));
         EncodingPlan initial = EncodingPlanService.Create(AdaptiveStorageSavingsTests.Context());
         EncodingPlan fallback = EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(initial, evidence);
         Assert.Equal(initial.Quality!.EffectiveQuality, fallback.Quality!.EffectiveQuality);
@@ -698,6 +763,9 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.Equal(EncodingStatisticsOutcome.StoragePolicyRejected, record.Outcome);
         Assert.Null(record.OutputSizeBytes);
         Assert.Equal(26, record.AdaptiveSelection!.SelectedQuality);
+        Assert.Equal(25, record.AdaptiveSelection.SamplesExecuted);
+        Assert.True(record.AdaptiveSelection.SevenFirstEarlyPositive);
+        Assert.Equal(1, record.ProductionEncodeCount);
         Assert.True(File.Exists(source));
         Assert.Empty(journal.ReadEvents());
     }
@@ -725,6 +793,9 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.Equal(800_000, record.OutputSizeBytes);
         Assert.Equal(30.5, record.ProcessingSeconds);
         Assert.Equal(25, record.AdaptiveSelection!.SelectedQuality);
+        Assert.Equal(16, record.AdaptiveSelection.SamplesExecuted);
+        Assert.True(record.AdaptiveSelection.SevenFirstEarlyPositive);
+        Assert.Equal(1, record.ProductionEncodeCount);
         Assert.Null(record.SourceAdaptiveShadow);
         Assert.Equal("", record.PredictionConfidence);
         Assert.Empty(journal.ReadEvents());
@@ -733,6 +804,8 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         history.Append(new JobHistoryRecord { Status = JobStatus.Success, AdaptiveSelection = selection, OutputSizeBytes = 800_000 });
         var readBack = Assert.Single(history.LoadAll());
         Assert.Equal(25, readBack.AdaptiveSelection!.SelectedQuality);
+        Assert.Equal(16, readBack.AdaptiveSelection.SamplesExecuted);
+        Assert.True(readBack.AdaptiveSelection.SevenFirstEarlyPositive);
         Assert.Equal(800_000, readBack.OutputSizeBytes);
     }
 
@@ -873,6 +946,56 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         Assert.Null(Assert.Single(statistics.GetAll()).SourceAdaptiveShadow);
         Assert.False(Assert.Single(statistics.GetAll()).RecoveredSuccessful);
         Assert.Empty(journal.ReadEvents());
+    }
+
+    [Fact]
+    public void ExternalEngineOutcomePersistsExactlyOneHistoryAndStatisticsRecord()
+    {
+        string source = CreateFile("external-engine-source.mp4");
+        string historyPath = Path.Combine(_root, "external-engine-history", "history.json");
+        var statistics = new EncodingStatisticsService(Path.Combine(_root, "external-engine-statistics.jsonl"));
+        var orchestrator = CreateOrchestrator(
+            new SyntheticExecutor(MakePlan()),
+            new PredictionShadowObservationJournal(Path.Combine(_root, "external-engine-research.jsonl")),
+            statistics);
+        var lifecycle = new EncodeExecutionLifecycleService(orchestrator, () => new HistoryService(historyPath));
+        string id = Guid.NewGuid().ToString("N");
+        var history = new JobHistoryRecord
+        {
+            Id = id,
+            Type = JobType.Encode,
+            Status = JobStatus.Success,
+            StartUtc = Now,
+            EndUtc = Now.AddSeconds(2),
+            SourcePath = source,
+            OutputPath = Path.Combine(_root, "external-engine-output.mp4"),
+            ProductionEncodeCount = 1,
+            TerminalResult = EncodingTerminalResult.Completed
+        };
+        var statisticsRecord = new EncodingStatisticsRecord
+        {
+            Id = id,
+            StartUtc = Now,
+            EndUtc = Now.AddSeconds(2),
+            Outcome = EncodingStatisticsOutcome.Success,
+            SourcePath = source,
+            OutputPath = history.OutputPath,
+            Codec = "hevc",
+            Encoder = "libx265",
+            ProductionEncodeCount = 1,
+            ProcessingSeconds = 2
+        };
+
+        EncodeExecutionLifecycleCompletion first = lifecycle.RecordExternalExecution(history, statisticsRecord);
+        EncodeExecutionLifecycleCompletion duplicate = lifecycle.RecordExternalExecution(history, statisticsRecord);
+
+        Assert.True(first.HistoryRecorded);
+        Assert.True(first.StatisticsRecorded);
+        Assert.True(duplicate.HistoryRecorded);
+        Assert.False(duplicate.StatisticsRecorded);
+        JobHistoryRecord persistedHistory = Assert.Single(new HistoryService(historyPath).LoadAll());
+        Assert.Equal(1, persistedHistory.ProductionEncodeCount);
+        Assert.Single(statistics.GetAll());
     }
 
     private EncodeExecutionOrchestrator CreateOrchestrator(
@@ -1091,6 +1214,26 @@ public sealed class EncodeExecutionOrchestratorTests : IDisposable
         "MF-ORCHESTRATOR-TEST", 1, 1,
         PredictionShadowExperimentStratum.Low,
         PredictionShadowExperimentRole.Target);
+
+    private static AdaptiveQualitySelectionEvidence AllMissEvidence()
+    {
+        RepresentativeSampleEvidence[] samples = StorageSavingsSampleSelector.Positions(TimeSpan.FromSeconds(120))
+            .Select(sample => new RepresentativeSampleEvidence(sample, 4_000_000, 25))
+            .ToArray();
+        int[] qualities = [19, 20, 21];
+        AdaptiveCandidateEvidence[] candidates = qualities
+            .Select((quality, index) => new AdaptiveCandidateEvidence(
+                quality, Array.AsReadOnly(samples), 300_000_000 + index, 400_000_000 + index, 4_000_000,
+                AdaptiveSampleClassification.ClearlyMisses)
+            { ProjectedTypicalBytes = 350_000_000 + index })
+            .ToArray();
+        return new AdaptiveQualitySelectionEvidence(
+            AdaptiveSelectionDisposition.Skipped, VideoEncoderIds.Nvenc, "hevc_nvenc", QualityTarget.HighQuality,
+            EncoderQualityMechanism.Cq, 19, null, 21, 2, 25, false,
+            new AdaptiveAncillaryAllowance(0, 0, 0, 0), Array.AsReadOnly(candidates),
+            "Every acceptable candidate clearly misses the storage objective.")
+        { SamplingSeconds = 3, SourceDurationSeconds = 120 };
+    }
 
     private string CreateFile(string name)
     {

@@ -220,7 +220,7 @@ public static class V2FastEstimateService
         double targetEncoderFactor = TargetEncoderFactor(encoder);
         double qualityAnchor = QualityAnchor(encoder, qualityMode);
         double qualityScale = Math.Pow(2d, (qualityAnchor - request.QualityValue) / 6d);
-        double presetScale = PresetScale(encoder, preset);
+        double presetScale = GetPresetRateMultiplier(encoder, preset);
         double targetBpp = targetCodecBpp * targetEncoderFactor * sourceComplexity * qualityScale * presetScale;
         double targetVideoKbps = targetBpp * targetPixelsPerSecond / 1000d;
         long videoBytes = ToBytes(targetVideoKbps * 1000d / 8d * facts.DurationSeconds);
@@ -486,8 +486,10 @@ public static class V2FastEstimateService
         _ => 23d
     };
 
-    private static double PresetScale(string encoder, string preset)
+    internal static double GetPresetRateMultiplier(string? encoder, string? preset)
     {
+        encoder = encoder?.Trim().ToLowerInvariant() ?? "";
+        preset = preset?.Trim().ToLowerInvariant() ?? "";
         if (encoder is "libx264" or "libx265") return preset switch
         {
             "ultrafast" => 1.38d,

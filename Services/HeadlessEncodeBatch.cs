@@ -8,7 +8,8 @@ public sealed record HeadlessEncodeBatchCommand(
     string? OutputDirectory,
     string? QualityModeOverride,
     bool DeleteSourceAfterCompression,
-    bool RequireStorageSavingsContract = false)
+    bool RequireStorageSavingsContract = false,
+    string? UserDataRoot = null)
 {
     public static bool IsRequested(string[] args) =>
         args.Length > 0 && string.Equals(args[0], "--headless-encode", StringComparison.Ordinal);
@@ -28,8 +29,10 @@ public sealed record HeadlessEncodeBatchCommand(
         string? qualityMode = null;
         bool deleteSource = false;
         bool requireStorageSavingsContract = false;
+        string? userDataRoot = null;
         bool outputSeen = false;
         bool qualitySeen = false;
+        bool userDataSeen = false;
         for (int i = 1; i < args.Length; i++)
         {
             string option = args[i];
@@ -55,9 +58,9 @@ public sealed record HeadlessEncodeBatchCommand(
                 continue;
             }
 
-            if (option is not ("--source" or "--output-directory" or "--quality-mode") || i + 1 >= args.Length)
+            if (option is not ("--source" or "--output-directory" or "--quality-mode" or "--user-data") || i + 1 >= args.Length)
             {
-                error = $"Unsupported, incomplete, or misplaced headless option '{option}'. Use repeated --source <absolute-path>, optional --output-directory <absolute-path>, optional --quality-mode Automatic|Manual, and optional --storage-savings.";
+                error = $"Unsupported, incomplete, or misplaced headless option '{option}'. Use repeated --source <absolute-path>, optional --output-directory <absolute-path>, optional --quality-mode Automatic|Manual, optional --user-data <prepared-isolated-directory>, and optional --storage-savings.";
                 return false;
             }
 
@@ -117,6 +120,20 @@ public sealed record HeadlessEncodeBatchCommand(
                     qualityMode = value;
                     qualitySeen = true;
                     break;
+                case "--user-data":
+                    if (userDataSeen)
+                    {
+                        error = "--user-data may be specified only once.";
+                        return false;
+                    }
+                    try { userDataRoot = MediaFluxStoragePathService.NormalizeIsolatedRoot(value); }
+                    catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                    {
+                        error = "The isolated UserData directory is invalid: " + ex.Message;
+                        return false;
+                    }
+                    userDataSeen = true;
+                    break;
             }
         }
 
@@ -125,7 +142,7 @@ public sealed record HeadlessEncodeBatchCommand(
             error = "At least one --source <absolute-path> is required.";
             return false;
         }
-        command = new(sources.AsReadOnly(), outputDirectory, qualityMode, deleteSource, requireStorageSavingsContract);
+        command = new(sources.AsReadOnly(), outputDirectory, qualityMode, deleteSource, requireStorageSavingsContract, userDataRoot);
         return true;
     }
 }
@@ -174,7 +191,9 @@ public sealed record HeadlessEncodeJobResult(
     int? SourceWidth = null,
     int? SourceHeight = null,
     double? SourceFrameRate = null,
-    bool FatalBatchFailure = false);
+    bool FatalBatchFailure = false,
+    AutomaticEncodePerformanceDiagnostics? Performance = null,
+    string? PerformanceSummary = null);
 
 public sealed record HeadlessEncodeBatchResult(
     int SchemaVersion,

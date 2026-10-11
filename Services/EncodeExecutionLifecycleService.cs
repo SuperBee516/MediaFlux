@@ -197,6 +197,50 @@ public sealed class EncodeExecutionLifecycleService
         }
     }
 
+    /// <summary>Persists one outcome produced by an execution engine outside the V1 orchestrator.</summary>
+    public EncodeExecutionLifecycleCompletion RecordExternalExecution(
+        JobHistoryRecord historyRecord,
+        EncodingStatisticsRecord statisticsRecord)
+    {
+        ArgumentNullException.ThrowIfNull(historyRecord);
+        ArgumentNullException.ThrowIfNull(statisticsRecord);
+        if (!string.Equals(historyRecord.Id, statisticsRecord.Id, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("External history and statistics must share one operation ID.", nameof(statisticsRecord));
+
+        bool historyRecorded = TryAppendExternalHistory(historyRecord);
+        bool statisticsRecorded = false;
+        try
+        {
+            statisticsRecorded = _orchestrator.RecordExternalStatistics(statisticsRecord);
+        }
+        catch (Exception ex)
+        {
+            Report("Could not record external encode statistics", ex);
+        }
+
+        return new(statisticsRecorded, historyRecorded);
+    }
+
+    private bool TryAppendExternalHistory(JobHistoryRecord historyRecord)
+    {
+        try
+        {
+            lock (_historyGate)
+            {
+                if (_appendedHistoryIds.Contains(historyRecord.Id))
+                    return true;
+                _history.Value.Append(historyRecord);
+                _appendedHistoryIds.Add(historyRecord.Id);
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Report("External history append failed", ex);
+            return false;
+        }
+    }
+
     public static string ResolveFailureFinalizationOutcome(
         EncodeFinalizationResult? finalizationResult,
         bool assignmentValidationFailed,

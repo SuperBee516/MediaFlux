@@ -197,8 +197,7 @@ public partial class MainForm
             if (nudAutoQuality != null) nudAutoQuality.Value = Math.Clamp(settings.QualityValue, (int)nudAutoQuality.Minimum, (int)nudAutoQuality.Maximum);
             if (comboQualityMode != null)
                 SelectQualityMode(comboQualityMode, settings.QualityMode);
-            if (trkQualityTarget != null)
-                trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(settings.QualityTarget));
+            qualityTargetSelector?.SetSelectedTarget(ParseQualityTarget(settings.QualityTarget));
         }
         finally { _applyingEncodeDropdownSettings = false; }
         _config.EnableOutputSuffix = settings.EnableOutputSuffix;

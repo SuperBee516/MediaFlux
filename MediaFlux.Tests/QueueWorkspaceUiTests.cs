@@ -177,7 +177,7 @@ public sealed class QueueWorkspaceUiTests
                 string[] expectedNames =
                 [
                     "colOrder", "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
-                    "colSourceEstimate", "colProgress", "colETA"
+                    "colEstimatedSize", "colProgress", "colETA"
                 ];
                 string[] actualNames = queue.Columns.Cast<DataGridViewColumn>()
                     .Where(column => column.Visible)
@@ -188,16 +188,22 @@ public sealed class QueueWorkspaceUiTests
                 Assert.Equal("File", queue.Columns["colName"].HeaderText);
                 Assert.Equal("Recommendation", queue.Columns["colEncodeRecommendation"].HeaderText);
                 Assert.Equal("Planned Output", queue.Columns["colPlannedOutput"].HeaderText);
-                Assert.Equal("Estimated Output", queue.Columns["colSourceEstimate"].HeaderText);
+                Assert.Equal("Estimated Output", queue.Columns["colEstimatedSize"].HeaderText);
+                Assert.False(queue.Columns.Contains("colSourceEstimate"));
+                Assert.Equal(DataGridViewColumnSortMode.Automatic, queue.Columns["colEstimatedSize"].SortMode);
                 Assert.True(queue.Columns["colProgress"].Visible);
                 Assert.True(queue.Columns["colETA"].Visible);
                 Assert.False(queue.Columns["colSize"].Visible);
-                Assert.False(queue.Columns["colEstimatedSize"].Visible);
+                Assert.True(queue.Columns["colEstimatedSize"].Visible);
                 Assert.False(queue.Columns["colCustom"].Visible);
                 Assert.True(Field<Config>(main, "_config").QueueWorkspaceLayoutInitialized);
 
                 FlowLayoutPanel actionPanel = Field<FlowLayoutPanel>(main, "pnlQueueActionButtons");
-                foreach (Size size in new[] { new Size(1100, 700), new Size(1360, 840), new Size(1800, 1100) })
+                foreach (Size size in new[]
+                         {
+                             new Size(1100, 700), new Size(1000, 720),
+                             new Size(1360, 840), new Size(1800, 1100)
+                         })
                 {
                     main.ClientSize = size;
                     Application.DoEvents();
@@ -207,11 +213,19 @@ public sealed class QueueWorkspaceUiTests
 
                     var visibleCoreColumns = expectedNames.Select(name => queue.Columns[name]).ToArray();
                     int fixedWidth = visibleCoreColumns.Where(column => column.Name != "colName").Sum(column => column.Width);
+                    string layoutPath = DescribeControlAncestors(queue);
+                    int requiredWidth = fixedWidth + queue.Columns["colName"].MinimumWidth;
                     Assert.True(
-                        queue.ClientSize.Width >= fixedWidth + queue.Columns["colName"].MinimumWidth,
-                        $"Core queue columns should fit at {size}; grid={queue.ClientSize.Width}, required={fixedWidth + queue.Columns["colName"].MinimumWidth}.");
+                        queue.ClientSize.Width >= requiredWidth,
+                        $"Core queue columns should fit at {size}; grid={queue.ClientSize.Width}, required={requiredWidth}; {layoutPath}.");
+                    int expectedGridWidth = main.ClientSize.Width - Field<TableLayoutPanel>(main, "tlEncode").Padding.Horizontal;
+                    Assert.Equal(expectedGridWidth, queue.ClientSize.Width);
                     Assert.True(queue.Columns["colName"].Width >= queue.Columns["colName"].MinimumWidth);
-                    Assert.True(queue.ClientSize.Height >= 24, $"Queue grid should retain usable height at {size}.");
+                    Assert.True(
+                        queue.Parent is Control workspace &&
+                        queue.ClientSize.Height >= queue.MinimumSize.Height &&
+                        queue.Bottom <= workspace.ClientSize.Height,
+                        $"Queue grid should remain visible inside its workspace at {size}; grid={queue.Bounds}, workspace={queue.Parent?.ClientSize}.");
                     Assert.All(new[] { startQueue, startSelected, removeSelected, pause, stop }, button => Assert.True(button.Visible));
                     Assert.True(analyze.Visible);
                     Assert.True(actionPanel.ClientSize.Width > 0);
@@ -231,6 +245,208 @@ public sealed class QueueWorkspaceUiTests
         thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Queue workspace UI test timed out.");
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void LegacyDuplicateEstimateLayoutMigratesToVisibleCanonicalColumnAndPreservesLaterHide()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        Exception? failure = null;
+        MainForm? main = null;
+        string? isolatedConfigPath = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                main = new MainForm();
+                isolatedConfigPath = QueueWorkspaceTestSupport.UseIsolatedConfig(main);
+                var config = new Config
+                {
+                    QueueWorkspaceLayoutInitialized = true,
+                    ShowEstimatedOutputColumn = false,
+                    EncodeQueueSortColumn = "colSourceEstimate",
+                    EncodeQueueSortDescending = true,
+                    EncodeGridColumnOrder = ["colPlannedOutput", "colSourceEstimate", "colProgress", "colEstimatedSize"],
+                    EncodeGridColumnWidths = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["colEstimatedSize"] = 140,
+                        ["colSourceEstimate"] = 225
+                    }
+                };
+                SetField(main, "_config", config);
+                main.Show();
+                Application.DoEvents();
+
+                DataGridView grid = Field<DataGridView>(main, "dgvEncodeQueue");
+                Assert.True(config.EstimatedOutputColumnLayoutVersion >= 1);
+                Assert.True(config.ShowEstimatedOutputColumn);
+                Assert.Equal("colEstimatedSize", config.EncodeQueueSortColumn);
+                Assert.True(config.EncodeQueueSortDescending);
+                Assert.True(grid.Columns["colEstimatedSize"].Visible);
+                Assert.False(grid.Columns.Contains("colSourceEstimate"));
+                Assert.Equal(225, grid.Columns["colEstimatedSize"].Width);
+                Assert.Single(config.EncodeGridColumnOrder, name => name == "colEstimatedSize");
+                Assert.DoesNotContain(config.EncodeGridColumnOrder, name => name == "colSourceEstimate");
+                Assert.Equal("colEstimatedSize", config.EncodeGridColumnOrder[
+                    config.EncodeGridColumnOrder.IndexOf("colPlannedOutput") + 1]);
+                Assert.DoesNotContain(config.EncodeGridColumnWidths.Keys, name => name == "colSourceEstimate");
+
+                config.ShowEstimatedOutputColumn = false;
+                Invoke(main, "ApplyQueueWorkspaceColumnPreferences");
+                Assert.False(grid.Columns["colEstimatedSize"].Visible);
+                Assert.False(config.ShowEstimatedOutputColumn);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(main);
+                QueueWorkspaceTestSupport.DeleteIsolatedConfig(isolatedConfigPath);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Estimated Output layout migration test timed out.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void EstimatedOutputPresentationHandlesSavingsStatesAndExistingSizeFormatting()
+    {
+        MainForm.QueueEstimateCellPresentation smallMb = MainForm.FormatQueueEstimateCellPresentation(
+            0, 0.25, "0.3 MB", "estimate details");
+        Assert.Equal("0.3 MB", smallMb.FullText);
+        Assert.Equal(0, smallMb.SavingsFraction);
+        Assert.Contains("Source size is unavailable", smallMb.ToolTipText);
+
+        MainForm.QueueEstimateCellPresentation hundredsMb = MainForm.FormatQueueEstimateCellPresentation(
+            1024, 607.25, "607.3 MB", "estimate details");
+        Assert.Equal("607.3 MB • 41% saved", hundredsMb.FullText);
+        Assert.Equal("607.3 MB • 41%", hundredsMb.MediumText);
+        Assert.Equal("41%", hundredsMb.NarrowText);
+        Assert.InRange(hundredsMb.SavingsFraction, 0.4069, 0.4071);
+        Assert.Contains("Source: 1 GB. Output: 607.3 MB. 41% saved.", hundredsMb.ToolTipText);
+
+        MainForm.QueueEstimateCellPresentation oneGb = MainForm.FormatQueueEstimateCellPresentation(
+            2 * 1024, 1.02 * 1024, "1.02 GB", "estimate details");
+        Assert.Equal("1.02 GB • 49% saved", oneGb.FullText);
+
+        MainForm.QueueEstimateCellPresentation veryLarge = MainForm.FormatQueueEstimateCellPresentation(
+            1_000_000, 750_000, "732.42 GB", "estimate details");
+        Assert.Equal("732.42 GB • 25% saved", veryLarge.FullText);
+
+        MainForm.QueueEstimateCellPresentation smallSaving = MainForm.FormatQueueEstimateCellPresentation(
+            100, 98, "98 MB", "");
+        Assert.Equal("98 MB • 2% saved", smallSaving.FullText);
+
+        MainForm.QueueEstimateCellPresentation subPercentSaving = MainForm.FormatQueueEstimateCellPresentation(
+            1000, 999.5, "999.5 MB", "");
+        Assert.Equal("999.5 MB • <1% saved", subPercentSaving.FullText);
+
+        MainForm.QueueEstimateCellPresentation largeSaving = MainForm.FormatQueueEstimateCellPresentation(
+            100, 20, "20 MB", "");
+        Assert.Equal("20 MB • 80% saved", largeSaving.FullText);
+
+        MainForm.QueueEstimateCellPresentation noSavings = MainForm.FormatQueueEstimateCellPresentation(
+            842, 842, "842 MB", "");
+        Assert.Equal("842 MB • No savings", noSavings.FullText);
+        Assert.Equal(0, noSavings.SavingsFraction);
+
+        MainForm.QueueEstimateCellPresentation largerOutput = MainForm.FormatQueueEstimateCellPresentation(
+            1000, 1080, "1.05 GB", "");
+        Assert.Equal("1.05 GB • 8% larger", largerOutput.FullText);
+        Assert.Equal("1.05 GB • +8%", largerOutput.MediumText);
+        Assert.Equal("+8%", largerOutput.NarrowText);
+        Assert.Equal(0, largerOutput.SavingsFraction);
+
+        MainForm.QueueEstimateCellPresentation pending = MainForm.FormatQueueEstimateCellPresentation(
+            0, 0, "Estimating…", "");
+        Assert.Equal("Estimating…", pending.FullText);
+        Assert.False(pending.HasNumericOutput);
+
+        MainForm.QueueEstimateCellPresentation unavailable = MainForm.FormatQueueEstimateCellPresentation(
+            0, 0, "Metadata unavailable", "");
+        Assert.Equal("Unavailable", unavailable.FullText);
+        Assert.Equal("Estimated output is not available yet.", unavailable.ToolTipText);
+
+        MainForm.QueueEstimateCellPresentation noSource = MainForm.FormatQueueEstimateCellPresentation(
+            0, 6, "6 MB", "");
+        Assert.Equal("6 MB", noSource.FullText);
+        Assert.Contains("Source size is unavailable", noSource.ToolTipText);
+    }
+
+    [Fact]
+    public void EstimatedOutputSavingsUseByteBackedValuesBeforeFormattingPainterText()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        (long SourceBytes, long EstimateBytes, string ExpectedRelation)[] cases =
+        [
+            (541_100_000, 464_100_000, "14% saved"),
+            (586_800_000, 224_000_000, "62% saved"),
+            (200_000_000, 15_000_000, "93% saved"),
+            (1_000_000_000, 500_000_000, "50% saved"),
+            (100_000_000, 100_000_000, "No savings"),
+            (100_000_000, 120_000_000, "20% larger")
+        ];
+        MethodInfo formatSize = typeof(MainForm).GetMethod(
+            "FormatSize", BindingFlags.Static | BindingFlags.NonPublic, null, [typeof(double)], null)
+            ?? throw new MissingMethodException(typeof(MainForm).FullName, "FormatSize(double)");
+        MethodInfo paintTextSelector = typeof(MainForm).GetMethod(
+            "SelectQueueEstimateCellText", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(typeof(MainForm).FullName, "SelectQueueEstimateCellText");
+
+        using var bitmap = new Bitmap(1200, 80);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        using var font = new Font("Segoe UI", 9f);
+        foreach ((long sourceBytes, long estimateBytes, string expectedRelation) in cases)
+        {
+            double sourceMb = sourceBytes / (1024d * 1024d);
+            double estimateMb = estimateBytes / (1024d * 1024d);
+            double expectedFraction = (sourceBytes - estimateBytes) / (double)sourceBytes;
+            MainForm.QueueEstimateCellPresentation presentation = MainForm.FormatQueueEstimateCellPresentation(
+                sourceMb,
+                estimateMb,
+                (string)formatSize.Invoke(null, [estimateMb])!,
+                "test estimate basis");
+
+            Assert.Equal(expectedFraction > 0 ? expectedFraction : 0, presentation.SavingsFraction, 12);
+            Assert.Contains(expectedRelation, presentation.FullText, StringComparison.Ordinal);
+
+            string sourceDisplay = (string)formatSize.Invoke(null, [sourceMb])!;
+            string estimateDisplay = (string)formatSize.Invoke(null, [estimateMb])!;
+            Assert.Contains($"Source: {sourceDisplay}. Output: {estimateDisplay}.", presentation.ToolTipText, StringComparison.Ordinal);
+
+            string painterText = (string)paintTextSelector.Invoke(
+                null,
+                [presentation, graphics, font, 1200])!;
+            Assert.Equal(presentation.FullText, painterText);
+            Assert.Contains(expectedRelation, painterText, StringComparison.Ordinal);
+        }
+
+        long displayThresholdSourceBytes = (long)Math.Round(999.9501d * 1024d * 1024d);
+        long displayThresholdEstimateBytes = (long)Math.Round(495.0499d * 1024d * 1024d);
+        double preciseSourceMb = displayThresholdSourceBytes / (1024d * 1024d);
+        double preciseEstimateMb = displayThresholdEstimateBytes / (1024d * 1024d);
+        string roundedSource = (string)formatSize.Invoke(null, [preciseSourceMb])!;
+        string roundedEstimate = (string)formatSize.Invoke(null, [preciseEstimateMb])!;
+        MainForm.QueueEstimateCellPresentation precisePresentation = MainForm.FormatQueueEstimateCellPresentation(
+            preciseSourceMb,
+            preciseEstimateMb,
+            roundedEstimate,
+            "test estimate basis");
+        double precisePercent = (displayThresholdSourceBytes - displayThresholdEstimateBytes) * 100d /
+                               displayThresholdSourceBytes;
+        double displayTextPercent = (1000d - 495d) * 100d / 1000d;
+
+        Assert.Equal("1000 MB", roundedSource);
+        Assert.Equal("495 MB", roundedEstimate);
+        Assert.InRange(precisePercent, 50.49d, 50.5d);
+        Assert.Equal(50, Math.Round(precisePercent, MidpointRounding.AwayFromZero));
+        Assert.Equal(51, Math.Round(displayTextPercent, MidpointRounding.AwayFromZero));
+        Assert.Contains("50% saved", precisePresentation.FullText, StringComparison.Ordinal);
     }
 
     private static void SetRow(DataGridViewRow row, string path, string status)
@@ -258,12 +474,45 @@ public sealed class QueueWorkspaceUiTests
         (T)(typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)
             ?? throw new MissingFieldException(name));
 
+    private static string DescribeControlAncestors(Control control)
+    {
+        var parts = new List<string>();
+        for (Control? current = control; current != null; current = current.Parent)
+        {
+            string details = current is SplitContainer split
+                ? $" orientation={split.Orientation} distance={split.SplitterDistance} splitter={split.SplitterWidth} " +
+                  $"panel1={split.Panel1.Bounds} panel2={split.Panel2.Bounds} panelMins={split.Panel1MinSize}/{split.Panel2MinSize}"
+                : string.Empty;
+            parts.Add($"{current.Name}:{current.GetType().Name} bounds={current.Bounds} client={current.ClientSize} " +
+                      $"dock={current.Dock} margin={current.Margin} padding={current.Padding} min={current.MinimumSize}{details}");
+        }
+
+        return string.Join(" <- ", parts);
+    }
+
     private static void AssertCompactWorkspaceLayout(MainForm main)
     {
         TableLayoutPanel controls = Field<TableLayoutPanel>(main, "pnlQueueControlsCard");
+        TableLayoutPanel encodingControls = Field<TableLayoutPanel>(main, "pnlEncodingProfileCard");
         int maxCardHeight = (int)Math.Ceiling(190d * main.DeviceDpi / 96d);
-        Assert.True(controls.Height <= maxCardHeight,
-            $"Queue Controls should remain compact; card height={controls.Height}, maximum={maxCardHeight}, client={main.ClientSize}.");
+        int[] queueRows = controls.GetRowHeights();
+        int contentHeight = controls.RowCount == 7
+            ? queueRows.Skip(1).Take(5).Sum() + controls.Padding.Vertical
+            : queueRows.Sum() + controls.Padding.Vertical;
+        Assert.True(contentHeight <= maxCardHeight,
+            $"Queue Controls content should remain compact; content height={contentHeight}, maximum={maxCardHeight}, card={controls.Bounds}, rows={string.Join(",", queueRows)}, client={main.ClientSize}.");
+        if (controls.RowCount == 7)
+        {
+            Assert.False(controls.AutoSize);
+            Assert.Equal(DockStyle.Fill, controls.Dock);
+            Assert.InRange(Math.Abs(controls.Height - encodingControls.Height), 0, 2);
+        }
+        else
+        {
+            Assert.True(controls.AutoSize);
+            Assert.True(controls.Height <= maxCardHeight,
+                $"Stacked Queue Controls should retain its natural height; card height={controls.Height}, maximum={maxCardHeight}, client={main.ClientSize}.");
+        }
 
         TableLayoutPanel summary = main.Controls.Find("queueWorkspaceSummaryCards", searchAllChildren: true)
             .OfType<TableLayoutPanel>()

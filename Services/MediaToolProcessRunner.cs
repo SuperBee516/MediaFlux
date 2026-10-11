@@ -58,6 +58,10 @@ namespace MediaFlux.Services
             using var process = new Process { StartInfo = startInfo };
             process.Start();
             TimeSpan processLaunchElapsed = Stopwatch.GetElapsedTime(launchStartedAt);
+            AutomaticEncodePerformanceInstrumentation.Current?.RecordExternalProcessStart(
+                request.FileName,
+                request.DiagnosticComponent,
+                processLaunchElapsed);
             try
             {
                 request.ProcessStartedCallback?.Invoke(new MediaToolProcessLaunchInfo(

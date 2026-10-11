@@ -222,7 +222,8 @@ namespace MediaFlux.Services
             long sourceAttachmentSizeBytes = 0,
             StorageSavingsOptions? storageSavings = null,
             bool sourceAdaptiveCeilingEligible = false,
-            bool useResolvedQualityTarget = false)
+            bool useResolvedQualityTarget = false,
+            double presetRateMultiplier = 1d)
         {
             if (srcMb <= 0 || durationSec <= 0 || width <= 0 || height <= 0 || fps <= 0)
                 return SizeEstimateBreakdown.Unavailable;
@@ -358,11 +359,16 @@ namespace MediaFlux.Services
                         : GetCompressionMultiplier(compressionProfile);
                 double qualityScale =
                     Math.Pow(2.0, (23 - effectiveQuality) / 12.0);
+                double effectivePresetRateMultiplier =
+                    double.IsFinite(presetRateMultiplier) && presetRateMultiplier > 0
+                        ? presetRateMultiplier
+                        : 1d;
                 double targetBpp =
                     GetCodecBpp(targetCodec) *
                     profileScale *
                     qualityScale *
-                    complexity;
+                    complexity *
+                    effectivePresetRateMultiplier;
                 targetVideoKbps =
                     ((double)outputWidth * outputHeight * fps * targetBpp) / 1000.0;
                 mode = useResolvedQualityTarget
@@ -370,6 +376,8 @@ namespace MediaFlux.Services
                     : usesStorageQualityTarget
                         ? $"storage quality target {effectiveQuality} (CQ/CRF/ICQ)"
                         : $"conservative profile {compressionProfile}, quality {effectiveQuality}";
+                if (Math.Abs(effectivePresetRateMultiplier - 1d) > 0.000001d)
+                    mode += $"; encoder preset rate multiplier {effectivePresetRateMultiplier:0.###}";
 
                 bool sameEfficientCodecUnchangedResolution =
                     UsesSameEfficientCodecQualityFloor(

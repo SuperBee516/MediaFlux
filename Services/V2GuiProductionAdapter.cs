@@ -274,7 +274,7 @@ public static class V2GuiRequestMapper
 }
 
 /// <summary>GUI application adapter over the Phase 2 queue runner and Phase 1 item lifecycle.</summary>
-public sealed class V2GuiProductionAdapter
+public sealed class V2GuiProductionAdapter : IV2GuiProductionAdapter
 {
     private readonly string _applicationDirectory;
     private readonly string? _configuredFfmpegPath;
@@ -377,3 +377,13 @@ public sealed record V2GuiQueueItemResult(
     V2EncodingQueueResult Queue,
     V2ExecutionResult Execution,
     FrozenEncodePlan PreflightPlan);
+
+public interface IV2GuiProductionAdapter
+{
+    Task<V2GuiPreparationResult> PrepareAsync(V2GuiEncodeIntent intent, CancellationToken cancellationToken);
+
+    Task<V2GuiQueueItemResult> RunAsync(
+        V2GuiPreparedEncode prepared,
+        Action<V2EncodingQueueEvent>? eventObserver,
+        CancellationToken cancellationToken);
+}

@@ -318,6 +318,8 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
             .SetValue(service, new FfprobeService(Path.Combine(_root, "ffprobe.exe"), new ProbeRunner()));
         EncodingPlanSnapshot? frozen = null;
         AdaptiveQualitySelectionEvidence? selection = null;
+        string? outputPath = null;
+        string? stagingPath = null;
         var request = new EncodingRequest
         {
             Input = EncodingInputSource.FromFile(Source), OutputFolder = _root, Suffix = "_test",
@@ -327,6 +329,8 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
             ExperimentalPolicyCRetryEnabled = true, OutputContainer = OutputContainerSelection.Matroska,
             AdaptiveSelectionCallback = value => { events.Add("selection"); selection = value; },
             EncodingPlanSnapshotCallback = value => { events.Add("plan"); frozen = value; },
+            OutputPathCallback = value => outputPath = value,
+            StagingPathCallback = value => stagingPath = value,
             AdaptivePreAttemptCaptureCallback = async (observation, _) =>
             {
                 events.Add("capture");
@@ -341,15 +345,24 @@ public sealed class AdaptivePreAttemptEvidenceTests : IDisposable
         };
         if (failCapture)
             await Assert.ThrowsAsync<AdaptivePreAttemptEvidenceCaptureException>(() => service.EncodeWithResultAsync(request));
+        else if (projectedMiss)
+            await Assert.ThrowsAsync<AdaptiveStorageSavingsSkippedException>(() => service.EncodeWithResultAsync(request));
         else
             await Assert.ThrowsAsync<ProductionBoundaryException>(() => service.EncodeWithResultAsync(request));
-        Assert.Equal(failCapture ? 0 : 1, launches);
-        Assert.Equal(failCapture ? ["selection", "plan", "capture"] : new[] { "selection", "plan", "capture", "acknowledged", "production" }, events);
+        Assert.Equal(failCapture || projectedMiss ? 0 : 1, launches);
+        Assert.Equal(failCapture
+            ? ["selection", "plan", "capture"]
+            : projectedMiss
+                ? ["selection", "plan", "capture", "acknowledged"]
+                : ["selection", "plan", "capture", "acknowledged", "production"], events);
         if (projectedMiss)
         {
-            Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, selection!.Disposition);
-            Assert.Equal(selection.PreferredQuality, selection.SelectedQuality);
+            Assert.Equal(AdaptiveSelectionDisposition.Skipped, selection!.Disposition);
+            Assert.Null(selection.SelectedQuality);
             Assert.Equal(selection.PreferredQuality, frozen!.Plan.Quality!.EffectiveQuality);
+            Assert.Null(outputPath);
+            Assert.Null(stagingPath);
+            Assert.True(File.Exists(Source));
         }
         if (samplingFailure)
         {

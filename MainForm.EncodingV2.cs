@@ -150,12 +150,6 @@ public partial class MainForm
             ContainerDecisionReason = prepared.ContainerDecision.Reason,
             TerminalResult = terminal
         };
-        try
-        {
-            lock (_historyLock) _historyService.AppendEncodingOutcome(historyRecord, null);
-        }
-        catch (Exception ex) { Debug.WriteLine("V2 history append failed: " + ex); }
-
         var statisticsRecord = new EncodingStatisticsRecord
         {
             Id = meta.StatisticsOperationId,
@@ -183,12 +177,12 @@ public partial class MainForm
             TerminalResult = terminal.ToString(),
             Notes = "Engine=V2; fixed-quality production; Storage Savings was advisory and had no acceptance authority."
         };
-        try
-        {
-            if (_encodingStatisticsService.AppendFinalized(statisticsRecord))
-                Ui(RefreshEncodingStatistics);
-        }
-        catch (Exception ex) { Debug.WriteLine("V2 statistics append failed: " + ex); }
+        EncodeExecutionLifecycleCompletion persistence = _encodeExecutionLifecycleService.RecordExternalExecution(
+            historyRecord, statisticsRecord);
+        if (!persistence.HistoryRecorded || !persistence.StatisticsRecorded)
+            Log($"[V2] Outcome persistence incomplete: history={persistence.HistoryRecorded}; statistics={persistence.StatisticsRecorded}.");
+        if (persistence.StatisticsRecorded)
+            Ui(RefreshEncodingStatistics);
 
         if (completed)
         {

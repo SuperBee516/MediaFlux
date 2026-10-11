@@ -61,6 +61,11 @@ namespace MediaFlux.Services
             }
 
             Stopwatch probeWatch = Stopwatch.StartNew();
+            long? diagnosticProbeStartedAt = AutomaticEncodePerformanceInstrumentation.Current is null
+                ? null
+                : Stopwatch.GetTimestamp();
+            using IDisposable? diagnosticPurpose = AutomaticEncodePerformanceInstrumentation.EnterProcessPurpose(
+                AutomaticPerformanceProcessPurpose.SourceMetadata);
             CriticalPathTiming.WriteLine(
                 $"[CriticalPathTiming] stage=ffprobe-start source={Path.GetFileName(path)} utc={DateTime.UtcNow:O}");
             MediaInfo info;
@@ -71,6 +76,9 @@ namespace MediaFlux.Services
             finally
             {
                 probeWatch.Stop();
+                if (diagnosticProbeStartedAt is long startedAt)
+                    AutomaticEncodePerformanceInstrumentation.Current?.RecordNamedStage(
+                        "preflightSourceMetadataProbe", startedAt, probeWatch.Elapsed, completed: true);
                 CriticalPathTiming.WriteLine(
                     $"[CriticalPathTiming] stage=ffprobe-end source={Path.GetFileName(path)} " +
                     $"elapsedMs={probeWatch.Elapsed.TotalMilliseconds:0} utc={DateTime.UtcNow:O}");
@@ -246,9 +254,18 @@ namespace MediaFlux.Services
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
 
+                long processStartTimestamp = AutomaticEncodePerformanceInstrumentation.Current is null
+                    ? 0
+                    : Stopwatch.GetTimestamp();
                 using var proc = Process.Start(psi);
                 if (proc == null)
                     return info;
+                if (processStartTimestamp != 0)
+                    AutomaticEncodePerformanceInstrumentation.Current?.RecordExternalProcessStart(
+                        _ffprobePath,
+                        FfmpegDiagnosticComponent.Ffprobe,
+                        Stopwatch.GetElapsedTime(processStartTimestamp),
+                        AutomaticPerformanceProcessPurpose.SourceMetadata);
 
                 string output = ReadProcessOutputWithTimeout(proc, TimeSpan.FromSeconds(30));
 
@@ -523,9 +540,18 @@ namespace MediaFlux.Services
                 psi.ArgumentList.Add("default=noprint_wrappers=1:nokey=1");
                 psi.ArgumentList.Add(path);
 
+                long processStartTimestamp = AutomaticEncodePerformanceInstrumentation.Current is null
+                    ? 0
+                    : Stopwatch.GetTimestamp();
                 using var proc = Process.Start(psi);
                 if (proc == null)
                     return 0;
+                if (processStartTimestamp != 0)
+                    AutomaticEncodePerformanceInstrumentation.Current?.RecordExternalProcessStart(
+                        _ffprobePath,
+                        FfmpegDiagnosticComponent.Ffprobe,
+                        Stopwatch.GetElapsedTime(processStartTimestamp),
+                        AutomaticPerformanceProcessPurpose.SourceTiming);
 
                 string output = ReadProcessOutputWithTimeout(proc, TimeSpan.FromSeconds(30));
                 double bestDuration = 0;

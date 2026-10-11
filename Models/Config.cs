@@ -25,6 +25,9 @@ namespace MediaFlux.Models
         public bool ShowDuplicateConfidenceColumn { get; set; }
         public bool ShowDuplicateActionColumn { get; set; }
         public bool QueueWorkspaceLayoutInitialized { get; set; }
+        // One-time normalization for the former duplicate Estimated Output columns.
+        // Once set, later user visibility choices are preserved.
+        public int EstimatedOutputColumnLayoutVersion { get; set; }
 
         // Persist the Encode queue's last selected sort.
         public string EncodeQueueSortColumn { get; set; } = "";

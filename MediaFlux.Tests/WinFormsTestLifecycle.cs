@@ -1,4 +1,6 @@
+using System.Reflection;
 using System.Windows.Forms;
+using MediaFlux.Services;
 
 namespace MediaFlux.Tests;
 
@@ -29,6 +31,16 @@ internal static class WinFormsTestLifecycle
 
         if (owner is { IsDisposed: false })
             owner.Dispose();
+
+        if (owner is MainForm mainForm &&
+            typeof(MainForm).GetField("_estimateService", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.GetValue(mainForm) is EstimateBackgroundService estimateService)
+        {
+            // MainForm's close path resets the estimator to cancel current work,
+            // which starts a fresh worker set. Tests keep the process alive after
+            // closing forms, so dispose that final set after the UI lifetime ends.
+            estimateService.Dispose();
+        }
 
         WindowsFormsSynchronizationContext.Uninstall();
     }

@@ -7,8 +7,30 @@ namespace MediaFlux.Services
     {
         private const string MigrationMarkerName = ".legacy-install-data-migrated-v1";
         private static readonly MediaFluxStoragePathService NormalStorage = new();
+        private static MediaFluxStoragePathService? _testStorage;
         private static MediaFluxStoragePathService? _headlessStorage;
-        private static MediaFluxStoragePathService Storage => Volatile.Read(ref _headlessStorage) ?? NormalStorage;
+        private static MediaFluxStoragePathService Storage =>
+            Volatile.Read(ref _headlessStorage) ?? Volatile.Read(ref _testStorage) ?? NormalStorage;
+
+        /// <summary>
+        /// Installs a process-scoped UserData root for the automated test process. This is
+        /// deliberately separate from normal storage resolution and is only activated by the
+        /// test assembly bootstrap. A headless command can temporarily take precedence through
+        /// <see cref="UseIsolatedHeadlessStorage"/>.
+        /// </summary>
+        internal static IDisposable UseIsolatedTestStorage(MediaFluxStoragePathService storage)
+        {
+            if (!storage.IsProcessScoped)
+                throw new ArgumentException("An isolated test UserData root is required.", nameof(storage));
+            if (Interlocked.CompareExchange(ref _testStorage, storage, null) is not null)
+                throw new InvalidOperationException("An isolated test UserData root is already active.");
+            return new TestStorageScope(storage);
+        }
+
+        private sealed class TestStorageScope(MediaFluxStoragePathService storage) : IDisposable
+        {
+            public void Dispose() => Interlocked.CompareExchange(ref _testStorage, null, storage);
+        }
 
         /// <summary>Selected before any headless services are constructed; never persisted.</summary>
         internal static IDisposable UseIsolatedHeadlessStorage(MediaFluxStoragePathService storage)

@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
 using MediaFlux.Services;
@@ -39,6 +40,110 @@ namespace MediaFlux
             int Ready,
             int Running,
             int Attention);
+
+        internal readonly record struct QueueEstimateCellPresentation(
+            string FullText,
+            string MediumText,
+            string NarrowText,
+            string ToolTipText,
+            double SavingsFraction,
+            bool HasNumericOutput);
+
+        internal static QueueEstimateCellPresentation FormatQueueEstimateCellPresentation(
+            double sourceMb,
+            double estimatedOutputMb,
+            string? fallbackText,
+            string? existingToolTip)
+        {
+            sourceMb = double.IsFinite(sourceMb) && sourceMb > 0 ? sourceMb : 0;
+            estimatedOutputMb = double.IsFinite(estimatedOutputMb) && estimatedOutputMb > 0
+                ? estimatedOutputMb
+                : 0;
+
+            if (estimatedOutputMb <= 0)
+            {
+                string status = string.IsNullOrWhiteSpace(fallbackText)
+                    ? "—"
+                    : string.Equals(fallbackText, AdaptiveStorageSavingsPolicy.PendingEstimate, StringComparison.Ordinal)
+                        ? "Pending…"
+                        : fallbackText.Contains("unavailable", StringComparison.OrdinalIgnoreCase) ||
+                          fallbackText.Contains("metadata unavailable", StringComparison.OrdinalIgnoreCase)
+                            ? "Unavailable"
+                            : fallbackText.Trim();
+                string tooltip = string.IsNullOrWhiteSpace(existingToolTip)
+                    ? status == "Unavailable" ? "Estimated output is not available yet." : status
+                    : existingToolTip;
+                return new QueueEstimateCellPresentation(status, status, status, tooltip, 0, false);
+            }
+
+            string size = FormatSize(estimatedOutputMb);
+            if (sourceMb <= 0)
+            {
+                string tooltip = AppendQueueEstimateTooltipDetail(
+                    existingToolTip,
+                    $"Output: {size}. Source size is unavailable, so savings cannot be determined.");
+                return new QueueEstimateCellPresentation(size, size, size, tooltip, 0, true);
+            }
+
+            double relativeDifference = (sourceMb - estimatedOutputMb) / sourceMb;
+            bool noMeaningfulDifference = Math.Abs(relativeDifference) < 0.000001;
+            string percentage;
+            string relation;
+            string compactRelation;
+            string narrowRelation;
+            double savingsFraction;
+            if (noMeaningfulDifference)
+            {
+                percentage = "0%";
+                relation = "No savings";
+                compactRelation = relation;
+                narrowRelation = relation;
+                savingsFraction = 0;
+            }
+            else if (relativeDifference > 0)
+            {
+                percentage = FormatQueueEstimatePercent(relativeDifference * 100d);
+                relation = $"{percentage} saved";
+                compactRelation = percentage;
+                narrowRelation = percentage;
+                savingsFraction = Math.Clamp(relativeDifference, 0d, 1d);
+            }
+            else
+            {
+                percentage = FormatQueueEstimatePercent(Math.Abs(relativeDifference) * 100d);
+                relation = $"{percentage} larger";
+                compactRelation = $"+{percentage}";
+                narrowRelation = compactRelation;
+                savingsFraction = 0;
+            }
+
+            string source = FormatSize(sourceMb);
+            string detail = $"Source: {source}. Output: {size}. {relation}.";
+            string fullTooltip = AppendQueueEstimateTooltipDetail(existingToolTip, detail);
+            return new QueueEstimateCellPresentation(
+                $"{size} • {relation}",
+                $"{size} • {compactRelation}",
+                narrowRelation,
+                fullTooltip,
+                savingsFraction,
+                true);
+        }
+
+        private static string FormatQueueEstimatePercent(double percent)
+        {
+            if (percent < 0.5)
+                return "<1%";
+            return $"{Math.Round(percent, MidpointRounding.AwayFromZero).ToString("0", CultureInfo.InvariantCulture)}%";
+        }
+
+        private static string AppendQueueEstimateTooltipDetail(string? existingToolTip, string detail) =>
+            string.IsNullOrWhiteSpace(existingToolTip)
+                ? $"Output comparison: {detail}"
+                : string.Join(
+                    Environment.NewLine,
+                    existingToolTip.Split(new[] { Environment.NewLine }, StringSplitOptions.None)
+                        .Where(line => !line.StartsWith("Output comparison:", StringComparison.Ordinal))
+                        .Append($"Output comparison: {detail}"));
 
         internal static QueueWorkspaceCounts CountQueueWorkspaceItems(
             IEnumerable<(string Status, bool IsRunning, bool RequiresAttention)> items)
@@ -127,6 +232,7 @@ namespace MediaFlux
 
             UpdateQueueWorkspaceResponsiveLayout();
             RefreshQueueWorkspacePresentation();
+            UpdateQueueEncodingControlsViewport();
         }
 
         private void AddQueueWorkspaceColumns()
@@ -160,19 +266,6 @@ namespace MediaFlux
                 });
             }
 
-            if (!dgvEncodeQueue.Columns.Contains("colSourceEstimate"))
-            {
-                dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
-                {
-                    Name = "colSourceEstimate",
-                    HeaderText = "Estimated Output",
-                    Width = ScaleUi(205),
-                    MinimumWidth = ScaleUi(165),
-                    SortMode = DataGridViewColumnSortMode.Automatic,
-                    Resizable = DataGridViewTriState.True,
-                    ToolTipText = "Estimated output size. Click the header to sort by estimated size."
-                });
-            }
         }
 
         private void CreateQueueWorkspaceSurface()
@@ -415,6 +508,7 @@ namespace MediaFlux
             btnStartEncode.Click -= btnStartEncode_Click;
             btnStartEncode.Click += StartFullEncodeQueueFromContextMenu_Click;
             btnStartEncode.AccessibleName = "Start full queue";
+            btnStartEncode.TabIndex = 0;
             _uiToolTip.SetToolTip(
                 btnStartEncode,
                 "Starts every eligible item in logical queue order. View visibility does not change execution scope.");
@@ -425,6 +519,7 @@ namespace MediaFlux
                 Text = "Start Selected",
                 AutoSize = true,
                 Margin = new Padding(0, 0, 8, 0),
+                TabIndex = 1,
                 AccessibleName = "Start selected queue items",
                 AccessibleDescription = "Starts only selected eligible queue items."
             };
@@ -437,24 +532,34 @@ namespace MediaFlux
                 Text = "Remove Selected",
                 AutoSize = true,
                 Margin = new Padding(0, 0, 8, 0),
+                TabIndex = 0,
                 AccessibleName = "Remove selected queue items"
             };
             _btnRemoveSelectedQueue.Click += RemoveSelectedRows_Click;
 
             pnlQueueActionButtons.Controls.Add(_btnStartSelectedQueue);
             pnlQueueActionButtons.Controls.SetChildIndex(_btnStartSelectedQueue, 1);
-            pnlQueueActionButtons.Controls.Add(_btnRemoveSelectedQueue);
-            pnlQueueActionButtons.Controls.SetChildIndex(_btnRemoveSelectedQueue, 2);
+            pnlQueueSecondaryActions.Controls.Add(_btnRemoveSelectedQueue);
+            pnlQueueSecondaryActions.Controls.SetChildIndex(_btnRemoveSelectedQueue, 0);
 
             btnPauseQueue.AccessibleName = "Pause dispatch of new queue jobs";
+            btnPauseQueue.TabIndex = 2;
             btnPauseQueue.AccessibleDescription =
                 "Pause prevents new jobs from being dispatched. FFmpeg processes already running continue.";
             _uiToolTip.SetToolTip(
                 btnPauseQueue,
                 "Pauses dispatch of new jobs only. Already-running FFmpeg processes continue until they finish or are stopped.");
             btnStopEncode.AccessibleDescription = "Cancels active queue work.";
+            btnStopEncode.TabIndex = 3;
             _uiToolTip.SetToolTip(btnStopEncode, "Stops the queue and cancels active encode work.");
             btnRefreshEncode.AccessibleDescription = "Rescans the current input folder and updates the queue.";
+            btnRefreshEncode.TabIndex = 1;
+            btnSampleComparison.AccessibleName = "Compare sample encodes";
+            btnSampleComparison.TabIndex = 0;
+            btnCqSampleComparison.AccessibleName = "Compare CQ 22 through 25 samples";
+            btnCqSampleComparison.TabIndex = 1;
+            _uiToolTip.SetToolTip(btnSampleComparison, "Compare sample encodes for the current configuration.");
+            _uiToolTip.SetToolTip(btnCqSampleComparison, "Compare CQ 22 through 25 for the current configuration.");
             if (_analyzeQueueButton != null)
                 _analyzeQueueButton.ToolTipText = "Run queue analysis and refresh existing estimates and recommendations.";
 
@@ -464,19 +569,31 @@ namespace MediaFlux
 
         private void ApplyQueueWorkspaceColumnPreferences()
         {
+            bool configChanged = false;
+            if (_config.EstimatedOutputColumnLayoutVersion < 1)
+            {
+                // Earlier queue migration hid this graphical column while adding an
+                // always-visible text duplicate. Show the single retained column once;
+                // later checkbox choices are respected by this version marker.
+                _config.ShowEstimatedOutputColumn = true;
+                _config.EstimatedOutputColumnLayoutVersion = 1;
+                configChanged = true;
+            }
+
             bool migrateLegacyLayout = !_config.QueueWorkspaceLayoutInitialized;
             if (migrateLegacyLayout)
             {
-                // These columns remain available through Column Settings, but the
-                // combined source/estimate column replaces their former defaults.
+                // Keep the compact queue defaults while retaining the single
+                // Estimated Output column as the canonical estimate display.
                 _config.ShowSizeColumn = false;
-                _config.ShowEstimatedOutputColumn = false;
                 _config.ShowCustomColumn = false;
                 _config.ShowDuplicateColumn = false;
                 _config.ShowDuplicateConfidenceColumn = false;
                 _config.ShowDuplicateActionColumn = false;
 
                 var rememberedOrder = (_config.EncodeGridColumnOrder ?? new List<string>())
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Select(NormalizeQueueColumnName)
                     .Where(name => dgvEncodeQueue.Columns.Contains(name))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
@@ -485,14 +602,13 @@ namespace MediaFlux
                     rememberedOrder = new List<string>
                     {
                         "colOrder", "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
-                        "colSourceEstimate", "colProgress", "colETA", "colSize", "colEstimatedSize",
+                        "colEstimatedSize", "colProgress", "colETA", "colSize",
                         "colCreated", "colCustom", "colDuplicate", "colDuplicateConfidence", "colDuplicateAction"
                     };
                 }
                 else
                 {
                     InsertRememberedColumnAfter(rememberedOrder, "colPlannedOutput", "colEncodeRecommendation");
-                    InsertRememberedColumnAfter(rememberedOrder, "colSourceEstimate", "colEstimatedSize");
                     foreach (DataGridViewColumn column in dgvEncodeQueue.Columns)
                     {
                         if (!rememberedOrder.Contains(column.Name, StringComparer.OrdinalIgnoreCase))
@@ -501,19 +617,14 @@ namespace MediaFlux
                 }
 
                 _config.EncodeGridColumnOrder = rememberedOrder;
-                if (!(_config.EncodeGridColumnWidths?.ContainsKey("colSourceEstimate") ?? false))
-                {
-                    int previousEstimateWidth = _config.EncodeGridColumnWidths != null &&
-                                                _config.EncodeGridColumnWidths.TryGetValue("colEstimatedSize", out int savedEstimateWidth)
-                        ? savedEstimateWidth
-                        : ScaleUi(205);
-                    _config.EncodeGridColumnWidths ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                    _config.EncodeGridColumnWidths["colSourceEstimate"] = Math.Clamp(previousEstimateWidth, ScaleUi(165), ScaleUi(360));
-                }
-
                 _config.QueueWorkspaceLayoutInitialized = true;
-                _config.Save(_configPath);
+                configChanged = true;
             }
+
+            if (NormalizeEstimatedOutputColumnPreferences())
+                configChanged = true;
+            if (configChanged)
+                _config.Save(_configPath);
 
             dgvEncodeQueue.Columns["colName"].Visible = true;
             dgvEncodeQueue.Columns["colName"].HeaderText = "File";
@@ -522,17 +633,69 @@ namespace MediaFlux
             dgvEncodeQueue.Columns["colEncodeRecommendation"].Visible = _config.ShowRecommendationColumn;
             dgvEncodeQueue.Columns["colEncodeRecommendation"].HeaderText = "Recommendation";
             dgvEncodeQueue.Columns["colPlannedOutput"].Visible = true;
-            dgvEncodeQueue.Columns["colSourceEstimate"].Visible = true;
+            dgvEncodeQueue.Columns["colEstimatedSize"].HeaderText = "Estimated Output";
+            dgvEncodeQueue.Columns["colEstimatedSize"].Visible = _config.ShowEstimatedOutputColumn;
             dgvEncodeQueue.Columns["colProgress"].Visible = true;
             dgvEncodeQueue.Columns["colETA"].Visible = true;
             dgvEncodeQueue.Columns["colSize"].Visible = _config.ShowSizeColumn;
-            dgvEncodeQueue.Columns["colEstimatedSize"].Visible = _config.ShowEstimatedOutputColumn;
             dgvEncodeQueue.Columns["colCreated"].Visible = _config.ShowCreatedColumn;
             dgvEncodeQueue.Columns["colCustom"].Visible = _config.ShowCustomColumn;
             dgvEncodeQueue.Columns["colDuplicate"].Visible = _config.ShowDuplicateColumn;
             dgvEncodeQueue.Columns["colDuplicateConfidence"].Visible = _config.ShowDuplicateConfidenceColumn;
             dgvEncodeQueue.Columns["colDuplicateAction"].Visible = _config.ShowDuplicateActionColumn;
         }
+
+        private bool NormalizeEstimatedOutputColumnPreferences()
+        {
+            bool changed = false;
+            List<string> normalizedOrder = (_config.EncodeGridColumnOrder ?? new List<string>())
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Select(NormalizeQueueColumnName)
+                .Where(name => dgvEncodeQueue.Columns.Contains(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (!normalizedOrder.SequenceEqual(
+                    _config.EncodeGridColumnOrder ?? new List<string>(),
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                _config.EncodeGridColumnOrder = normalizedOrder;
+                changed = true;
+            }
+
+            if (string.Equals(
+                    _config.EncodeQueueSortColumn,
+                    "colSourceEstimate",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _config.EncodeQueueSortColumn = "colEstimatedSize";
+                changed = true;
+            }
+
+            _config.EncodeGridColumnWidths ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            KeyValuePair<string, int>? legacyWidth = _config.EncodeGridColumnWidths
+                .Where(pair => string.Equals(pair.Key, "colSourceEstimate", StringComparison.OrdinalIgnoreCase))
+                .Select(pair => (KeyValuePair<string, int>?)pair)
+                .FirstOrDefault();
+            if (legacyWidth is { } oldWidth)
+            {
+                if (oldWidth.Value > 0)
+                    _config.EncodeGridColumnWidths["colEstimatedSize"] = oldWidth.Value;
+                foreach (string key in _config.EncodeGridColumnWidths.Keys
+                             .Where(key => string.Equals(key, "colSourceEstimate", StringComparison.OrdinalIgnoreCase))
+                             .ToArray())
+                {
+                    _config.EncodeGridColumnWidths.Remove(key);
+                }
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private static string NormalizeQueueColumnName(string name) =>
+            string.Equals(name, "colSourceEstimate", StringComparison.OrdinalIgnoreCase)
+                ? "colEstimatedSize"
+                : name;
 
         private void InsertRememberedColumnAfter(List<string> names, string column, string after)
         {
@@ -1000,14 +1163,6 @@ namespace MediaFlux
                     : estimateText.Contains("Metadata unavailable", StringComparison.OrdinalIgnoreCase)
                         ? "Unavailable"
                         : string.IsNullOrWhiteSpace(estimateText) ? "—" : estimateText;
-            SetQueueWorkspaceCellValue(row.Cells["colSourceEstimate"], estimate);
-            SetQueueWorkspaceCellTooltip(
-                row.Cells["colSourceEstimate"],
-                estimateMb > 0
-                    ? BuildQueueEstimateTooltip(meta, sourceMb, estimateMb)
-                    : estimate.Contains("skip", StringComparison.OrdinalIgnoreCase)
-                        ? estimate
-                        : "Estimated output is not available yet.");
             SetQueueWorkspaceCellTooltip(
                 row.Cells["colEstimatedSize"],
                 estimateMb > 0

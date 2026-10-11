@@ -908,13 +908,17 @@ namespace MediaFlux.Services
                     _ffmpegPath, _ffprobePath, _ffprobeService, (sampleRequest, candidate, segment, sampleOutput) =>
                     {
                         var values = EncodingPlanService.GetExecutionValues(shadowPlan);
+                        TimeSpan inputRelativeStart = GetInputRelativeSampleStart(segment, sampleRequest.SourceVideoStartOffsetSeconds);
+                        AutomaticEncodePerformanceInstrumentation.Current?.RecordAdaptiveSampleSeekMapping(
+                            sampleRequest.SourceVideoStartOffsetSeconds, inputRelativeStart);
                         return "-hide_banner -nostats -loglevel error " + BuildFfmpegArgs(
                             sampleRequest.Input, sampleOutput, values.Encoder.FfmpegCodec, values.UseGpu, null,
                             scaleMode, encoderPreset, tenBit, audioChannels: null, concurrentEncoderSessions,
                             mapMode, copySubtitles: false, copyDataStreams: false, copyAttachments: false,
                             containerDecision: values.ContainerDecision, knownDuration: segment.Duration,
                             qualityValue: candidate, encoderSelection: values.Encoder,
-                            sampleStart: segment.Start, sampleDuration: segment.Duration,
+                            sampleStart: inputRelativeStart,
+                            sampleDuration: segment.Duration,
                             sourcePixelFormat: sampleRequest.Video.SourcePixelFormat,
                             restoration: restoration, plannedVideoGeometry: values.Geometry, videoOnly: true);
                     });
@@ -937,17 +941,33 @@ namespace MediaFlux.Services
                 }
                 selection = selection with { SamplingSeconds = samplingWatch.Elapsed.TotalSeconds };
                 cancellationToken.ThrowIfCancellationRequested();
-                bool adaptiveProjectionSkipped = selection.Disposition == AdaptiveSelectionDisposition.Skipped;
-                selection = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(selection);
-                if (adaptiveProjectionSkipped)
+                _log?.Invoke($"[AdaptiveStorageSavings] samplesExecuted={selection.SamplesExecuted}; sevenFirstEarlyPositive={selection.SevenFirstEarlyPositive}; selectedQuality={selection.SelectedQuality?.ToString() ?? "none"}; disposition={selection.Disposition}.");
+                bool adaptiveSelectionSkipped = selection.Disposition == AdaptiveSelectionDisposition.Skipped;
+                bool reliableStorageObjectiveMiss = adaptiveSelectionSkipped &&
+                    StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(selection, selectionRequest!);
+                if (adaptiveSelectionSkipped && !reliableStorageObjectiveMiss)
+                    selection = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(selection);
+                if (reliableStorageObjectiveMiss)
                 {
-                    _log?.Invoke($"[AdaptiveStorageSavings] No candidate selected; configured quality {selection.PreferredQuality} will be used. Actual-byte validation remains authoritative. {selection.Reason}");
+                    _log?.Invoke($"[AdaptiveStorageSavings] {selection.Reason} No production encode or output promotion will run; the source will be retained.");
+                }
+                else if (adaptiveSelectionSkipped)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavings] The skip evidence was not authoritative; configured quality {selection.PreferredQuality} will be used. Actual-byte validation remains authoritative. {selection.Reason}");
                 }
                 bool adaptiveQualitySelected = selection.Disposition == AdaptiveSelectionDisposition.Selected;
                 shadowPlan = selection.Disposition == AdaptiveSelectionDisposition.NotSuitable
                     ? EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(shadowPlan, selection)
                     : EncodingPlanService.FreezeAdaptiveSelection(shadowPlan, selection);
                 adaptiveSelectionCallback?.Invoke(selection);
+                if (selection.Disposition == AdaptiveSelectionDisposition.Skipped)
+                {
+                    encodingPlanSnapshotCallback?.Invoke(new(shadowPlan.PlanId, shadowPlan));
+                    if (adaptivePreAttemptCaptureCallback is not null)
+                        await adaptivePreAttemptCaptureCallback(new(new(shadowPlan.PlanId, shadowPlan), selectionRequest!,
+                            restoration?.Clone() ?? new()), cancellationToken).ConfigureAwait(false);
+                    throw new AdaptiveStorageSavingsSkippedException(selection);
+                }
                 if (adaptiveQualitySelected)
                 {
                     callback($"Encoding at {(selection.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF")} {selection.SelectedQuality}");
@@ -3570,9 +3590,25 @@ namespace MediaFlux.Services
                 context.MapMode, copySubtitles: false, copyDataStreams: false, copyAttachments: false,
                 containerDecision: values.ContainerDecision, knownDuration: sample.Duration,
                 qualityValue: quality, encoderSelection: values.Encoder,
-                sampleStart: sample.Start, sampleDuration: sample.Duration,
+                sampleStart: GetInputRelativeSampleStart(sample, request.SourceVideoStartOffsetSeconds),
+                sampleDuration: sample.Duration,
                 sourcePixelFormat: request.Video.SourcePixelFormat, restoration: context.Restoration,
                 plannedVideoGeometry: values.Geometry, videoOnly: true);
+        }
+
+        internal static TimeSpan GetInputRelativeSampleStart(RepresentativeSample sample,
+            double? sourceVideoStartOffsetSeconds)
+        {
+            if (sourceVideoStartOffsetSeconds is not double offset || !double.IsFinite(offset))
+                return sample.Start;
+
+            // Sampling regions are relative to the video presentation timeline,
+            // while FFmpeg -ss is relative to the input/container timeline.
+            double inputStartSeconds = sample.Start.TotalSeconds + offset;
+            if (!double.IsFinite(inputStartSeconds)) return sample.Start;
+            if (inputStartSeconds <= 0) return TimeSpan.Zero;
+            if (inputStartSeconds > TimeSpan.MaxValue.TotalSeconds) return sample.Start;
+            return TimeSpan.FromSeconds(inputStartSeconds);
         }
 
         private string BuildFfmpegArgs(

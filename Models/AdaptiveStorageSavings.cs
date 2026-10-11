@@ -32,6 +32,10 @@ public sealed record AdaptiveQualitySelectionEvidence(
 {
     public double SamplingSeconds { get; init; }
     public double? SourceDurationSeconds { get; init; }
+    /// <summary>Number of production sample measurements completed for this selection.</summary>
+    public int SamplesExecuted { get; init; }
+    /// <summary>True only when seven of nine regions established an early positive selection.</summary>
+    public bool SevenFirstEarlyPositive { get; init; }
 }
 
 public sealed class AdaptiveStorageSavingsSkippedException : InvalidOperationException

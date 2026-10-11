@@ -286,7 +286,12 @@ public sealed class EncodeExecutionOrchestrator
             AdaptiveStorageSavingsEnabled = snapshot.AdaptiveStorageSavingsEnabled && snapshot.PredictionShadowExperimentAssignment is null,
             ExperimentalPolicyCRetryEnabled = snapshot.ExperimentalPolicyCRetryEnabled &&
                 snapshot.AdaptiveStorageSavingsEnabled && snapshot.PredictionShadowExperimentAssignment is null,
-            AdaptiveSelectionCallback = evidence => attempt.AdaptiveSelection = evidence,
+            AdaptiveSelectionCallback = evidence =>
+            {
+                attempt.AdaptiveSelection = evidence;
+                AutomaticEncodePerformanceInstrumentation.Current?.RecordAdaptiveSelection(
+                    evidence, snapshot.StorageSavingsContract.MaximumAcceptedOutputBytes);
+            },
             AdaptivePreAttemptCaptureCallback = snapshot.AdaptivePreAttemptResearchCapture.Enabled
                 ? (observation, token) => CaptureAdaptivePreAttemptAsync(attempt, observation, callbacks, token)
                 : null,
@@ -634,6 +639,12 @@ public sealed class EncodeExecutionOrchestrator
             encoderId, encoderPreset, sourceResolutionTier, outputResolutionTier, outputBitDepth,
             scalingApplied, concurrentEncoderSessions, isSampleJob, diagnosticSummary,
             recoveredSuccessful, predictionPlan, executionOutcome, finalOutputProbe, storageSavings);
+    }
+
+    public bool RecordExternalStatistics(EncodingStatisticsRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        return _encodingStatisticsService.AppendFinalized(record);
     }
 
     private async Task CaptureResearchAsync(

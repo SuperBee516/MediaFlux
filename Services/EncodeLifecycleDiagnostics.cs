@@ -25,12 +25,15 @@ public sealed class EncodeLifecycleDiagnostics
     private readonly Dictionary<EncodeLifecycleEvent, DateTime> _times = new();
     private long? _processReadBytes, _processWriteBytes;
     private DateTime? _previousQueueCompletedUtc;
+    private readonly AutomaticEncodePerformanceInstrumentation? _performanceInstrumentation =
+        AutomaticEncodePerformanceInstrumentation.Current;
 
     public bool FaststartActive { get { lock (_gate) return _times.ContainsKey(EncodeLifecycleEvent.FaststartStart) && !_times.ContainsKey(EncodeLifecycleEvent.FfmpegExit); } }
     public bool IsActiveEncodePeriod { get { lock (_gate) return _times.ContainsKey(EncodeLifecycleEvent.FirstProgress) && !_times.ContainsKey(EncodeLifecycleEvent.FaststartStart) && !_times.ContainsKey(EncodeLifecycleEvent.FfmpegExit); } }
 
     public void Record(EncodeLifecycleEvent milestone, DateTime? utc = null)
     {
+        _performanceInstrumentation?.RecordProductionLifecycleEvent(milestone);
         lock (_gate)
         {
             DateTime time = (utc ?? DateTime.UtcNow).ToUniversalTime();

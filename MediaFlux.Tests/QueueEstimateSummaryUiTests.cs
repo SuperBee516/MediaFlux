@@ -4,12 +4,17 @@ using System.Windows.Forms;
 using MediaFlux.Models;
 using MediaFlux.Services;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace MediaFlux.Tests;
 
 [Collection("LibraryAnalyzerUi")]
 public sealed class QueueEstimateSummaryUiTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public QueueEstimateSummaryUiTests(ITestOutputHelper output) => _output = output;
+
     [Theory]
     [InlineData("Encoding", false)]
     [InlineData("AdaptiveSkip", false)]
@@ -296,9 +301,7 @@ public sealed class QueueEstimateSummaryUiTests
             Invoke(main, "ApplySmartEstimateResultsBatch");
             Invoke(main, "RefreshQueueWorkspaceRow", row);
             string estimate = row.Cells["colEstimatedSize"].Value!.ToString()!;
-            string queueEstimate = row.Cells["colSourceEstimate"].Value!.ToString()!;
             Assert.Equal("6 MB", estimate);
-            Assert.Equal("6 MB", queueEstimate);
             Assert.Contains("Estimated output: 6 MB", row.Cells["colEstimatedSize"].ToolTipText);
             Assert.DoesNotContain("confidence", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("calibration", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.OrdinalIgnoreCase);
@@ -309,7 +312,7 @@ public sealed class QueueEstimateSummaryUiTests
             else
             {
                 Assert.DoesNotContain("likely skip", estimate, StringComparison.OrdinalIgnoreCase);
-                Assert.DoesNotContain("CRF26", queueEstimate);
+                Assert.DoesNotContain("CRF26", estimate);
                 Assert.DoesNotContain("provisional", estimate, StringComparison.OrdinalIgnoreCase);
                 Assert.DoesNotContain("Empirical projection", row.Cells["colEstimatedSize"].ToolTipText);
                 Assert.Same(preview, Field<EmpiricalPreviewResult?>(meta, "EmpiricalPreview"));
@@ -321,80 +324,258 @@ public sealed class QueueEstimateSummaryUiTests
     }
 
     [Fact]
-    public void RapidQualityTargetChangesRefreshTheLatestEstimateGeneration()
+    public async Task RapidQualityTargetChangesRefreshTheLatestEstimateGeneration()
     {
-        RunOnUiThread(main =>
+        await RunOnUiThreadAsync(async main =>
         {
             Config config = Field<Config>(main, "_config");
             config.StorageSavings.Enabled = true;
             config.VideoRestoration = new();
+            config.SmartRecommendationsEnabled = false;
             Invoke(main, "SelectEncoderById", VideoEncoderIds.Nvenc);
             Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.Hevc);
             Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
             Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Automatic • Source Adaptive";
-            Field<CheckBox>(main, "chkAutoTargetSize").Checked = false;
+            Field<CheckBox>(main, "chkAutoTargetSize").Checked = true;
             Field<TextBox>(main, "txtTargetSize").Text = "";
 
-            EstimateBackgroundService service = Field<EstimateBackgroundService>(main, "_estimateService");
-            service.ResetAndCancel();
-            int oldGeneration = service.CurrentGeneration;
-            (DataGridViewRow row, object meta, string path) = AddQueueRow(main, "MediaFlux.quality-target-generation");
-
-            TrackBar target = Field<TrackBar>(main, "trkQualityTarget");
-            target.Value = 4;
-            target.Value = 3;
-            System.Windows.Forms.Timer refreshTimer = Field<System.Windows.Forms.Timer>(main, "_estimateRefreshTimer");
-            Assert.True(refreshTimer.Enabled);
-
-            Invoke(main, "EstimateRefreshTimer_Tick", null, EventArgs.Empty);
-
-            Assert.Equal(oldGeneration + 1, service.CurrentGeneration);
-            Assert.Equal(QualityTarget.HighQuality, Invoke(main, "GetSelectedQualityTarget"));
-
-            MediaProbeResult source = new()
-            {
-                Success = true,
-                Streams = [new MediaProbeStreamInfo
+            EstimateBackgroundService previousService = Field<EstimateBackgroundService>(main, "_estimateService");
+            var service = new EstimateBackgroundService(
+                Field<MediaInfoService>(main, "_mediaInfoService"),
+                null!,
+                _ => new MediaInfoService.MediaInfo
                 {
-                    CodecType = "video", CodecName = "h264", Width = 1920,
-                    Height = 1080, FrameRate = 30, BitRate = 6_000_000
-                }]
-            };
-            var encoder = new VideoEncoderSelection(
-                VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc");
-            QualityTarget selectedTarget = (QualityTarget)Invoke(main, "GetSelectedQualityTarget")!;
-            EncodingQualityResolution quality = new EncodingQualityPolicyService().Resolve(new(
-                EncodingQualityIntent.Automatic(selectedTarget), source, encoder,
-                null, EncodingService.ScaleMode.None, null));
-            SizeEstimateBreakdown expected =
-                SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
-                    srcMb: 2_700, durationSec: 3_600, width: 1920, height: 1080,
-                    fps: 30, sourceVideoBitrateKbps: 6_000, sourceCodec: "h264",
-                    compressionProfile: "Medium Quality (Default)", targetCodec: encoder.FfmpegCodec,
-                    quality: quality.EffectiveQuality!.Value, targetHeight: null,
-                    storageSavings: config.StorageSavings,
-                    useResolvedQualityTarget: true);
+                    Width = 1920,
+                    Height = 1080,
+                    Fps = 30,
+                    DurationSeconds = 3_600,
+                    VideoCodec = "h264",
+                    BitrateKbps = 6_000,
+                    TotalBitrateKbps = 6_000
+                });
+            previousService.Dispose();
+            SetField(main, "_estimateService", service);
 
-            var results = Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(
-                service, "_smartResults");
-            Guid queueItemId = Field<Guid>(meta, "QueueItemId");
-            results.Enqueue(new EstimateBackgroundService.SmartEstimateResult(
-                service.CurrentGeneration, queueItemId, path, 2_700, expected.EstimatedOutputMb,
-                3_600, "1920x1080", "h264", 30, false, null, null,
-                "Latest target estimate.", 0, 0, qualityResolution: quality));
-            results.Enqueue(new EstimateBackgroundService.SmartEstimateResult(
-                oldGeneration, queueItemId, path, 2_700, 999,
-                3_600, "1920x1080", "h264", 30, false, null, null,
-                "Stale prior-target estimate.", 0, 0));
+            (DataGridViewRow row, object meta, string path) = AddQueueRow(main, "MediaFlux.quality-target-generation");
+            try
+            {
+                const long sourceBytes = 12L * 1024 * 1024;
+                using (var source = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    source.SetLength(sourceBytes);
 
-            Invoke(main, "ApplySmartEstimateResultsBatch");
+                QualityTargetSegmentSelector target = Field<QualityTargetSegmentSelector>(main, "qualityTargetSelector");
+                int oldGeneration = service.CurrentGeneration;
+                target.GetSegment(QualityTarget.MaximumQuality).PerformClick();
+                target.GetSegment(QualityTarget.HighQuality).PerformClick();
+                System.Windows.Forms.Timer refreshTimer = Field<System.Windows.Forms.Timer>(main, "_estimateRefreshTimer");
+                Assert.True(refreshTimer.Enabled);
 
-            Assert.Equal(expected.EstimatedOutputMb,
-                Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
-            Assert.Equal(QualityTarget.HighQuality,
-                Field<EncodingQualityResolution>(meta, "QualityPreview").Intent.Target);
-            Assert.DoesNotContain("999", Convert.ToString(row.Cells["colEstimatedSize"].Value));
+                Invoke(main, "EstimateRefreshTimer_Tick", null, EventArgs.Empty);
+
+                Assert.Equal(oldGeneration + 1, service.CurrentGeneration);
+                Assert.Equal(QualityTarget.HighQuality, Invoke(main, "GetSelectedQualityTarget"));
+
+                object workItems = Field<object>(service, "_workItems");
+                workItems.GetType().GetMethod("CompleteAdding")!.Invoke(workItems, null);
+                await Task.WhenAll(Field<Task[]>(service, "_workers")).WaitAsync(TimeSpan.FromSeconds(10));
+
+                ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult> results =
+                    Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(service, "_smartResults");
+                EstimateBackgroundService.SmartEstimateResult latest = Assert.Single(
+                    results.ToArray(), item => !item.RecommendationOnly);
+                Assert.Equal(service.CurrentGeneration, latest.Generation);
+                Assert.Equal(Field<Guid>(meta, "QueueItemId"), latest.QueueItemId);
+                Assert.NotNull(latest.QualityResolution);
+                Assert.Equal(QualityTarget.HighQuality, latest.QualityResolution!.Intent.Target);
+                Assert.True(latest.EstimatedMb > 0);
+                Assert.Equal(0L, Field<long>(meta, "V2EstimateGeneration"));
+
+                results.Enqueue(new EstimateBackgroundService.SmartEstimateResult(
+                    oldGeneration, latest.QueueItemId, path, 12, 999,
+                    3_600, "1920x1080", "h264", 30, false, null, null,
+                    "Stale prior-target estimate.", 0, 0));
+
+                Invoke(main, "ApplySmartEstimateResultsBatch");
+
+                Assert.Equal(latest.EstimatedMb, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
+                Assert.Equal(QualityTarget.HighQuality,
+                    Field<EncodingQualityResolution>(meta, "QualityPreview").Intent.Target);
+                Assert.DoesNotContain("999", Convert.ToString(row.Cells["colEstimatedSize"].Value));
+                Assert.False(service.TryDequeueSmart(out _));
+            }
+            finally
+            {
+                service.Dispose();
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
         });
+    }
+
+    [Fact]
+    public async Task AutomaticQualityTargetsReachTheActualEstimateAndManualTargetOverridesThem()
+    {
+        var automaticRows = new List<string>();
+        var manualRows = new List<string>();
+        await RunOnUiThreadAsync(async main =>
+        {
+            Config config = Field<Config>(main, "_config");
+            config.StorageSavings.Enabled = false;
+            config.VideoRestoration = new();
+            config.SmartRecommendationsEnabled = false;
+            Invoke(main, "SelectEncoderById", VideoEncoderIds.Libx265);
+            Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.Hevc);
+            ComboBox encoderPreset = Field<ComboBox>(main, "comboEncoderPreset");
+            encoderPreset.SelectedItem = "slow";
+            Assert.Equal("slow", encoderPreset.Text);
+            Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
+            Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Automatic • Source Adaptive";
+            Field<CheckBox>(main, "chkAutoTargetSize").Checked = true;
+            Field<TextBox>(main, "txtTargetSize").Text = "";
+
+            EstimateBackgroundService previousService = Field<EstimateBackgroundService>(main, "_estimateService");
+            var service = new EstimateBackgroundService(
+                Field<MediaInfoService>(main, "_mediaInfoService"),
+                null!,
+                _ => new MediaInfoService.MediaInfo
+                {
+                    Width = 1920,
+                    Height = 1080,
+                    Fps = 30,
+                    DurationSeconds = 16.777216,
+                    VideoCodec = "h264",
+                    BitrateKbps = 6_000,
+                    TotalBitrateKbps = 6_000
+                });
+            previousService.Dispose();
+            SetField(main, "_estimateService", service);
+
+            (DataGridViewRow row, object meta, string path) = AddQueueRow(main, "MediaFlux.automatic-quality-estimate");
+            try
+            {
+            const long sourceBytes = 12L * 1024 * 1024;
+            using (var source = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                source.SetLength(sourceBytes);
+
+            QualityTargetSegmentSelector selector = Field<QualityTargetSegmentSelector>(main, "qualityTargetSelector");
+            selector.SetSelectedTarget(QualityTarget.Balanced);
+            int mainHandlerCount = QualityTargetChangedHandlerCount(selector);
+            Assert.Equal(1, mainHandlerCount);
+            var targets = new[]
+            {
+                QualityTarget.SmallerFile,
+                QualityTarget.Efficient,
+                QualityTarget.Balanced,
+                QualityTarget.HighQuality,
+                QualityTarget.MaximumQuality
+            };
+            var estimates = new List<double>();
+            var effectiveQualities = new List<int>();
+            string configPath = Field<string>(main, "_configPath");
+            System.Windows.Forms.Timer? refreshTimer = null;
+
+            foreach (QualityTarget target in targets)
+            {
+                int previousGeneration = service.CurrentGeneration;
+                selector.GetSegment(target).PerformClick();
+                refreshTimer ??= Field<System.Windows.Forms.Timer>(main, "_estimateRefreshTimer");
+                Assert.True(refreshTimer.Enabled);
+                Assert.Equal(target, selector.SelectedTarget);
+                Assert.Equal(target.ToString(), Config.Load(configPath).LastQualityTarget);
+                Invoke(main, "EstimateRefreshTimer_Tick", null, EventArgs.Empty);
+                Assert.Equal(previousGeneration + 1, service.CurrentGeneration);
+
+                object workItems = Field<object>(service, "_workItems");
+                workItems.GetType().GetMethod("CompleteAdding")!.Invoke(workItems, null);
+                await Task.WhenAll(Field<Task[]>(service, "_workers")).WaitAsync(TimeSpan.FromSeconds(10));
+
+                ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult> results =
+                    Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(service, "_smartResults");
+                EstimateBackgroundService.SmartEstimateResult result = Assert.Single(
+                    results.ToArray(), item => !item.RecommendationOnly);
+                Assert.Equal(service.CurrentGeneration, result.Generation);
+                Assert.NotNull(result.QualityResolution);
+                EncodingQualityResolution qualityResolution = result.QualityResolution!;
+                Assert.Equal(target, qualityResolution.Intent.Target);
+                Assert.NotNull(qualityResolution.EffectiveQuality);
+                int effectiveQuality = qualityResolution.EffectiveQuality!.Value;
+                Assert.Contains($"Source Adaptive quality target {effectiveQuality}", result.EstimateDiagnostic);
+                Assert.True(result.EstimatedMb > 0);
+                Assert.Equal(0L, Field<long>(meta, "V2EstimateGeneration"));
+                estimates.Add(result.EstimatedMb);
+                effectiveQualities.Add(effectiveQuality);
+
+                Invoke(main, "ApplySmartEstimateResultsBatch");
+                Assert.Equal(result.EstimatedMb, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
+                Assert.Equal(target, Field<EncodingQualityResolution>(meta, "QualityPreview").Intent.Target);
+                Assert.Equal(mainHandlerCount, QualityTargetChangedHandlerCount(selector));
+                MainForm.QueueEstimateCellPresentation presentation = MainForm.FormatQueueEstimateCellPresentation(
+                    12d,
+                    result.EstimatedMb,
+                    Convert.ToString(row.Cells["colEstimatedSize"].Value),
+                    row.Cells["colEstimatedSize"].ToolTipText);
+                automaticRows.Add(
+                    $"{target}|CRF {effectiveQuality}|{result.EstimatedMb * 1024d * 1024d:0.##} bytes|" +
+                    $"{presentation.FullText}|{((12d - result.EstimatedMb) / 12d * 100d):0.###}%|{result.EstimateDiagnostic}");
+            }
+
+            Assert.Equal(5, effectiveQualities.Distinct().Count());
+            Assert.Equal(5, estimates.Distinct().Count());
+            Assert.True(estimates.Zip(estimates.Skip(1)).All(pair => pair.First < pair.Second),
+                "Smaller-to-Maximum quality targets should project progressively larger outputs for this fixed fixture.");
+
+            // The selected preference survives a Manual round trip without adding
+            // selector subscriptions, then applies again when Automatic is restored.
+            Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual • Legacy Numeric";
+            Assert.Equal(QualityTarget.MaximumQuality, selector.SelectedTarget);
+            Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Automatic • Source Adaptive";
+            Assert.Equal(QualityTarget.MaximumQuality, selector.SelectedTarget);
+            Assert.Equal(mainHandlerCount, QualityTargetChangedHandlerCount(selector));
+            refreshTimer!.Stop();
+
+            // With Auto target off and an explicit target size, the size target
+            // supersedes the retained quality preference in the estimate request.
+            Field<CheckBox>(main, "chkAutoTargetSize").Checked = false;
+            Field<TextBox>(main, "txtTargetSize").Text = "25";
+            Assert.False(selector.Enabled);
+            foreach (QualityTarget target in targets)
+            {
+                int previousGeneration = service.CurrentGeneration;
+                selector.SetSelectedTarget(target);
+                Invoke(main, "EstimateRefreshTimer_Tick", null, EventArgs.Empty);
+                Assert.Equal(previousGeneration + 1, service.CurrentGeneration);
+
+                object workItems = Field<object>(service, "_workItems");
+                workItems.GetType().GetMethod("CompleteAdding")!.Invoke(workItems, null);
+                await Task.WhenAll(Field<Task[]>(service, "_workers")).WaitAsync(TimeSpan.FromSeconds(10));
+                ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult> results =
+                    Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(service, "_smartResults");
+                EstimateBackgroundService.SmartEstimateResult result = Assert.Single(
+                    results.ToArray(), item => !item.RecommendationOnly);
+                Assert.Null(result.QualityResolution);
+                Assert.Equal(25d, result.EstimatedMb);
+                Invoke(main, "ApplySmartEstimateResultsBatch");
+                Assert.Equal(25d, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path]);
+                Assert.Equal(mainHandlerCount, QualityTargetChangedHandlerCount(selector));
+                manualRows.Add($"{target}|superseded by 25 MiB manual target|{result.EstimatedMb:0.###} MiB");
+            }
+            Assert.Equal(5, manualRows.Count);
+            Assert.Equal(1, QualityTargetChangedHandlerCount(selector));
+            }
+            finally
+            {
+                service.Dispose();
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+        });
+
+        _output.WriteLine("Automatic, Auto target ON (one real EstimateBackgroundService work item per target):");
+        foreach (string line in automaticRows)
+            _output.WriteLine(line);
+        _output.WriteLine("Automatic, Auto target OFF with 25 MiB manual target:");
+        foreach (string line in manualRows)
+            _output.WriteLine(line);
     }
 
     [Theory]
@@ -457,8 +638,6 @@ public sealed class QueueEstimateSummaryUiTests
                 Assert.Equal(6d, Field<double>(main, "_queueTotalSavingsEstimateOutputMb"));
                 Assert.Equal(1, Field<int>(main, "_queueSavingsEstimateFileCount"));
                 Assert.NotEqual("--", Field<Label>(main, "_summaryTotalEstimatedSavedValue").Text);
-                Assert.Equal("6 MB", row.Cells["colSourceEstimate"].Value);
-                Assert.DoesNotContain(AdaptiveStorageSavingsPolicy.PendingEstimate, row.Cells["colSourceEstimate"].Value!.ToString());
                 Assert.Contains("Estimated output: 6 MB", row.Cells["colEstimatedSize"].ToolTipText);
                 Assert.DoesNotContain("confidence", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.OrdinalIgnoreCase);
                 Assert.DoesNotContain("Provisional", row.Cells["colEstimatedSize"].ToolTipText, StringComparison.OrdinalIgnoreCase);
@@ -527,7 +706,6 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.Equal(0d, Field<double>(main, "_queueTotalEstimatedMb"));
             Assert.True(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
             Assert.Equal("Estimated output is not available yet.", row.Cells["colEstimatedSize"].ToolTipText);
-            Assert.Equal("Unavailable", row.Cells["colSourceEstimate"].Value);
             Assert.False(Field<bool>(meta, "RecommendationPending"));
             Assert.Equal(SmartEncodeRecommendationKind.Unavailable,
                 Field<SmartEncodeRecommendation>(meta, "EncodeRecommendation").Kind);
@@ -608,7 +786,6 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.Equal(26, Field<EncodingPlan?>(meta, "IntelligencePlan")!.AdaptiveSelection!.SelectedQuality);
             Assert.Contains("Quality: Balanced", row.Cells["colEstimatedSize"].ToolTipText);
             Assert.DoesNotContain("CQ 26", row.Cells["colEstimatedSize"].ToolTipText);
-            Assert.Equal("6 MB", row.Cells["colSourceEstimate"].Value);
         });
     }
 
@@ -635,7 +812,6 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.Equal(0, Field<int>(main, "_queueEstimateEligibleFileCount"));
             Assert.True(Field<bool>(meta, "AdaptiveSelectionSkipped"));
             Assert.False(Field<bool>(meta, "AdaptiveQualitySelectionPending"));
-            Assert.Equal("Skipped — insufficient savings at acceptable quality", row.Cells["colSourceEstimate"].Value);
         });
     }
 
@@ -1015,6 +1191,14 @@ public sealed class QueueEstimateSummaryUiTests
     private static T Field<T>(MainForm main, string name) where T : class =>
         (T)(typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main)
             ?? throw new MissingFieldException(name));
+
+    private static int QualityTargetChangedHandlerCount(QualityTargetSegmentSelector selector)
+    {
+        FieldInfo field = typeof(QualityTargetSegmentSelector).GetField(
+            "SelectedTargetChanged", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(typeof(QualityTargetSegmentSelector).FullName, "SelectedTargetChanged");
+        return ((Delegate?)field.GetValue(selector))?.GetInvocationList().Length ?? 0;
+    }
 
     private static T Field<T>(object target, string name)
     {

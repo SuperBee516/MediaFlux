@@ -608,6 +608,54 @@ public sealed class SizeEstimateServiceTests
     }
 
     [Fact]
+    public void AutomaticQualityTargetsCanConvergeAtSameCodecSourceGuardrails()
+    {
+        const double durationSeconds = 1_800;
+        const int sourceVideoKbps = 2_364;
+        double sourceMb = sourceVideoKbps * durationSeconds / 8388.608d;
+        var source = new MediaProbeResult
+        {
+            Success = true,
+            Streams =
+            [
+                new MediaProbeStreamInfo
+                {
+                    CodecType = "video", CodecName = "hevc", Width = 1920,
+                    Height = 1080, FrameRate = 30, BitRate = sourceVideoKbps * 1000L
+                }
+            ]
+        };
+        var encoder = new VideoEncoderSelection(
+            VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc");
+        var policy = new EncodingQualityPolicyService();
+        SizeEstimateBreakdown[] estimates = Enum.GetValues<QualityTarget>()
+            .Select(target =>
+            {
+                EncodingQualityResolution quality = policy.Resolve(new(
+                    EncodingQualityIntent.Automatic(target), source, encoder,
+                    null, EncodingService.ScaleMode.None, null));
+                return SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                    sourceMb, durationSeconds, 1920, 1080, 30, sourceVideoKbps, "hevc",
+                    "Medium Quality (Default)", "hevc_nvenc", quality.EffectiveQuality!.Value, null,
+                    sourceAdaptiveCeilingEligible: true,
+                    useResolvedQualityTarget: true);
+            })
+            .ToArray();
+
+        // The 90% floor makes the three smaller preferences equal; the source
+        // ceiling makes the two preservation preferences equal.
+        Assert.Equal(estimates[0].EstimatedOutputMb, estimates[1].EstimatedOutputMb);
+        Assert.Equal(estimates[1].EstimatedOutputMb, estimates[2].EstimatedOutputMb);
+        Assert.NotEqual(estimates[2].EstimatedOutputMb, estimates[3].EstimatedOutputMb);
+        Assert.Equal(estimates[3].EstimatedOutputMb, estimates[4].EstimatedOutputMb);
+        Assert.Contains("same-codec 90% source floor applied", estimates[0].Diagnostic);
+        Assert.Contains("same-codec 90% source floor applied", estimates[1].Diagnostic);
+        Assert.Contains("same-codec 90% source floor applied", estimates[2].Diagnostic);
+        Assert.Contains("same-codec source ceiling applied", estimates[3].Diagnostic);
+        Assert.Contains("same-codec source ceiling applied", estimates[4].Diagnostic);
+    }
+
+    [Fact]
     public void ResolvedAutomaticQualityDrivesMonotonicOutputEstimates()
     {
         var source = new MediaProbeResult

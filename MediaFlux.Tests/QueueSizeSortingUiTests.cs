@@ -26,6 +26,8 @@ public sealed class QueueSizeSortingUiTests
                 main = new MainForm(configPath) { StartPosition = FormStartPosition.Manual };
                 main.Show();
                 Application.DoEvents();
+                object estimateService = Field<object>(main, "_estimateService");
+                estimateService.GetType().GetMethod("ResetAndCancel")!.Invoke(estimateService, null);
 
                 DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
                 AddRow(main, queue, "medium.mkv", "1.2 GB", 1_288_490_189, 1_500);
@@ -34,11 +36,35 @@ public sealed class QueueSizeSortingUiTests
                 AddRow(main, queue, "small.mkv", "950 MB", 996_147_200, 700);
                 AddRow(main, queue, "unknown-a.mkv", "—", null, null);
 
-                DataGridViewColumn sourceSize = queue.Columns["colSourceEstimate"];
-                Assert.Equal(DataGridViewColumnSortMode.Automatic, sourceSize.SortMode);
+                DataGridViewColumn estimatedOutput = queue.Columns["colEstimatedSize"];
+                Assert.Equal(DataGridViewColumnSortMode.Automatic, estimatedOutput.SortMode);
 
                 string[] originalLogicalOrder = LogicalNames(main);
-                queue.Sort(sourceSize, ListSortDirection.Ascending);
+                // Exercise numeric fallback from the retained cell's MB/GB text.
+                Field<Dictionary<string, double>>(main, "_estimatedSizeMap").Clear();
+                foreach (DataGridViewRow row in queue.Rows.Cast<DataGridViewRow>().Where(row => !row.IsNewRow))
+                {
+                    string name = Convert.ToString(row.Cells["colName"].Value) ?? string.Empty;
+                    row.Cells["colEstimatedSize"].Value = name switch
+                    {
+                        "medium.mkv" => "1.46 GB",
+                        "unknown-b.mkv" => "450 MB",
+                        "large.mkv" => "1.86 GB",
+                        "small.mkv" => "700 MB",
+                        _ => "—"
+                    };
+                }
+                DataGridViewRow mediumRow = FindRow(queue, "medium.mkv");
+                DataGridViewRow smallRow = FindRow(queue, "small.mkv");
+                Assert.Equal("1.46 GB", mediumRow.Cells["colEstimatedSize"].Value);
+                Assert.InRange((double)Invoke(main, "ParseSizeToMb", "1.46 GB")!, 1495, 1495.1);
+                var mediumKey = ((double? OutputMb, string Path, long Sequence))Invoke(
+                    main, "GetQueueEstimatedOutputSortKey", mediumRow.Index)!;
+                var smallKey = ((double? OutputMb, string Path, long Sequence))Invoke(
+                    main, "GetQueueEstimatedOutputSortKey", smallRow.Index)!;
+                Assert.InRange(mediumKey.OutputMb!.Value, 1490, 1500);
+                Assert.Equal(700d, smallKey.OutputMb);
+                queue.Sort(estimatedOutput, ListSortDirection.Ascending);
                 Application.DoEvents();
                 Assert.Equal(
                     new[] { "unknown-a.mkv", "unknown-b.mkv", "small.mkv", "medium.mkv", "large.mkv" },
@@ -50,7 +76,7 @@ public sealed class QueueSizeSortingUiTests
                     new[] { "unknown-a.mkv", "unknown-b.mkv", "small.mkv", "medium.mkv", "large.mkv" },
                     DisplayNames(queue));
 
-                queue.Sort(sourceSize, ListSortDirection.Descending);
+                queue.Sort(estimatedOutput, ListSortDirection.Descending);
                 Application.DoEvents();
                 Assert.Equal(
                     new[] { "large.mkv", "medium.mkv", "small.mkv", "unknown-b.mkv", "unknown-a.mkv" },
@@ -89,7 +115,11 @@ public sealed class QueueSizeSortingUiTests
         meta.GetType().GetField("SourceSizeBytes", BindingFlags.Instance | BindingFlags.Public)!.SetValue(meta, sizeBytes);
         row.Cells["colName"].Value = name;
         row.Cells["colSize"].Value = sizeText;
-        row.Cells["colSourceEstimate"].Value = estimatedMb is > 0 ? $"{estimatedMb:0} MB" : "—";
+        row.Cells["colEstimatedSize"].Value = estimatedMb is > 0
+            ? estimatedMb.Value >= 1024
+                ? $"{estimatedMb.Value / 1024:0.##} GB"
+                : $"{estimatedMb.Value:0.#} MB"
+            : "—";
         row.Cells["colStatus"].Value = "Queued";
         if (estimatedMb is > 0)
             Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[path] = estimatedMb.Value;
@@ -100,6 +130,10 @@ public sealed class QueueSizeSortingUiTests
         .Where(row => !row.IsNewRow)
         .Select(row => Convert.ToString(row.Cells["colName"].Value) ?? string.Empty)
         .ToArray();
+
+    private static DataGridViewRow FindRow(DataGridView queue, string name) => queue.Rows
+        .Cast<DataGridViewRow>()
+        .Single(row => !row.IsNewRow && string.Equals(Convert.ToString(row.Cells["colName"].Value), name, StringComparison.Ordinal));
 
     private static string[] LogicalNames(MainForm main) => ((IEnumerable<DataGridViewRow>)Invoke(
             main,

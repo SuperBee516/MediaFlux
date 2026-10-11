@@ -306,7 +306,7 @@ public partial class MainForm
             {
                 if (string.IsNullOrWhiteSpace(savedName))
                     continue;
-                DataGridViewColumn? column = FindQueueColumn(savedName);
+                DataGridViewColumn? column = FindQueueColumn(NormalizeQueueColumnName(savedName));
                 if (column != null && seen.Add(column.Name))
                     normalized.Add(column.Name);
             }
@@ -335,7 +335,7 @@ public partial class MainForm
         string[] phaseOneOrder =
         [
             "colOrder", "colName", "colStatus", "colEncodeRecommendation", "colPlannedOutput",
-            "colSourceEstimate", "colProgress", "colETA", "colSize", "colEstimatedSize",
+            "colEstimatedSize", "colProgress", "colETA", "colSize",
             "colCreated", "colCustom", "colDuplicate", "colDuplicateConfidence", "colDuplicateAction"
         ];
 
@@ -479,7 +479,7 @@ public partial class MainForm
         "colName" => 0,
         "colOrder" => ScaleUi(56),
         "colSize" => 92,
-        "colEstimatedSize" => 150,
+        "colEstimatedSize" => ScaleUi(205),
         "colEncodeRecommendation" => ScaleUi(120),
         "colCreated" => 140,
         "colStatus" => ScaleUi(86),
@@ -490,7 +490,6 @@ public partial class MainForm
         "colDuplicateConfidence" => 92,
         "colDuplicateAction" => 130,
         "colPlannedOutput" => ScaleUi(190),
-        "colSourceEstimate" => ScaleUi(205),
         _ => 0
     };
 
@@ -501,7 +500,7 @@ public partial class MainForm
         "colStatus" => ScaleUi(64),
         "colEncodeRecommendation" => ScaleUi(92),
         "colPlannedOutput" => ScaleUi(120),
-        "colSourceEstimate" => ScaleUi(140),
+        "colEstimatedSize" => ScaleUi(96),
         "colProgress" or "colETA" => ScaleUi(58),
         _ => Math.Max(ScaleUi(48), column.MinimumWidth)
     };

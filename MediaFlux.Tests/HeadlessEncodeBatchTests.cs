@@ -26,6 +26,17 @@ public sealed class HeadlessEncodeBatchTests
         Assert.False(HeadlessEncodeBatchCommand.TryParse(
             ["--headless-encode", "--source", first, "--storage-savings", "--storage-savings"], out _, out error));
 
+        string isolatedUserData = Path.Combine(Path.GetTempPath(), "MediaFlux-Isolated-Campaign");
+        Assert.True(HeadlessEncodeBatchCommand.TryParse(
+            ["--headless-encode", "--source", first, "--user-data", isolatedUserData],
+            out command, out error), error);
+        Assert.Equal(Path.GetFullPath(isolatedUserData), command!.UserDataRoot);
+        Assert.False(HeadlessEncodeBatchCommand.TryParse(
+            ["--headless-encode", "--source", first, "--user-data", isolatedUserData,
+                "--user-data", isolatedUserData], out _, out error));
+        Assert.False(HeadlessEncodeBatchCommand.TryParse(
+            ["--headless-encode", "--source", first, "--user-data", "relative-user-data"], out _, out error));
+
         Assert.False(HeadlessEncodeBatchCommand.TryParse(
             ["--headless-encode", "--source", "relative.mp4"], out _, out error));
         Assert.Contains("absolute", error, StringComparison.OrdinalIgnoreCase);

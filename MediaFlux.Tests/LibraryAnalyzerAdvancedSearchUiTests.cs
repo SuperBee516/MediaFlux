@@ -434,7 +434,8 @@ public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
             using var form = new LibraryAnalyzerForm(runtime);
             Mark("show form");
             form.Show();
-            Application.DoEvents();
+            Mark("await initial analyzer refresh");
+            Pump(InvokeTask(form, "RefreshAllAsync"));
             Mark("run form assertions");
             try { action(catalog, form, probe); }
             finally { Mark("close form"); form.Close(); }

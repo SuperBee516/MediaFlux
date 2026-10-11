@@ -68,16 +68,15 @@ namespace MediaFlux
         private int _encodeStorageRejectedCount;
         private int _encodeSucceededCount;
         private NumericUpDown? nudAutoQuality;
-        private Label? lblAutoQuality;
         private ComboBox? comboQualityMode;
-        private TrackBar? trkQualityTarget;
+        private Label? lblQualityMode;
+        private QualityTargetSegmentSelector? qualityTargetSelector;
         private Label? lblQualityTargetValue;
         private Label? lblQualityTargetDescription;
         private Panel? pnlQualityIntent;
-        private Panel? pnlQualityTargetLabels;
         private Label? lblManualQuality;
         private bool _independentEncodingProfileLayout;
-        private Label[] _qualityTargetLabels = Array.Empty<Label>();
+        private bool _updatingQualityTargetDescriptionLayout;
         private Label? lblEncodingSpeed;
         private System.Windows.Forms.Timer? _estSmartUiTimer;
         private System.Windows.Forms.Timer? _v2EstimateUiTimer;
@@ -95,6 +94,7 @@ namespace MediaFlux
         private Label? _summaryQueueStatusValue;
         private Label? _collapsedQueueStatusLabel;
         private Label? _activeConfigurationSummaryLabel;
+        private ToolTip? _activeConfigurationSummaryToolTip;
         private Label? _queueCommandSummaryLabel;
         private Label? _detailsContextLabel;
         private GroupBox? _failureAnalysisGroup;
@@ -127,6 +127,11 @@ namespace MediaFlux
         private bool? _encodingOptionsStacked;
         private bool? _encodingProfileStacked;
         private bool _applyingEncodingProfileLayout;
+        private Panel? _queueEncodingControlsViewport;
+        private TableLayoutPanel? _queueEncodingControlsLayout;
+        private bool? _upperControlCardsStacked;
+        private bool _applyingUpperControlLayout;
+        private bool _applyingQueueEncodingControlsViewport;
         private bool _applyingCheckboxStates;
         private bool _applyingRememberedSort;
         private CompactModeForm? _compactModeForm;
@@ -138,6 +143,9 @@ namespace MediaFlux
         private const int MinimumEncodeInfoHeight = 150;
         private const int MinimumEncodeQueueHeight = 160;
         private const int EncodeInfoSplitterWidth = 7;
+        private const float QueueControlsColumnPercent = 46F;
+        private const float EncodingControlsColumnPercent = 54F;
+        private const int MinimumEncodingFieldsWidth = 520;
         private const double StandardEncodeDetailsRatio = 0.45;
 
         private PictureBox? _encodingSpinner;
@@ -383,8 +391,6 @@ namespace MediaFlux
             nudAutoQuality!.ValueChanged += (_, __) => ScheduleEstimateRefresh(qualityChanged: true);
             if (comboQualityMode != null)
                 comboQualityMode.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh(qualityChanged: true);
-            if (trkQualityTarget != null)
-                trkQualityTarget.ValueChanged += (_, __) => ScheduleEstimateRefresh(qualityChanged: true);
 
             chkIncludeSubfolders.CheckedChanged += (s, e) =>
             {
@@ -433,7 +439,11 @@ namespace MediaFlux
             WireEncodePreviewAndDropdownPersistence();
             ApplyRememberedEncodeDropdowns();
 
-            Shown += (_, __) => ApplyEncodeInfoSplitterState();
+            Shown += (_, __) =>
+            {
+                UpdateQueueEncodingControlsViewport();
+                ApplyEncodeInfoSplitterState();
+            };
 
             // persist column‐width changes
             dgvEncodeQueue.ColumnWidthChanged += DgvEncodeQueue_ColumnWidthChanged;
@@ -510,12 +520,11 @@ namespace MediaFlux
             // changes, but its event wiring, context menu, selection and queue state do not.
             tlEncode.Controls.Remove(dgvEncodeQueue);
 
-            // The former accordion content remains available, but belongs with the
-            // contextual details rather than competing with the queue for vertical space.
-            tlEncode.Controls.Remove(grpOptions);
+            // The Encoding Options group is constructed once and hosted by its own
+            // Queue Inspector tab; it no longer occupies an Encode table row.
             tlEncode.Controls.Remove(grpDuplicateFinder);
             AddQueueCommandSummary();
-            MoveEncodingProfileFieldsToDetails();
+            BuildQueueEncodingControlsLayout();
 
             _encodeQueueSplit = new SplitContainer
             {
@@ -547,90 +556,280 @@ namespace MediaFlux
 
         private int ScaleUi(int pixels) => (int)Math.Round(pixels * (DeviceDpi / 96.0));
 
-        private void MoveEncodingProfileFieldsToDetails()
+        private void BuildQueueEncodingControlsLayout()
         {
-            if (pnlQueueControlsCard == null || pnlEncodingProfileCard == null || tlEncodingProfileFields == null)
+            if (tlEncode == null || pnlQueueControlsCard == null || pnlEncodingProfileCard == null ||
+                pnlQueueBehavior == null || _queueEncodingControlsLayout != null)
                 return;
 
-            tlEncode?.Controls.Remove(pnlEncodingProfileCard);
+            _applyingUpperControlLayout = true;
+            tlEncode.SuspendLayout();
             pnlQueueControlsCard.SuspendLayout();
             pnlEncodingProfileCard.SuspendLayout();
             try
             {
-                pnlEncodingProfileCard.Controls.Clear();
-                pnlEncodingProfileCard.RowStyles.Clear();
-                pnlEncodingProfileCard.RowCount = 1;
-                pnlEncodingProfileCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                // Rehost the existing queue-scope checkbox with its existing persistence handler.
+                pnlQueueBehavior.Controls.Add(chkProcessAll);
+                chkDeleteSource.TabIndex = 1;
+                chkIncludeSubfolders.TabIndex = 2;
+                chkProcessAll.TabIndex = 3;
 
-                var compactProfile = new TableLayoutPanel
+                Label? header = pnlEncodingProfileCard.Controls.OfType<Label>()
+                    .FirstOrDefault(label => label.Text == "Encoding Profile");
+                if (header != null)
+                    header.Text = "Encoding Controls";
+                pnlEncodingProfileCard.Name = "pnlEncodingControlsCard";
+                pnlEncodingProfileCard.Dock = DockStyle.Top;
+
+                var activeProfile = new TableLayoutPanel
                 {
+                    Name = "activeEncodingProfileSummary",
                     Dock = DockStyle.Top,
-                    AutoSize = true,
-                    ColumnCount = 3,
+                    AutoSize = false,
+                    Height = ScaleUi(27),
+                    ColumnCount = 2,
                     RowCount = 1,
-                    Padding = new Padding(10, 7, 10, 7),
+                    Padding = Padding.Empty,
                     Margin = Padding.Empty
                 };
-                compactProfile.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-                compactProfile.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-                compactProfile.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-
-                compactProfile.Controls.Add(new Label
+                activeProfile.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                activeProfile.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+                activeProfile.Controls.Add(new Label
                 {
                     Text = "Active encoding profile",
                     AutoSize = true,
                     Font = new Font("Segoe UI", 9F, FontStyle.Bold),
                     Anchor = AnchorStyles.Left,
-                    Margin = new Padding(0, 3, 12, 3)
+                    Margin = new Padding(0, 2, ScaleUi(8), 2),
+                    TabStop = false
                 }, 0, 0);
 
                 _activeConfigurationSummaryLabel = new Label
                 {
+                    Name = "activeConfigurationSummaryText",
                     AutoSize = false,
                     AutoEllipsis = true,
                     Dock = DockStyle.Fill,
-                    Anchor = AnchorStyles.Left,
                     TextAlign = ContentAlignment.MiddleLeft,
                     ForeColor = SystemColors.ControlText,
-                    Margin = new Padding(0, 2, 12, 2)
+                    AccessibleName = "Active encoding profile summary",
+                    Margin = new Padding(0, 2, 0, 2)
                 };
-                new ToolTip(components).SetToolTip(_activeConfigurationSummaryLabel, "Current encoding configuration");
-                compactProfile.Controls.Add(_activeConfigurationSummaryLabel, 1, 0);
+                _activeConfigurationSummaryToolTip = new ToolTip(components);
+                _activeConfigurationSummaryToolTip.SetToolTip(_activeConfigurationSummaryLabel, "Current encoding configuration");
+                activeProfile.Controls.Add(_activeConfigurationSummaryLabel, 1, 0);
+                int activeProfileRow = pnlEncodingProfileCard.RowCount++;
+                pnlEncodingProfileCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                pnlEncodingProfileCard.Controls.Add(activeProfile, 0, activeProfileRow);
 
-                var configureButton = new Button
+                int profileRow = tlEncode.GetRow(pnlEncodingProfileCard);
+                int queueRow = tlEncode.GetRow(pnlQueueControlsCard);
+                tlEncode.SetColumnSpan(pnlEncodingProfileCard, 1);
+                tlEncode.SetRowSpan(pnlEncodingProfileCard, 1);
+                tlEncode.SetColumnSpan(pnlQueueControlsCard, 1);
+                tlEncode.SetRowSpan(pnlQueueControlsCard, 1);
+                tlEncode.Controls.Remove(pnlEncodingProfileCard);
+                tlEncode.Controls.Remove(pnlQueueControlsCard);
+
+                var upperLayout = new TableLayoutPanel
                 {
-                    Text = "Configure…",
+                    Name = "queueEncodingControlsLayout",
                     AutoSize = true,
-                    Margin = Padding.Empty
+                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    Dock = DockStyle.Top,
+                    ColumnCount = 2,
+                    RowCount = 1,
+                    Margin = Padding.Empty,
+                    Padding = Padding.Empty,
+                    GrowStyle = TableLayoutPanelGrowStyle.FixedSize
                 };
-                configureButton.Click += (_, __) => ShowEncodingConfiguration();
-                compactProfile.Controls.Add(configureButton, 2, 0);
-                int statusRow = pnlQueueControlsCard.GetRow(lblEncodeStatus);
-                if (statusRow < 0) statusRow = pnlQueueControlsCard.RowCount - 1;
-                Label? summaryLabel = _queueCommandSummaryLabel;
-                int summaryRow = summaryLabel == null ? -1 : pnlQueueControlsCard.GetRow(summaryLabel);
-                if (summaryRow >= 0)
-                    pnlQueueControlsCard.SetCellPosition(summaryLabel!, new TableLayoutPanelCellPosition(0, summaryRow + 1));
-                pnlQueueControlsCard.RowCount = Math.Max(pnlQueueControlsCard.RowCount + 1, statusRow + 2);
-                pnlQueueControlsCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-                pnlQueueControlsCard.SetCellPosition(lblEncodeStatus, new TableLayoutPanelCellPosition(0, statusRow + 1));
-                pnlQueueControlsCard.Controls.Add(compactProfile, 0, summaryRow >= 0 ? summaryRow : statusRow);
+                upperLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, QueueControlsColumnPercent));
+                upperLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, EncodingControlsColumnPercent));
+                upperLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                pnlQueueControlsCard.Dock = DockStyle.Top;
+                pnlQueueControlsCard.Margin = new Padding(0, 0, ScaleUi(5), ScaleUi(4));
+                pnlEncodingProfileCard.Margin = new Padding(ScaleUi(5), 0, 0, ScaleUi(4));
+                upperLayout.SuspendLayout();
+                upperLayout.Controls.Add(pnlQueueControlsCard);
+                upperLayout.Controls.Add(pnlEncodingProfileCard);
+                upperLayout.SetCellPosition(pnlQueueControlsCard, new TableLayoutPanelCellPosition(0, 0));
+                upperLayout.SetCellPosition(pnlEncodingProfileCard, new TableLayoutPanelCellPosition(1, 0));
+                upperLayout.SetColumnSpan(pnlQueueControlsCard, 1);
+                upperLayout.SetColumnSpan(pnlEncodingProfileCard, 1);
+                upperLayout.ResumeLayout(false);
+                var upperViewport = new Panel
+                {
+                    Name = "queueEncodingControlsViewport",
+                    AutoScroll = false,
+                    Dock = DockStyle.Fill,
+                    Margin = Padding.Empty,
+                    Padding = Padding.Empty,
+                    BackColor = SystemColors.Control
+                };
+                upperViewport.Controls.Add(upperLayout);
+                upperViewport.ClientSizeChanged += (_, __) =>
+                {
+                    if (upperLayout.Width != upperViewport.ClientSize.Width)
+                        upperLayout.Width = upperViewport.ClientSize.Width;
+                    if (!_applyingQueueEncodingControlsViewport)
+                        UpdateQueueEncodingControlsViewport();
+                };
+                upperLayout.SizeChanged += (_, __) =>
+                {
+                    UpdateQueueEncodingControlsResponsiveLayout();
+                    UpdateQueueEncodingControlsViewport();
+                };
+                tlEncode.Controls.Add(upperViewport, 0, Math.Min(profileRow, queueRow));
+                tlEncode.SetColumnSpan(upperViewport, 4);
+                _queueEncodingControlsViewport = upperViewport;
+                _queueEncodingControlsLayout = upperLayout;
+                tlEncode.Layout += (_, __) => UpdateQueueEncodingControlsViewport();
+                tlEncode.SizeChanged += (_, __) => UpdateQueueEncodingControlsViewport();
                 _activeConfigurationSummaryLabel.AutoEllipsis = true;
             }
             finally
             {
-                pnlEncodingProfileCard.ResumeLayout(true);
-                pnlQueueControlsCard.ResumeLayout(true);
+                pnlEncodingProfileCard.ResumeLayout(false);
+                pnlQueueControlsCard.ResumeLayout(false);
+                tlEncode.ResumeLayout(true);
+                _applyingUpperControlLayout = false;
+            }
+
+            UpdateQueueEncodingControlsResponsiveLayout();
+        }
+
+        private void UpdateQueueEncodingControlsViewport()
+        {
+            TableLayoutPanel? parent = tlEncode;
+            Panel? viewport = _queueEncodingControlsViewport;
+            TableLayoutPanel? layout = _queueEncodingControlsLayout;
+            SplitContainer? split = _encodeQueueSplit;
+            if (parent == null || viewport == null || layout == null || split == null || _queueWorkspaceHost == null ||
+                parent.IsDisposed || _applyingQueueEncodingControlsViewport || _applyingUpperControlLayout)
+            {
+                return;
+            }
+
+            int upperRow = parent.GetRow(viewport);
+            int queueRow = parent.GetRow(split);
+            if (upperRow < 0 || queueRow < 0 || upperRow >= parent.RowStyles.Count)
+                return;
+
+            int[] rowHeights = parent.GetRowHeights();
+            int otherRowsHeight = 0;
+            for (int row = 0; row < rowHeights.Length; row++)
+            {
+                if (row != upperRow && row != queueRow)
+                    otherRowsHeight += rowHeights[row];
+            }
+
+            int availableRowsHeight = Math.Max(
+                0,
+                parent.ClientSize.Height - parent.Padding.Vertical - otherRowsHeight);
+            int lowerWorkspaceMinimum = GetMinimumEncodeQueuePaneHeight() +
+                                        GetMinimumEncodeInfoDetailsHeight() + EncodeInfoSplitterWidth;
+            int maximumUpperHeight = Math.Max(0, availableRowsHeight - lowerWorkspaceMinimum);
+            int preferredUpperHeight = GetPreferredQueueEncodingControlsHeight();
+            bool rowAllocationIsStale = Math.Abs(rowHeights[upperRow] - preferredUpperHeight) > 1;
+            bool needsScroll = preferredUpperHeight > maximumUpperHeight;
+            int viewportHeight = needsScroll ? maximumUpperHeight : preferredUpperHeight;
+            RowStyle rowStyle = parent.RowStyles[upperRow];
+
+            bool layoutAlreadyMatches = needsScroll
+                ? rowStyle.SizeType == SizeType.Absolute &&
+                  Math.Abs(rowStyle.Height - viewportHeight) <= 1 &&
+                  viewport.AutoScroll && viewport.MinimumSize == Size.Empty && viewport.AutoScrollMinSize == Size.Empty &&
+                  viewport.DisplayRectangle.Height <= preferredUpperHeight + ScaleUi(4)
+                : rowStyle.SizeType == SizeType.Absolute &&
+                  Math.Abs(rowStyle.Height - preferredUpperHeight) <= 1 &&
+                  !viewport.AutoScroll && viewport.MinimumSize == Size.Empty &&
+                  viewport.AutoScrollMinSize == Size.Empty;
+            if (!needsScroll && layoutAlreadyMatches)
+                layoutAlreadyMatches = Math.Abs(rowHeights[upperRow] - preferredUpperHeight) <= 1;
+            if (layoutAlreadyMatches)
+                return;
+
+            _applyingQueueEncodingControlsViewport = true;
+            parent.SuspendLayout();
+            viewport.SuspendLayout();
+            try
+            {
+                if (needsScroll)
+                {
+                    // Keep the upper cards scrollable when stacked content would
+                    // otherwise consume the queue and inspector rows below it.
+                    viewport.MinimumSize = Size.Empty;
+                    viewport.AutoScroll = true;
+                    viewport.AutoScrollMinSize = Size.Empty;
+                    layout.Width = viewport.ClientSize.Width;
+                    rowStyle.SizeType = SizeType.Absolute;
+                    rowStyle.Height = viewportHeight;
+                }
+                else
+                {
+                    viewport.AutoScroll = false;
+                    viewport.AutoScrollMinSize = Size.Empty;
+                    layout.Width = viewport.ClientSize.Width;
+                    // An AutoSize row can keep its old larger measurement after its
+                    // AutoSize children shrink. Use the measured card preference so
+                    // reclaimed height moves into the queue immediately.
+                    rowStyle.SizeType = SizeType.Absolute;
+                    rowStyle.Height = preferredUpperHeight;
+                    viewport.MinimumSize = Size.Empty;
+                    if (rowAllocationIsStale)
+                        rowStyle.SizeType = SizeType.AutoSize;
+                }
+            }
+            finally
+            {
+                viewport.ResumeLayout(true);
+                parent.ResumeLayout(true);
+                if (!needsScroll && rowAllocationIsStale)
+                {
+                    // TableLayoutPanel can retain a previous stacked-row measurement through
+                    // a maximize/restore transition even after the child AutoSize has shrunk.
+                    // Re-measure the row once, then pin the resulting natural height.
+                    parent.PerformLayout();
+                    rowStyle.SizeType = SizeType.Absolute;
+                    rowStyle.Height = preferredUpperHeight;
+                    parent.PerformLayout();
+                }
+                _applyingQueueEncodingControlsViewport = false;
             }
         }
 
-        private void ShowEncodingConfiguration()
+        private int GetPreferredQueueEncodingControlsHeight()
         {
-            ApplyEncodeInfoHeaderCollapsedState(false);
-            ApplyEncodingOptionsCollapsedState(false);
-            if (_encodeInfoTabs != null)
-                _encodeInfoTabs.SelectedTab = _encodeInfoTabs.TabPages.Cast<TabPage>()
-                    .FirstOrDefault(page => page.Text == "Plan & Analysis");
+            if (pnlQueueControlsCard == null || pnlEncodingProfileCard == null)
+                return 0;
+
+            int queueCardHeight = pnlQueueControlsCard.PreferredSize.Height + pnlQueueControlsCard.Margin.Vertical;
+            int encodingCardHeight = pnlEncodingProfileCard.PreferredSize.Height + pnlEncodingProfileCard.Margin.Vertical;
+            return _upperControlCardsStacked == true
+                ? queueCardHeight + encodingCardHeight
+                : Math.Max(queueCardHeight, encodingCardHeight);
+        }
+
+        private int GetMinimumEncodeQueuePaneHeight()
+        {
+            int workspaceChromeHeight = 0;
+            if (_queueWorkspaceHost is TableLayoutPanel workspace)
+            {
+                int[] rows = workspace.GetRowHeights();
+                workspaceChromeHeight = rows.Take(Math.Min(3, rows.Length)).Sum();
+                workspaceChromeHeight += workspace.Padding.Vertical + workspace.Margin.Vertical;
+            }
+
+            int gridMinimumHeight = dgvEncodeQueue?.MinimumSize.Height ?? 0;
+            return Math.Max(ScaleUi(MinimumEncodeQueueHeight), workspaceChromeHeight + gridMinimumHeight);
+        }
+
+        private int GetMinimumEncodeInfoDetailsHeight()
+        {
+            bool collapsed = _encodeInfoHeaderContent?.Visible != true;
+            return collapsed
+                ? Math.Max(36, (_encodeInfoToggleBar?.PreferredSize.Height ?? 34) + 2)
+                : MinimumEncodeInfoHeight;
         }
 
         private void AddQueueCommandSummary()
@@ -641,17 +840,15 @@ namespace MediaFlux
             pnlQueueControlsCard.SuspendLayout();
             try
             {
-                pnlQueueControlsCard.RowCount = Math.Max(pnlQueueControlsCard.RowCount + 1, 5);
-                pnlQueueControlsCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-                pnlQueueControlsCard.SetCellPosition(lblEncodeStatus, new TableLayoutPanelCellPosition(0, 4));
                 _queueCommandSummaryLabel = new Label
                 {
+                    Name = "queueCommandSummary",
                     AutoSize = true,
                     ForeColor = SystemColors.GrayText,
                     Margin = new Padding(0, 5, 0, 0),
+                    Visible = false,
                     Text = "0 files  |  Estimated output: --  |  Estimated savings: --"
                 };
-                pnlQueueControlsCard.Controls.Add(_queueCommandSummaryLabel, 0, 3);
                 if (_analyzeQueueButton != null)
                 {
                     statusStrip1.Items.Remove(_analyzeQueueButton);
@@ -663,7 +860,7 @@ namespace MediaFlux
                         Margin = new Padding(8, 0, 0, 0)
                     };
                     analyzeHost.Items.Add(_analyzeQueueButton);
-                    pnlQueueActionButtons.Controls.Add(analyzeHost);
+                    pnlQueueSecondaryActions.Controls.Add(analyzeHost);
                 }
             }
             finally
@@ -1294,18 +1491,15 @@ namespace MediaFlux
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 1,
-                RowCount = 2,
+                RowCount = 1,
                 Dock = DockStyle.Top,
                 Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
             content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            tlEncodingProfileFields.Dock = DockStyle.Top;
             grpOptions.Dock = DockStyle.Top;
-            content.Controls.Add(tlEncodingProfileFields, 0, 0);
-            content.Controls.Add(grpOptions, 0, 1);
+            content.Controls.Add(grpOptions, 0, 0);
             return content;
         }
 
@@ -1426,6 +1620,7 @@ namespace MediaFlux
                     : "Collapses the lower queue inspector.";
             }
 
+            UpdateQueueEncodingControlsViewport();
             ApplyEncodeInfoSplitterState();
         }
 
@@ -1463,6 +1658,7 @@ namespace MediaFlux
                         ? ScaleUi(_config.EncodeInfoHeight)
                         : CalculateStandardEncodeDetailsHeight(availableHeight);
                 int detailsMinimum = collapsed ? collapsedHeight : MinimumEncodeInfoHeight;
+                int minimumQueueHeight = GetMinimumEncodeQueuePaneHeight();
                 int legalMaximumHeight = Math.Max(
                     0,
                     availableHeight - EncodeInfoSplitterWidth);
@@ -1473,7 +1669,7 @@ namespace MediaFlux
                     legalMaximumHeight,
                     Math.Max(
                         effectiveDetailsMinimum,
-                        availableHeight - EncodeInfoSplitterWidth - MinimumEncodeQueueHeight));
+                        availableHeight - EncodeInfoSplitterWidth - minimumQueueHeight));
                 int detailsHeight = Math.Clamp(
                     desiredDetailsHeight,
                     effectiveDetailsMinimum,
@@ -1486,7 +1682,7 @@ namespace MediaFlux
                 // Enforce both normal minimums whenever the host has enough room.
                 // If the whole window is temporarily smaller, SplitContainer must
                 // remain lay-outable instead of throwing or overlapping controls.
-                _encodeQueueSplit.Panel1MinSize = Math.Min(MinimumEncodeQueueHeight, splitterDistance);
+                _encodeQueueSplit.Panel1MinSize = Math.Min(minimumQueueHeight, splitterDistance);
                 _encodeQueueSplit.Panel2MinSize = Math.Min(detailsMinimum, detailsHeight);
             }
             finally
@@ -1520,7 +1716,8 @@ namespace MediaFlux
             if (available == 0) return;
             int collapsedHeight = Math.Max(36, (_encodeInfoToggleBar?.PreferredSize.Height ?? 34) + 2);
             int detailsMinimum = _encodeInfoHeaderContent?.Visible == true ? MinimumEncodeInfoHeight : collapsedHeight;
-            int maximumDetails = Math.Max(detailsMinimum, available - MinimumEncodeQueueHeight);
+            int minimumQueueHeight = GetMinimumEncodeQueuePaneHeight();
+            int maximumDetails = Math.Max(detailsMinimum, available - minimumQueueHeight);
             int currentDetails = available - _encodeQueueSplit.SplitterDistance;
             int details = Math.Clamp(currentDetails, Math.Min(detailsMinimum, available), Math.Min(maximumDetails, available));
 
@@ -1530,7 +1727,7 @@ namespace MediaFlux
                 _encodeQueueSplit.Panel1MinSize = 0;
                 _encodeQueueSplit.Panel2MinSize = 0;
                 _encodeQueueSplit.SplitterDistance = available - details;
-                _encodeQueueSplit.Panel1MinSize = Math.Min(MinimumEncodeQueueHeight, _encodeQueueSplit.SplitterDistance);
+                _encodeQueueSplit.Panel1MinSize = Math.Min(minimumQueueHeight, _encodeQueueSplit.SplitterDistance);
                 _encodeQueueSplit.Panel2MinSize = Math.Min(detailsMinimum, details);
             }
             finally { _applyingEncodeInfoSplitterState = false; }
@@ -1892,7 +2089,10 @@ namespace MediaFlux
                         return;
 
                     if (!_applyingEncodeDropdownSettings)
+                    {
                         PersistEncoderSelection();
+                        ScheduleEstimateRefresh();
+                    }
 
                     UpdateEncodePreview();
                 };
@@ -1956,8 +2156,7 @@ namespace MediaFlux
                         (int)nudAutoQuality.Maximum);
                 }
                 SelectQualityMode(comboQualityMode!, _config.LastQualityMode);
-                if (trkQualityTarget != null)
-                    trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(_config.LastQualityTarget));
+                qualityTargetSelector?.SetSelectedTarget(ParseQualityTarget(_config.LastQualityTarget));
                 UpdateQualityIntentUi();
             }
             finally
@@ -2009,7 +2208,7 @@ namespace MediaFlux
                 comboEncoderPreset?.Text ?? _config.LastEncodingSpeedPreset;
             if (nudAutoQuality != null)
                 _config.LastQualityValue = (int)nudAutoQuality.Value;
-            if (trkQualityTarget != null)
+            if (qualityTargetSelector != null)
                 _config.LastQualityTarget = GetSelectedQualityTarget().ToString();
 
             if (saveImmediately)
@@ -2235,9 +2434,11 @@ namespace MediaFlux
             var values = new List<string>();
             AddActiveConfigurationValue(values, comboEncoderMode?.Text);
             AddActiveConfigurationValue(values, comboVideoFormat?.Text);
-            if (chkAutoTargetSize?.Checked == true && nudAutoQuality != null)
-                values.Add($"CQ{nudAutoQuality.Value:0}");
-            else if (!string.IsNullOrWhiteSpace(txtTargetSize?.Text))
+            if (IsAutomaticQualitySelected())
+                values.Add(QualityTargetDisplayName(GetSelectedQualityTarget()));
+            else if (nudAutoQuality != null)
+                values.Add($"Manual quality {nudAutoQuality.Value:0}");
+            if (chkAutoTargetSize?.Checked == false && !string.IsNullOrWhiteSpace(txtTargetSize?.Text))
                 values.Add($"Target {txtTargetSize.Text.Trim()} MB");
             AddActiveConfigurationValue(values, comboEncoderPreset?.Text);
             if (chkTenBit?.Checked == true)
@@ -2254,6 +2455,7 @@ namespace MediaFlux
                 : string.Join("  ·  ", values);
             if (!string.Equals(_activeConfigurationSummaryLabel.Text, summary, StringComparison.Ordinal))
                 _activeConfigurationSummaryLabel.Text = summary;
+            _activeConfigurationSummaryToolTip?.SetToolTip(_activeConfigurationSummaryLabel, summary);
         }
 
         private static void AddActiveConfigurationValue(ICollection<string> values, string? value)
@@ -3030,21 +3232,13 @@ namespace MediaFlux
                 TabIndex = (chkAutoTargetSize?.TabIndex ?? 0) + 1
             };
 
-            lblAutoQuality = new Label
-            {
-                AutoSize = true,
-                Text = "Quality preference",
-                TextAlign = ContentAlignment.MiddleLeft,
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(18, 5, 14, 3)
-            };
-
             comboQualityMode = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Width = 190,
                 Name = "comboQualityMode",
-                TabIndex = (chkAutoTargetSize?.TabIndex ?? 0) + 1
+                AccessibleName = "Encoding mode",
+                TabIndex = 1
             };
             comboQualityMode.Items.AddRange(new object[]
             {
@@ -3064,80 +3258,72 @@ namespace MediaFlux
                 UpdateEncodePreview();
             };
 
-            trkQualityTarget = new TrackBar
+            qualityTargetSelector = new QualityTargetSegmentSelector(_uiToolTip)
             {
-                Minimum = 0,
-                Maximum = 4,
-                TickFrequency = 1,
-                SmallChange = 1,
-                LargeChange = 1,
-                Value = 2,
-                Height = 38,
-                Dock = DockStyle.Fill,
-                AccessibleName = "Quality preference",
-                TabIndex = comboQualityMode.TabIndex + 1
+                TabIndex = comboQualityMode.TabIndex + 1,
+                Dock = DockStyle.Fill
             };
-            trkQualityTarget.ValueChanged += (_, __) =>
+            qualityTargetSelector.SelectedTargetChanged += (_, __) =>
             {
                 UpdateQualityIntentUi();
                 if (!_applyingEncodeDropdownSettings)
                     PersistEncoderSelection();
                 UpdateEncodePreview();
+                ScheduleEstimateRefresh(qualityChanged: true);
             };
-            trkQualityTarget.Resize += (_, __) => LayoutQualityTargetLabels();
-            lblQualityTargetValue = new Label { AutoSize = true, TextAlign = ContentAlignment.MiddleLeft };
+            lblQualityMode = new Label
+            {
+                Name = "lblQualityMode",
+                AutoSize = true,
+                Text = "Mode",
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 5, 12, 3),
+                TabStop = false
+            };
+            lblQualityTargetValue = new Label
+            {
+                Name = "lblQualityTargetValue",
+                AutoSize = true,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AccessibleName = "Selected automatic quality preference",
+                Margin = Padding.Empty
+            };
             lblQualityTargetDescription = new Label
             {
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText,
-                MaximumSize = new Size(360, 0),
-                Margin = new Padding(0, 0, 0, 3)
+                MaximumSize = new Size(ScaleUi(560), 0),
+                Margin = new Padding(ScaleUi(8), 0, 0, 0)
             };
-            pnlQualityTargetLabels = new Panel
-            {
-                AutoSize = false,
-                Height = 24,
-                Dock = DockStyle.Fill,
-                Margin = new Padding(0, 0, 0, 3),
-                AccessibleName = "Quality preference labels"
-            };
-            foreach (QualityTarget target in QualityTargetOrder)
-                pnlQualityTargetLabels.Controls.Add(new Label
-                {
-                    AutoSize = false,
-                    Text = QualityTargetDisplayName(target),
-                    TextAlign = ContentAlignment.TopCenter,
-                    Font = new Font("Segoe UI", 8.25F),
-                    Height = 24
-                });
-            _qualityTargetLabels = pnlQualityTargetLabels.Controls.OfType<Label>().ToArray();
-            pnlQualityTargetLabels.Resize += (_, __) => LayoutQualityTargetLabels();
             lblManualQuality = new Label { AutoSize = true, Text = "Manual quality (CRF/CQ)", Margin = new Padding(0, 5, 8, 3) };
             var qualityLayout = new TableLayoutPanel
             {
                 AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 2, Dock = DockStyle.Top, Margin = Padding.Empty
+                ColumnCount = 2, RowCount = 3, Dock = DockStyle.Top, Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                AccessibleName = "Automatic quality preference"
             };
             qualityLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             qualityLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            qualityLayout.Controls.Add(new Label { AutoSize = true, Text = "Mode", Margin = new Padding(0, 5, 8, 3) }, 0, 0);
-            qualityLayout.Controls.Add(comboQualityMode, 1, 0);
-            qualityLayout.Controls.Add(lblQualityTargetValue, 0, 1);
-            qualityLayout.SetColumnSpan(lblQualityTargetValue, 2);
-            qualityLayout.Controls.Add(trkQualityTarget, 0, 2);
-            qualityLayout.SetColumnSpan(trkQualityTarget, 2);
-            qualityLayout.Controls.Add(pnlQualityTargetLabels, 0, 3);
-            qualityLayout.SetColumnSpan(pnlQualityTargetLabels, 2);
-            qualityLayout.Controls.Add(lblQualityTargetDescription, 0, 4);
-            qualityLayout.SetColumnSpan(lblQualityTargetDescription, 2);
-            qualityLayout.Controls.Add(lblManualQuality, 0, 5);
-            qualityLayout.Controls.Add(nudAutoQuality, 1, 5);
-            pnlQualityIntent = new Panel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Top, Margin = new Padding(0, 2, 0, 3) };
+            for (int row = 0; row < qualityLayout.RowCount; row++)
+                qualityLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            qualityLayout.Controls.Add(lblQualityTargetValue, 0, 0);
+            qualityLayout.Controls.Add(lblQualityTargetDescription, 1, 0);
+            qualityLayout.Controls.Add(qualityTargetSelector, 0, 1);
+            qualityLayout.SetColumnSpan(qualityTargetSelector, 2);
+            qualityLayout.Controls.Add(lblManualQuality, 0, 2);
+            qualityLayout.Controls.Add(nudAutoQuality, 1, 2);
+            pnlQualityIntent = new Panel
+            {
+                Name = "pnlModeSpecificQuality",
+                AccessibleName = "Mode-specific quality controls",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top,
+                Margin = new Padding(0, 2, 0, 3)
+            };
             pnlQualityIntent.Controls.Add(qualityLayout);
-
-            const int autoQualityRow = 2;
-            tlEncodingProfileFields.Controls.Add(lblAutoQuality, 2, autoQualityRow);
-            tlEncodingProfileFields.Controls.Add(pnlQualityIntent, 3, autoQualityRow);
+            qualityLayout.SizeChanged += (_, __) => UpdateQualityTargetDescriptionLayout();
 
             // when Auto is unchecked, disable quality
             nudAutoQuality.Enabled = false;
@@ -3148,51 +3334,9 @@ namespace MediaFlux
                     UpdateEncodePreview();
                 };
 
-            // This control adds a row participant after the initial table sizing.
-            // Allow the explicit pass below even if an earlier SizeChanged applied
-            // the same responsive mode.
+            // The fields are reflowed after all existing editors have been created.
             _encodingProfileStacked = null;
-            UpdateEncodingProfileResponsiveLayout();
             UpdateQualityIntentUi();
-            LayoutQualityTargetLabels();
-        }
-
-        private void LayoutQualityTargetLabels()
-        {
-            if (pnlQualityTargetLabels == null || trkQualityTarget == null ||
-                _qualityTargetLabels.Length != QualityTargetOrder.Length)
-                return;
-
-            int width = trkQualityTarget.ClientSize.Width;
-            if (width <= 0 || pnlQualityTargetLabels.ClientSize.Width <= 0)
-                return;
-            int inset = GetQualityTrackThumbInset(trkQualityTarget);
-            for (int index = 0; index < _qualityTargetLabels.Length; index++)
-            {
-                Label label = _qualityTargetLabels[index];
-                label.Width = TextRenderer.MeasureText(label.Text, label.Font).Width + 4;
-                int center = trkQualityTarget.Left +
-                    GetQualityTrackPosition(width, inset, index, QualityTargetOrder.Length);
-                int left = Math.Clamp(center - label.Width / 2, 0,
-                    Math.Max(0, pnlQualityTargetLabels.ClientSize.Width - label.Width));
-                label.SetBounds(left, 0, label.Width, label.Height);
-            }
-        }
-
-        internal static int GetQualityTrackThumbInset(TrackBar trackBar)
-        {
-            int dpi = trackBar.DeviceDpi > 0 ? trackBar.DeviceDpi : 96;
-            int estimatedThumbWidth = Math.Max(8, (int)Math.Round(10 * dpi / 96d));
-            return Math.Max(1, estimatedThumbWidth / 2);
-        }
-
-        internal static int GetQualityTrackPosition(int trackWidth, int thumbInset, int valueIndex, int valueCount)
-        {
-            if (valueCount <= 1)
-                return Math.Max(0, trackWidth / 2);
-            int usableWidth = Math.Max(0, trackWidth - thumbInset * 2);
-            return Math.Clamp(thumbInset +
-                (int)Math.Round(usableWidth * valueIndex / (double)(valueCount - 1)), 0, Math.Max(0, trackWidth));
         }
 
         private void CreateAdvancedVideoControls()
@@ -3223,18 +3367,10 @@ namespace MediaFlux
 
             if (tlEncodingProfileFields != null)
             {
-                const int encodingSpeedRow = 3;
                 lblEncodingSpeed.Text = "Encoding speed";
                 lblEncodingSpeed.Anchor = AnchorStyles.Left;
                 lblEncodingSpeed.Margin = new Padding(0, 5, 14, 3);
                 comboEncoderPreset.Margin = new Padding(0, 2, 0, 3);
-                tlEncodingProfileFields.Controls.Add(lblEncodingSpeed, 0, encodingSpeedRow);
-                tlEncodingProfileFields.Controls.Add(comboEncoderPreset, 1, encodingSpeedRow);
-                // The table may have already received a SizeChanged event while the
-                // remaining profile controls were being created. Force one complete
-                // placement pass now that this row exists.
-                _encodingProfileStacked = null;
-                UpdateEncodingProfileResponsiveLayout();
             }
             InitializeEncoderInformationLabel();
 
@@ -3376,79 +3512,98 @@ namespace MediaFlux
             BuildIndependentEncodingProfileLayout();
         }
 
-        private static TableLayoutPanel CreateCompactFieldColumn()
-        {
-            var column = new TableLayoutPanel
-            {
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 2,
-                RowCount = 0,
-                Dock = DockStyle.Top,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty
-            };
-            column.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            return column;
-        }
-
-        private static void AddCompactFieldRow(
-            TableLayoutPanel column, Control label, Control editor)
-        {
-            int row = column.RowCount++;
-            column.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            column.Controls.Add(label, 0, row);
-            column.Controls.Add(editor, 1, row);
-            editor.Dock = DockStyle.Fill;
-            label.Anchor = AnchorStyles.Left;
-        }
-
         private void BuildIndependentEncodingProfileLayout()
         {
             if (tlEncodingProfileFields == null || _independentEncodingProfileLayout ||
-                lblVideoFormat == null || lblCompressionProfile == null ||
-                pnlQualityIntent == null || comboEncoderPreset == null)
+                lblQualityMode == null || comboQualityMode == null || lblVideoFormat == null ||
+                lblCompressionProfile == null || lblEncodingSpeed == null || comboEncoderPreset == null ||
+                pnlQualityIntent == null)
                 return;
 
-            _independentEncodingProfileLayout = true;
+            _applyingEncodingProfileLayout = true;
             tlEncodingProfileFields.SuspendLayout();
             try
             {
                 tlEncodingProfileFields.Controls.Clear();
                 tlEncodingProfileFields.ColumnStyles.Clear();
                 tlEncodingProfileFields.RowStyles.Clear();
-                tlEncodingProfileFields.ColumnCount = 2;
-                tlEncodingProfileFields.RowCount = 1;
+                tlEncodingProfileFields.ColumnCount = 4;
+                tlEncodingProfileFields.RowCount = 5;
+                tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
                 tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+                tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
                 tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-                tlEncodingProfileFields.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                for (int row = 0; row < tlEncodingProfileFields.RowCount; row++)
+                    tlEncodingProfileFields.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-                TableLayoutPanel left = CreateCompactFieldColumn();
-                AddCompactFieldRow(left, lblEncoderMode, comboEncoderMode);
-                AddCompactFieldRow(left, lblTargetSize, txtTargetSize);
-                AddCompactFieldRow(left, lblCompressionProfile, comboCompressionProfile);
-                AddCompactFieldRow(left, lblEncodingSpeed!, comboEncoderPreset);
+                lblQualityMode.Margin = new Padding(0, 5, 10, 3);
+                comboQualityMode.Dock = DockStyle.Fill;
+                comboQualityMode.Margin = new Padding(0, 2, 8, 3);
+            comboQualityMode.MinimumSize = new Size(ScaleUi(165), 0);
+                comboEncoderMode.Dock = DockStyle.Fill;
+                comboEncoderMode.Margin = new Padding(0, 2, 0, 3);
+            comboEncoderMode.MinimumSize = new Size(ScaleUi(125), 0);
+                lblVideoFormat.Margin = new Padding(0, 5, 10, 3);
+                comboVideoFormat.Dock = DockStyle.Fill;
+                comboVideoFormat.Margin = new Padding(0, 2, 8, 3);
+            comboVideoFormat.MinimumSize = new Size(ScaleUi(140), 0);
+                lblCompressionProfile.Text = "Estimate profile";
+                lblCompressionProfile.AccessibleName = "File-size estimate profile";
+                lblCompressionProfile.Margin = new Padding(0, 5, 10, 3);
+                comboCompressionProfile.AccessibleName = "File-size estimate profile";
+                comboCompressionProfile.Dock = DockStyle.Fill;
+                comboCompressionProfile.Margin = new Padding(0, 2, 0, 3);
+            comboCompressionProfile.MinimumSize = new Size(ScaleUi(150), 0);
+                comboEncoderPreset.AccessibleName = "Encoding speed";
+                comboEncoderPreset.Dock = DockStyle.Fill;
+                comboEncoderPreset.Margin = new Padding(0, 2, 8, 3);
+            comboEncoderPreset.MinimumSize = new Size(ScaleUi(150), 0);
+                lblEncodingSpeed.Margin = new Padding(0, 5, 10, 3);
+                lblTargetSize.Margin = new Padding(0, 5, 10, 3);
+                txtTargetSize.AccessibleName = "Target size in megabytes";
+                txtTargetSize.MinimumSize = new Size(ScaleUi(70), 0);
+                chkAutoTargetSize.AccessibleName = "Auto-determine best target size";
+                chkAutoTargetSize.Margin = new Padding(ScaleUi(8), 2, 0, 3);
+                pnlQualityIntent.Margin = new Padding(0, ScaleUi(2), 0, ScaleUi(3));
+            pnlQualityIntent.Padding = Padding.Empty;
 
-                TableLayoutPanel right = CreateCompactFieldColumn();
-                AddCompactFieldRow(right, lblVideoFormat, comboVideoFormat);
-                right.Controls.Add(chkAutoTargetSize, 0, right.RowCount++);
-                right.SetColumnSpan(chkAutoTargetSize, 2);
-                right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-                lblAutoQuality!.Visible = false;
-                pnlQualityIntent.Margin = new Padding(0, 2, 0, 3);
-                right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-                right.Controls.Add(pnlQualityIntent, 0, right.RowCount++);
-                right.SetColumnSpan(pnlQualityIntent, 2);
+                lblQualityMode.TabIndex = 0;
+                comboQualityMode.TabIndex = 1;
+                comboEncoderMode.TabIndex = 2;
+                comboVideoFormat.TabIndex = 3;
+                comboCompressionProfile.TabIndex = 4;
+                comboEncoderPreset.TabIndex = 5;
+                pnlQualityIntent.TabIndex = 6;
+                txtTargetSize.TabIndex = 7;
+                chkAutoTargetSize.TabIndex = 8;
 
-                tlEncodingProfileFields.Controls.Add(left, 0, 0);
-                tlEncodingProfileFields.Controls.Add(right, 1, 0);
+                tlEncodingProfileFields.Controls.Add(lblQualityMode, 0, 0);
+                tlEncodingProfileFields.Controls.Add(comboQualityMode, 1, 0);
+                tlEncodingProfileFields.Controls.Add(lblEncoderMode, 2, 0);
+                tlEncodingProfileFields.Controls.Add(comboEncoderMode, 3, 0);
+                tlEncodingProfileFields.Controls.Add(lblVideoFormat, 0, 1);
+                tlEncodingProfileFields.Controls.Add(comboVideoFormat, 1, 1);
+                tlEncodingProfileFields.Controls.Add(lblCompressionProfile, 2, 1);
+                tlEncodingProfileFields.Controls.Add(comboCompressionProfile, 3, 1);
+                tlEncodingProfileFields.Controls.Add(lblEncodingSpeed, 0, 2);
+                tlEncodingProfileFields.Controls.Add(comboEncoderPreset, 1, 2);
+                tlEncodingProfileFields.Controls.Add(pnlQualityIntent, 0, 3);
+                tlEncodingProfileFields.SetColumnSpan(pnlQualityIntent, 4);
+                tlEncodingProfileFields.Controls.Add(lblTargetSize, 0, 4);
+                tlEncodingProfileFields.Controls.Add(txtTargetSize, 1, 4);
+                tlEncodingProfileFields.Controls.Add(chkAutoTargetSize, 2, 4);
+                tlEncodingProfileFields.SetColumnSpan(chkAutoTargetSize, 2);
             }
             finally
             {
                 tlEncodingProfileFields.ResumeLayout(true);
+                _applyingEncodingProfileLayout = false;
             }
-            LayoutQualityTargetLabels();
+
+            _independentEncodingProfileLayout = true;
+            _encodingProfileStacked = null;
+            UpdateEncodingProfileResponsiveLayout();
+            UpdateQueueEncodingControlsViewport();
         }
 
         private static Label CreateCodecCountLabel()
@@ -3466,93 +3621,90 @@ namespace MediaFlux
 
         private void UpdateEncodingProfileResponsiveLayout()
         {
-            if (_independentEncodingProfileLayout)
-                return;
-            if (tlEncodingProfileFields == null || lblVideoFormat == null)
+            if (tlEncodingProfileFields == null || lblQualityMode == null || comboQualityMode == null ||
+                lblVideoFormat == null || comboVideoFormat == null || lblCompressionProfile == null ||
+                comboCompressionProfile == null || lblEncodingSpeed == null || comboEncoderPreset == null ||
+                pnlQualityIntent == null || _applyingEncodingProfileLayout || _updatingQualityTargetDescriptionLayout)
                 return;
 
-            bool stackFields = tlEncodingProfileFields.ClientSize.Width < 720;
+            UpdateQualityTargetDescriptionLayout();
+
+            bool stackFields = tlEncodingProfileFields.ClientSize.Width < ScaleUi(MinimumEncodingFieldsWidth);
             if (!EncodingOptionsLayoutState.ShouldApply(_encodingProfileStacked, stackFields) ||
                 _applyingEncodingProfileLayout)
+            {
+                UpdateQueueEncodingControlsViewport();
                 return;
+            }
 
             _applyingEncodingProfileLayout = true;
             tlEncodingProfileFields.SuspendLayout();
             try
             {
-                tlEncodingProfileFields.RowCount = 7;
-                while (tlEncodingProfileFields.RowStyles.Count < 7)
+                tlEncodingProfileFields.ColumnStyles.Clear();
+                tlEncodingProfileFields.RowStyles.Clear();
+                tlEncodingProfileFields.ColumnCount = stackFields ? 2 : 4;
+                tlEncodingProfileFields.RowCount = stackFields ? 8 : 5;
+                for (int row = 0; row < tlEncodingProfileFields.RowCount; row++)
                     tlEncodingProfileFields.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
                 if (stackFields)
                 {
-                    tlEncodingProfileFields.ColumnStyles[0].SizeType = SizeType.AutoSize;
-                    tlEncodingProfileFields.ColumnStyles[1].SizeType = SizeType.Percent;
-                    tlEncodingProfileFields.ColumnStyles[1].Width = 100F;
-                    tlEncodingProfileFields.ColumnStyles[2].SizeType = SizeType.Absolute;
-                    tlEncodingProfileFields.ColumnStyles[2].Width = 0F;
-                    tlEncodingProfileFields.ColumnStyles[3].SizeType = SizeType.Absolute;
-                    tlEncodingProfileFields.ColumnStyles[3].Width = 0F;
+                    tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                    tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+                    lblQualityMode.Margin = new Padding(0, 5, 10, 3);
+                    lblEncoderMode.Margin = new Padding(0, 5, 10, 3);
+                    lblVideoFormat.Margin = new Padding(0, 5, 10, 3);
+                    lblCompressionProfile.Margin = new Padding(0, 5, 10, 3);
+                    lblEncodingSpeed.Margin = new Padding(0, 5, 10, 3);
+                    chkAutoTargetSize.Margin = new Padding(0, ScaleUi(2), 0, ScaleUi(3));
 
-                    tlEncodingProfileFields.SetCellPosition(lblCompressionProfile, new TableLayoutPanelCellPosition(0, 4));
-                    tlEncodingProfileFields.SetCellPosition(comboCompressionProfile, new TableLayoutPanelCellPosition(1, 4));
-                    if (lblAutoQuality != null)
-                        tlEncodingProfileFields.SetCellPosition(lblAutoQuality, new TableLayoutPanelCellPosition(0, 5));
-                    if (pnlQualityIntent != null)
-                        tlEncodingProfileFields.SetCellPosition(pnlQualityIntent, new TableLayoutPanelCellPosition(1, 5));
-                    if (lblEncodingSpeed != null)
-                        tlEncodingProfileFields.SetCellPosition(lblEncodingSpeed, new TableLayoutPanelCellPosition(0, 6));
-                    if (comboEncoderPreset != null)
-                    {
-                        tlEncodingProfileFields.SetColumnSpan(comboEncoderPreset, 1);
-                        tlEncodingProfileFields.SetCellPosition(comboEncoderPreset, new TableLayoutPanelCellPosition(1, 6));
-                    }
-
-                    tlEncodingProfileFields.SetCellPosition(lblTargetSize, new TableLayoutPanelCellPosition(0, 2));
-                    tlEncodingProfileFields.SetCellPosition(txtTargetSize, new TableLayoutPanelCellPosition(1, 2));
-                    tlEncodingProfileFields.SetColumnSpan(chkAutoTargetSize, 1);
-                    tlEncodingProfileFields.SetCellPosition(chkAutoTargetSize, new TableLayoutPanelCellPosition(1, 3));
-                    tlEncodingProfileFields.SetCellPosition(lblVideoFormat, new TableLayoutPanelCellPosition(0, 1));
-                    tlEncodingProfileFields.SetCellPosition(comboVideoFormat, new TableLayoutPanelCellPosition(1, 1));
-
-                    lblVideoFormat.Margin = new Padding(0, 5, 14, 3);
-                    chkAutoTargetSize.Margin = new Padding(0, 2, 0, 4);
-                    if (lblAutoQuality != null)
-                        lblAutoQuality.Margin = new Padding(0, 5, 14, 3);
+                    tlEncodingProfileFields.SetCellPosition(lblQualityMode, new TableLayoutPanelCellPosition(0, 0));
+                    tlEncodingProfileFields.SetCellPosition(comboQualityMode, new TableLayoutPanelCellPosition(1, 0));
+                    tlEncodingProfileFields.SetCellPosition(lblEncoderMode, new TableLayoutPanelCellPosition(0, 1));
+                    tlEncodingProfileFields.SetCellPosition(comboEncoderMode, new TableLayoutPanelCellPosition(1, 1));
+                    tlEncodingProfileFields.SetCellPosition(lblVideoFormat, new TableLayoutPanelCellPosition(0, 2));
+                    tlEncodingProfileFields.SetCellPosition(comboVideoFormat, new TableLayoutPanelCellPosition(1, 2));
+                    tlEncodingProfileFields.SetCellPosition(lblCompressionProfile, new TableLayoutPanelCellPosition(0, 3));
+                    tlEncodingProfileFields.SetCellPosition(comboCompressionProfile, new TableLayoutPanelCellPosition(1, 3));
+                    tlEncodingProfileFields.SetCellPosition(lblEncodingSpeed, new TableLayoutPanelCellPosition(0, 4));
+                    tlEncodingProfileFields.SetCellPosition(comboEncoderPreset, new TableLayoutPanelCellPosition(1, 4));
+                    tlEncodingProfileFields.SetColumnSpan(pnlQualityIntent, 2);
+                    tlEncodingProfileFields.SetCellPosition(pnlQualityIntent, new TableLayoutPanelCellPosition(0, 5));
+                    tlEncodingProfileFields.SetCellPosition(lblTargetSize, new TableLayoutPanelCellPosition(0, 6));
+                    tlEncodingProfileFields.SetCellPosition(txtTargetSize, new TableLayoutPanelCellPosition(1, 6));
+                    tlEncodingProfileFields.SetColumnSpan(chkAutoTargetSize, 2);
+                    tlEncodingProfileFields.SetCellPosition(chkAutoTargetSize, new TableLayoutPanelCellPosition(0, 7));
                 }
                 else
                 {
-                    tlEncodingProfileFields.ColumnStyles[0].SizeType = SizeType.AutoSize;
-                    tlEncodingProfileFields.ColumnStyles[1].SizeType = SizeType.Percent;
-                    tlEncodingProfileFields.ColumnStyles[1].Width = 50F;
-                    tlEncodingProfileFields.ColumnStyles[2].SizeType = SizeType.AutoSize;
-                    tlEncodingProfileFields.ColumnStyles[3].SizeType = SizeType.Percent;
-                    tlEncodingProfileFields.ColumnStyles[3].Width = 50F;
+                    tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                    tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+                    tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                    tlEncodingProfileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+                    lblQualityMode.Margin = new Padding(0, 5, ScaleUi(8), 3);
+                    lblEncoderMode.Margin = new Padding(0, 5, ScaleUi(8), 3);
+                    lblVideoFormat.Margin = new Padding(0, 5, ScaleUi(8), 3);
+                    lblCompressionProfile.Margin = new Padding(0, 5, ScaleUi(8), 3);
+                    lblEncodingSpeed.Margin = new Padding(0, 5, ScaleUi(8), 3);
+                    chkAutoTargetSize.Margin = new Padding(ScaleUi(8), ScaleUi(2), 0, ScaleUi(3));
 
-                    tlEncodingProfileFields.SetCellPosition(lblVideoFormat, new TableLayoutPanelCellPosition(2, 0));
-                    tlEncodingProfileFields.SetCellPosition(comboVideoFormat, new TableLayoutPanelCellPosition(3, 0));
-                    tlEncodingProfileFields.SetCellPosition(lblTargetSize, new TableLayoutPanelCellPosition(0, 1));
-                    tlEncodingProfileFields.SetCellPosition(txtTargetSize, new TableLayoutPanelCellPosition(1, 1));
+                    tlEncodingProfileFields.SetCellPosition(lblQualityMode, new TableLayoutPanelCellPosition(0, 0));
+                    tlEncodingProfileFields.SetCellPosition(comboQualityMode, new TableLayoutPanelCellPosition(1, 0));
+                    tlEncodingProfileFields.SetCellPosition(lblEncoderMode, new TableLayoutPanelCellPosition(2, 0));
+                    tlEncodingProfileFields.SetCellPosition(comboEncoderMode, new TableLayoutPanelCellPosition(3, 0));
+                    tlEncodingProfileFields.SetCellPosition(lblVideoFormat, new TableLayoutPanelCellPosition(0, 1));
+                    tlEncodingProfileFields.SetCellPosition(comboVideoFormat, new TableLayoutPanelCellPosition(1, 1));
+                    tlEncodingProfileFields.SetCellPosition(lblCompressionProfile, new TableLayoutPanelCellPosition(2, 1));
+                    tlEncodingProfileFields.SetCellPosition(comboCompressionProfile, new TableLayoutPanelCellPosition(3, 1));
+                    tlEncodingProfileFields.SetCellPosition(lblEncodingSpeed, new TableLayoutPanelCellPosition(0, 2));
+                    tlEncodingProfileFields.SetCellPosition(comboEncoderPreset, new TableLayoutPanelCellPosition(1, 2));
+                    tlEncodingProfileFields.SetColumnSpan(pnlQualityIntent, 4);
+                    tlEncodingProfileFields.SetCellPosition(pnlQualityIntent, new TableLayoutPanelCellPosition(0, 3));
+                    tlEncodingProfileFields.SetCellPosition(lblTargetSize, new TableLayoutPanelCellPosition(0, 4));
+                    tlEncodingProfileFields.SetCellPosition(txtTargetSize, new TableLayoutPanelCellPosition(1, 4));
                     tlEncodingProfileFields.SetColumnSpan(chkAutoTargetSize, 2);
-                    tlEncodingProfileFields.SetCellPosition(chkAutoTargetSize, new TableLayoutPanelCellPosition(2, 1));
-                    tlEncodingProfileFields.SetCellPosition(lblCompressionProfile, new TableLayoutPanelCellPosition(0, 2));
-                    tlEncodingProfileFields.SetCellPosition(comboCompressionProfile, new TableLayoutPanelCellPosition(1, 2));
-                    if (lblAutoQuality != null)
-                        tlEncodingProfileFields.SetCellPosition(lblAutoQuality, new TableLayoutPanelCellPosition(2, 2));
-                    if (pnlQualityIntent != null)
-                        tlEncodingProfileFields.SetCellPosition(pnlQualityIntent, new TableLayoutPanelCellPosition(3, 2));
-                    if (lblEncodingSpeed != null)
-                        tlEncodingProfileFields.SetCellPosition(lblEncodingSpeed, new TableLayoutPanelCellPosition(0, 3));
-                    if (comboEncoderPreset != null)
-                    {
-                        tlEncodingProfileFields.SetCellPosition(comboEncoderPreset, new TableLayoutPanelCellPosition(1, 3));
-                        tlEncodingProfileFields.SetColumnSpan(comboEncoderPreset, 1);
-                    }
-
-                    lblVideoFormat.Margin = new Padding(18, 5, 14, 3);
-                    chkAutoTargetSize.Margin = new Padding(18, 5, 0, 4);
-                    if (lblAutoQuality != null)
-                        lblAutoQuality.Margin = new Padding(18, 5, 14, 3);
+                    tlEncodingProfileFields.SetCellPosition(chkAutoTargetSize, new TableLayoutPanelCellPosition(2, 4));
                 }
                 _encodingProfileStacked = stackFields;
             }
@@ -3561,31 +3713,250 @@ namespace MediaFlux
                 tlEncodingProfileFields.ResumeLayout(true);
                 _applyingEncodingProfileLayout = false;
             }
+
+            UpdateQueueEncodingControlsViewport();
+        }
+
+        private void UpdateQualityTargetDescriptionLayout()
+        {
+            Label? description = lblQualityTargetDescription;
+            if (_updatingQualityTargetDescriptionLayout || description?.Parent is not TableLayoutPanel qualityLayout ||
+                qualityLayout.ColumnCount <= 1)
+            {
+                return;
+            }
+
+            int[] columnWidths = qualityLayout.GetColumnWidths();
+            int column = qualityLayout.GetColumn(description);
+            int columnSpan = qualityLayout.GetColumnSpan(description);
+            if (column < 0 || column + columnSpan > columnWidths.Length)
+                return;
+
+            int availableWidth = columnWidths.Skip(column).Take(columnSpan).Sum() - description.Margin.Horizontal;
+            if (availableWidth <= 0)
+                return;
+
+            int maximumWidth = Math.Min(ScaleUi(560), availableWidth);
+            if (description.MaximumSize.Width == maximumWidth && description.MaximumSize.Height == 0)
+                return;
+
+            _updatingQualityTargetDescriptionLayout = true;
+            try
+            {
+                // The label's previous fixed maximum could exceed the live table cell.
+                // Bound it to the current description column so AutoSize measures the
+                // wrapped height at the width the user can actually see.
+                description.MaximumSize = new Size(maximumWidth, 0);
+                qualityLayout.PerformLayout();
+                pnlQualityIntent?.PerformLayout();
+                tlEncodingProfileFields?.PerformLayout();
+                pnlEncodingProfileCard?.PerformLayout();
+            }
+            finally
+            {
+                _updatingQualityTargetDescriptionLayout = false;
+            }
         }
 
         private void UpdateQueueControlsResponsiveLayout()
         {
-            if (pnlQueueControlsCard == null || pnlQueueBehavior == null || pnlQueueActionButtons == null)
+            if (pnlQueueControlsCard == null || pnlQueueBehavior == null || pnlQueueActionButtons == null ||
+                pnlQueueSecondaryActions == null || pnlQueueComparisonActions == null ||
+                _applyingUpperControlLayout)
                 return;
 
             int contentWidth = Math.Max(200, pnlQueueControlsCard.ClientSize.Width - pnlQueueControlsCard.Padding.Horizontal);
-            int actionWidth = pnlQueueActionButtons.GetPreferredSize(Size.Empty).Width;
-            int behaviorWidth = pnlQueueBehavior.GetPreferredSize(Size.Empty).Width;
-            bool wrapControls = pnlQueueControlsCard.ClientSize.Width < 650 ||
-                                actionWidth > contentWidth ||
-                                behaviorWidth > contentWidth;
+            bool narrowCard = pnlQueueControlsCard.ClientSize.Width < ScaleUi(420);
             ApplyQueueControlsCompactLayout(
                 pnlQueueControlsCard,
                 pnlQueueBehavior,
-                pnlQueueActionButtons,
-                wrapControls,
+                narrowCard || GetQueueControlsUnwrappedWidth(pnlQueueBehavior) > contentWidth,
                 contentWidth);
+            ApplyQueueControlsCompactLayout(
+                pnlQueueControlsCard,
+                pnlQueueActionButtons,
+                narrowCard || GetQueueControlsUnwrappedWidth(pnlQueueActionButtons) > contentWidth,
+                contentWidth);
+            ApplyQueueControlsCompactLayout(
+                pnlQueueControlsCard,
+                pnlQueueSecondaryActions,
+                narrowCard || GetQueueControlsUnwrappedWidth(pnlQueueSecondaryActions) > contentWidth,
+                contentWidth);
+            ApplyQueueControlsCompactLayout(
+                pnlQueueControlsCard,
+                pnlQueueComparisonActions,
+                narrowCard || GetQueueControlsUnwrappedWidth(pnlQueueComparisonActions) > contentWidth,
+                contentWidth);
+            UpdateQueueEncodingControlsViewport();
+        }
+
+        private static int GetQueueControlsUnwrappedWidth(FlowLayoutPanel panel) =>
+            panel.Padding.Horizontal + panel.Controls.Cast<Control>()
+                .Where(control => control.Visible)
+                .Sum(control => control.GetPreferredSize(Size.Empty).Width + control.Margin.Horizontal);
+
+        private void UpdateQueueEncodingControlsResponsiveLayout()
+        {
+            TableLayoutPanel? layout = _queueEncodingControlsLayout;
+            if (layout == null || pnlQueueControlsCard == null || pnlEncodingProfileCard == null ||
+                layout.ClientSize.Width <= 0 || _applyingUpperControlLayout)
+                return;
+
+            bool stackCards = layout.ClientSize.Width < GetMinimumQueueEncodingControlsWidth();
+            if (!EncodingOptionsLayoutState.ShouldApply(_upperControlCardsStacked, stackCards))
+            {
+                UpdateQueueEncodingControlsViewport();
+                return;
+            }
+
+            _applyingUpperControlLayout = true;
+            try
+            {
+                ApplyQueueEncodingControlsCardArrangement(stackCards);
+            }
+            finally
+            {
+                _applyingUpperControlLayout = false;
+            }
+
+            UpdateQueueControlsResponsiveLayout();
+            UpdateEncodingProfileResponsiveLayout();
+            UpdateQueueEncodingControlsViewport();
+        }
+
+        private int GetMinimumQueueEncodingControlsWidth()
+        {
+            if (pnlQueueControlsCard == null || pnlEncodingProfileCard == null ||
+                pnlQueueActionButtons == null || tlEncodingProfileFields == null)
+                return ScaleUi(1000);
+
+            int primaryActionsWidth = pnlQueueActionButtons.Controls
+                .Cast<Control>()
+                .Sum(control => control.GetPreferredSize(Size.Empty).Width + control.Margin.Horizontal);
+            int queueCardMinimum = primaryActionsWidth + pnlQueueControlsCard.Padding.Horizontal + ScaleUi(2);
+
+            int firstLabelWidth = Math.Max(
+                lblQualityMode?.PreferredSize.Width + (lblQualityMode?.Margin.Horizontal ?? 0) ?? 0,
+                lblVideoFormat?.PreferredSize.Width + (lblVideoFormat?.Margin.Horizontal ?? 0) ?? 0);
+            int secondLabelWidth = Math.Max(
+                lblEncoderMode?.PreferredSize.Width + (lblEncoderMode?.Margin.Horizontal ?? 0) ?? 0,
+                lblCompressionProfile?.PreferredSize.Width + (lblCompressionProfile?.Margin.Horizontal ?? 0) ?? 0);
+            int firstEditorWidth = new[]
+            {
+                comboQualityMode?.MinimumSize.Width ?? 0,
+                comboVideoFormat?.MinimumSize.Width ?? 0,
+                comboEncoderPreset?.MinimumSize.Width ?? 0,
+                txtTargetSize?.MinimumSize.Width ?? 0
+            }.Max();
+            int secondEditorWidth = Math.Max(
+                comboEncoderMode?.MinimumSize.Width ?? 0,
+                comboCompressionProfile?.MinimumSize.Width ?? 0);
+            int secondColumnMinimum = Math.Max(
+                secondLabelWidth + secondEditorWidth,
+                chkAutoTargetSize?.PreferredSize.Width ?? 0);
+            int fieldsMinimum = firstLabelWidth + firstEditorWidth + secondColumnMinimum + ScaleUi(8);
+            int encodingCardMinimum = fieldsMinimum + pnlEncodingProfileCard.Padding.Horizontal + ScaleUi(2);
+
+            int queueCellMinimum = queueCardMinimum + ScaleUi(5);
+            int encodingCellMinimum = encodingCardMinimum + ScaleUi(5);
+            return (int)Math.Ceiling(Math.Max(
+                queueCellMinimum / (QueueControlsColumnPercent / 100d),
+                encodingCellMinimum / (EncodingControlsColumnPercent / 100d)));
+        }
+
+        private void ApplyQueueEncodingControlsCardArrangement(bool stackCards)
+        {
+            TableLayoutPanel? layout = _queueEncodingControlsLayout;
+            if (layout == null || pnlQueueControlsCard == null || pnlEncodingProfileCard == null)
+                return;
+
+            layout.SuspendLayout();
+            try
+            {
+                layout.Controls.Clear();
+                layout.ColumnStyles.Clear();
+                layout.RowStyles.Clear();
+                if (stackCards)
+                {
+                    layout.ColumnCount = 1;
+                    layout.RowCount = 2;
+                    layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                    pnlQueueControlsCard.Margin = new Padding(0, 0, 0, ScaleUi(4));
+                    pnlEncodingProfileCard.Margin = new Padding(0, 0, 0, ScaleUi(4));
+                    SetQueueControlsCardRowFill(false);
+                    layout.Controls.Add(pnlQueueControlsCard, 0, 0);
+                    layout.Controls.Add(pnlEncodingProfileCard, 0, 1);
+                }
+                else
+                {
+                    layout.ColumnCount = 2;
+                    layout.RowCount = 1;
+                    layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, QueueControlsColumnPercent));
+                    layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, EncodingControlsColumnPercent));
+                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                    pnlQueueControlsCard.Margin = new Padding(0, 0, ScaleUi(5), ScaleUi(4));
+                    pnlEncodingProfileCard.Margin = new Padding(ScaleUi(5), 0, 0, ScaleUi(4));
+                    SetQueueControlsCardRowFill(true);
+                    layout.Controls.Add(pnlQueueControlsCard, 0, 0);
+                    layout.Controls.Add(pnlEncodingProfileCard, 1, 0);
+                }
+
+                _upperControlCardsStacked = stackCards;
+            }
+            finally
+            {
+                layout.ResumeLayout(true);
+            }
+        }
+
+        private void SetQueueControlsCardRowFill(bool fillSharedHeight)
+        {
+            TableLayoutPanel? card = pnlQueueControlsCard;
+            if (card == null)
+                return;
+
+            Control[] content = card.Controls.Cast<Control>().ToArray();
+            card.SuspendLayout();
+            try
+            {
+                card.AutoSize = !fillSharedHeight;
+                card.Dock = fillSharedHeight ? DockStyle.Fill : DockStyle.Top;
+                card.RowCount = content.Length + (fillSharedHeight ? 2 : 0);
+                card.RowStyles.Clear();
+                if (fillSharedHeight)
+                    card.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+
+                for (int index = 0; index < content.Length; index++)
+                {
+                    card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                    card.SetCellPosition(content[index], new TableLayoutPanelCellPosition(0, index + (fillSharedHeight ? 1 : 0)));
+                }
+
+                if (fillSharedHeight)
+                    card.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            }
+            finally
+            {
+                card.ResumeLayout(true);
+            }
         }
 
         internal static void ApplyQueueControlsCompactLayout(
             TableLayoutPanel card,
             FlowLayoutPanel behavior,
             FlowLayoutPanel actions,
+            bool wrapControls,
+            int contentWidth)
+        {
+            ApplyQueueControlsCompactLayout(card, behavior, wrapControls, contentWidth);
+            ApplyQueueControlsCompactLayout(card, actions, wrapControls, contentWidth);
+        }
+
+        internal static void ApplyQueueControlsCompactLayout(
+            TableLayoutPanel card,
+            FlowLayoutPanel panel,
             bool wrapControls,
             int contentWidth)
         {
@@ -3597,12 +3968,9 @@ namespace MediaFlux
             Size maximumSize = wrapControls
                 ? new Size(Math.Max(200, contentWidth), 0)
                 : Size.Empty;
-            if (behavior.Dock == DockStyle.Top &&
-                actions.Dock == DockStyle.Top &&
-                behavior.WrapContents == wrapControls &&
-                actions.WrapContents == wrapControls &&
-                behavior.MaximumSize == maximumSize &&
-                actions.MaximumSize == maximumSize)
+            if (panel.Dock == DockStyle.Top &&
+                panel.WrapContents == wrapControls &&
+                panel.MaximumSize == maximumSize)
             {
                 return;
             }
@@ -3610,12 +3978,9 @@ namespace MediaFlux
             card.SuspendLayout();
             try
             {
-                behavior.Dock = DockStyle.Top;
-                actions.Dock = DockStyle.Top;
-                behavior.WrapContents = wrapControls;
-                actions.WrapContents = wrapControls;
-                behavior.MaximumSize = maximumSize;
-                actions.MaximumSize = maximumSize;
+                panel.Dock = DockStyle.Top;
+                panel.WrapContents = wrapControls;
+                panel.MaximumSize = maximumSize;
             }
             finally
             {
@@ -3693,47 +4058,20 @@ namespace MediaFlux
                         StringComparison.OrdinalIgnoreCase);
         }
 
-        private static readonly QualityTarget[] QualityTargetOrder =
-        {
-            QualityTarget.SmallerFile, QualityTarget.Efficient,
-            QualityTarget.Balanced, QualityTarget.HighQuality,
-            QualityTarget.MaximumQuality
-        };
-
         private static QualityTarget ParseQualityTarget(string? value) =>
             Enum.TryParse<QualityTarget>(value, true, out var target)
                 ? target : QualityTarget.Balanced;
 
-        private static int QualityTargetToTrackValue(QualityTarget target)
-        {
-            int index = Array.IndexOf(QualityTargetOrder, target);
-            return index >= 0 ? index : 2;
-        }
+        private static int QualityTargetToIndex(QualityTarget target) => QualityTargetSegmentSelector.IndexOf(target);
 
         private QualityTarget GetSelectedQualityTarget() =>
-            trkQualityTarget == null ? QualityTarget.Balanced : QualityTargetOrder[Math.Clamp(trkQualityTarget.Value, 0, 4)];
+            qualityTargetSelector?.SelectedTarget ?? QualityTarget.Balanced;
 
         private bool IsAutomaticQualitySelected() => comboQualityMode?.SelectedIndex == 0;
 
-        private static string QualityTargetDescription(QualityTarget target) => target switch
-        {
-            QualityTarget.SmallerFile => "Prioritizes storage savings. More compression may reduce fine detail.",
-            QualityTarget.Efficient => "Favors smaller files while maintaining good visual quality.",
-            QualityTarget.Balanced => "Recommended for most videos. Balances visual quality and storage efficiency.",
-            QualityTarget.HighQuality => "Preserves additional source detail at the cost of larger output files.",
-            QualityTarget.MaximumQuality => "Prioritizes preservation of source quality. File size is secondary.",
-            _ => string.Empty
-        };
+        private static string QualityTargetDescription(QualityTarget target) => QualityTargetSegmentSelector.Description(target);
 
-        private static string QualityTargetDisplayName(QualityTarget target) => target switch
-        {
-            QualityTarget.SmallerFile => "Smaller File",
-            QualityTarget.Efficient => "Efficient",
-            QualityTarget.Balanced => "Balanced",
-            QualityTarget.HighQuality => "High Quality",
-            QualityTarget.MaximumQuality => "Maximum Quality",
-            _ => target.ToString()
-        };
+        private static string QualityTargetDisplayName(QualityTarget target) => QualityTargetSegmentSelector.FullName(target);
 
         private void UpdateQualityIntentUi()
         {
@@ -3741,23 +4079,21 @@ namespace MediaFlux
             bool automatic = IsAutomaticQualitySelected();
             bool manualTargetSize = chkAutoTargetSize?.Checked == false;
             if (lblQualityTargetValue != null)
-                lblQualityTargetValue.Text = $"{QualityTargetDisplayName(target)}  ({QualityTargetToTrackValue(target) + 1} of 5)";
+                lblQualityTargetValue.Text = $"Quality: {QualityTargetDisplayName(target)}  ({QualityTargetToIndex(target) + 1} of 5)";
             if (lblQualityTargetDescription != null)
                 lblQualityTargetDescription.Text = automatic && !manualTargetSize
                     ? QualityTargetDescription(target)
                     : automatic
                         ? "Manual target size is authoritative; the quality preference is retained but does not control this encode."
                         : "Manual encoder quality is used. Lower values generally preserve more detail.";
-            if (trkQualityTarget != null)
-                trkQualityTarget.Enabled = automatic && !manualTargetSize;
-            if (pnlQualityTargetLabels != null)
-                pnlQualityTargetLabels.Visible = automatic;
+            if (qualityTargetSelector != null)
+                qualityTargetSelector.Enabled = automatic && !manualTargetSize;
             if (lblQualityTargetValue != null)
                 lblQualityTargetValue.Visible = automatic;
             if (lblQualityTargetDescription != null)
                 lblQualityTargetDescription.Visible = automatic;
-            if (trkQualityTarget != null)
-                trkQualityTarget.Visible = automatic;
+            if (qualityTargetSelector != null)
+                qualityTargetSelector.Visible = automatic;
             if (nudAutoQuality != null)
             {
                 nudAutoQuality.Enabled = !automatic;
@@ -3771,11 +4107,14 @@ namespace MediaFlux
             lblCompressionProfile.Visible = !automatic;
             comboCompressionProfile.Visible = !automatic;
             if (!automatic)
-                lblCompressionProfile.Text = "File-size estimate";
+                lblCompressionProfile.Text = "Estimate profile";
+            UpdateQualityTargetDescriptionLayout();
             pnlQualityIntent?.PerformLayout();
             pnlQualityIntent?.Parent?.PerformLayout();
-            if (lblAutoQuality != null)
-                lblAutoQuality.Text = automatic ? "Quality preference" : "Encoder quality";
+            pnlEncodingProfileCard?.PerformLayout();
+            _queueEncodingControlsLayout?.PerformLayout();
+            UpdateQueueEncodingControlsViewport();
+            tlEncode?.PerformLayout();
         }
 
         private EncodingQualityIntent? GetQualityIntentFromUi() =>
@@ -3891,8 +4230,6 @@ namespace MediaFlux
                 dgvEncodeQueue.Columns["colSize"].Width = _config.SizeColumnWidth;
             if (_config.CreatedColumnWidth > 0 && dgvEncodeQueue.Columns.Contains("colCreated"))
                 dgvEncodeQueue.Columns["colCreated"].Width = _config.CreatedColumnWidth;
-            if (dgvEncodeQueue.Columns.Contains("colEstimatedSize"))
-            dgvEncodeQueue.Columns["colEstimatedSize"].Visible = _config.ShowEstimatedOutputColumn;
             ApplyQueueWorkspaceColumnPreferences();
             InitializeQueueColumnSizingPreferences();
             ApplyEncodeGridColumnLayout();
@@ -4172,7 +4509,11 @@ namespace MediaFlux
 
             while (current != null)
             {
-                segments.Push(GetPersistentControlSegment(current));
+                // This responsive host is layout-only. Omitting it preserves the
+                // persisted checkbox paths for the existing Queue Controls.
+                if (!string.Equals(current.Name, "queueEncodingControlsLayout", StringComparison.Ordinal) &&
+                    !string.Equals(current.Name, "queueEncodingControlsViewport", StringComparison.Ordinal))
+                    segments.Push(GetPersistentControlSegment(current));
                 current = current.Parent;
             }
 
@@ -4195,18 +4536,10 @@ namespace MediaFlux
                 e.SortResult = CompareQueueSourceSizeRows(e.RowIndex1, e.RowIndex2);
                 e.Handled = true;
             }
-            else if (e.Column.Name == "colSourceEstimate")
+            else if (e.Column.Name == "colEstimatedSize")
             {
                 e.SortResult = CompareQueueEstimatedOutputRows(e.RowIndex1, e.RowIndex2);
                 e.Handled = true;
-            }
-            else if (e.Column.Name == "colEstimatedSize")
-            {
-                double val1 = ParseSizeToMb(e.CellValue1?.ToString());
-                double val2 = ParseSizeToMb(e.CellValue2?.ToString());
-
-                e.SortResult = val1.CompareTo(val2);
-                e.Handled = true; // we handled sorting
             }
             else if (e.Column.Name == "colEncodeRecommendation")
             {
@@ -4276,7 +4609,7 @@ namespace MediaFlux
             }
             else
             {
-                double parsed = ParseSizeToMb(row.Cells["colSourceEstimate"].Value?.ToString());
+                double parsed = ParseSizeToMb(row.Cells["colEstimatedSize"].Value?.ToString());
                 if (parsed > 0)
                     outputMb = parsed;
             }
@@ -4350,42 +4683,89 @@ namespace MediaFlux
             e.Handled = true;
             e.PaintBackground(e.ClipBounds, true);
 
-            // Read stored values (may be null if not refreshed yet)
-            var cell = grid.Rows[e.RowIndex].Cells[e.ColumnIndex];
-            var tag = cell.Tag as Tuple<double, double>;
-            double srcMb = tag?.Item1 ?? 0;
-            double estMb = tag?.Item2 ?? 0;
+            DataGridViewCell cell = grid.Rows[e.RowIndex].Cells[e.ColumnIndex];
+            Tuple<double, double>? tag = cell.Tag as Tuple<double, double>;
+            string valueText = Convert.ToString(cell.Value) ?? string.Empty;
+            double parsedOutputMb = ParseSizeToMb(valueText);
+            double estimatedOutputMb = parsedOutputMb > 0 ? tag?.Item2 is > 0 ? tag.Item2 : parsedOutputMb : 0;
+            double sourceMb = tag?.Item1 is > 0
+                ? tag.Item1
+                : ParseSizeToMb(Convert.ToString(grid.Rows[e.RowIndex].Cells["colSize"].Value));
+            QueueEstimateCellPresentation presentation = FormatQueueEstimateCellPresentation(
+                sourceMb,
+                estimatedOutputMb,
+                e.FormattedValue?.ToString(),
+                cell.ToolTipText);
+            if (!string.Equals(cell.ToolTipText, presentation.ToolTipText, StringComparison.Ordinal))
+                cell.ToolTipText = presentation.ToolTipText;
 
-            // Draw bar only if we have numbers
-            if (srcMb > 0 && estMb > 0)
+            bool drawBar = presentation.HasNumericOutput && sourceMb > 0;
+            Rectangle textBounds = e.CellBounds;
+            int horizontalPadding = Math.Max(1, ScaleUi(6));
+            if (drawBar)
             {
-                double ratio = Math.Min(1.0, Math.Max(0.0, estMb / srcMb));
-
-                var rect = e.CellBounds;
-                rect.Inflate(-4, -6); // padding
-
-                using (var bg = new SolidBrush(SystemColors.ControlLight))
-                    e.Graphics!.FillRectangle(bg, rect);
-
-                var fill = new Rectangle(rect.X, rect.Y, (int)(rect.Width * (1.0 - ratio)), rect.Height);
-                using (var fg = new SolidBrush(Color.Orange))
-                    e.Graphics!.FillRectangle(fg, fill);
-
-                using (var pen = new Pen(SystemColors.ControlDark))
-                    e.Graphics!.DrawRectangle(pen, rect);
+                int padding = Math.Max(1, ScaleUi(4));
+                Rectangle barBounds = Rectangle.FromLTRB(
+                    e.CellBounds.Left + padding,
+                    e.CellBounds.Top + padding,
+                    Math.Max(e.CellBounds.Left + padding, e.CellBounds.Right - padding),
+                    Math.Max(e.CellBounds.Top + padding, e.CellBounds.Bottom - padding));
+                if (barBounds.Width > 0 && barBounds.Height > 0)
+                {
+                    using var background = new SolidBrush(SystemColors.ControlLight);
+                    e.Graphics!.FillRectangle(background, barBounds);
+                    int fillWidth = (int)Math.Round(barBounds.Width * presentation.SavingsFraction);
+                    if (fillWidth > 0)
+                    {
+                        using var fill = new SolidBrush(Color.Orange);
+                        e.Graphics.FillRectangle(fill, new Rectangle(barBounds.Left, barBounds.Top, fillWidth, barBounds.Height));
+                    }
+                    using var border = new Pen(SystemColors.ControlDark);
+                    e.Graphics.DrawRectangle(border, barBounds.Left, barBounds.Top, barBounds.Width - 1, barBounds.Height - 1);
+                }
             }
 
-            // Draw text last
-            var text = e.FormattedValue?.ToString() ?? string.Empty;
             var font = e.CellStyle?.Font ?? this.Font;
-            var fore = e.CellStyle?.ForeColor ?? this.ForeColor;
-
+            int verticalPadding = Math.Max(1, ScaleUi(2));
+            textBounds = Rectangle.FromLTRB(
+                e.CellBounds.Left + horizontalPadding,
+                e.CellBounds.Top + verticalPadding,
+                Math.Max(e.CellBounds.Left + horizontalPadding, e.CellBounds.Right - horizontalPadding),
+                Math.Max(e.CellBounds.Top + verticalPadding, e.CellBounds.Bottom - verticalPadding));
+            int availableWidth = Math.Max(0, textBounds.Width);
+            string text = SelectQueueEstimateCellText(presentation, e.Graphics!, font, availableWidth);
+            bool selected = (e.State & DataGridViewElementStates.Selected) != 0;
+            Color foreColor = drawBar
+                ? SystemColors.ControlText
+                : selected
+                    ? e.CellStyle?.SelectionForeColor ?? SystemColors.HighlightText
+                    : e.CellStyle?.ForeColor ?? this.ForeColor;
             TextRenderer.DrawText(
-                e.Graphics!, text, font, e.CellBounds, fore,
-                TextFormatFlags.VerticalCenter | TextFormatFlags.Left
-            );
+                e.Graphics!,
+                text,
+                font,
+                textBounds,
+                foreColor,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
 
             e.Paint(e.CellBounds, DataGridViewPaintParts.Focus);
+        }
+
+        private static string SelectQueueEstimateCellText(
+            QueueEstimateCellPresentation presentation,
+            Graphics graphics,
+            Font font,
+            int availableWidth)
+        {
+            const TextFormatFlags measureFlags = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
+            foreach (string candidate in new[]
+                     { presentation.FullText, presentation.MediumText, presentation.NarrowText })
+            {
+                if (TextRenderer.MeasureText(graphics, candidate, font, Size.Empty, measureFlags).Width <= availableWidth)
+                    return candidate;
+            }
+
+            return presentation.NarrowText;
         }
 
 
@@ -5155,7 +5535,7 @@ namespace MediaFlux
             var chkName = new CheckBox { Text = "Name", Checked = true, Enabled = false, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkExecutionOrder = new CheckBox { Text = "Order", Checked = _config.ShowExecutionOrderColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkSize = new CheckBox { Text = "Source size (legacy)", Checked = _config.ShowSizeColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
-            var chkEstimatedOutput = new CheckBox { Text = "Estimated output (legacy)", Checked = _config.ShowEstimatedOutputColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+            var chkEstimatedOutput = new CheckBox { Text = "Estimated Output", Checked = _config.ShowEstimatedOutputColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
             var chkCreated = new CheckBox { Text = "Created", Checked = _config.ShowCreatedColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
             var chkCustom = new CheckBox { Text = "Custom", Checked = _config.ShowCustomColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
             var chkRecommendation = new CheckBox { Text = "Recommendation", Checked = _config.ShowRecommendationColumn, AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
@@ -6074,8 +6454,7 @@ namespace MediaFlux
                 }
                 if (comboQualityMode != null)
                     SelectQualityMode(comboQualityMode, s.QualityMode);
-                if (trkQualityTarget != null)
-                    trkQualityTarget.Value = QualityTargetToTrackValue(ParseQualityTarget(s.QualityTarget));
+                qualityTargetSelector?.SetSelectedTarget(ParseQualityTarget(s.QualityTarget));
                 UpdateQualityIntentUi();
                 if (comboAudioChannels != null &&
                     !string.IsNullOrWhiteSpace(s.AudioChannels))

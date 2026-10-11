@@ -97,11 +97,19 @@ public sealed class AdaptiveStorageSavingsTests
     [Fact]
     public async Task PreferredClearlyMeetsAndStopsBeforeAnyStrongerCandidate()
     {
+        AdaptiveQualitySelectionRequest request = Request();
         var runner = new FakeSamples((_, _) => 5_000);
-        var result = await Select(runner);
+        var result = await Select(runner, request);
         Assert.Equal(24, result.SelectedQuality);
         Assert.Single(result.Candidates);
-        Assert.Equal(9, runner.Calls.Count);
+        Assert.Equal(7, runner.Calls.Count);
+        Assert.Equal(7, result.SamplesExecuted);
+        Assert.True(result.SevenFirstEarlyPositive);
+        Assert.Equal(7, result.Candidates[0].Samples.Count);
+        Assert.Equal(new[] { 0, 1, 2, 4, 6, 7, 8 }, runner.Calls.Select(call =>
+            Array.FindIndex(StorageSavingsSampleSelector.Positions(request.SourceDuration).ToArray(), sample => sample == call.Sample)));
+        Assert.DoesNotContain(runner.Calls, call => call.Sample == StorageSavingsSampleSelector.Positions(request.SourceDuration)[3]);
+        Assert.DoesNotContain(runner.Calls, call => call.Sample == StorageSavingsSampleSelector.Positions(request.SourceDuration)[5]);
         Assert.Equal(AdaptiveSampleClassification.ClearlyMeets, result.Candidates[0].Classification);
     }
 
@@ -113,29 +121,133 @@ public sealed class AdaptiveStorageSavingsTests
         Assert.Equal(new[] { 24, 25, 26 }, result.Candidates.Select(c => c.Quality));
         Assert.Equal(26, result.SelectedQuality);
         Assert.Equal(AdaptiveSampleClassification.Borderline, result.Candidates[1].Classification);
+        Assert.True(result.SevenFirstEarlyPositive);
+        Assert.Equal(25, runner.Calls.Count);
+        Assert.Equal(25, result.SamplesExecuted);
         Assert.DoesNotContain(runner.Calls, c => c.Quality == 27);
     }
 
     [Fact]
-    public async Task AllMissFallsBackToConfiguredQualityWithoutExtrapolating()
+    public async Task AllCandidatesClearlyMissingTheObjectiveProduceAnAuthoritativePreEncodeSkip()
     {
         var runner = new FakeSamples((_, _) => 10_000);
         var result = await Select(runner);
-        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
-        Assert.Equal(result.PreferredQuality, result.SelectedQuality);
+        Assert.Equal(AdaptiveSelectionDisposition.Skipped, result.Disposition);
+        Assert.Null(result.SelectedQuality);
         Assert.Equal(new[] { 24, 25, 26, 27 }, result.Candidates.Select(c => c.Quality));
         Assert.All(result.Candidates, c => Assert.Equal(AdaptiveSampleClassification.ClearlyMisses, c.Classification));
-        Assert.Contains("Preserve configured quality", result.Reason);
+        Assert.Equal(36, runner.Calls.Count);
+        Assert.Equal(36, result.SamplesExecuted);
+        Assert.False(result.SevenFirstEarlyPositive);
+        Assert.True(StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(result, Request()));
 
         EncodingPlan initial = EncodingPlanService.Create(Context());
-        EncodingPlan fallback = EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(initial, result);
-        Assert.Equal(initial.Quality!.EffectiveQuality, fallback.Quality!.EffectiveQuality);
-        Assert.Same(initial.Recovery, fallback.Recovery);
-        Assert.Same(initial.RecoveryCapabilities, fallback.RecoveryCapabilities);
+        EncodingPlan rejected = EncodingPlanService.FreezeAdaptiveSelection(initial, result);
+        Assert.Equal(initial.Quality!.EffectiveQuality, rejected.Quality!.EffectiveQuality);
+        Assert.Same(result, rejected.AdaptiveSelection);
         Assert.Equal(StorageSavingsAcceptance.Rejected,
             StorageSavingsContractService.Evaluate(Contract, Contract.MaximumAcceptedOutputBytes!.Value + 1).Acceptance);
         Assert.Equal(StorageSavingsAcceptance.Accepted,
             StorageSavingsContractService.Evaluate(Contract, Contract.MaximumAcceptedOutputBytes.Value).Acceptance);
+    }
+
+    [Fact]
+    public async Task EarlySkipRequiresEveryCompleteProductionCandidateToClearlyMiss()
+    {
+        AdaptiveQualitySelectionEvidence result = await Select(new FakeSamples((_, _) => 10_000));
+        AdaptiveQualitySelectionRequest request = Request();
+        Assert.True(StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(result, request));
+
+        Assert.False(StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(
+            result with { Candidates = Array.AsReadOnly(result.Candidates.Take(result.Candidates.Count - 1).ToArray()) }, request));
+
+        AdaptiveCandidateEvidence first = result.Candidates[0];
+        AdaptiveCandidateEvidence[] partialRows = result.Candidates.ToArray();
+        partialRows[0] = first with { Samples = Array.AsReadOnly(first.Samples.Take(1).ToArray()) };
+        Assert.False(StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(
+            result with { Candidates = Array.AsReadOnly(partialRows) }, request));
+
+        AdaptiveCandidateEvidence[] previewRows = result.Candidates.ToArray();
+        previewRows[0] = first with
+        {
+            Samples = Array.AsReadOnly(first.Samples.Select(sample => sample with
+                { Purpose = VideoSamplePurpose.PreviewEstimation }).ToArray())
+        };
+        Assert.False(StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(
+            result with { Candidates = Array.AsReadOnly(previewRows) }, request));
+
+        AdaptiveCandidateEvidence[] borderlineRows = result.Candidates.ToArray();
+        borderlineRows[0] = first with { Classification = AdaptiveSampleClassification.Borderline };
+        Assert.False(StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(
+            result with { Candidates = Array.AsReadOnly(borderlineRows) }, request));
+    }
+
+    [Fact]
+    public async Task SevenFirstMissSuggestionStillCompletesFullNineBeforeAbstaining()
+    {
+        AdaptiveQualitySelectionRequest request = Request();
+        var runner = new FakeSamples((_, position) => position is 3 or 5 ? 1_000 : 10_000);
+        AdaptiveQualitySelectionEvidence result = await Select(runner, request);
+
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
+        Assert.Equal(request.Envelope.PreferredQuality, result.SelectedQuality);
+        Assert.Equal(36, runner.Calls.Count);
+        Assert.Equal(36, result.SamplesExecuted);
+        Assert.False(result.SevenFirstEarlyPositive);
+        Assert.All(result.Candidates, candidate =>
+        {
+            Assert.Equal(9, candidate.Samples.Count);
+            Assert.Equal(AdaptiveSampleClassification.Borderline, candidate.Classification);
+        });
+    }
+
+    [Fact]
+    public async Task SevenFirstAmbiguousProjectionRunsFullNineAndPreservesLegacyBorderlineSelection()
+    {
+        AdaptiveQualitySelectionRequest request = Request();
+        var runner = new FakeSamples((_, position) => position is 3 or 5 ? 1_000 : 8_000);
+        AdaptiveQualitySelectionEvidence result = await Select(runner, request);
+
+        Assert.Equal(AdaptiveSelectionDisposition.Selected, result.Disposition);
+        Assert.Equal(request.Envelope.PreferredQuality, result.SelectedQuality);
+        Assert.Equal(36, runner.Calls.Count);
+        Assert.Equal(36, result.SamplesExecuted);
+        Assert.False(result.SevenFirstEarlyPositive);
+        Assert.Equal(24, result.SelectedQuality);
+        Assert.All(result.Candidates, candidate =>
+        {
+            Assert.Equal(AdaptiveSampleClassification.Borderline, candidate.Classification);
+            Assert.Equal(9, candidate.Samples.Count);
+        });
+    }
+
+    [Fact]
+    public async Task SevenFirstNonPositiveResultMatchesFullNineSelectionEvidence()
+    {
+        AdaptiveQualitySelectionRequest request = Request();
+        var runner = new FakeSamples((_, position) => position % 2 == 0 ? 8_000 : 12_000);
+        AdaptiveQualitySelectionEvidence result = await Select(runner, request);
+        AdaptiveCandidateEvidence[] legacyFullNineCandidates = AdaptiveQualityEnvelopeService.Candidates(request.Envelope)
+            .Select(quality => StorageSavingsSampleSelector.ProjectCandidate(request, quality,
+                runner.Measurements.Where(measurement => measurement.Quality == quality)
+                    .OrderBy(measurement => measurement.Position).Select(measurement => measurement.Evidence).ToArray()))
+            .ToArray();
+
+        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
+        Assert.Equal(request.Envelope.PreferredQuality, result.SelectedQuality);
+        Assert.Equal(36, result.SamplesExecuted);
+        Assert.False(result.SevenFirstEarlyPositive);
+        Assert.Equal(new[] { 24, 25, 26, 27 }, result.Candidates.Select(candidate => candidate.Quality));
+        Assert.All(result.Candidates, candidate => Assert.Equal(9, candidate.Samples.Count));
+        Assert.Equal(legacyFullNineCandidates.Select(candidate => candidate.Quality), result.Candidates.Select(candidate => candidate.Quality));
+        Assert.Equal(legacyFullNineCandidates.Select(candidate => candidate.Classification), result.Candidates.Select(candidate => candidate.Classification));
+        Assert.Equal(legacyFullNineCandidates.Select(candidate => candidate.ProjectedLowerBytes), result.Candidates.Select(candidate => candidate.ProjectedLowerBytes));
+        Assert.Equal(legacyFullNineCandidates.Select(candidate => candidate.ProjectedTypicalBytes), result.Candidates.Select(candidate => candidate.ProjectedTypicalBytes));
+        Assert.Equal(legacyFullNineCandidates.Select(candidate => candidate.ProjectedUpperBytes), result.Candidates.Select(candidate => candidate.ProjectedUpperBytes));
+        Assert.Equal(legacyFullNineCandidates.SelectMany(candidate => candidate.Samples).Select(sample => sample.Sample),
+            result.Candidates.SelectMany(candidate => candidate.Samples).Select(sample => sample.Sample));
+        Assert.All(legacyFullNineCandidates, candidate => Assert.False(StorageSavingsSampleSelector.IsEligibleBorderline(
+            candidate, request.Contract.MaximumAcceptedOutputBytes!.Value)));
     }
 
     [Fact]
@@ -278,6 +390,8 @@ public sealed class AdaptiveStorageSavingsTests
         AdaptiveQualitySelectionEvidence? roundTrip = JsonSerializer.Deserialize<AdaptiveQualitySelectionEvidence>(JsonSerializer.Serialize(selected));
         Assert.Equal(selected.SelectedQuality, roundTrip!.SelectedQuality);
         Assert.Equal(selected.Candidates[0].Samples[0], roundTrip.Candidates[0].Samples[0]);
+        Assert.Equal(selected.SamplesExecuted, roundTrip.SamplesExecuted);
+        Assert.Equal(selected.SevenFirstEarlyPositive, roundTrip.SevenFirstEarlyPositive);
     }
 
     [Theory]
@@ -400,14 +514,19 @@ public sealed class AdaptiveStorageSavingsTests
     internal sealed class FakeSamples(Func<int, int, double> rate) : IAdaptiveVideoSampleRunner
     {
         public List<(int Quality, RepresentativeSample Sample)> Calls { get; } = [];
+        public List<(int Quality, int Position, RepresentativeSampleEvidence Evidence)> Measurements { get; } = [];
         public Action<int>? OnMeasure { get; init; }
         public Task<RepresentativeSampleEvidence> MeasureAsync(AdaptiveQualitySelectionRequest request, int quality,
             RepresentativeSample sample, CancellationToken cancellationToken)
         {
             Calls.Add((quality, sample));
             OnMeasure?.Invoke(Calls.Count);
-            int position = Calls.Count(c => c.Quality == quality) - 1;
-            return Task.FromResult(new RepresentativeSampleEvidence(sample, (long)(rate(quality, position) * sample.Duration.TotalSeconds), sample.Duration.TotalSeconds));
+            int position = Array.FindIndex(StorageSavingsSampleSelector.Positions(request.SourceDuration).ToArray(), candidate => candidate == sample);
+            if (position < 0) throw new InvalidDataException("The sampled region is not in the production sample plan.");
+            var evidence = new RepresentativeSampleEvidence(sample,
+                (long)(rate(quality, position) * sample.Duration.TotalSeconds), sample.Duration.TotalSeconds);
+            Measurements.Add((quality, position, evidence));
+            return Task.FromResult(evidence);
         }
     }
 

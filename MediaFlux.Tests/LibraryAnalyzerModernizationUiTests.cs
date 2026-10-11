@@ -68,6 +68,7 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
     {
         if (!OperatingSystem.IsWindows()) return;
         Exception? failure = null;
+        string stage = "create catalog";
         var thread = new Thread(() =>
         {
             LibraryAnalyzerForm? form = null;
@@ -76,12 +77,15 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
                 SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
                 using var catalog = new SqliteLibraryCatalog(Path.Combine(_root, "navigation.db"), Path.Combine(_root, "navigation-backups"), Path.Combine(_root, "navigation-recovery"));
                 catalog.Initialize();
+                stage = "create runtime and form";
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 form = new LibraryAnalyzerForm(runtime);
+                stage = "show form and await initial analyzer refresh";
                 form.Show();
                 form.Size = new Size(1100, 700);
-                Application.DoEvents();
+                Pump(InvokeTask(form, "RefreshAllAsync"));
 
+                stage = "inspect navigation layout";
                 AnalyzerNavigationRail rail = Field<AnalyzerNavigationRail>(form, "_navigationRail");
                 TabControl tabs = Field<TabControl>(form, "_tabs");
                 Assert.Equal(13, rail.Entries.Count);
@@ -108,6 +112,7 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
                 Assert.True(constrainedRail.VerticalScrollVisible);
 
                 AnalyzerNavigationItem visual = AllControls(rail).OfType<AnalyzerNavigationItem>().Single(item => item.Text == "Visual");
+                stage = "synchronize navigation selection";
                 rail.Activate(5);
                 Application.DoEvents();
                 Assert.Equal(5, tabs.SelectedIndex);
@@ -122,11 +127,15 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
                 Assert.True(AllControls(rail).OfType<AnalyzerNavigationItem>().All(item => item.TabStop));
             }
             catch (Exception ex) { failure = ex; }
-            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+            finally
+            {
+                stage = "dispose form and runtime";
+                WinFormsTestLifecycle.CloseAndDispose(form);
+            }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Analyzer navigation UI test timed out.");
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), $"Analyzer navigation UI test timed out at {stage}.");
         if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
@@ -180,7 +189,7 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
         {
             if (DateTime.UtcNow >= end) throw new TimeoutException();
             Application.DoEvents();
-            Thread.Sleep(10);
+            Thread.Yield();
         }
         task.GetAwaiter().GetResult();
     }

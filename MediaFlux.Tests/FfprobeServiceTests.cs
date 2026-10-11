@@ -100,6 +100,7 @@ public sealed class FfprobeServiceTests : IDisposable
                       ],
                       "format": {
                         "format_name": "mpeg",
+                        "start_time": "0.25",
                         "duration": "120.5",
                         "size": "1048576",
                         "bit_rate": "7000000",
@@ -115,6 +116,7 @@ public sealed class FfprobeServiceTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal("mpeg", result.FormatName);
+        Assert.Equal(0.25, result.ContainerStartTimeSeconds);
         Assert.Equal(120.5, result.DurationSeconds);
         Assert.Equal(1_048_576, result.SizeBytes);
         Assert.Equal(7_000_000, result.BitRate);

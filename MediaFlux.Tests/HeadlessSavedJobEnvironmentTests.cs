@@ -229,7 +229,7 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
             Assert.False(File.Exists(Path.Combine(_isolated, ".legacy-install-data-migrated-v1")));
         }
         Assert.Same(previous, AppPaths.StoragePaths);
-        Assert.Equal(Path.Combine(Path.GetTempPath(), "MediaFlux", "AdaptiveSamples"), AppPaths.RuntimeTemporaryDirectory("AdaptiveSamples"));
+        Assert.Equal(Path.Combine(AppPaths.StoragePaths.Temp, "AdaptiveSamples"), AppPaths.RuntimeTemporaryDirectory("AdaptiveSamples"));
     }
 
     [Fact]
@@ -278,7 +278,7 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
     [InlineData(HeadlessSavedJobMode.Preflight, "accepted", 0, HeadlessSavedJobExitCode.Success)]
     [InlineData(HeadlessSavedJobMode.Run, "accepted", 1, HeadlessSavedJobExitCode.Success)]
     [InlineData(HeadlessSavedJobMode.Run, "rejected", 1, HeadlessSavedJobExitCode.StoragePolicyRejected)]
-    [InlineData(HeadlessSavedJobMode.Run, "projection-miss", 1, HeadlessSavedJobExitCode.Success)]
+    [InlineData(HeadlessSavedJobMode.Run, "projection-miss", 0, HeadlessSavedJobExitCode.AdaptiveStorageSavingsSkipped)]
     public async Task BothModesUseTheSameIsolatedSnapshotAndSharedGuardrails(
         HeadlessSavedJobMode mode, string outcome, int fullEncodeCount, HeadlessSavedJobExitCode expected)
     {
@@ -305,14 +305,30 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
             {
                 var record = Assert.Single(stats);
                 Assert.NotNull(record.AdaptiveSelection);
+                Assert.Equal(outcome == "projection-miss" ? 0 : 1, record.ProductionEncodeCount);
                 Assert.Equal(outcome switch
                 {
                     "accepted" => EncodingStatisticsOutcome.Success,
                     "rejected" => EncodingStatisticsOutcome.StoragePolicyRejected,
+                    "projection-miss" => EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped,
                     _ => EncodingStatisticsOutcome.Success
                 }, record.Outcome);
                 if (outcome == "projection-miss")
-                    Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, record.AdaptiveSelection!.Disposition);
+                {
+                    Assert.Equal(AdaptiveSelectionDisposition.Skipped, record.AdaptiveSelection!.Disposition);
+                    Assert.Equal(36, record.AdaptiveSelection.SamplesExecuted);
+                    Assert.False(record.AdaptiveSelection.SevenFirstEarlyPositive);
+                    Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped.ToString(), record.TerminalResult);
+                    Assert.Null(record.OutputSizeBytes);
+                    Assert.Equal(0, record.ProcessingSeconds);
+                    Assert.False(File.Exists(Path.Combine(snapshot.OutputFolder!, "fixture-output.mp4")));
+                }
+                else
+                {
+                    Assert.Equal(7, record.AdaptiveSelection!.SamplesExecuted);
+                    Assert.True(record.AdaptiveSelection.SevenFirstEarlyPositive);
+                    Assert.NotNull(record.AdaptiveSelection.SelectedQuality);
+                }
             }
             Assert.False(File.Exists(AppPaths.PredictionShadowObservationsFile));
             Assert.Equal(1_000_000, new FileInfo(snapshot.SourceFilePath).Length);
@@ -389,6 +405,13 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
 
     private static async Task<(int ExitCode, string Stdout, string Stderr)> InvokeExecutableAsync(string[] args)
     {
+        if (!args.Any(argument =>
+                argument.Equals("--user-data", StringComparison.OrdinalIgnoreCase) ||
+                argument.StartsWith("--user-data=", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException("Every MediaFlux child-process test must specify an explicit --user-data value.");
+        }
+
         string executable = Path.Combine(Path.GetDirectoryName(typeof(Config).Assembly.Location)!, "MediaFlux.exe");
         Assert.True(File.Exists(executable), executable);
         var start = new ProcessStartInfo(executable)
@@ -500,12 +523,17 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
             Assert.True(AdaptiveStorageSavingsPolicy.TryCreateRequest(true, false, request.StorageSavingsContract, context, plan, out var sampling, out _));
             var selection = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((_, _) => outcome == "projection-miss" ? 10_000 : 4_000))
                 .SelectAsync(sampling!, null, request.CancellationToken);
-            selection = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(selection);
+            bool reliableStorageMiss = selection.Disposition == AdaptiveSelectionDisposition.Skipped &&
+                StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(selection, sampling!);
+            if (selection.Disposition == AdaptiveSelectionDisposition.Skipped && !reliableStorageMiss)
+                selection = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(selection);
             plan = selection.Disposition == AdaptiveSelectionDisposition.NotSuitable
                 ? EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(plan, selection)
                 : EncodingPlanService.FreezeAdaptiveSelection(plan, selection);
             request.EncodingPlanSnapshotCallback?.Invoke(new(plan.PlanId, plan));
             request.AdaptiveSelectionCallback?.Invoke(selection);
+            if (selection.Disposition == AdaptiveSelectionDisposition.Skipped)
+                throw new AdaptiveStorageSavingsSkippedException(selection);
             FullEncodeCount++;
             long bytes = outcome == "rejected" ? request.StorageSavingsContract.MaximumAcceptedOutputBytes!.Value + 1 : 800_000;
             var actual = StorageSavingsContractService.Evaluate(request.StorageSavingsContract, bytes);

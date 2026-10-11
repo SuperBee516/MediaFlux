@@ -33,10 +33,32 @@ public static class AdaptiveStorageSavingsPolicy
         if (!TryAncillaryAllowance(context.Source, execution.ContainerDecision, execution.AudioChannels,
             context.KnownDuration.TotalSeconds, out AdaptiveAncillaryAllowance? allowance, out reason)) return false;
         AdaptiveQualityEnvelope envelope = AdaptiveQualityEnvelopeService.Resolve(execution.QualityResolution, execution.Encoder);
+        double? sourceVideoStartOffsetSeconds = null;
+        double? sourceVideoEndOffsetSeconds = null;
+        // Sample -ss positions are relative to the input start. Normalize FFprobe's
+        // stream timestamp against the format timeline start before carrying it.
+        if (context.Source.ContainerStartTimeSeconds is double containerStart &&
+            video.StartTimeSeconds is double videoStart &&
+            video.DurationSeconds is double videoDuration &&
+            double.IsFinite(containerStart) && double.IsFinite(videoStart) &&
+            double.IsFinite(videoDuration) && videoDuration > 0)
+        {
+            double startOffset = videoStart - containerStart;
+            double endOffset = startOffset + videoDuration;
+            if (double.IsFinite(startOffset) && double.IsFinite(endOffset) && endOffset > startOffset)
+            {
+                sourceVideoStartOffsetSeconds = startOffset;
+                sourceVideoEndOffsetSeconds = endOffset;
+            }
+        }
         request = new(contract, envelope, context.Input, context.KnownDuration,
             new(execution.Encoder, execution.UseGpu, context.EncoderPreset, context.TenBit,
                 concurrentEncoderSessions, geometry, video.PixelFormat, context.ScaleMode, execution.ContainerDecision.Resolved,
-                video.ColorRange, video.ColorSpace, video.ColorTransfer, video.ColorPrimaries), allowance!);
+                video.ColorRange, video.ColorSpace, video.ColorTransfer, video.ColorPrimaries), allowance!)
+        {
+            SourceVideoStartOffsetSeconds = sourceVideoStartOffsetSeconds,
+            SourceVideoEndOffsetSeconds = sourceVideoEndOffsetSeconds
+        };
         reason = "Applicable AVC to HEVC automatic storage-savings job.";
         return true;
     }
