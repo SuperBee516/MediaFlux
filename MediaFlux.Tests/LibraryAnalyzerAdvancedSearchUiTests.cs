@@ -15,6 +15,7 @@ public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "MediaFlux-AdvancedSearchUi", Guid.NewGuid().ToString("N"));
     private readonly ITestOutputHelper _output;
+    private readonly RefreshDiagnosticTrace _refreshDiagnosticTrace = new();
     private string _stage = "starting";
 
     public LibraryAnalyzerAdvancedSearchUiTests(ITestOutputHelper output)
@@ -254,10 +255,17 @@ public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
             grid.ClearSelection();
             grid.CurrentCell = second.Cells["Name"];
             second.Selected = true;
+            _refreshDiagnosticTrace.Start();
             Mark("refresh selected page");
-            Pump(InvokeTask(form, "RefreshFilesAsync"));
+            _refreshDiagnosticTrace.Checkpoint("before InvokeTask(RefreshFilesAsync)");
+            Task refreshTask = InvokeTask(form, "RefreshFilesAsync");
+            _refreshDiagnosticTrace.Checkpoint("after InvokeTask returned", refreshTask);
+            _refreshDiagnosticTrace.Checkpoint("before Pump", refreshTask);
+            Pump(refreshTask, _refreshDiagnosticTrace);
+            _refreshDiagnosticTrace.Checkpoint("after Pump completed", refreshTask);
             Assert.Equal(secondId, Assert.Single(grid.SelectedRows.Cast<DataGridViewRow>())
                 .Tag is LibraryFileViewRecord refreshed ? refreshed.FileId : -1);
+            _refreshDiagnosticTrace.Checkpoint("after selected-row restoration assertion", refreshTask);
 
             Field<TextBox>(form, "_search").Text = "first";
             Mark("filtered refresh");
@@ -438,7 +446,13 @@ public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
             Pump(InvokeTask(form, "RefreshAllAsync"));
             Mark("run form assertions");
             try { action(catalog, form, probe); }
-            finally { Mark("close form"); form.Close(); }
+            finally
+            {
+                Mark("close form");
+                _refreshDiagnosticTrace.Checkpoint("before form.Close");
+                form.Close();
+                _refreshDiagnosticTrace.Checkpoint("after form.Close");
+            }
         });
     }
 
@@ -457,11 +471,22 @@ public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(40)), $"Advanced Search UI test timed out at {Volatile.Read(ref _stage)}.");
-        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+        bool completed = thread.Join(TimeSpan.FromSeconds(40));
+        string diagnostics = _refreshDiagnosticTrace.Snapshot();
+        if (!completed)
+            throw new Xunit.Sdk.XunitException(
+                $"Advanced Search UI test timed out at {Volatile.Read(ref _stage)}.{Environment.NewLine}{diagnostics}");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException($"{failure}{Environment.NewLine}{diagnostics}");
+        if (!string.IsNullOrWhiteSpace(diagnostics))
+            _output.WriteLine(diagnostics);
     }
 
-    private void Mark(string stage) => Volatile.Write(ref _stage, stage);
+    private void Mark(string stage)
+    {
+        Volatile.Write(ref _stage, stage);
+        _refreshDiagnosticTrace.RecordStage(stage);
+    }
 
     private static void SelectProperty(LibraryAnalyzerSearchConditionRow row, string propertyId)
     {
@@ -494,16 +519,154 @@ public sealed class LibraryAnalyzerAdvancedSearchUiTests : IDisposable
         root.Controls.Cast<Control>().SelectMany(child =>
             (child is T match ? new[] { match } : Array.Empty<T>()).Concat(Descendants<T>(child)));
 
-    private static void Pump(Task task)
+    private static void Pump(Task task, RefreshDiagnosticTrace? diagnostics = null)
     {
         var timer = Stopwatch.StartNew();
+        int doEventsCall = 0;
         while (!task.IsCompleted)
         {
-            if (timer.Elapsed > TimeSpan.FromSeconds(20)) throw new TimeoutException();
-            Application.DoEvents();
+            if (timer.Elapsed > TimeSpan.FromSeconds(20))
+            {
+                diagnostics?.Checkpoint("Pump reached its existing 20-second timeout", task);
+                throw new TimeoutException();
+            }
+
+            diagnostics?.RecordDoEvents("enter", doEventsCall, task);
+            long doEventsStarted = Stopwatch.GetTimestamp();
+            try
+            {
+                Application.DoEvents();
+            }
+            finally
+            {
+                diagnostics?.RecordDoEvents("exit", doEventsCall, task, doEventsStarted);
+            }
+            doEventsCall++;
             Thread.Yield();
         }
         task.GetAwaiter().GetResult();
+    }
+
+    private sealed class RefreshDiagnosticTrace
+    {
+        private const int MaximumMilestones = 16;
+        private const int MaximumPumpCheckpoints = 16;
+        private readonly object _gate = new();
+        private readonly Queue<DiagnosticCheckpoint> _milestones = new();
+        private readonly Queue<DiagnosticCheckpoint> _pumpCheckpoints = new();
+        private bool _active;
+        private long _startedAt;
+        private int _doEventsEntered;
+        private int _doEventsExited;
+        private double _maximumDoEventsMilliseconds;
+        private TaskStatus? _lastTaskStatus;
+
+        public void Start()
+        {
+            lock (_gate)
+            {
+                _milestones.Clear();
+                _pumpCheckpoints.Clear();
+                _startedAt = Stopwatch.GetTimestamp();
+                _doEventsEntered = 0;
+                _doEventsExited = 0;
+                _maximumDoEventsMilliseconds = 0;
+                _lastTaskStatus = null;
+                _active = true;
+            }
+        }
+
+        public void Checkpoint(string name, Task? task = null)
+        {
+            lock (_gate)
+            {
+                if (!_active) return;
+                if (task != null) _lastTaskStatus = task.Status;
+                EnqueueBounded(_milestones, CreateCheckpoint(name, task), MaximumMilestones);
+            }
+        }
+
+        public void RecordStage(string stage)
+        {
+            lock (_gate)
+            {
+                if (!_active) return;
+                EnqueueBounded(_milestones, CreateCheckpoint($"stage={stage}", null), MaximumMilestones);
+            }
+        }
+
+        public void RecordDoEvents(string phase, int call, Task task, long? startedAt = null)
+        {
+            lock (_gate)
+            {
+                if (!_active) return;
+
+                long timestamp = Stopwatch.GetTimestamp();
+                TaskStatus status = task.Status;
+                _lastTaskStatus = status;
+                double durationMilliseconds = 0;
+                if (phase == "enter")
+                    _doEventsEntered++;
+                else
+                {
+                    _doEventsExited++;
+                    if (startedAt.HasValue)
+                        durationMilliseconds = Stopwatch.GetElapsedTime(startedAt.Value, timestamp).TotalMilliseconds;
+                    _maximumDoEventsMilliseconds = Math.Max(_maximumDoEventsMilliseconds, durationMilliseconds);
+                }
+
+                string detail = phase == "exit"
+                    ? $"DoEvents {phase} #{call} duration={durationMilliseconds:F2}ms"
+                    : $"DoEvents {phase} #{call}";
+                EnqueueBounded(_pumpCheckpoints, CreateCheckpoint(detail, task, timestamp), MaximumPumpCheckpoints);
+            }
+        }
+
+        public string Snapshot()
+        {
+            lock (_gate)
+            {
+                if (!_active) return string.Empty;
+
+                var lines = new List<string>
+                {
+                    "Advanced Search refresh STA diagnostics (bounded recent checkpoints):"
+                };
+                DiagnosticCheckpoint[] checkpoints = _milestones.Concat(_pumpCheckpoints)
+                    .OrderBy(checkpoint => checkpoint.Timestamp).ToArray();
+                lines.AddRange(checkpoints.Select(checkpoint => checkpoint.Text));
+                if (checkpoints.Length > 0)
+                    lines.Add($"Latest recorded checkpoint: {checkpoints[^1].Text}");
+                lines.Add(
+                    $"DoEvents entered={_doEventsEntered}, exited={_doEventsExited}, " +
+                    $"inside={_doEventsEntered - _doEventsExited}, " +
+                    $"max completed duration={_maximumDoEventsMilliseconds:F2}ms, " +
+                    $"last task status={_lastTaskStatus?.ToString() ?? "n/a"}");
+                return string.Join(Environment.NewLine, lines);
+            }
+        }
+
+        private DiagnosticCheckpoint CreateCheckpoint(string name, Task? task, long? timestamp = null)
+        {
+            long checkpointTimestamp = timestamp ?? Stopwatch.GetTimestamp();
+            double elapsedMilliseconds = Stopwatch.GetElapsedTime(_startedAt, checkpointTimestamp).TotalMilliseconds;
+            string context = SynchronizationContext.Current?.GetType().FullName ?? "<null>";
+            string status = task?.Status.ToString() ?? "n/a";
+            return new DiagnosticCheckpoint(checkpointTimestamp,
+                $"+{elapsedMilliseconds:F2}ms thread={Environment.CurrentManagedThreadId} " +
+                $"context={context} task={status} checkpoint={name}");
+        }
+
+        private static void EnqueueBounded(
+            Queue<DiagnosticCheckpoint> queue,
+            DiagnosticCheckpoint value,
+            int maximumCount)
+        {
+            if (queue.Count == maximumCount) queue.Dequeue();
+            queue.Enqueue(value);
+        }
+
+        private readonly record struct DiagnosticCheckpoint(long Timestamp, string Text);
     }
 
     private sealed class CountingProbe : ILibraryMetadataProbe
