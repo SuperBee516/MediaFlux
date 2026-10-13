@@ -55,6 +55,7 @@ namespace MediaFlux
             _sampleComparisonCts = new CancellationTokenSource();
             CancellationToken token = _sampleComparisonCts.Token;
             btnStartEncode.Enabled = false;
+            btnCqSampleComparison.Enabled = false;
             btnSampleComparison.Text = "Cancel Sample";
             lblEncodeStatus.Text = $"Preparing samples for {Path.GetFileName(sourcePath)}…";
 
@@ -139,7 +140,141 @@ namespace MediaFlux
                 _sampleComparisonCts.Dispose();
                 _sampleComparisonCts = null;
                 btnSampleComparison.Text = "Compare Samples";
+                btnCqSampleComparison.Text = "Compare CQ 22–25";
+                btnCqSampleComparison.Enabled = !_encodingActive && _mediaRemuxCts == null;
                 btnStartEncode.Enabled = !_encodingActive;
+                if (!_encodingActive)
+                    lblEncodeStatus.Text = string.Empty;
+            }
+        }
+
+        private async void btnCqSampleComparison_Click(object? sender, EventArgs e)
+        {
+            if (_sampleComparisonCts != null)
+            {
+                _sampleComparisonCts.Cancel();
+                return;
+            }
+
+            if (_encodingActive)
+            {
+                ShowStatusInfo("Finish or stop the active encode before generating CQ comparison samples.");
+                return;
+            }
+            if (_mediaRemuxCts != null)
+            {
+                ShowStatusInfo("Finish or cancel the active remux before generating CQ comparison samples.");
+                return;
+            }
+            if (!EnsureFfmpegToolsAvailable() || !EnsureSelectedVideoEncoderAvailable())
+                return;
+
+            DataGridViewRow? row = dgvEncodeQueue.CurrentRow;
+            if (row == null || row.IsNewRow)
+                row = dgvEncodeQueue.Rows.Cast<DataGridViewRow>().FirstOrDefault(r => !r.IsNewRow && r.Visible);
+            string sourcePath = row?.Tag is RowMeta meta ? meta.Path : row?.Tag as string ?? string.Empty;
+            if (row == null || string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                ShowStatusInfo("Select a video in the encode queue before generating CQ comparison samples.");
+                return;
+            }
+
+            ValidatedEncoderSettings validated;
+            try
+            {
+                validated = GetValidatedEncoderSettingsFromUi(includeConcurrentSessions: false);
+            }
+            catch (Exception ex)
+            {
+                ShowStatusInfo($"CQ comparison settings are invalid: {ex.Message}");
+                return;
+            }
+            if (!validated.Resolved.Selection.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase) ||
+                validated.Resolved.Selection.CodecFamily != VideoCodecFamily.Hevc ||
+                !validated.Preset.Equals("p5", StringComparison.OrdinalIgnoreCase) ||
+                !validated.TenBit || GetSelectedScaleMode() != EncodingService.ScaleMode.None)
+            {
+                ShowStatusInfo("Set NVENC HEVC, preset p5, 10-bit, and Original resolution before comparing CQ22–CQ25.");
+                return;
+            }
+
+            double durationSeconds = (row.Tag as RowMeta)?.DurationSec ?? 0;
+            if (durationSeconds <= 0)
+                durationSeconds = await Task.Run(() => _mediaInfoService.GetDurationSeconds(sourcePath));
+            if (durationSeconds < 75)
+            {
+                ShowStatusInfo("CQ comparison needs a source at least 75 seconds long for identical 25-second beginning, middle, and end samples.");
+                return;
+            }
+
+            RowMeta? rowMeta = row.Tag as RowMeta;
+            var settings = new SampleComparisonSettings
+            {
+                Encoder = validated.Resolved.Selection,
+                VideoCodec = validated.Resolved.Selection.FfmpegCodec,
+                UseGpu = validated.UseGpu,
+                ProjectedTargetMb = null,
+                ScaleMode = EncodingService.ScaleMode.None,
+                EncoderPreset = "p5",
+                QualityValue = 22,
+                TenBit = true,
+                AudioChannels = GetSelectedAudioChannels(),
+                AdditionalMappedBitrateKbps = rowMeta?.EstimatedPlannedMappedAncillaryBitrateKbps ?? 0,
+                Restoration = _config.VideoRestoration.Clone(),
+                ClipSeconds = 25
+            };
+
+            _sampleComparisonCts = new CancellationTokenSource();
+            CancellationToken token = _sampleComparisonCts.Token;
+            btnStartEncode.Enabled = false;
+            btnSampleComparison.Enabled = false;
+            btnCqSampleComparison.Text = "Cancel CQ Comparison";
+            lblEncodeStatus.Text = $"Preparing CQ22–CQ25 samples for {Path.GetFileName(sourcePath)}…";
+            try
+            {
+                var service = new SampleComparisonService(
+                    AppPaths.InstallDirectory, _config.FfmpegPath, _config.FfprobePath);
+                var progress = new Progress<string>(message =>
+                {
+                    lblEncodeStatus.Text = message;
+                    toolStripStatusLabel1.Text = message;
+                });
+                using SampleComparisonCqSetResult result = await service.GenerateCqComparisonAsync(
+                    sourcePath, TimeSpan.FromSeconds(durationSeconds), settings, progress, token);
+                using var dialog = new CqSampleComparisonForm(
+                    sourcePath,
+                    "NVENC HEVC · p5 · 10-bit · Original geometry · target size disabled",
+                    result,
+                    _config.ExternalPlayerPath);
+                dialog.ShowDialog(this);
+                ShowStatusInfo("CQ22–CQ25 sample comparison complete. The queue settings were not changed.");
+            }
+            catch (OperationCanceledException)
+            {
+                ShowStatusInfo("CQ sample comparison canceled.");
+            }
+            catch (Exception ex)
+            {
+                string logPath = ErrorLogService.Append(
+                    AppPaths.InstallDirectory,
+                    "NVENC CQ sample comparison failed",
+                    sourcePath,
+                    exception: ex);
+                MessageBox.Show(this,
+                    "MediaFlux could not generate the CQ comparison clips.\r\n\r\n" +
+                    "The details were written to the central error log:\r\n" + logPath,
+                    "CQ Sample Comparison", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowStatusInfo("CQ sample comparison failed. See the central error log.");
+            }
+            finally
+            {
+                _sampleComparisonCts.Dispose();
+                _sampleComparisonCts = null;
+                btnSampleComparison.Text = "Compare Samples";
+                btnCqSampleComparison.Text = "Compare CQ 22–25";
+                btnStartEncode.Enabled = !_encodingActive;
+                btnSampleComparison.Enabled = !_encodingActive && _mediaRemuxCts == null;
+                btnCqSampleComparison.Enabled = !_encodingActive && _mediaRemuxCts == null;
                 if (!_encodingActive)
                     lblEncodeStatus.Text = string.Empty;
             }

@@ -2,8 +2,8 @@ using Microsoft.Data.Sqlite;
 
 namespace MediaFlux.Services.LibraryCatalog
 {
-    public sealed partial class SqliteLibraryCatalog : ILibraryCatalog, ILibraryAnalysisCatalog,
-        ILibraryVisualCatalog, ILibraryScanAccelerationCatalog
+    public sealed partial class SqliteLibraryCatalog : ILibraryCatalog, ILibraryAnalysisCatalog, ILibraryFileRelocationCatalog,
+        ILibraryVisualCatalog, ILibraryScanAccelerationCatalog, ILibraryOverviewCatalog
     {
         private const int MaximumPageSize = 10_000;
         private readonly LibraryCatalogDatabase _database;
@@ -268,6 +268,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     locationCommand.Parameters.AddWithValue("$completed", completedTicks);
                     locationCommand.Parameters.AddWithValue("$location_id", scan.LocationId);
                     locationCommand.ExecuteNonQuery();
+                    InsertOverviewHistorySnapshot(connection, transaction, completedTicks);
                 }
 
                 return null;
@@ -329,6 +330,17 @@ namespace MediaFlux.Services.LibraryCatalog
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText = FileSelectSql + " WHERE path_key = $path_key;";
             command.Parameters.AddWithValue("$path_key", pathKey);
+            using SqliteDataReader reader = command.ExecuteReader();
+            return reader.Read() ? ReadFile(reader) : null;
+        }
+
+        public IndexedFileRecord? GetFile(long fileId)
+        {
+            ThrowIfDisposed();
+            using SqliteConnection connection = _database.OpenConnection(readOnly: true);
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = FileSelectSql + " WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", fileId);
             using SqliteDataReader reader = command.ExecuteReader();
             return reader.Read() ? ReadFile(reader) : null;
         }

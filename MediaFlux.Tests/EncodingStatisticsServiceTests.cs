@@ -44,6 +44,95 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
     }
 
     [Fact]
+    public void PredictionObservationPersistsAndLegacyRecordLeavesItUnavailable()
+    {
+        var service = new EncodingStatisticsService(_statisticsPath);
+        EncodingStatisticsRecord record = CreateRecord("prediction", EncodingStatisticsOutcome.Success, DateTime.UtcNow,
+            4_000, 2_500, 120, 60) with
+        {
+            PredictionPlanId = "frozen-plan", PredictionSourceCodec = "h264", PredictionTargetCodec = "hevc",
+            PredictedOutputSizeBytes = 2_400, PredictedProcessingSeconds = 55, PredictionConfidence = "Medium",
+            PredictionRecommendation = "Encode", TerminalResult = "Completed"
+        };
+        Assert.True(service.AppendFinalized(record));
+        EncodingStatisticsRecord stored = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+        Assert.Equal("frozen-plan", stored.PredictionPlanId);
+        Assert.Equal(2_400, stored.PredictedOutputSizeBytes);
+        Assert.Equal(55, stored.PredictedProcessingSeconds);
+    }
+
+    [Fact]
+    public void ProductionDirectEstimateProvenancePersistsAcrossReload()
+    {
+        EncodingStatisticsRecord record = CreateRecord("direct", EncodingStatisticsOutcome.Success,
+            DateTime.UtcNow, 4_000, 2_500, 120, 60) with
+        {
+            EstimateModelId = ProductionDirectOutputResult.ModelId,
+            EstimateStatus = ProductionDirectOutputStatus.Supported.ToString(),
+            EstimateIndependentFamilyCount = 12,
+            EstimateHeldOutCount = 7,
+            EstimateHeldOutEligibleCount = 12,
+            EstimateMedianAbsoluteErrorPercent = 2.7,
+            EstimatePredictedVideoBitrateKbps = 9340,
+            PredictedOutputSizeBytes = 2_700
+        };
+        Assert.True(new EncodingStatisticsService(_statisticsPath).AppendFinalized(record));
+        EncodingStatisticsRecord loaded = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+        Assert.Equal(ProductionDirectOutputResult.ModelId, loaded.EstimateModelId);
+        Assert.Equal("Supported", loaded.EstimateStatus);
+        Assert.Equal(12, loaded.EstimateIndependentFamilyCount);
+        Assert.Equal(7, loaded.EstimateHeldOutCount);
+        Assert.Equal(12, loaded.EstimateHeldOutEligibleCount);
+        Assert.Equal(2.7, loaded.EstimateMedianAbsoluteErrorPercent);
+        Assert.Equal(9340, loaded.EstimatePredictedVideoBitrateKbps);
+        Assert.Equal(2_700, loaded.PredictedOutputSizeBytes);
+    }
+
+    [Fact]
+    public void AdaptivePolicyProvenancePersistsAcrossStatisticsReload()
+    {
+        var service = new EncodingStatisticsService(_statisticsPath);
+        EncodingStatisticsRecord record = CreateRecord("adaptive-policy", EncodingStatisticsOutcome.Success,
+            DateTime.UtcNow, 4_000, 2_500, 120, 60) with
+        {
+            CalibrationPolicyId = "PredictionCalibrationPolicyV1",
+            CalibrationDecision = "Applied",
+            CalibrationLearningStrength = .75,
+            CalibrationRawHistoricalCorrectionPercent = 10,
+            CalibrationCorrectionPercent = 7.5,
+            CalibrationAppliedCorrectionPercent = 7.5,
+            CalibrationCohortKey = "h264|hevc|1080p|1080p|nvenc|gpu-a|22|good|conversion",
+            CalibrationEffectivenessState = "Effective",
+            CalibrationDecisionUtc = DateTime.UtcNow,
+            CalibrationEvidenceCutoffUtc = DateTime.UtcNow.AddHours(-1)
+        };
+
+        Assert.True(service.AppendFinalized(record));
+        EncodingStatisticsRecord loaded = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+
+        Assert.Equal(record.CalibrationPolicyId, loaded.CalibrationPolicyId);
+        Assert.Equal(record.CalibrationDecision, loaded.CalibrationDecision);
+        Assert.Equal(record.CalibrationLearningStrength, loaded.CalibrationLearningStrength);
+        Assert.Equal(record.CalibrationRawHistoricalCorrectionPercent, loaded.CalibrationRawHistoricalCorrectionPercent);
+        Assert.Equal(record.CalibrationAppliedCorrectionPercent, loaded.CalibrationAppliedCorrectionPercent);
+        Assert.Equal(record.CalibrationCohortKey, loaded.CalibrationCohortKey);
+        Assert.Equal(record.CalibrationEffectivenessState, loaded.CalibrationEffectivenessState);
+        Assert.Equal(record.CalibrationDecisionUtc, loaded.CalibrationDecisionUtc);
+        Assert.Equal(record.CalibrationEvidenceCutoffUtc, loaded.CalibrationEvidenceCutoffUtc);
+    }
+
+    [Fact]
+    public void DamagedLineDoesNotHidePredictionObservations()
+    {
+        File.WriteAllText(_statisticsPath, "not-json" + Environment.NewLine);
+        var service = new EncodingStatisticsService(_statisticsPath);
+        Assert.True(service.AppendFinalized(CreateRecord("valid", EncodingStatisticsOutcome.Success, DateTime.UtcNow,
+            100, 50, 20, 10) with { PredictedOutputSizeBytes = 55 }));
+        EncodingStatisticsRecord actual = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+        Assert.Equal(55, actual.PredictedOutputSizeBytes);
+    }
+
+    [Fact]
     public void StableRecordIdPreventsDuplicateCountingBeforeAndAfterRestart()
     {
         var first = new EncodingStatisticsService(_statisticsPath);
@@ -72,8 +161,13 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
         EncodingStatisticsRecord record = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
         Assert.Equal(1, record.SchemaVersion);
         Assert.Equal("", record.EncoderId);
+        Assert.Equal("", record.CalibrationPolicyId);
         Assert.Null(record.OutputBitDepth);
         Assert.Null(record.ConcurrentEncoderSessions);
+        Assert.Equal("", record.EstimateModelId);
+        Assert.Equal("", record.EstimateStatus);
+        Assert.Null(record.EstimateIndependentFamilyCount);
+        Assert.Null(record.EstimatePredictedVideoBitrateKbps);
     }
 
     [Fact]
@@ -252,6 +346,42 @@ public sealed class EncodingStatisticsServiceTests : IDisposable
     public void ByteFormattingUsesReadableBinaryUnits(long bytes, string expected)
     {
         Assert.Equal(expected, EncodingStatisticsCalculator.FormatBytes(bytes));
+    }
+
+    [Fact]
+    public void RejectedCandidateEvidencePersistsWithoutEnteringSuccessOrSavingsTotals()
+    {
+        var contract = StorageSavingsContractService.Resolve(true, 1000);
+        var rejection = StorageSavingsContractService.Evaluate(contract, 901);
+        var service = new EncodingStatisticsService(_statisticsPath);
+        // Even a caller incorrectly claiming success cannot admit rejected training evidence.
+        var record = CreateRecord("policy-rejected", EncodingStatisticsOutcome.Success, DateTime.UtcNow, 1000, 901, 60, 12)
+            with { StorageSavings = rejection };
+        service.AppendFinalized(record);
+        EncodingStatisticsRecord loaded = Assert.Single(new EncodingStatisticsService(_statisticsPath).GetAll());
+        Assert.Equal(EncodingStatisticsOutcome.StoragePolicyRejected, loaded.Outcome);
+        Assert.Equal(rejection, loaded.StorageSavings);
+        Assert.Null(loaded.OutputSizeBytes);
+        Assert.Equal("StoragePolicyRejected", loaded.TerminalResult);
+        var snapshot = EncodingStatisticsCalculator.Aggregate([loaded]);
+        Assert.Equal(0, snapshot.Successful);
+        Assert.Equal(0, snapshot.Failed);
+        Assert.Equal(0, snapshot.FinalizationFailed);
+        Assert.Equal(1, snapshot.Skipped);
+        Assert.Equal(0, snapshot.SpaceSavedBytes);
+
+        var history = new HistoryService(Path.Combine(_root, "policy-history.json"));
+        history.Append(new JobHistoryRecord
+        {
+            Status = JobStatus.Skipped, TerminalResult = MediaFlux.Models.EncodingTerminalResult.StoragePolicyRejected,
+            StorageSavings = rejection, SourceSizeBytes = 1000, OutputSizeBytes = 901,
+            Notes = rejection.Reason
+        });
+        var job = Assert.Single(history.LoadAll());
+        Assert.Equal(JobStatus.Skipped, job.Status);
+        Assert.Equal(rejection, job.StorageSavings);
+        Assert.Equal("Skipped — insufficient savings", JobHistoryPresentation.OutcomeLabel(job));
+        Assert.Single(JobHistoryPresentation.Filter([job], null, "Skipped", null, JobHistoryDateFilter.All));
     }
 
     private static EncodingStatisticsRecord CreateRecord(

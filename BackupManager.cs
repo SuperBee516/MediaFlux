@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace MediaFlux
 {
@@ -12,7 +13,8 @@ namespace MediaFlux
         private static readonly string[] RuntimeDataDirectories =
         {
             "ai-intermediates", "restoration-previews", "frame-previews",
-            "staging", "encode-staging", "temporary-encodes"
+            "duplicate-previews", "staging", "encode-staging", "temporary-encodes",
+            "ai-benchmark-reruns"
         };
         private static readonly string[] PersistentRootFiles = { "config.json" };
         private static readonly string[] PersistentDataRoots = { "data" };
@@ -21,23 +23,39 @@ namespace MediaFlux
 
         public static string ResolveBackupFolder(string? configuredPath)
         {
-            if (string.IsNullOrWhiteSpace(configuredPath))
-                return GetDefaultBackupFolder();
-
-            string resolved = Path.GetFullPath(
-                Environment.ExpandEnvironmentVariables(configuredPath.Trim()));
             string legacyDefault = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Encode",
                 "Backups");
+            return ResolveBackupFolder(
+                configuredPath,
+                Services.AppPaths.UserDataDirectory,
+                GetDefaultBackupFolder(),
+                legacyDefault);
+        }
 
-            return string.Equals(
-                resolved.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                Path.GetFullPath(legacyDefault).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                StringComparison.OrdinalIgnoreCase)
-                ? GetDefaultBackupFolder()
+        internal static string ResolveBackupFolder(
+            string? configuredPath,
+            string userDataDirectory,
+            string defaultBackupDirectory,
+            string legacyEncodeBackupDirectory)
+        {
+            string normalizedDefault = NormalizeBackupPath(defaultBackupDirectory);
+            if (string.IsNullOrWhiteSpace(configuredPath))
+                return normalizedDefault;
+
+            string resolved = NormalizeBackupPath(Environment.ExpandEnvironmentVariables(configuredPath.Trim()));
+            string formerInternalDefault = NormalizeBackupPath(Path.Combine(userDataDirectory, "Backups"));
+            string formerEncodeDefault = NormalizeBackupPath(legacyEncodeBackupDirectory);
+
+            return string.Equals(resolved, formerInternalDefault, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(resolved, formerEncodeDefault, StringComparison.OrdinalIgnoreCase)
+                ? normalizedDefault
                 : resolved;
         }
+
+        private static string NormalizeBackupPath(string path) =>
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
         public static string CreateBackup(string userDataDirectory, string? backupFolder, int backupsToKeep, Action<string>? reportProgress = null)
         {
@@ -49,16 +67,9 @@ namespace MediaFlux
 
             Report("Preparing backup...");
             Log("Preparing backup...");
-            Report("Cleaning temporary AI files...");
-            BackupCleanupResult cleanup = CleanupRuntimeArtifacts(source, warning => { Report("Warning: " + warning); Log(warning); });
-            if (cleanup.FilesDeleted == 0 && cleanup.FoldersDeleted == 0)
-                Report("No temporary MediaFlux data found.");
-            else
-            {
-                Report($"✓ Deleted {cleanup.FoldersDeleted:N0} folders");
-                Report($"✓ Deleted {cleanup.FilesDeleted:N0} files");
-                Report($"✓ Reclaimed {FormatBytes(cleanup.BytesReclaimed)}");
-            }
+            Report("Excluding regenerable runtime data...");
+            // A backup must never disrupt an encode or discard useful failure forensics. Runtime
+            // roots are excluded below instead of being deleted from the live installation.
             Report("Backing up persistent settings...");
             Log("Backing up persistent user data...");
 
@@ -223,7 +234,7 @@ namespace MediaFlux
                     foreach (string file in Directory.EnumerateFiles(current, "*", SearchOption.TopDirectoryOnly))
                     {
                         string name = Path.GetFileName(file);
-                        if (IsTransientFile(name) && !currentRelative.StartsWith("restoration-profiles", StringComparison.OrdinalIgnoreCase))
+                        if ((IsTransientFile(name) || IsSqliteSidecar(name)) && !currentRelative.StartsWith("restoration-profiles", StringComparison.OrdinalIgnoreCase))
                             continue;
                         CopyFile(file, currentRelative + "/" + name);
                     }
@@ -241,9 +252,70 @@ namespace MediaFlux
             {
                 if (!File.Exists(file))
                     return;
+
+                if (TryCopySqliteDatabase(file, relative))
+                    return;
+
                 zip.CreateEntryFromFile(file, relative.Replace('\\', '/'), CompressionLevel.Optimal);
                 files++;
                 bytes += new FileInfo(file).Length;
+            }
+
+            bool TryCopySqliteDatabase(string file, string relative)
+            {
+                if (!Path.GetExtension(file).Equals(".db", StringComparison.OrdinalIgnoreCase))
+                    return false;
+
+                string snapshot = Path.Combine(
+                    Path.GetTempPath(),
+                    "MediaFlux_BackupSnapshot_" + Guid.NewGuid().ToString("N") + ".db");
+                try
+                {
+                    // SQLite's online backup reads a transactionally consistent view of the
+                    // database, including WAL-backed data, without requiring active services
+                    // to close pooled connections.
+                    var sourceBuilder = new SqliteConnectionStringBuilder
+                    {
+                        DataSource = file,
+                        Mode = SqliteOpenMode.ReadOnly,
+                        Pooling = false,
+                        DefaultTimeout = 10
+                    };
+                    using var source = new SqliteConnection(sourceBuilder.ToString());
+                    source.Open();
+                    using (SqliteCommand validation = source.CreateCommand())
+                    {
+                        validation.CommandText = "PRAGMA schema_version;";
+                        validation.ExecuteScalar();
+                    }
+
+                    var destinationBuilder = new SqliteConnectionStringBuilder
+                    {
+                        DataSource = snapshot,
+                        Mode = SqliteOpenMode.ReadWriteCreate,
+                        Pooling = false
+                    };
+                    using (var destination = new SqliteConnection(destinationBuilder.ToString()))
+                    {
+                        destination.Open();
+                        source.BackupDatabase(destination);
+                    }
+
+                    zip.CreateEntryFromFile(snapshot, relative.Replace('\\', '/'), CompressionLevel.Optimal);
+                    files++;
+                    bytes += new FileInfo(snapshot).Length;
+                    return true;
+                }
+                catch (SqliteException ex) when (ex.SqliteErrorCode == 26)
+                {
+                    // A user-owned .db-suffixed file is not necessarily SQLite. Preserve the
+                    // existing ordinary-file backup behavior for that narrow case only.
+                    return false;
+                }
+                finally
+                {
+                    try { if (File.Exists(snapshot)) File.Delete(snapshot); } catch { }
+                }
             }
         }
 
@@ -326,6 +398,10 @@ namespace MediaFlux
 
         private static bool IsRuntimeDirectory(string name) => RuntimeDataDirectories.Contains(name, StringComparer.OrdinalIgnoreCase) || name.StartsWith("ai-intermediate-", StringComparison.OrdinalIgnoreCase);
         private static bool IsTransientFile(string name) => name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) || name.Contains(".partial", StringComparison.OrdinalIgnoreCase);
+        // WAL and SHM are implementation details of their primary SQLite database. They must
+        // never be copied independently; CopyPersistentUserData snapshots the .db through
+        // SQLite's backup API, which includes committed WAL data consistently.
+        private static bool IsSqliteSidecar(string name) => name.EndsWith(".db-wal", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".db-shm", StringComparison.OrdinalIgnoreCase);
         private static bool IsCurrentUserDataDirectory(string source) => string.Equals(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), Services.AppPaths.UserDataDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
         private static string FormatBytes(long bytes) => bytes < 1024L * 1024 ? $"{bytes:N0} bytes" : bytes < 1024L * 1024 * 1024 ? $"{bytes / 1024d / 1024d:0.0} MB" : $"{bytes / 1024d / 1024d / 1024d:0.0} GB";
         private sealed class BackupCleanupResult { public int FilesDeleted { get; set; } public int FoldersDeleted { get; set; } public long BytesReclaimed { get; set; } }

@@ -138,6 +138,8 @@ namespace MediaFlux
                 QualityValue = nudAutoQuality == null
                     ? null
                     : (int)nudAutoQuality.Value,
+                QualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual",
+                QualityTarget = _config.LastQualityTarget,
                 TenBit = chkTenBit?.Checked == true,
                 AudioChannels = comboAudioChannels?.Text ?? "",
                 LimitGpuEncodingQueueToOneJob = _config.LimitGpuEncodingQueueToOneJob,
@@ -188,6 +190,10 @@ namespace MediaFlux
                         (int)nudAutoQuality.Minimum,
                         (int)nudAutoQuality.Maximum);
                 }
+                if (comboQualityMode != null)
+                    SelectQualityMode(comboQualityMode, preset.QualityMode);
+                qualityTargetSelector?.SetSelectedTarget(ParseQualityTarget(preset.QualityTarget));
+                UpdateQualityIntentUi();
                 if (chkTenBit != null)
                     chkTenBit.Checked = preset.TenBit;
 
@@ -212,6 +218,7 @@ namespace MediaFlux
                     _config.LastEncodingSpeedPreset;
                 if (nudAutoQuality != null)
                     _config.LastQualityValue = (int)nudAutoQuality.Value;
+                _config.LastQualityTarget = GetSelectedQualityTarget().ToString();
                 _config.Save(_configPath);
             }
             finally

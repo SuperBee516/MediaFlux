@@ -196,6 +196,23 @@ public sealed class AiBenchmarkDatabase
         catch { return 0; }
     }
 
+    /// <summary>Bounds historical diagnostics; current matching records remain unaffected until they age out.</summary>
+    public int PruneOlderThan(TimeSpan retention, DateTimeOffset? utcNow = null)
+    {
+        if (retention < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(retention));
+        try
+        {
+            lock (_gate)
+            {
+                using SqliteConnection connection = Open(); using SqliteCommand command = connection.CreateCommand();
+                command.CommandText = "DELETE FROM ai_benchmark_results WHERE recorded_utc_ticks < $cutoff;";
+                command.Parameters.AddWithValue("$cutoff", (utcNow ?? DateTimeOffset.UtcNow).Subtract(retention).UtcTicks);
+                return command.ExecuteNonQuery();
+            }
+        }
+        catch { return 0; }
+    }
+
     private static AiBenchmarkRecord ReadRecord(SqliteDataReader reader)
     {
         NcnnThreadConfiguration? threads = reader.IsDBNull(9) ? null : new(reader.GetInt32(9), reader.GetInt32(10), reader.GetInt32(11));

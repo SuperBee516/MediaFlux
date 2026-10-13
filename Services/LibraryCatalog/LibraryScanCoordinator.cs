@@ -253,7 +253,8 @@ namespace MediaFlux.Services.LibraryCatalog
                                 mutation.FullPath,
                                 mutation.VolumeId,
                                 mutation.SizeBytes,
-                                new DateTime(mutation.LastWriteUtcTicks, DateTimeKind.Utc)));
+                                new DateTime(mutation.LastWriteUtcTicks, DateTimeKind.Utc),
+                                FileIdentity: mutation.FileIdentity));
                         if (accepted)
                             Interlocked.Increment(ref enrichmentQueued);
                         else

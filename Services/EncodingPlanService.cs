@@ -1,0 +1,863 @@
+using MediaFlux.Models;
+using MediaFlux.Services.Encoders;
+
+namespace MediaFlux.Services;
+
+/// <summary>
+/// Builds the read-only pre-encode presentation from the same resolved policy,
+/// geometry, restoration, and encoder contracts used by the encode pipeline.
+/// It does not estimate output size or perform any new compatibility decisions.
+/// </summary>
+public static class EncodingPlanService
+{
+    internal sealed record EncodingPlanExecutionValues(
+        OutputContainerDecision ContainerDecision,
+        VideoOutputGeometryPlan? Geometry,
+        VideoEncoderSelection Encoder,
+        string EncoderPreset,
+        bool UseGpu,
+        double? TargetMb,
+        EncodingQualityResolution QualityResolution,
+        int? AudioChannels,
+        EncodingService.StreamMapMode MapMode,
+        bool CopySubtitles,
+        bool CopyDataStreams,
+        bool CopyAttachments,
+        AutomaticTargetPlan? AutomaticTargetPlan);
+
+    /// <summary>
+    /// Creates a domain plan by composing the same container and geometry policy
+    /// used by EncodingService.  The result is observational: callers must not
+    /// use it to choose or alter an execution path.
+    /// </summary>
+    public static EncodingPlan Create(EncodingDecisionContext context)
+        => Create(context, EncodingRecommendationService.Evaluate);
+
+    internal static EncodingPlan Create(
+        EncodingDecisionContext context,
+        Func<EncodingPlan, EncodingRecommendation> evaluateRecommendation)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(evaluateRecommendation);
+        MediaProbeStreamInfo? sourceVideo = context.Source.Streams.FirstOrDefault(stream =>
+            stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+        VideoOutputGeometryPlan? geometry = null;
+        if (sourceVideo?.Width is > 0 && sourceVideo.Height is > 0)
+        {
+            VideoOutputResolutionPlan resolution = VideoRestorationPipeline.ResolveFinalOutputResolution(
+                sourceVideo.Width.Value, sourceVideo.Height.Value, context.Restoration, context.ScaleMode);
+            geometry = VideoOutputGeometryPlanner.Resolve(
+                sourceVideo.Width.Value, sourceVideo.Height.Value, resolution, context.Encoder, context.TenBit);
+        }
+
+        OutputContainerDecision container = OutputContainerPolicy.Decide(
+            context.ContainerConfigured, context.Source, context.Input, context.MapMode,
+            context.CopySubtitles, context.CopyDataStreams, context.CopyAttachments,
+            audioWillBeTranscoded: context.AudioChannels is > 0);
+        AutomaticTargetPlan? automaticTarget = null;
+        if (context.TargetMb is not > 0 &&
+            context.QualityIntent is { Kind: EncodingQualityIntentKind.AutomaticTargetBitrate, Target: { } target })
+        {
+            automaticTarget = AutomaticTargetPlanner.Create(
+                context.Source, context.Input, context.Encoder, geometry,
+                context.KnownDuration, target, context.AudioChannels, container);
+            if (!automaticTarget.IsAvailable)
+                return new EncodingPlan
+                {
+                    IsAvailable = false,
+                    UnavailableReason = automaticTarget.Reason,
+                    AutomaticTarget = automaticTarget
+                };
+        }
+        bool strictRejected = container.Resolved == OutputContainer.Mp4 &&
+            context.CompatibilityPolicy == ContainerCompatibilityPolicy.Strict &&
+            !OutputContainerPolicy.CanProceedAutomatically(container, context.CompatibilityPolicy);
+        var reasons = new List<EncodingDecisionReason>
+        {
+            new(EncodingDecisionReasonCode.UserRequestedVideoReencode, "The existing encoding pipeline always supplies a replacement video stream."),
+            new(EncodingDecisionReasonCode.ContainerCompatibility, container.Reason)
+        };
+        if (context.ContainerConfigured == OutputContainerSelection.Auto)
+            reasons.Add(new(EncodingDecisionReasonCode.ContainerAutoResolved, container.Reason));
+        if (geometry?.WasNormalized == true)
+            reasons.Add(new(EncodingDecisionReasonCode.GeometryNormalized, geometry.Reason));
+        if (context.UseGpu)
+            reasons.Add(new(EncodingDecisionReasonCode.HardwareEncoderSelected, "The validated request selected hardware encoding."));
+        if (context.TargetMb is > 0)
+            reasons.Add(new(EncodingDecisionReasonCode.TargetSizeBudget, "A target-size budget is configured."));
+        if (automaticTarget is not null)
+            reasons.Add(new(EncodingDecisionReasonCode.TargetBitrateBudget,
+                $"Automatic uses {automaticTarget.TargetVideoBitrateKbps:0} kbps VBR ({automaticTarget.QualityTarget}); projected total is approximately {automaticTarget.ProjectedOutputBytes:N0} bytes. {automaticTarget.Reason}"));
+        if (context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
+            reasons.Add(new(EncodingDecisionReasonCode.IntelligentRecoveryAvailable, "One tolerant source-video decode retry is permitted only after corroborated failure evidence."));
+        if (strictRejected)
+            reasons.Add(new(EncodingDecisionReasonCode.StrictPolicyRejected, "Strict compatibility policy rejects the resolved stream plan."));
+
+        List<EncodingPlanStream> streams = container.StreamPlans.Select(plan => new EncodingPlanStream(
+            plan.StreamIndex, plan.StreamType, plan.Codec, plan.Action, plan.TargetCodec,
+            plan.Reason,
+            plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase)
+                ? context.AudioChannels : null)).ToList();
+        foreach (EncodingPlanStream audio in streams.Where(stream => stream.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase)))
+            reasons.Add(new(audio.Action == StreamCompatibilityAction.Copy ? EncodingDecisionReasonCode.CompatibleAudioPassthrough : EncodingDecisionReasonCode.AudioConversionRequired,
+                audio.Action == StreamCompatibilityAction.Copy ? "The container policy preserves this audio stream." : "The container policy requires an audio compatibility action."));
+        foreach (EncodingPlanStream subtitle in streams.Where(stream => stream.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) && stream.Action != StreamCompatibilityAction.Copy))
+            reasons.Add(new(EncodingDecisionReasonCode.SubtitleConversionRequired, "The container policy requires a subtitle compatibility action."));
+
+        var risks = new List<EncodingRisk>();
+        AddCompatibilityRisks(container, risks);
+        if (geometry?.WasNormalized == true)
+            risks.Add(new(EncodingRiskSeverity.Information, EncodingRiskCategory.Geometry, "geometry-normalized", geometry.Reason));
+        if (context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
+            risks.Add(new(EncodingRiskSeverity.Information, EncodingRiskCategory.SourceDecode, "conditional-video-recovery", "A single tolerant retry is available only for corroborated source-video corruption; cancellation, storage, and NVENC failures are excluded."));
+
+        bool copiedAudioRecoveryCandidate = container.StreamPlans.Any(plan =>
+            plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+            plan.Action == StreamCompatibilityAction.Copy);
+        bool intelligentRecovery = context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent;
+        bool tolerantSalvageEligible = intelligentRecovery &&
+            context.Input.Kind == EncodingInputKind.File &&
+            string.Equals(sourceVideo?.CodecName, "h264", StringComparison.OrdinalIgnoreCase);
+        EncodingRecoveryCapability[] recoveryCapabilities =
+        [
+            new(EncodingRecoveryKind.VideoDecode, EncodingRecoveryMode.Strict, intelligentRecovery, intelligentRecovery ? 1 : 0,
+                [EncodingRecoveryFailureClass.SourceVideoCorruption, EncodingRecoveryFailureClass.FrameCadenceValidationFailure, EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption],
+                [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.StorageFailure, EncodingRecoveryFailureClass.NvencFailure, EncodingRecoveryFailureClass.SourceTruncation, EncodingRecoveryFailureClass.SourceAudioCorruption],
+                "The existing video policy alone corroborates failure evidence and permits one tolerant retry."),
+            new(EncodingRecoveryKind.SourceContainerRemux, EncodingRecoveryMode.Strict, intelligentRecovery, intelligentRecovery ? 1 : 0,
+                [EncodingRecoveryFailureClass.SourceContainerCorruption],
+                [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.StorageFailure, EncodingRecoveryFailureClass.NvencFailure],
+                "Strong source-integrity evidence permits one non-destructive stream-copy remux followed by decode validation."),
+            new(EncodingRecoveryKind.TolerantDecodeReencode, EncodingRecoveryMode.Strict, tolerantSalvageEligible, tolerantSalvageEligible ? 1 : 0,
+                [EncodingRecoveryFailureClass.SourceContainerCorruption],
+                [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.StorageFailure, EncodingRecoveryFailureClass.NvencFailure, EncodingRecoveryFailureClass.SourceTruncation],
+                "After the one stream-copy remux is authoritatively rejected, eligible H.264 file sources may receive one tolerant software-decode re-encode with strict copied-audio and final output validation."),
+            new(EncodingRecoveryKind.AudioStream, EncodingRecoveryMode.Strict, intelligentRecovery && copiedAudioRecoveryCandidate, intelligentRecovery && copiedAudioRecoveryCandidate ? 1 : 0,
+                [EncodingRecoveryFailureClass.SourceAudioCorruption],
+                [EncodingRecoveryFailureClass.Cancellation, EncodingRecoveryFailureClass.SourceVideoCorruption],
+                "The existing audio path can transcode only a copied stream identified from encode diagnostics."),
+            new(EncodingRecoveryKind.HardwareDecode, EncodingRecoveryMode.Strict, context.UseGpu && context.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase), context.UseGpu && context.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase) ? 1 : 0,
+                [EncodingRecoveryFailureClass.NvdecCudaFailure],
+                [EncodingRecoveryFailureClass.Cancellation],
+                "The existing NVDEC/CUDA fallback retains NVENC and removes hardware decode."),
+            new(EncodingRecoveryKind.GpuFramePipeline, EncodingRecoveryMode.Strict, context.UseGpu && context.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase), context.UseGpu && context.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase) ? 1 : 0,
+                [EncodingRecoveryFailureClass.GpuFramePipelineFailure],
+                [EncodingRecoveryFailureClass.Cancellation],
+                "The existing GPU-frame fallback uses software-frame conversion when negotiation fails.")
+        ];
+
+        EncodingQualityIntent qualityIntent = context.QualityIntent ??
+            EncodingQualityIntent.LegacyNumeric(context.QualityValue);
+        EncodingQualityResolution quality = new EncodingQualityPolicyService().Resolve(
+            new EncodingQualityPolicyRequest(
+                qualityIntent, context.Source, context.Encoder, geometry,
+                context.ScaleMode, context.TargetMb));
+
+        double? targetKbps = automaticTarget?.TargetTotalBitrateKbps ??
+            (context.TargetMb is > 0 && context.KnownDuration > TimeSpan.Zero
+                ? context.TargetMb.Value * 8192d / context.KnownDuration.TotalSeconds : null);
+        double? sourceBytes = context.Input.Kind == EncodingInputKind.File && File.Exists(context.Input.SourcePath)
+            ? new FileInfo(context.Input.SourcePath).Length : null;
+        double? automaticEstimateMb = automaticTarget?.ProjectedOutputBytes is long projectedBytes && projectedBytes > 0
+            ? projectedBytes / (1024d * 1024d)
+            : null;
+        double? ratio = automaticTarget?.ProjectedOutputBytes is long automaticBytes && automaticBytes > 0 && sourceBytes is > 0
+            ? automaticBytes / sourceBytes.Value
+            : sourceBytes is > 0 && context.TargetMb is > 0
+                ? context.TargetMb.Value * 1024d * 1024d / sourceBytes.Value
+                : null;
+        // Historical forecasts are observational. Loading the statistics journal
+        // cannot supply execution quality or become a prerequisite for Start.
+        var source = new EncodingPlanSource(sourceVideo?.CodecName ?? "unknown", sourceVideo?.Width, sourceVideo?.Height, sourceVideo?.FrameRate, context.KnownDuration > TimeSpan.Zero ? context.KnownDuration.TotalSeconds : null)
+        {
+            SizeBytes = context.Source.SizeBytes,
+            BitrateKbps = sourceVideo?.BitRate is > 0 ? sourceVideo.BitRate.Value / 1000d : context.Source.BitRate is > 0 ? context.Source.BitRate.Value / 1000d : null
+        };
+        var executionValues = new EncodingPlanExecutionValues(
+            container, geometry, context.Encoder, context.EncoderPreset, context.UseGpu, context.TargetMb, quality,
+            context.AudioChannels, context.MapMode, container.CopySubtitles,
+            container.CopyDataStreams, container.CopyAttachments, automaticTarget);
+        EncodingPlan plan = new EncodingPlan
+        {
+            IsAvailable = true,
+            Source = source,
+            SourceHealth = context.SourceHealth,
+            Video = new EncodingPlanVideo("Reencode", context.Encoder.FfmpegCodec, context.Encoder.EncoderId, geometry?.RequestedWidth, geometry?.RequestedHeight, geometry?.Width, geometry?.Height, geometry?.PixelFormat),
+            Audio = streams.Where(stream => stream.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase)).ToArray(),
+            Subtitles = streams.Where(stream => stream.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase)).ToArray(),
+            Container = new EncodingPlanContainer(context.ContainerConfigured, container.Resolved, container.Reason),
+            Hardware = new EncodingPlanHardware(context.UseGpu, context.Encoder.EncoderId, context.UseGpu),
+            Recovery = new EncodingPlanRecovery("Strict", context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent, context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent ? 1 : 0, new[] { "corroborated-source-video-corruption" }, new[] { "cancellation", "storage", "NVENC", "source-truncation", "audio-only" }),
+            Preflight = new EncodingPlanPreflight(
+            [
+                new(EncodingPreflightCheckKind.SourceProbe, EncodingPreflightDisposition.Required, "FFprobe resolves source streams before planning and launch."),
+                new(EncodingPreflightCheckKind.SourceTiming, context.Input.Kind == EncodingInputKind.File ? EncodingPreflightDisposition.Required : EncodingPreflightDisposition.NotRequired, "File inputs retain the existing source-timing safety analysis."),
+                new(EncodingPreflightCheckKind.SubtitleConversion, EncodingPreflightDisposition.Required, "Existing subtitle conversion preflight validates planned subtitle operations."),
+                new(EncodingPreflightCheckKind.CopiedAudioDecode, EncodingPreflightDisposition.NotRequired, "Copied audio remains on the normal encode path; no full-duration preflight is added."),
+                new(EncodingPreflightCheckKind.SampleComparison, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison ? EncodingPreflightDisposition.Required : EncodingPreflightDisposition.NotRequired, "Sample comparison retains its existing independent command and failure semantics.")
+            ]),
+            RecoveryCapabilities = new EncodingPlanRecoveryCapabilities(recoveryCapabilities),
+            ValidationIntent = new EncodingValidationIntent(true, true, true, true, true, true, true, context.ValidationProfile.ToString()),
+            FinalizationIntent = new EncodingFinalizationIntent(true, true, true, true, "Collision-safe, no-overwrite promotion"),
+            Validation = new EncodingPlanValidation(context.ValidationProfile.ToString(), true, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison),
+            Quality = quality,
+            AutomaticTarget = automaticTarget,
+            SourceAdaptiveShadow = null,
+            Estimates = new EncodingPlanEstimates(targetKbps,
+                automaticEstimateMb ?? context.TargetMb, ratio,
+                null, context.SizePredictionCalibration?.CalibratedPredictionMb)
+            {
+                TargetVideoBitrateKbps = automaticTarget?.TargetVideoBitrateKbps
+            },
+            SizePredictionCalibration = context.SizePredictionCalibration,
+            Risks = risks,
+            DecisionReasons = reasons,
+            ExecutionValues = executionValues,
+            ProductionPlan = ProductionPlanFingerprintService.Create(context, executionValues)
+        };
+        try
+        {
+            plan.Recommendation = evaluateRecommendation(plan);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            plan.Recommendation = null;
+            System.Diagnostics.Debug.WriteLine(
+                $"[EncodingPlan] Optional recommendation failed; the plan remains available. {ex}");
+        }
+        return plan;
+    }
+
+    internal static EncodingPlanExecutionValues GetExecutionValues(EncodingPlan plan) =>
+        plan.ExecutionValues ?? throw new InvalidOperationException(
+            "The plan was not created for execution.");
+
+    internal static EncodingPlan FreezeAdaptiveSelection(EncodingPlan plan, AdaptiveQualitySelectionEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(evidence);
+        using IDisposable? performanceScope = AutomaticEncodePerformanceInstrumentation.Current?.MeasurePlanFreeze();
+        if (evidence.Candidates.Any(c => c.Samples.Any(s => s.Purpose != VideoSamplePurpose.ProductionAcceptance)))
+            throw new InvalidDataException("Preview evidence cannot be frozen as production selection.");
+        EncodingPlanExecutionValues execution = GetExecutionValues(plan);
+        EncodingQualityResolution quality = execution.QualityResolution with
+        {
+            EffectiveQuality = evidence.SelectedQuality ?? evidence.PreferredQuality,
+            Reasons = Array.AsReadOnly(execution.QualityResolution.Reasons.Append(
+                new EncodingQualityReason(EncodingQualityReasonCode.AdaptiveStorageSavingsSelection, evidence.Reason)).ToArray())
+        };
+        return new EncodingPlan
+        {
+            IsAvailable = plan.IsAvailable, UnavailableReason = plan.UnavailableReason, PlanId = plan.PlanId,
+            Source = plan.Source, SourceHealth = plan.SourceHealth, Video = plan.Video,
+            Audio = plan.Audio, Subtitles = plan.Subtitles, Container = plan.Container, Hardware = plan.Hardware,
+            Recovery = plan.Recovery,
+            Preflight = plan.Preflight,
+            RecoveryCapabilities = plan.RecoveryCapabilities is null ? null : new(
+                Array.AsReadOnly(plan.RecoveryCapabilities.Items.Select(capability =>
+                    capability.Kind is EncodingRecoveryKind.SourceContainerRemux or EncodingRecoveryKind.TolerantDecodeReencode
+                        ? capability
+                        : capability with
+                        {
+                            Permitted = false,
+                            MaximumAttempts = 0,
+                            Reason = "Adaptive selection permits only the existing evidence-gated source-corruption recovery path."
+                        }).ToArray())),
+            ValidationIntent = plan.ValidationIntent, FinalizationIntent = plan.FinalizationIntent, Validation = plan.Validation,
+            // Do not carry the preferred-quality recommendation forward; its size
+            // evidence is invalidated below and it may no longer describe execution.
+            Quality = quality, AdaptiveSelection = evidence,
+            // Preferred-quality predictions/calibration are no longer comparable.
+            // Sample selection never enters research or successful prediction evidence.
+            SourceAdaptiveShadow = null, Estimates = new(null, null, null), SizePredictionCalibration = null,
+            Risks = plan.Risks,
+            DecisionReasons = plan.DecisionReasons,
+            Sections = plan.Sections,
+            ExecutionValues = execution with { QualityResolution = quality },
+            ProductionPlan = plan.ProductionPlan is null
+                ? null
+                : ProductionPlanFingerprintService.WithQuality(
+                    plan.ProductionPlan, quality.EffectiveQuality)
+        };
+    }
+
+    internal static EncodingPlan PreserveConfiguredQualityAfterAdaptiveAbstention(
+        EncodingPlan plan, AdaptiveQualitySelectionEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(evidence);
+        using IDisposable? performanceScope = AutomaticEncodePerformanceInstrumentation.Current?.MeasurePlanFreeze();
+        if (evidence.Disposition != AdaptiveSelectionDisposition.NotSuitable ||
+            evidence.SelectedQuality != evidence.PreferredQuality)
+            throw new InvalidOperationException("Adaptive abstention must retain the configured preferred quality.");
+        if (evidence.Candidates.Any(candidate => candidate.Samples.Any(sample =>
+                sample.Purpose != VideoSamplePurpose.ProductionAcceptance)))
+            throw new InvalidDataException("Preview evidence cannot be attached to a production plan.");
+
+        EncodingPlanExecutionValues execution = GetExecutionValues(plan);
+        if (!plan.IsAvailable || plan.AdaptiveSelection is not null || plan.Quality is null ||
+            plan.Quality.EffectiveQuality != evidence.PreferredQuality ||
+            execution.QualityResolution.EffectiveQuality != evidence.PreferredQuality)
+            throw new InvalidOperationException("The configured execution plan does not match the adaptive abstention quality.");
+
+        // Abstention is observational. Keep the configured plan, estimates,
+        // recommendation, and recovery policy intact while retaining its evidence.
+        return new EncodingPlan
+        {
+            IsAvailable = plan.IsAvailable,
+            UnavailableReason = plan.UnavailableReason,
+            PlanId = plan.PlanId,
+            Source = plan.Source,
+            SourceHealth = plan.SourceHealth,
+            Video = plan.Video,
+            Audio = plan.Audio,
+            Subtitles = plan.Subtitles,
+            Container = plan.Container,
+            Hardware = plan.Hardware,
+            Recovery = plan.Recovery,
+            Preflight = plan.Preflight,
+            RecoveryCapabilities = plan.RecoveryCapabilities,
+            ValidationIntent = plan.ValidationIntent,
+            FinalizationIntent = plan.FinalizationIntent,
+            Validation = plan.Validation,
+            Quality = plan.Quality,
+            AdaptiveSelection = evidence,
+            SourceAdaptiveShadow = plan.SourceAdaptiveShadow,
+            Estimates = plan.Estimates,
+            SizePredictionCalibration = plan.SizePredictionCalibration,
+            Recommendation = plan.Recommendation,
+            Risks = plan.Risks,
+            DecisionReasons = plan.DecisionReasons,
+            Sections = plan.Sections,
+            ExecutionValues = execution,
+            ProductionPlan = plan.ProductionPlan
+        };
+    }
+
+    internal static EncodingPlan FreezeAdaptiveRetryQuality(
+        EncodingPlan plan,
+        PolicyCDecision decision,
+        int attemptNumber,
+        int completedProductionEncodeCount)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(decision);
+        if (attemptNumber != AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber)
+            throw new ArgumentOutOfRangeException(nameof(attemptNumber), "Policy C can derive only attempt 2.");
+        if (completedProductionEncodeCount != AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber)
+            throw new ArgumentOutOfRangeException(nameof(completedProductionEncodeCount), "Policy C can derive attempt 2 only after attempt 1.");
+        if (!decision.ShouldRetry || decision.ReasonCode != PolicyCDecisionReason.Selected || decision.Candidate is null)
+            throw new InvalidOperationException("A successful Policy C decision with a selected candidate is required.");
+        if (!plan.IsAvailable || plan.AdaptiveSelection is not { Disposition: AdaptiveSelectionDisposition.Selected, SelectedQuality: int selectedQuality } selection ||
+            plan.Quality is null || plan.Quality.EffectiveQuality != selectedQuality)
+            throw new InvalidOperationException("The original plan must contain a frozen selected adaptive candidate.");
+
+        AdaptiveCandidateEvidence candidate = decision.Candidate;
+        if (selection.Candidates is null || plan.Quality.Mechanism != selection.Mechanism ||
+            !string.Equals(plan.Video?.Codec, selection.Codec, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The plan codec or adaptive candidate collection does not match the frozen selection.");
+        AdaptiveCandidateEvidence[] matchingCandidates = selection.Candidates
+            .Where(row => row is not null && row.Quality == candidate.Quality)
+            .ToArray();
+        AdaptiveCandidateEvidence[] originalCandidates = selection.Candidates
+            .Where(row => row is not null && row.Quality == selectedQuality)
+            .ToArray();
+        if (matchingCandidates.Length != 1 || !ReferenceEquals(matchingCandidates[0], candidate) ||
+            originalCandidates.Length != 1 || originalCandidates[0].Classification != AdaptiveSampleClassification.Borderline)
+            throw new InvalidOperationException("The retry candidate must be a unique row in the frozen evidence and the original selection must be Borderline.");
+        if (candidate.Quality <= selectedQuality || candidate.Quality < selection.PreferredQuality ||
+            candidate.Quality > selection.WorstAcceptableQuality ||
+            candidate.Classification is not (AdaptiveSampleClassification.Borderline or AdaptiveSampleClassification.ClearlyMeets) ||
+            !HasComparableRetryEvidence(originalCandidates[0], candidate))
+            throw new InvalidOperationException("The selected retry candidate is inconsistent with the frozen quality envelope or sample evidence.");
+
+        EncodingPlanExecutionValues execution = GetExecutionValues(plan);
+        if (execution.QualityResolution.EffectiveQuality != selectedQuality ||
+            plan.Recovery is null || plan.RecoveryCapabilities is null ||
+            plan.RecoveryCapabilities.Items.Any(item => item.Permitted &&
+                (item.Kind is not (EncodingRecoveryKind.SourceContainerRemux or EncodingRecoveryKind.TolerantDecodeReencode) ||
+                 item.MaximumAttempts != 1)) ||
+            plan.SourceAdaptiveShadow is not null || plan.SizePredictionCalibration is not null ||
+            plan.Estimates.TargetTotalBitrateKbps is not null || plan.Estimates.EstimatedOutputSizeMb is not null ||
+            plan.Estimates.EstimatedCompressionRatio is not null || plan.Estimates.HistoricalPrediction is not null ||
+            plan.Estimates.ProductionPredictedOutputSizeMb is not null)
+            throw new InvalidOperationException("The original adaptive plan has unsupported recovery authority or unfrozen prediction evidence.");
+
+        const string retryReason = "Policy C attempt 2 of 2; initial candidate rejected by Phase 1.";
+        EncodingQualityResolution quality = execution.QualityResolution with
+        {
+            EffectiveQuality = candidate.Quality,
+            Reasons = Array.AsReadOnly(execution.QualityResolution.Reasons.Append(
+                new EncodingQualityReason(EncodingQualityReasonCode.AdaptiveStorageSavingsRetry, retryReason)).ToArray())
+        };
+        return new EncodingPlan
+        {
+            IsAvailable = plan.IsAvailable, UnavailableReason = plan.UnavailableReason, PlanId = plan.PlanId,
+            Source = plan.Source, SourceHealth = plan.SourceHealth, Video = plan.Video,
+            Audio = plan.Audio, Subtitles = plan.Subtitles, Container = plan.Container, Hardware = plan.Hardware,
+            Recovery = plan.Recovery with
+            {
+                TolerantRecoveryPermitted = false,
+                MaximumRetryCount = 0
+            },
+            Preflight = plan.Preflight,
+            RecoveryCapabilities = new EncodingPlanRecoveryCapabilities(
+                Array.AsReadOnly(plan.RecoveryCapabilities.Items.Select(item => item with
+                {
+                    Permitted = false,
+                    MaximumAttempts = 0,
+                    Reason = "Policy C attempt 2 is a single frozen-quality encode; automatic recovery is disabled."
+                }).ToArray())),
+            ValidationIntent = plan.ValidationIntent, FinalizationIntent = plan.FinalizationIntent, Validation = plan.Validation,
+            Quality = quality, AdaptiveSelection = plan.AdaptiveSelection,
+            SourceAdaptiveShadow = plan.SourceAdaptiveShadow, Estimates = plan.Estimates,
+            SizePredictionCalibration = plan.SizePredictionCalibration, Recommendation = plan.Recommendation,
+            Risks = Array.AsReadOnly(plan.Risks.Where(risk => risk.Code != "conditional-video-recovery").ToArray()),
+            DecisionReasons = Array.AsReadOnly(plan.DecisionReasons.Where(reason => reason.Code != EncodingDecisionReasonCode.IntelligentRecoveryAvailable).ToArray()),
+            Sections = plan.Sections,
+            ExecutionValues = execution with { QualityResolution = quality },
+            ProductionPlan = plan.ProductionPlan is null
+                ? null
+                : ProductionPlanFingerprintService.WithQuality(
+                    plan.ProductionPlan, quality.EffectiveQuality)
+        };
+    }
+
+    private static bool HasComparableRetryEvidence(
+        AdaptiveCandidateEvidence original,
+        AdaptiveCandidateEvidence candidate)
+    {
+        if (!ValidProjection(original) || !ValidProjection(candidate) ||
+            original.Samples is null || candidate.Samples is null || original.Samples.Count == 0 ||
+            original.Samples.Count != candidate.Samples.Count)
+            return false;
+
+        var expected = new HashSet<(string Label, long Start, long Duration)>();
+        foreach (RepresentativeSampleEvidence? evidence in original.Samples)
+        {
+            if (!ValidSample(evidence) || !expected.Add(SampleKey(evidence!.Sample)))
+                return false;
+        }
+        var actual = new HashSet<(string Label, long Start, long Duration)>();
+        foreach (RepresentativeSampleEvidence? evidence in candidate.Samples)
+        {
+            if (!ValidSample(evidence) || !actual.Add(SampleKey(evidence!.Sample)))
+                return false;
+        }
+        return actual.SetEquals(expected);
+    }
+
+    private static bool ValidProjection(AdaptiveCandidateEvidence candidate) =>
+        double.IsFinite(candidate.ProjectedLowerBytes) && candidate.ProjectedLowerBytes > 0 &&
+        double.IsFinite(candidate.ProjectedUpperBytes) && candidate.ProjectedUpperBytes > 0 &&
+        candidate.ProjectedUpperBytes >= candidate.ProjectedLowerBytes &&
+        double.IsFinite(candidate.ContainerAllowanceBytes) && candidate.ContainerAllowanceBytes >= 0;
+
+    private static bool ValidSample(RepresentativeSampleEvidence? evidence) =>
+        evidence?.Purpose == VideoSamplePurpose.ProductionAcceptance && evidence.Sample is { } sample && !string.IsNullOrWhiteSpace(sample.Label) &&
+        sample.Start >= TimeSpan.Zero && sample.Duration > TimeSpan.Zero && evidence.VideoBytes > 0 &&
+        double.IsFinite(evidence.MeasuredSeconds) && evidence.MeasuredSeconds > 0;
+
+    private static (string Label, long Start, long Duration) SampleKey(RepresentativeSample sample) =>
+        (sample.Label, sample.Start.Ticks, sample.Duration.Ticks);
+
+    internal static IReadOnlyList<EncodingPlanDivergence> Compare(
+        EncodingPlan plan, OutputContainerDecision actualContainer,
+        VideoOutputGeometryPlan? actualGeometry, VideoEncoderSelection actualEncoder,
+        double? actualTargetMb, FfmpegSourceDecodeMode actualInitialDecodeMode)
+    {
+        var divergences = new List<EncodingPlanDivergence>();
+        if (plan.Container is { } container && container.Effective != actualContainer.Resolved)
+            divergences.Add(new("output-container", container.Effective.ToString(), actualContainer.Resolved.ToString()));
+        if (plan.Video is { } video && !video.Codec.Equals(actualEncoder.FfmpegCodec, StringComparison.OrdinalIgnoreCase))
+            divergences.Add(new("video-codec", video.Codec, actualEncoder.FfmpegCodec));
+        if (plan.Video is { EffectiveWidth: not null, EffectiveHeight: not null } planned && actualGeometry is not null &&
+            (planned.EffectiveWidth != actualGeometry.Width || planned.EffectiveHeight != actualGeometry.Height))
+            divergences.Add(new("effective-resolution", $"{planned.EffectiveWidth}x{planned.EffectiveHeight}", $"{actualGeometry.Width}x{actualGeometry.Height}"));
+        CompareStreamActions(plan.Audio, actualContainer, "audio-action", divergences);
+        CompareStreamActions(plan.Subtitles, actualContainer, "subtitle-action", divergences);
+        if (plan.Estimates.EstimatedOutputSizeMb != actualTargetMb)
+            divergences.Add(new("target-size-mb", plan.Estimates.EstimatedOutputSizeMb?.ToString("0.###") ?? "unknown", actualTargetMb?.ToString("0.###") ?? "unknown"));
+        if (plan.Recovery is { } recovery && !recovery.InitialDecodeMode.Equals(actualInitialDecodeMode.ToString(), StringComparison.OrdinalIgnoreCase))
+            divergences.Add(new("initial-decode-mode", recovery.InitialDecodeMode, actualInitialDecodeMode.ToString()));
+        return divergences;
+    }
+
+    internal static EncodingPlanDivergence? CompareRecoveryAttempt(
+        EncodingPlan plan, EncodingRecoveryKind kind, EncodingRecoveryFailureClass failureClass)
+    {
+        EncodingRecoveryCapability? capability = plan.RecoveryCapabilities?.Items
+            .FirstOrDefault(item => item.Kind == kind);
+        if (capability is null || !capability.Permitted || !capability.EligibleFailureClasses.Contains(failureClass))
+            return new EncodingPlanDivergence(
+                "recovery-capability",
+                capability is null ? $"{kind}: unavailable" : $"{kind}: not permitted for {failureClass}",
+                $"{kind}: attempted for {failureClass}");
+        return null;
+    }
+
+    public static string DescribeRecovery(EncodingExecutionOutcome outcome)
+    {
+        string recovery = outcome.Recovery.Count == 0
+            ? "RecoveryAttempted=False"
+            : string.Join("; ", outcome.Recovery.Select(item =>
+                $"Type={item.Kind}; Failure={item.FailureClass}; InitialMode={item.InitialMode}; RecoveryMode={item.RecoveryMode}; Attempt={item.Attempt}/{item.MaximumAttempts}; ProcessResult={item.ProcessResult}; MediaDisposition={item.MediaDisposition}; Result={item.Result}"));
+        return $"[EncodingRecovery] PlanId={outcome.PlanId}; {recovery}";
+    }
+
+    internal static EncodingValidationOutcome DescribeValidationOutcome(EncodeFinalizationResult result)
+    {
+        EncodeOutputValidationResult? staged = result.StagedValidationResult;
+        EncodingLifecycleStatus status = staged is null ? EncodingLifecycleStatus.NotRun : staged.Success ? EncodingLifecycleStatus.Passed : EncodingLifecycleStatus.Failed;
+        EncodingLifecycleStatus component = status == EncodingLifecycleStatus.Passed ? EncodingLifecycleStatus.Passed : status;
+        return new EncodingValidationOutcome(status, component, component, component, component, component,
+            result.StagingPath, result.FailureKind == EncodeFinalizationFailureKind.Validation ? "Validation" : "", staged?.ErrorMessage ?? result.ErrorMessage);
+    }
+
+    internal static EncodingFinalizationOutcome DescribeFinalizationOutcome(EncodeFinalizationResult result) =>
+        new(result.Success ? EncodingLifecycleStatus.Passed :
+                result.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected ? EncodingLifecycleStatus.Skipped : EncodingLifecycleStatus.Failed,
+            result.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected ? false : result.StagedValidationResult?.Success,
+            result.FinalOutputPath,
+            result.Success ? EncodingSourceDisposition.DeferredToCaller : EncodingSourceDisposition.Retained,
+            result.Success ? "Promoted" : string.IsNullOrWhiteSpace(result.RecoverableOutputPath) ? "RetainedOrUnavailable" : "Recoverable",
+            result.FailureKind.ToString(), result.ErrorMessage);
+
+    internal static IReadOnlyList<EncodingPlanDivergence> CompareLifecycle(
+        EncodingPlan plan, EncodingExecutionOutcome outcome)
+    {
+        var divergences = new List<EncodingPlanDivergence>();
+        if (outcome.TerminalResult is EncodingTerminalResult.Completed or EncodingTerminalResult.CompletedAfterRecovery or EncodingTerminalResult.CompletedAfterDegradedSalvage)
+        {
+            if (plan.ValidationIntent?.StagedOutputRequired == true && outcome.Validation?.Status != EncodingLifecycleStatus.Passed)
+                divergences.Add(new("validation-lifecycle", "staged validation required", outcome.Validation?.Status.ToString() ?? "NotRun"));
+            if (plan.FinalizationIntent?.PromoteOnlyAfterValidation == true && outcome.Finalization?.Status != EncodingLifecycleStatus.Passed)
+                divergences.Add(new("finalization-lifecycle", "validated promotion required", outcome.Finalization?.Status.ToString() ?? "NotRun"));
+        }
+        return divergences;
+    }
+
+    public static string DescribeLifecycle(EncodingExecutionOutcome outcome) =>
+        $"[EncodingResult] PlanId={outcome.PlanId}; Validation={outcome.Validation?.Status.ToString() ?? "NotRun"}; " +
+        $"Finalization={outcome.Finalization?.Status.ToString() ?? "NotRun"}; TerminalResult={outcome.TerminalResult}.";
+
+    private static void CompareStreamActions(
+        IReadOnlyList<EncodingPlanStream> planned,
+        OutputContainerDecision actualContainer,
+        string decision,
+        List<EncodingPlanDivergence> divergences)
+    {
+        foreach (EncodingPlanStream stream in planned)
+        {
+            StreamCompatibilityPlan? actual = actualContainer.StreamPlans.FirstOrDefault(candidate =>
+                candidate.StreamIndex == stream.StreamIndex &&
+                candidate.StreamType.Equals(stream.StreamType, StringComparison.OrdinalIgnoreCase));
+            if (actual is not null && (actual.Action != stream.Action ||
+                !string.Equals(actual.TargetCodec, stream.TargetCodec, StringComparison.OrdinalIgnoreCase)))
+            {
+                divergences.Add(new(
+                    decision,
+                    $"#{stream.StreamIndex}:{stream.Action}/{stream.TargetCodec ?? "copy"}",
+                    $"#{actual.StreamIndex}:{actual.Action}/{actual.TargetCodec ?? "copy"}"));
+            }
+        }
+    }
+
+    public static string DescribeSummary(EncodingPlan plan)
+    {
+        string source = plan.Source is { } s ? $"{s.Codec} {s.Width}x{s.Height}" : "unknown";
+        string video = plan.Video is { } v ? $"{v.Action}/{v.Codec}" : "unknown";
+        string container = plan.Container is { } c ? $"{c.Configured}->{c.Effective}" : "unknown";
+        string rateControl = plan.AutomaticTarget is { IsAvailable: true } target
+            ? $"RateControl=target-bitrate VBR; target={target.TargetVideoBitrateKbps:0} kbps; maxrate={target.MaximumVideoBitrateKbps:0} kbps; bufsize={target.VideoBufferSizeKbps:0} kbps; projection={target.ProjectedOutputBytes:N0} bytes ({target.Disposition})"
+            : plan.Quality is { } quality && quality.EffectiveQuality is { } value
+                ? $"RateControl={quality.Mechanism} {value}"
+                : "RateControl=unavailable";
+        EncodingRecoveryCapability? videoRecovery = plan.RecoveryCapabilities?.Items
+            .FirstOrDefault(item => item.Kind == EncodingRecoveryKind.VideoDecode);
+        EncodingRecoveryCapability? audioRecovery = plan.RecoveryCapabilities?.Items
+            .FirstOrDefault(item => item.Kind == EncodingRecoveryKind.AudioStream);
+        string recommendation = plan.Recommendation is { } advisory
+            ? $"Recommendation={advisory.DisplayName}; Reason={advisory.PrimaryReason}; Confidence={advisory.Confidence}"
+            : plan.AdaptiveSelection is not null
+                ? "Recommendation=Unavailable (adaptive sample selection invalidated preferred-quality estimates)"
+                : "Recommendation=Unavailable";
+        SourceAdaptiveShadowCalibration? shadow = plan.SourceAdaptiveShadow;
+        string shadowSummary = shadow is null ? "" :
+            $" Source Adaptive shadow: status={shadow.Status}; CQ={shadow.InitialCq?.ToString() ?? "n/a"} (unchanged); " +
+            $"source-video={shadow.SourceVideoBitrateKbps?.ToString("0") ?? "unknown"} kbps [{shadow.SourceBitrateProvenance}]; " +
+            $"predicted-video={shadow.PredictedOutputVideoBitrateKbps?.ToString("0") ?? "unknown"} kbps; " +
+            $"video-ratio={shadow.PredictedVideoRatio?.ToString("0.##") ?? "unknown"}x; " +
+            $"total-bytes={shadow.PredictedTotalOutputBytes?.ToString() ?? "unknown"}; " +
+            $"reason={shadow.EligibilityReason}; execution-adjustment=none (shadow mode).";
+        return $"[EncodingPlan] PlanId={plan.PlanId}; Source={source}; Video={video}; Container={container}; {rateControl}; {recommendation}; " +
+            $"Recovery={plan.Recovery?.InitialDecodeMode}; VideoRecoveryPermitted={videoRecovery?.Permitted}; " +
+            $"AudioRecoveryPermitted={audioRecovery?.Permitted}; Risks={plan.Risks.Count} informational.{shadowSummary}";
+    }
+
+    private static void AddCompatibilityRisks(OutputContainerDecision decision, List<EncodingRisk> risks)
+    {
+        foreach (StreamCompatibilityPlan stream in decision.StreamPlans.Where(plan => plan.Action != StreamCompatibilityAction.Copy))
+        {
+            EncodingRiskCategory category = stream.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase)
+                ? EncodingRiskCategory.AudioCompatibility : stream.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase)
+                    ? EncodingRiskCategory.SubtitleCompatibility : EncodingRiskCategory.ContainerCompatibility;
+            risks.Add(new(EncodingRiskSeverity.Information, category, "container-stream-action", stream.Reason));
+        }
+    }
+
+    public sealed record Request(
+        MediaProbeResult Source,
+        EncodingInputSource Input,
+        VideoEncoderSelection Encoder,
+        bool UseGpu,
+        bool TenBit,
+        int? AudioChannels,
+        EncodingService.ScaleMode ScaleMode,
+        VideoRestorationSettings Restoration,
+        OutputContainerSelection OutputContainer,
+        EncodingService.StreamMapMode MapMode = EncodingService.StreamMapMode.KeepAll,
+        bool CopySubtitles = true,
+        bool CopyDataStreams = true,
+        bool CopyAttachments = true,
+        ContainerCompatibilityPolicy CompatibilityPolicy = ContainerCompatibilityPolicy.Intelligent);
+
+    public static EncodingPlan Resolve(Request request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Source);
+        ArgumentNullException.ThrowIfNull(request.Input);
+        ArgumentNullException.ThrowIfNull(request.Encoder);
+
+        var sections = new List<EncodingPlanSection>();
+        var compatibilityItems = new List<EncodingPlanItem>();
+        MediaProbeStreamInfo? sourceVideo = request.Source.Streams.FirstOrDefault(
+            stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+
+        if (sourceVideo != null)
+        {
+            var videoItems = new List<EncodingPlanItem>();
+            string sourceCodec = DisplayCodec(sourceVideo.CodecName);
+            string sourceResolution = DescribeResolution(sourceVideo.Width, sourceVideo.Height);
+            string targetCodec = DisplayCodec(request.Encoder.FfmpegCodec);
+            string targetResolution = sourceResolution;
+            VideoOutputGeometryPlan? geometry = null;
+
+            if (sourceVideo.Width is > 0 && sourceVideo.Height is > 0)
+            {
+                VideoOutputResolutionPlan outputResolution =
+                    VideoRestorationPipeline.ResolveFinalOutputResolution(
+                        sourceVideo.Width.Value,
+                        sourceVideo.Height.Value,
+                        request.Restoration,
+                        request.ScaleMode);
+                geometry = VideoOutputGeometryPlanner.Resolve(
+                    sourceVideo.Width.Value,
+                    sourceVideo.Height.Value,
+                    outputResolution,
+                    request.Encoder,
+                    request.TenBit);
+                targetResolution = DescribeResolution(geometry.Width, geometry.Height);
+            }
+
+            videoItems.Add(new(
+                "Video",
+                $"{sourceCodec} {sourceResolution} → {targetCodec} {targetResolution}"));
+
+            string encoderName = request.UseGpu ? "Hardware acceleration" : "Software encoding";
+            try
+            {
+                encoderName = EncoderRegistry.Default
+                    .Resolve(request.Encoder.EncoderId, request.Encoder.CodecFamily)
+                    .Provider.Capabilities.DisplayName;
+                encoderName += request.UseGpu ? " (GPU)" : " (CPU)";
+            }
+            catch
+            {
+                // The actual encoder validation remains authoritative at encode time.
+            }
+            videoItems.Add(new("Encoder", encoderName));
+
+            if (geometry != null && !string.IsNullOrWhiteSpace(geometry.PixelFormat))
+                videoItems.Add(new("Pixel format", geometry.PixelFormat));
+
+            sections.Add(new("Video", videoItems));
+
+            if (geometry?.WasNormalized == true)
+            {
+                compatibilityItems.Add(new(
+                    "Geometry",
+                    $"{geometry.RequestedWidth}×{geometry.RequestedHeight} → {geometry.Width}×{geometry.Height}",
+                    geometry.Reason));
+            }
+        }
+
+        OutputContainerDecision decision = OutputContainerPolicy.Decide(
+            request.OutputContainer,
+            request.Source,
+            request.Input,
+            request.MapMode,
+            request.CopySubtitles,
+            request.CopyDataStreams,
+            request.CopyAttachments,
+            audioWillBeTranscoded: request.AudioChannels is > 0);
+
+        var audioItems = new List<EncodingPlanItem>();
+        foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(IsAudio))
+        {
+            string action = plan.Action switch
+            {
+                StreamCompatibilityAction.Copy => "Copy",
+                StreamCompatibilityAction.Transcode =>
+                    $"{DisplayCodec(plan.TargetCodec ?? "aac")} 192 kbps",
+                StreamCompatibilityAction.Omit => "Drop",
+                _ => "Unsupported"
+            };
+            audioItems.Add(new(
+                $"Stream {plan.StreamIndex}",
+                $"{DisplayCodec(plan.Codec)} → {action}",
+                plan.Reason));
+        }
+        if (audioItems.Count > 0)
+            sections.Add(new("Audio", audioItems));
+
+        var subtitleItems = new List<EncodingPlanItem>();
+        foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(IsSubtitle))
+        {
+            string action = plan.Action switch
+            {
+                StreamCompatibilityAction.Copy => "Copy",
+                StreamCompatibilityAction.Transcode => DisplayCodec(plan.TargetCodec ?? "converted"),
+                StreamCompatibilityAction.Omit => "Drop",
+                _ => "Unsupported"
+            };
+            subtitleItems.Add(new(
+                $"Stream {plan.StreamIndex}",
+                $"{DisplayCodec(plan.Codec)} → {action}",
+                plan.Reason));
+        }
+        if (subtitleItems.Count > 0)
+            sections.Add(new("Subtitles", subtitleItems));
+
+        VideoRestorationSettings effectiveRestoration =
+            VideoRestorationModeResolver.Resolve(request.Restoration);
+        var processingItems = new List<EncodingPlanItem>();
+        if (effectiveRestoration.Preset != VideoRestorationPreset.Off)
+        {
+            processingItems.Add(new(
+                "Restoration",
+                DisplayRestorationPreset(effectiveRestoration.Preset)));
+            VideoRestorationPipelinePlan pipeline =
+                VideoRestorationPipeline.BuildPlan(effectiveRestoration, request.ScaleMode);
+            if (pipeline.UsesAi)
+            {
+                string model = string.IsNullOrWhiteSpace(effectiveRestoration.AiModelId)
+                    ? "configured model"
+                    : effectiveRestoration.AiModelId;
+                processingItems.Add(new(
+                    "AI stage",
+                    $"{effectiveRestoration.AiMode} · {model} · {(int)effectiveRestoration.AiScale}×"));
+            }
+            else if (!string.IsNullOrWhiteSpace(pipeline.ConventionalFilterChain))
+            {
+                processingItems.Add(new("Stage", "FFmpeg restoration filters"));
+            }
+        }
+        if (processingItems.Count > 0)
+            sections.Add(new("Processing", processingItems));
+
+        if (decision.Resolved == OutputContainer.Mp4 &&
+            request.CompatibilityPolicy == ContainerCompatibilityPolicy.Strict &&
+            !OutputContainerPolicy.CanProceedAutomatically(
+                decision,
+                request.CompatibilityPolicy))
+        {
+            compatibilityItems.Add(new(
+                "Policy",
+                "Strict policy will stop before encoding",
+                "The resolved stream plan contains a conversion, omission, or unsupported stream."));
+        }
+        else if (decision.Resolved == OutputContainer.Mp4 &&
+                 request.CompatibilityPolicy == ContainerCompatibilityPolicy.AlwaysAsk &&
+                 decision.RequiresConfirmation)
+        {
+            compatibilityItems.Add(new(
+                "Policy",
+                "Confirmation required before encoding",
+                "Always Ask requires approval for the resolved MP4 compatibility corrections."));
+        }
+
+        if (request.OutputContainer == OutputContainerSelection.Auto ||
+            (request.OutputContainer == OutputContainerSelection.Mp4 && decision.CompatibilityWarnings.Count > 0))
+        {
+            compatibilityItems.Add(new(
+                "Container",
+                decision.Resolved.ToString(),
+                decision.Reason));
+        }
+        foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(plan =>
+                     plan.Action is StreamCompatibilityAction.Transcode or
+                     StreamCompatibilityAction.Omit or
+                     StreamCompatibilityAction.Unsupported))
+        {
+            compatibilityItems.Add(new(
+                plan.StreamType,
+                $"{DisplayCodec(plan.Codec)} → {plan.Action switch
+                {
+                    StreamCompatibilityAction.Transcode => DisplayCodec(plan.TargetCodec ?? "converted"),
+                    StreamCompatibilityAction.Omit => "dropped",
+                    _ => "blocked"
+                }}",
+                plan.Reason));
+        }
+        if (compatibilityItems.Count > 0)
+            sections.Add(new("Compatibility corrections", compatibilityItems));
+
+        return new EncodingPlan
+        {
+            IsAvailable = true,
+            Sections = sections
+        };
+    }
+
+    private static bool IsAudio(StreamCompatibilityPlan plan) =>
+        plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSubtitle(StreamCompatibilityPlan plan) =>
+        plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase);
+
+    private static string DescribeResolution(int? width, int? height) =>
+        width is > 0 && height is > 0 ? $"{width}×{height}" : "unknown resolution";
+
+    private static string DisplayCodec(string? codec)
+    {
+        if (string.IsNullOrWhiteSpace(codec))
+            return "unknown";
+
+        return codec.Trim().ToLowerInvariant() switch
+        {
+            "h264" or "avc1" or "libx264" => "H.264",
+            "hevc" or "h265" or "hev1" or "libx265" or "hevc_nvenc" => "HEVC",
+            "av1" or "av1_nvenc" or "svt-av1" => "AV1",
+            "mpeg2video" => "MPEG-2",
+            "mp2" => "MP2",
+            "mp3" => "MP3",
+            "dts" => "DTS",
+            "aac" => "AAC",
+            "mov_text" => "mov_text",
+            "subrip" or "srt" => "SubRip",
+            "ass" or "ssa" => codec.Trim().ToUpperInvariant(),
+            _ => codec.Trim()
+        };
+    }
+
+    private static string DisplayRestorationPreset(VideoRestorationPreset preset) => preset switch
+    {
+        VideoRestorationPreset.VhsTvCaptureRestore => "VHS / TV capture restore",
+        VideoRestorationPreset.VintageAnimationLight => "Vintage animation cleanup",
+        VideoRestorationPreset.VintageAnimationRestore => "Vintage animation restore",
+        VideoRestorationPreset.DvdAnimationRestore => "DVD animation restore",
+        VideoRestorationPreset.Custom => "Custom restoration",
+        _ => preset.ToString()
+    };
+}

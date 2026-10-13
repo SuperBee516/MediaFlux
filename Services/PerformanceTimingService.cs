@@ -160,6 +160,8 @@ public sealed class PerformanceTimingService
         }
     }
 
+    internal void RecordElapsedForTesting(PerformanceTimingStage stage, TimeSpan elapsed) => Record(stage, elapsed, completed: true);
+
     private void RecordAiChunkCore(int frameCount, TimeSpan elapsed)
     {
         _aiFrames += frameCount;
@@ -388,7 +390,12 @@ public sealed class PerformanceTimingService
 
     private static readonly PerformanceTimingStage[] StageOrder =
     {
+        PerformanceTimingStage.SourceProbe,
         PerformanceTimingStage.SourceAnalysis,
+        PerformanceTimingStage.SourceTimingAnalysis,
+        PerformanceTimingStage.SubtitlePreflight,
+        PerformanceTimingStage.AudioIntegrityRecovery,
+        PerformanceTimingStage.VideoDecodeRecovery,
         PerformanceTimingStage.AiPreparation,
         PerformanceTimingStage.AiExtraction,
         PerformanceTimingStage.AiProcessing,
@@ -405,7 +412,12 @@ public sealed class PerformanceTimingService
     private static readonly IReadOnlyDictionary<PerformanceTimingStage, string> StageNames =
         new Dictionary<PerformanceTimingStage, string>
         {
+            [PerformanceTimingStage.SourceProbe] = "Source Probe",
             [PerformanceTimingStage.SourceAnalysis] = "Source Analysis",
+            [PerformanceTimingStage.SourceTimingAnalysis] = "Source Timing Analysis",
+            [PerformanceTimingStage.SubtitlePreflight] = "Subtitle Preflight",
+            [PerformanceTimingStage.AudioIntegrityRecovery] = "Audio Integrity / Recovery",
+            [PerformanceTimingStage.VideoDecodeRecovery] = "Video Decode Recovery",
             [PerformanceTimingStage.AiPreparation] = "AI Preparation",
             [PerformanceTimingStage.AiExtraction] = "AI Extraction",
             [PerformanceTimingStage.AiProcessing] = "AI Processing",
@@ -424,18 +436,28 @@ public sealed class PerformanceTimingService
         private readonly PerformanceTimingService _owner;
         private readonly PerformanceTimingStage _stage;
         private readonly long _startedAt = Stopwatch.GetTimestamp();
+        private readonly AutomaticEncodePerformanceInstrumentation? _diagnosticInstrumentation;
+        private readonly IDisposable? _diagnosticStageScope;
         private int _disposed;
         private bool _completed;
 
         internal PerformanceScope(PerformanceTimingService owner, PerformanceTimingStage stage)
-        { _owner = owner; _stage = stage; }
+        {
+            _owner = owner;
+            _stage = stage;
+            _diagnosticInstrumentation = AutomaticEncodePerformanceInstrumentation.Current;
+            _diagnosticStageScope = _diagnosticInstrumentation?.EnterPerformanceStage(stage);
+        }
 
         public void Complete() => _completed = true;
 
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-            _owner.Record(_stage, Stopwatch.GetElapsedTime(_startedAt), _completed);
+            TimeSpan elapsed = Stopwatch.GetElapsedTime(_startedAt);
+            _owner.Record(_stage, elapsed, _completed);
+            _diagnosticInstrumentation?.RecordPerformanceStage(_stage, _startedAt, elapsed, _completed);
+            _diagnosticStageScope?.Dispose();
         }
     }
 }
@@ -501,7 +523,12 @@ public sealed record AiChunkPerformanceMetrics(
 
 public enum PerformanceTimingStage
 {
+    SourceProbe,
     SourceAnalysis,
+    SourceTimingAnalysis,
+    SubtitlePreflight,
+    AudioIntegrityRecovery,
+    VideoDecodeRecovery,
     AiPreparation,
     AiExtraction,
     AiProcessing,

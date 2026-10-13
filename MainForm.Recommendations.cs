@@ -5,13 +5,6 @@ namespace MediaFlux
 {
     public partial class MainForm
     {
-        private enum RecommendationStartChoice
-        {
-            EncodeAll,
-            CandidatesOnly,
-            Cancel
-        }
-
         private void SetRecommendationAnalyzing(DataGridViewRow row)
         {
             if (!dgvEncodeQueue.Columns.Contains("colEncodeRecommendation"))
@@ -20,12 +13,11 @@ namespace MediaFlux
             RowMeta meta = EnsureRowMeta(row);
             meta.EncodeRecommendation = null;
             meta.BaselineEncodeRecommendation = null;
+            meta.RecommendationPending = false;
             meta.DeepAnalysis = null;
             var cell = row.Cells["colEncodeRecommendation"];
-            cell.Value = _config.SmartRecommendationsEnabled ? "Analyzing…" : "";
-            cell.ToolTipText = _config.SmartRecommendationsEnabled
-                ? "Recommendation will be calculated from this file and the current encoding settings."
-                : "";
+            cell.Value = _config.SmartRecommendationsEnabled ? "—" : "";
+            cell.ToolTipText = "";
             ApplyRecommendationCellStyle(cell, null);
         }
 
@@ -62,6 +54,7 @@ namespace MediaFlux
             RowMeta meta = EnsureRowMeta(row);
             if (updateBaseline)
             {
+                meta.RecommendationPending = false;
                 meta.BaselineEncodeRecommendation = recommendation;
                 meta.DeepAnalysis = null;
                 if (recommendation != null &&
@@ -89,16 +82,15 @@ namespace MediaFlux
                 cell.ToolTipText = "";
                 ApplyRecommendationCellStyle(cell, null);
                 if (row.Selected || dgvEncodeQueue.CurrentRow == row)
-                    UpdateEncodePreview();
+                    UpdateQueueSelectionPreview();
                 return;
             }
 
             cell.Value = recommendation?.DisplayName ?? "Unavailable";
-            cell.ToolTipText = recommendation?.BuildTooltip() ??
-                "Required media metadata could not be analyzed.";
+            cell.ToolTipText = GetQueueAnalysisPresentation(row, meta).BuildQueueTooltip();
             ApplyRecommendationCellStyle(cell, recommendation?.Kind);
             if (row.Selected || dgvEncodeQueue.CurrentRow == row)
-                UpdateEncodePreview();
+                UpdateQueueSelectionPreview();
         }
 
         private static void ApplyRecommendationCellStyle(
@@ -130,64 +122,26 @@ namespace MediaFlux
             cell.Style.SelectionForeColor = fore.IsEmpty ? Color.White : fore;
         }
 
-        private RecommendationStartChoice ReviewRecommendationsBeforeStart(
-            IReadOnlyCollection<DataGridViewRow> requestedRows)
+        private static bool IsQueueRecommendationPending(RowMeta? meta) =>
+            meta?.IntelligencePlan?.Recommendation == null && meta?.RecommendationPending == true;
+
+        private void SetSmartRecommendationPending(DataGridViewRow row)
         {
-            if (!_config.SmartRecommendationsEnabled ||
-                !_config.WarnBeforeEncodingSkippedOrReviewItems)
-            {
-                return RecommendationStartChoice.EncodeAll;
-            }
+            if (row == null || row.IsNewRow || row.DataGridView != dgvEncodeQueue ||
+                !dgvEncodeQueue.Columns.Contains("colEncodeRecommendation"))
+                return;
 
-            var eligible = requestedRows
-                .Where(row =>
-                    row.Tag is not RowMeta
-                    {
-                        ExcludedFromEncodeAsDuplicate: true
-                    } &&
-                    row.Tag is not RowMeta
-                    {
-                        IsDvdEncode: true
-                    })
-                .ToList();
-            int skip = eligible.Count(row =>
-                (row.Tag as RowMeta)?.EncodeRecommendation?.Kind ==
-                SmartEncodeRecommendationKind.Skip);
-            int review = eligible.Count(row =>
-                (row.Tag as RowMeta)?.EncodeRecommendation?.Kind ==
-                SmartEncodeRecommendationKind.Review);
-            int remuxOnly = eligible.Count(row =>
-                (row.Tag as RowMeta)?.EncodeRecommendation?.Kind ==
-                SmartEncodeRecommendationKind.RemuxOnly);
-            int unavailable = eligible.Count(row =>
-            {
-                SmartEncodeRecommendation? recommendation =
-                    (row.Tag as RowMeta)?.EncodeRecommendation;
-                return recommendation == null ||
-                       recommendation.Kind == SmartEncodeRecommendationKind.Unavailable;
-            });
-
-            if (skip == 0 && review == 0 && remuxOnly == 0 && unavailable == 0)
-                return RecommendationStartChoice.EncodeAll;
-
-            DialogResult choice = RecommendationStartForm.ShowRecommendationChoice(
-                this,
-                skip,
-                review,
-                remuxOnly,
-                unavailable);
-
-            return choice switch
-            {
-                DialogResult.Yes => RecommendationStartChoice.CandidatesOnly,
-                DialogResult.No => RecommendationStartChoice.EncodeAll,
-                _ => RecommendationStartChoice.Cancel
-            };
-        }
-
-        private static bool IsSmartEncodeCandidate(DataGridViewRow row)
-        {
-            return (row.Tag as RowMeta)?.EncodeRecommendation?.IsCandidate == true;
+            RowMeta meta = EnsureRowMeta(row);
+            meta.EncodeRecommendation = null;
+            meta.BaselineEncodeRecommendation = null;
+            meta.RecommendationPending = _config.SmartRecommendationsEnabled;
+            meta.DeepAnalysis = null;
+            var cell = row.Cells["colEncodeRecommendation"];
+            cell.Value = _config.SmartRecommendationsEnabled ? "—" : "";
+            cell.ToolTipText = "";
+            ApplyRecommendationCellStyle(cell, null);
+            if (row.Selected || dgvEncodeQueue.CurrentRow == row)
+                UpdateQueueSelectionPreview();
         }
 
         private void ViewRecommendationDetails_Click(object? sender, EventArgs e)
@@ -203,7 +157,9 @@ namespace MediaFlux
                 (row.Tag as RowMeta)?.EncodeRecommendation;
             if (recommendation == null)
             {
-                ShowStatusInfo("A recommendation is not available for the selected file.");
+                ShowStatusInfo(IsQueueRecommendationPending(row.Tag as RowMeta)
+                    ? "The recommendation is pending until the production plan has a measured estimate."
+                    : "A recommendation is not available for the selected file.");
                 return;
             }
 
@@ -260,11 +216,12 @@ namespace MediaFlux
             {
                 "Strong candidate" => 0,
                 "Moderate candidate" => 1,
-                "Review" => 2,
-                "Remux only" => 3,
-                "Skip" => 4,
-                "Analyzing…" => 5,
-                _ => 6
+                "—" => 2,
+                "Review" => 3,
+                "Remux only" => 4,
+                "Skip" => 5,
+                "Analyzing…" => 6,
+                _ => 7
             };
         }
     }

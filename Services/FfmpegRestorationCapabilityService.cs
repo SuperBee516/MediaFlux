@@ -50,7 +50,7 @@ public sealed class FfmpegRestorationCapabilityService
         return filters;
     }
 
-    internal static void ClearCacheForTesting() => Cache.Clear();
+    internal static void ClearCache() => Cache.Clear();
     private FfmpegRestorationCapabilities Unknown(string path, int exitCode, string detail)
     {
         var result = new FfmpegRestorationCapabilities(Path.GetFullPath(path), Version(path), new HashSet<string>(StringComparer.OrdinalIgnoreCase), FfmpegFilterInventoryState.Unknown, exitCode, 0);

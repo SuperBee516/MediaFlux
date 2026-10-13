@@ -42,10 +42,107 @@ public sealed class LibraryMaintenanceTests : IDisposable
     }
 
     [Fact]
+    public void WeeklyTuesdayWednesdayAdvancesFromTheExactScheduledOccurrence()
+    {
+        TimeZoneInfo zone=TimeZoneInfo.Utc;
+        LibraryMaintenanceProfile p=Profile(LibraryMaintenanceCadence.Weekly,TimeSpan.FromHours(3),TimeSpan.FromHours(8)) with
+        { Days=LibraryMaintenanceDays.Tuesday|LibraryMaintenanceDays.Wednesday };
+        DateTime tue=new(2026,9,22,3,0,0,DateTimeKind.Utc); // Tuesday
+        DateTime wed=new(2026,9,23,3,0,0,DateTimeKind.Utc);
+        Assert.Equal(tue,LibraryMaintenanceScheduleCalculator.GetMostRecentOccurrenceUtc(p,tue.AddHours(2),zone));
+        Assert.Equal(wed,LibraryMaintenanceScheduleCalculator.GetNextRunUtc(p,tue,zone));
+        Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p with{LastScheduledUtc=tue},wed.AddMinutes(1),false,zone));
+        Assert.False(LibraryMaintenanceScheduleCalculator.IsDue(p with{LastScheduledUtc=wed},wed.AddMinutes(1),false,zone));
+        Assert.Equal(new DateTime(2026,9,29,3,0,0,DateTimeKind.Utc),LibraryMaintenanceScheduleCalculator.GetNextRunUtc(p,wed,zone));
+    }
+
+    [Fact]
+    public void RunAtNextWindowRunsAfterNominalStartButMissedWindowDoesNot()
+    {
+        TimeZoneInfo zone=TimeZoneInfo.Utc;LibraryMaintenanceProfile p=Profile(LibraryMaintenanceCadence.Daily,TimeSpan.FromHours(3),TimeSpan.FromHours(8));
+        DateTime inside=new(2026,9,24,4,0,0,DateTimeKind.Utc);
+        Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p,inside,false,zone));
+        Assert.Equal(new DateTime(2026,9,24,3,0,0,DateTimeKind.Utc),LibraryMaintenanceScheduleCalculator.GetMostRecentOccurrenceUtc(p,inside,zone));
+        Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p,new DateTime(2026,9,24,9,0,0,DateTimeKind.Utc),false,zone)); // Coordinator records this as deferred because the window closed.
+        Assert.False(LibraryMaintenanceScheduleCalculator.IsDue(p,new DateTime(2026,9,24,2,0,0,DateTimeKind.Utc),false,zone));
+        Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p with{MissedRun=LibraryMaintenanceMissedRun.RunOnNextStartup},new DateTime(2026,9,24,9,0,0,DateTimeKind.Utc),true,zone));
+        Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p with{MissedRun=LibraryMaintenanceMissedRun.Skip},inside,false,zone)); // Late Skip occurrences are persisted as skipped history.
+    }
+
+    [Fact]
+    public void DstAmbiguousStartUsesOneDeterministicOccurrence()
+    {
+        TimeZoneInfo zone=TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+        LibraryMaintenanceProfile p=Profile(LibraryMaintenanceCadence.Daily,TimeSpan.FromHours(1.5),TimeSpan.FromHours(4));
+        DateTime utc=new(2026,11,1,5,45,0,DateTimeKind.Utc);
+        DateTime? occurrence=LibraryMaintenanceScheduleCalculator.GetMostRecentOccurrenceUtc(p,utc,zone);
+        Assert.Equal(new DateTime(2026,11,1,5,30,0,DateTimeKind.Utc),occurrence);
+        Assert.False(LibraryMaintenanceScheduleCalculator.IsDue(p with{LastScheduledUtc=occurrence},utc,false,zone));
+    }
+
+    [Fact]
+    public async Task CheckDueRunsEveryLocationThatIsDue()
+    {
+        DateTime now=new(2026,9,24,4,0,0,DateTimeKind.Utc);using SqliteLibraryCatalog catalog=Create();
+        string a=Path.Combine(_root,"due-a"),b=Path.Combine(_root,"due-b");Directory.CreateDirectory(a);Directory.CreateDirectory(b);long first=catalog.UpsertLocation(new(a)).Id;long second=catalog.UpsertLocation(new(b)).Id;
+        foreach(long id in new[]{first,second})catalog.SaveMaintenanceProfile(catalog.GetMaintenanceProfile(id) with{Enabled=true,Cadence=LibraryMaintenanceCadence.Daily,StartTime=TimeSpan.FromHours(3),EndTime=TimeSpan.FromHours(8),Actions=LibraryMaintenanceActions.None});
+        using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},new SuccessfulProbe(),new EmptyVisual(),startMaintenanceScheduler:false);
+        using var scheduler=new LibraryMaintenanceCoordinator(catalog,catalog,runtime.Scanner,runtime.Enrichment,runtime.Duplicates,runtime.VisualSimilarity,runtime.Integrity,utcNow:()=>now,timeZone:TimeZoneInfo.Utc,start:false);
+        await scheduler.CheckDueAsync(false);
+        Assert.Equal(2,catalog.GetMaintenanceHistory(limit:10).Count(x=>x.Outcome==LibraryMaintenanceOutcome.Completed));
+        Assert.All(catalog.GetMaintenanceHistory(limit:10),run=>Assert.Contains("Nominal start",run.Details));
+    }
+
+    [Fact]
+    public async Task SchedulerContinuesAfterAnIterationFails()
+    {
+        DateTime now=new(2026,9,24,3,1,0,DateTimeKind.Utc);string folder=Path.Combine(_root,"scheduler-retry");Directory.CreateDirectory(folder);
+        using SqliteLibraryCatalog catalog=Create();long id=catalog.UpsertLocation(new(folder)).Id;
+        catalog.SaveMaintenanceProfile(catalog.GetMaintenanceProfile(id) with{Enabled=true,Cadence=LibraryMaintenanceCadence.Daily,StartTime=TimeSpan.FromHours(3),EndTime=TimeSpan.FromHours(8),Actions=LibraryMaintenanceActions.None});
+        using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},new SuccessfulProbe(),new EmptyVisual(),startMaintenanceScheduler:false);
+        var flaky=new ThrowOnceMaintenanceCatalog(catalog);
+        using var scheduler=new LibraryMaintenanceCoordinator(flaky,catalog,runtime.Scanner,runtime.Enrichment,runtime.Duplicates,runtime.VisualSimilarity,runtime.Integrity,
+            utcNow:()=>now,timeZone:TimeZoneInfo.Utc,start:true,schedulerInterval:TimeSpan.FromMilliseconds(25));
+        await WaitUntilAsync(()=>catalog.GetMaintenanceHistory(id).Any(x=>x.Outcome==LibraryMaintenanceOutcome.Completed),TimeSpan.FromSeconds(5));
+        Assert.Contains(catalog.GetMaintenanceHistory(id),x=>x.Outcome==LibraryMaintenanceOutcome.Completed);
+    }
+
+    [Fact]
+    public async Task SchedulerContinuesAfterAProfileFails()
+    {
+        DateTime now=new(2026,9,24,3,1,0,DateTimeKind.Utc);using SqliteLibraryCatalog catalog=Create();
+        string a=Path.Combine(_root,"profile-fails"),b=Path.Combine(_root,"profile-continues");Directory.CreateDirectory(a);Directory.CreateDirectory(b);
+        long first=catalog.UpsertLocation(new(a)).Id,second=catalog.UpsertLocation(new(b)).Id;
+        foreach(long id in new[]{first,second})catalog.SaveMaintenanceProfile(catalog.GetMaintenanceProfile(id) with{Enabled=true,Cadence=LibraryMaintenanceCadence.Daily,StartTime=TimeSpan.FromHours(3),EndTime=TimeSpan.FromHours(8),Actions=LibraryMaintenanceActions.None});
+        using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},new SuccessfulProbe(),new EmptyVisual(),startMaintenanceScheduler:false);
+        var flaky=new ThrowOnceMaintenanceCatalog(catalog,throwOnEnumeration:false);
+        using var scheduler=new LibraryMaintenanceCoordinator(flaky,catalog,runtime.Scanner,runtime.Enrichment,runtime.Duplicates,runtime.VisualSimilarity,runtime.Integrity,utcNow:()=>now,timeZone:TimeZoneInfo.Utc,start:false);
+        await scheduler.CheckDueAsync(false);
+        Assert.Single(catalog.GetMaintenanceHistory(limit:10),run=>run.Outcome==LibraryMaintenanceOutcome.Completed);
+    }
+
+    [Fact]
+    public async Task EncodingWaitDefersWhenTheMaintenanceWindowCloses()
+    {
+        DateTime now=new(2026,9,24,3,59,0,DateTimeKind.Utc);string folder=Path.Combine(_root,"encoding-window");Directory.CreateDirectory(folder);
+        using SqliteLibraryCatalog catalog=Create();long id=catalog.UpsertLocation(new(folder)).Id;
+        catalog.SaveMaintenanceProfile(catalog.GetMaintenanceProfile(id) with{Enabled=true,Cadence=LibraryMaintenanceCadence.Daily,StartTime=TimeSpan.FromHours(3),EndTime=TimeSpan.FromHours(4),Actions=LibraryMaintenanceActions.None,ConflictBehavior=LibraryMaintenanceConflictBehavior.Wait});
+        using var runtime=new LibraryAnalyzerRuntime(catalog,new[]{".mkv"},new SuccessfulProbe(),new EmptyVisual(),startMaintenanceScheduler:false);bool encoding=true;
+        // Use a coordinator with a controllable clock for the window boundary.
+        using var scheduler=new LibraryMaintenanceCoordinator(catalog,catalog,runtime.Scanner,runtime.Enrichment,runtime.Duplicates,runtime.VisualSimilarity,runtime.Integrity,
+            isEncodingActive:()=>encoding,utcNow:()=>now,timeZone:TimeZoneInfo.Utc,start:false);
+        var waiting=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        scheduler.ProgressChanged+=p=>{if(p.Stage=="Waiting")waiting.TrySetResult();};
+        Task check=scheduler.CheckDueAsync(false);await waiting.Task.WaitAsync(TimeSpan.FromSeconds(3));now=new DateTime(2026,9,24,4,0,1,DateTimeKind.Utc);
+        await check.WaitAsync(TimeSpan.FromSeconds(3));LibraryMaintenanceRun run=Assert.Single(catalog.GetMaintenanceHistory(id));
+        Assert.Equal(LibraryMaintenanceOutcome.Deferred,run.Outcome);Assert.Contains("window is closed",run.Details,StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void DisabledMissedAndStartupPoliciesDoNotCreateDuplicateDueWork()
     {
         DateTime now=new(2026,8,13,13,30,0,DateTimeKind.Utc);LibraryMaintenanceProfile p=Profile(LibraryMaintenanceCadence.Daily,TimeSpan.FromHours(13),TimeSpan.FromHours(15));
-        Assert.False(LibraryMaintenanceScheduleCalculator.IsDue(p with{Enabled=false},now,false,TimeZoneInfo.Utc));Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p,now,false,TimeZoneInfo.Utc));Assert.False(LibraryMaintenanceScheduleCalculator.IsDue(p with{MissedRun=LibraryMaintenanceMissedRun.Skip},now,false,TimeZoneInfo.Utc));Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p with{MissedRun=LibraryMaintenanceMissedRun.RunOnNextStartup},now,true,TimeZoneInfo.Utc));
+        Assert.False(LibraryMaintenanceScheduleCalculator.IsDue(p with{Enabled=false},now,false,TimeZoneInfo.Utc));Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p,now,false,TimeZoneInfo.Utc));Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p with{MissedRun=LibraryMaintenanceMissedRun.Skip},now,false,TimeZoneInfo.Utc));Assert.True(LibraryMaintenanceScheduleCalculator.IsDue(p with{MissedRun=LibraryMaintenanceMissedRun.RunOnNextStartup},now,true,TimeZoneInfo.Utc));
         Assert.False(LibraryMaintenanceScheduleCalculator.IsDue(p with{LastScheduledUtc=new DateTime(2026,8,13,13,0,0,DateTimeKind.Utc)},now,false,TimeZoneInfo.Utc));
     }
 
@@ -67,6 +164,18 @@ public sealed class LibraryMaintenanceTests : IDisposable
     public void ActiveRunIsUniqueAndInterruptedRunRecoversConservatively()
     {
         using SqliteLibraryCatalog c=Create();long id=c.UpsertLocation(new(Path.Combine(_root,"recover"))).Id;DateTime now=DateTime.UtcNow;long first=c.BeginMaintenanceRun(id,LibraryMaintenanceTrigger.Scheduled,now);Assert.Equal(first,c.BeginMaintenanceRun(id,LibraryMaintenanceTrigger.Scheduled,now));Assert.Equal(1,c.RecoverInterruptedMaintenance(now.AddMinutes(1)));Assert.Equal(LibraryMaintenanceOutcome.Interrupted,Assert.Single(c.GetMaintenanceHistory(id)).Outcome);
+    }
+
+    [Fact]
+    public void ScheduledCompletionPersistsOccurrenceRatherThanLateStartTime()
+    {
+        using SqliteLibraryCatalog c=Create();long id=c.UpsertLocation(new(Path.Combine(_root,"occurrence"))).Id;c.SaveMaintenanceProfile(c.GetMaintenanceProfile(id) with{Enabled=true,Cadence=LibraryMaintenanceCadence.Daily});
+        DateTime occurrence=new(2026,9,23,3,0,0,DateTimeKind.Utc),started=occurrence.AddHours(4);
+        long run=c.BeginMaintenanceRun(id,LibraryMaintenanceTrigger.Scheduled,started);
+        c.CompleteMaintenanceRun(new(run,id,LibraryMaintenanceTrigger.Scheduled,LibraryMaintenanceOutcome.Deferred,"Waiting",started,started.AddMinutes(1),0,0,0,0,0,0,0,0,"Window closed",ScheduledOccurrenceUtc:occurrence));
+        LibraryMaintenanceProfile saved=c.GetMaintenanceProfile(id);
+        Assert.Equal(occurrence,saved.LastScheduledUtc);
+        Assert.Equal(occurrence,Assert.Single(c.GetMaintenanceHistory(id)).ScheduledOccurrenceUtc);
     }
 
     [Fact]
@@ -156,8 +265,28 @@ public sealed class LibraryMaintenanceTests : IDisposable
     private static LibraryIntegrityQueueItem Claim(SqliteLibraryCatalog c,long file){c.EnqueueIntegrity(file,LibraryIntegrityScrubType.Quick);return Assert.Single(c.ClaimIntegrityBatch(1,DateTime.UtcNow));}
     private static LibraryIntegrityResultWrite IntegrityResult(LibraryIntegrityQueueItem item,LibraryIntegrityResultState state)=>new(item.FileId,1,item.ScrubType,state,DateTime.UtcNow,item.SizeBytes,item.LastWriteUtc,item.VolumeId,item.FileIdentity,item.SizeBytes,item.DurationSeconds??0,1,LibraryIntegrityErrorCategory.None,"ok","test");
     private static LibraryMaintenanceProfile Profile(LibraryMaintenanceCadence cadence,TimeSpan start,TimeSpan end)=>new(1,1,true,cadence,LibraryMaintenanceDays.All,start,end,LibraryMaintenanceMissedRun.RunAtNextWindow,LibraryMaintenanceActions.Default,0,DateTime.UtcNow,DateTime.UtcNow);
+    private static async Task WaitUntilAsync(Func<bool> predicate,TimeSpan timeout){DateTime until=DateTime.UtcNow+timeout;while(!predicate()&&DateTime.UtcNow<until)await Task.Delay(10);Assert.True(predicate(),"Expected condition was not reached before timeout.");}
     private sealed class SuccessfulProbe:ILibraryMetadataProbe{public string ToolVersion=>"test";public Task<MediaProbeResult> ProbeAsync(string path,CancellationToken token)=>Task.FromResult(new MediaProbeResult{Success=true,FormatName="matroska",DurationSeconds=60,Streams=new[]{new MediaProbeStreamInfo{CodecType="video",CodecName="h264",Width=1920,Height=1080}}});}
     private sealed class CountingProbe:ILibraryMetadataProbe{private int _count;public int Count=>Volatile.Read(ref _count);public string ToolVersion=>"counting";public Task<MediaProbeResult> ProbeAsync(string path,CancellationToken token){Interlocked.Increment(ref _count);return Task.FromResult(new MediaProbeResult{Success=true,FormatName="matroska",DurationSeconds=60,Streams=new[]{new MediaProbeStreamInfo{CodecType="video",CodecName="h264",Width=1920,Height=1080}}});}}
     private sealed class EmptyVisual:ILibraryVisualFingerprintExtractor{public string ToolVersion=>"test";public Task<IReadOnlyList<ulong>> ExtractAsync(VisualFingerprintCandidate candidate,CancellationToken token)=>Task.FromResult<IReadOnlyList<ulong>>(Array.Empty<ulong>());}
+    private sealed class ThrowOnceMaintenanceCatalog(ILibraryMaintenanceCatalog inner,bool throwOnEnumeration=true):ILibraryMaintenanceCatalog
+    {
+        private int _throw=1;
+        public IReadOnlyList<LibraryMaintenanceProfileView> GetMaintenanceProfiles(DateTime now,TimeZoneInfo? zone=null){if(throwOnEnumeration&&Interlocked.Exchange(ref _throw,0)==1)throw new InvalidOperationException("Injected scheduler iteration failure.");return inner.GetMaintenanceProfiles(now,zone);}
+        public LibraryMaintenanceProfile GetMaintenanceProfile(long id)=>inner.GetMaintenanceProfile(id);
+        public void SaveMaintenanceProfile(LibraryMaintenanceProfile profile)=>inner.SaveMaintenanceProfile(profile);
+        public long BeginMaintenanceRun(long id,LibraryMaintenanceTrigger trigger,DateTime now){if(!throwOnEnumeration&&Interlocked.Exchange(ref _throw,0)==1)throw new InvalidOperationException("Injected profile failure.");return inner.BeginMaintenanceRun(id,trigger,now);}
+        public void UpdateMaintenanceRunStage(long id,string stage,string details)=>inner.UpdateMaintenanceRunStage(id,stage,details);
+        public void RecordMaintenanceCandidates(long id,IReadOnlyCollection<LibraryInventoryMutation> mutations)=>inner.RecordMaintenanceCandidates(id,mutations);
+        public IReadOnlyList<long> GetMaintenanceCandidateFileIds(long id,LibraryInventoryChangeKind? kind,int limit=50_000)=>inner.GetMaintenanceCandidateFileIds(id,kind,limit);
+        public IReadOnlyList<long> GetMaintenanceCandidateFileIdsPage(long id,LibraryInventoryChangeKind? kind,long after,int limit=1_000)=>inner.GetMaintenanceCandidateFileIdsPage(id,kind,after,limit);
+        public IReadOnlyList<LibraryEnrichmentCandidate> GetMaintenanceEnrichmentCandidates(long id,long after,int limit=1_000)=>inner.GetMaintenanceEnrichmentCandidates(id,after,limit);
+        public long PrepareMaintenanceAnalysisCandidates(long id,LibraryMaintenanceProfile profile)=>inner.PrepareMaintenanceAnalysisCandidates(id,profile);
+        public IReadOnlyList<long> GetMaintenanceIntegrityFileIds(long id,LibraryMaintenanceProfile profile,DateTime now,int limit=50_000)=>inner.GetMaintenanceIntegrityFileIds(id,profile,now,limit);
+        public IReadOnlyList<long> GetMaintenanceIntegrityFileIdsPage(long id,LibraryMaintenanceProfile profile,DateTime now,long after,int limit=1_000)=>inner.GetMaintenanceIntegrityFileIdsPage(id,profile,now,after,limit);
+        public void CompleteMaintenanceRun(LibraryMaintenanceRun run)=>inner.CompleteMaintenanceRun(run);
+        public IReadOnlyList<LibraryMaintenanceRun> GetMaintenanceHistory(long? id=null,int limit=100)=>inner.GetMaintenanceHistory(id,limit);
+        public int RecoverInterruptedMaintenance(DateTime now)=>inner.RecoverInterruptedMaintenance(now);
+    }
     public void Dispose(){SqliteConnection.ClearAllPools();if(Directory.Exists(_root))Directory.Delete(_root,true);}
 }

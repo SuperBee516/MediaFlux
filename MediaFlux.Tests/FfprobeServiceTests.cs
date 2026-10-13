@@ -46,6 +46,7 @@ public sealed class FfprobeServiceTests : IDisposable
                           "width": 720,
                           "height": 480,
                           "display_aspect_ratio": "16:9",
+                          "sample_aspect_ratio": "1:1",
                           "pix_fmt": "yuv420p",
                           "field_order": "tt",
                           "bits_per_raw_sample": "8",
@@ -54,8 +55,10 @@ public sealed class FfprobeServiceTests : IDisposable
                           "color_transfer": "bt709",
                           "color_primaries": "smpte170m",
                           "avg_frame_rate": "30000/1001",
+                          "r_frame_rate": "30/1",
                           "nb_frames": "3611",
                           "time_base": "1/90000",
+                          "start_time": "-0.042",
                           "duration": "120.5",
                           "disposition": { "default": 1 }
                         },
@@ -66,9 +69,17 @@ public sealed class FfprobeServiceTests : IDisposable
                           "codec_type": "audio",
                           "channels": 6,
                           "channel_layout": "5.1(side)",
+                          "sample_rate": "48000",
+                          "bit_rate": "448000",
                           "time_base": "1/90000",
                           "tags": { "language": "eng" },
                           "disposition": { "default": 1 }
+                        },
+                        {
+                          "index": 3,
+                          "codec_name": "hdmv_pgs_subtitle",
+                          "codec_type": "subtitle",
+                          "tags": { "language": "jpn", "title": "Signs" }
                         },
                         {
                           "index": 2,
@@ -89,6 +100,7 @@ public sealed class FfprobeServiceTests : IDisposable
                       ],
                       "format": {
                         "format_name": "mpeg",
+                        "start_time": "0.25",
                         "duration": "120.5",
                         "size": "1048576",
                         "bit_rate": "7000000",
@@ -104,23 +116,33 @@ public sealed class FfprobeServiceTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal("mpeg", result.FormatName);
+        Assert.Equal(0.25, result.ContainerStartTimeSeconds);
         Assert.Equal(120.5, result.DurationSeconds);
         Assert.Equal(1_048_576, result.SizeBytes);
         Assert.Equal(7_000_000, result.BitRate);
         Assert.Equal("MediaFlux Probe Test", result.FormatTags["title"]);
-        Assert.Equal(3, result.Streams.Count);
+        Assert.Equal(4, result.Streams.Count);
         Assert.Equal("0x1e0", result.Streams[0].Id);
         Assert.Equal(720, result.Streams[0].Width);
         Assert.Equal("Main", result.Streams[0].Profile);
         Assert.Equal(8, result.Streams[0].Level);
         Assert.Equal(6_500_000, result.Streams[0].BitRate);
+        Assert.Equal("1:1", result.Streams[0].SampleAspectRatio);
+        Assert.Equal("16:9", result.Streams[0].DisplayAspectRatio);
         Assert.Equal(8, result.Streams[0].BitsPerRawSample);
         Assert.Equal("smpte170m", result.Streams[0].ColorSpace);
         Assert.Equal(30000d / 1001d, result.Streams[0].FrameRate!.Value, precision: 6);
+        Assert.Equal(30000d / 1001d, result.Streams[0].AverageFrameRate!.Value, precision: 6);
+        Assert.Equal(30, result.Streams[0].NominalFrameRate);
+        Assert.Equal(-0.042, result.Streams[0].StartTimeSeconds);
         Assert.Equal(3611, result.Streams[0].FrameCount);
         Assert.Equal("eng", result.Streams[1].Language);
-        Assert.Equal("GPAC ISO Hint Handler", result.Streams[2].Tags["handler_name"]);
-        Assert.True(result.Streams[2].Dispositions["forced"]);
+        Assert.Equal(448_000, result.Streams[1].BitRate);
+        Assert.Equal(48_000, result.Streams[1].SampleRateHz);
+        Assert.Equal("jpn", result.Streams[2].Language);
+        Assert.Equal("Signs", result.Streams[2].Tags["title"]);
+        Assert.Equal("GPAC ISO Hint Handler", result.Streams[3].Tags["handler_name"]);
+        Assert.True(result.Streams[3].Dispositions["forced"]);
         Assert.Equal("Chapter 1", Assert.Single(result.Chapters).Title);
         Assert.Equal(_mediaPath, runner.LastRequest?.Arguments[^1]);
         Assert.Contains("-show_streams", runner.LastRequest?.Arguments ?? Array.Empty<string>());
@@ -145,6 +167,26 @@ public sealed class FfprobeServiceTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Contains("Invalid data", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void InvalidAverageRateFallsBackToNominalWithoutInventingMissingValues()
+    {
+        var result = FfprobeService.ParseProbeJson(
+            """
+            {"streams":[{"index":0,"codec_type":"video","avg_frame_rate":"0/0",
+              "r_frame_rate":"30000/1001","sample_aspect_ratio":"N/A",
+              "display_aspect_ratio":"N/A","bit_rate":"N/A"}],
+             "format":{"bit_rate":"15000000"}}
+            """, _mediaPath);
+
+        MediaFlux.Models.MediaProbeStreamInfo video = Assert.Single(result.Streams);
+        Assert.True(result.Success);
+        Assert.Null(video.AverageFrameRate);
+        Assert.Equal(30000d / 1001, video.NominalFrameRate!.Value, 6);
+        Assert.Equal(video.NominalFrameRate, video.FrameRate);
+        Assert.Null(video.BitRate);
+        Assert.Equal(15_000_000, result.BitRate);
     }
 
     [Fact]

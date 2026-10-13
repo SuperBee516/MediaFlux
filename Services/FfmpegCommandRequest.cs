@@ -2,6 +2,15 @@ using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
+    internal enum FfmpegSourceDecodeMode
+    {
+        Strict,
+        RecoverAudio,
+        RecoverVideo,
+        RecoverVideoWithTimestampReconstruction,
+        TolerantDecodeReencode
+    }
+
     /// <summary>Maps replacement video separately from the original ancillary streams.</summary>
     internal sealed record SplitSourceInput(string VideoPath, EncodingInputSource AncillarySource);
 
@@ -12,6 +21,7 @@ namespace MediaFlux.Services
         public required VideoEncoderSelection Encoder { get; init; }
         public required bool UseGpu { get; init; }
         public required double? TargetMb { get; init; }
+        public AutomaticTargetPlan? AutomaticTargetPlan { get; init; }
         public required EncodingService.ScaleMode ScaleMode { get; init; }
         public VideoRestorationSettings Restoration { get; init; } = new();
         public required string? EncoderPreset { get; init; }
@@ -23,6 +33,8 @@ namespace MediaFlux.Services
         public required bool CopySubtitles { get; init; }
         public required bool CopyDataStreams { get; init; }
         public bool CopyAttachments { get; init; }
+        // Adaptive samples measure video only; ordinary production mapping is unchanged.
+        public bool VideoOnly { get; init; }
         public OutputContainerDecision ContainerDecision { get; init; } = new()
         {
             Requested = OutputContainerSelection.Mp4,
@@ -36,10 +48,18 @@ namespace MediaFlux.Services
         // separate from NVENC availability because some FFmpeg builds expose
         // both features but cannot negotiate CUDA frames with a given format.
         public bool PreferNvencGpuResidentFrames { get; init; } = true;
+        // The bounded GPU-frame-pipeline fallback can feed host p010le frames
+        // directly to NVENC after a CUDA-assisted decode. Other upload-based
+        // workflows retain their existing hwupload_cuda boundary.
+        public bool UseNvencHostFrames { get; init; }
+        public bool NvencCudaFormatConversionSupported { get; init; }
         // Keeps NVENC active while deliberately removing NVDEC/CUDA input
         // acceleration for a single device-recovery retry.
         public bool DisableHardwareDecode { get; init; }
+        public FfmpegSourceDecodeMode SourceDecodeMode { get; init; } = FfmpegSourceDecodeMode.Strict;
         public string SourcePixelFormat { get; init; } = "";
+        public string? RecoveryFrameRateRational { get; init; }
+        public string? TimestampReconstructionFilter { get; init; }
         public VideoOutputGeometryPlan? PlannedVideoGeometry { get; init; }
         public TimeSpan? SampleStart { get; init; }
         public TimeSpan? SampleDuration { get; init; }

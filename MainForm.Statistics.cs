@@ -7,6 +7,7 @@ namespace MediaFlux
     public partial class MainForm
     {
         private EncodingStatisticsService _encodingStatisticsService = null!;
+        private NvencQualityModePredictionShadowService _predictionShadowService = null!;
         private readonly Dictionary<string, Label> _selectedStatisticsLabels =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Label> _lifetimeStatisticsLabels =
@@ -449,20 +450,6 @@ namespace MediaFlux
                 : $"{duration.Minutes}:{duration.Seconds:00}";
         }
 
-        private static int? RuntimeOutputHeight(int? sourceHeight, EncodingService.ScaleMode scaleMode)
-        {
-            if (sourceHeight is not > 0) return null;
-            int requested = scaleMode switch
-            {
-                EncodingService.ScaleMode.To720p => 720,
-                EncodingService.ScaleMode.To1080p => 1080,
-                EncodingService.ScaleMode.To1440p => 1440,
-                EncodingService.ScaleMode.To4K => 2160,
-                _ => sourceHeight.Value
-            };
-            return Math.Min(sourceHeight.Value, requested);
-        }
-
         private void RecordEncodingStatistics(
             string operationId,
             DateTime startUtc,
@@ -485,46 +472,20 @@ namespace MediaFlux
             bool? scalingApplied = null,
             bool? concurrentEncoderSessions = null,
             bool isSampleJob = false,
-            EncodingDiagnosticSummary? diagnosticSummary = null)
+            EncodingDiagnosticSummary? diagnosticSummary = null,
+            bool recoveredSuccessful = false,
+            EncodingPlan? predictionPlan = null,
+            EncodingExecutionOutcome? executionOutcome = null,
+            MediaProbeResult? finalOutputProbe = null)
         {
-            try
-            {
-                bool added = _encodingStatisticsService.AppendFinalized(
-                    new EncodingStatisticsRecord
-                    {
-                        Id = operationId,
-                        StartUtc = startUtc,
-                        EndUtc = endUtc,
-                        Outcome = outcome,
-                        SourcePath = sourcePath,
-                        OutputPath = outputPath,
-                        Codec = codec,
-                        Encoder = encoder,
-                        SourceSizeBytes = sourceSizeBytes,
-                        OutputSizeBytes = outputSizeBytes,
-                        MediaDurationSeconds = mediaDurationSeconds,
-                        ProcessingSeconds = processingSeconds,
-                        EncoderId = encoderId,
-                        EncoderPreset = encoderPreset,
-                        SourceResolutionTier = sourceResolutionTier,
-                        OutputResolutionTier = outputResolutionTier,
-                        OutputBitDepth = outputBitDepth,
-                        ScalingApplied = scalingApplied,
-                        ConcurrentEncoderSessions = concurrentEncoderSessions,
-                        IsSampleJob = isSampleJob,
-                        DiagnosticSummary = diagnosticSummary,
-                        Notes = notes
-                    });
-
-                if (added)
-                    Ui(RefreshEncodingStatistics);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Statistics append failed: {ex}");
-            }
+            _encodeExecutionOrchestrator.RecordEncodingStatistics(
+                operationId, startUtc, endUtc, outcome, sourcePath, outputPath, codec, encoder,
+                sourceSizeBytes, outputSizeBytes, mediaDurationSeconds, processingSeconds,
+                notes, encoderId, encoderPreset, sourceResolutionTier, outputResolutionTier,
+                outputBitDepth, scalingApplied, concurrentEncoderSessions, isSampleJob,
+                diagnosticSummary, recoveredSuccessful, predictionPlan, executionOutcome,
+                finalOutputProbe);
         }
-
         private void RecordSkippedEncodingRows(
             IEnumerable<DataGridViewRow> rows)
         {

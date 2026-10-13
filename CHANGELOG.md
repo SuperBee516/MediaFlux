@@ -5,7 +5,479 @@ All notable changes to MediaFlux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.9.0] - 2026-10-10
+
+### Added
+
+- Added a dedicated Encoding Options tab and a five-choice quality preference selector.
+- Routed supported fixed-quality saved jobs through Encoding Engine V2; adaptive and unsupported configurations continue to use V1.
+
+### Improved
+
+- Consolidated queue output sizing into one Estimated Output presentation with savings information, and migrated saved layouts to the canonical column.
+- Kept Queue and Encoding Controls responsive across window sizes.
+- Restored fast estimate refreshes, refreshed estimates when quality or encoder presets change, and improved same-codec Source Adaptive estimate bounds while reducing unnecessary Inspector probing.
+- Clearly positive adaptive candidates can finish sampling after seven regions; non-positive or inconclusive cases retain full-nine evidence.
+- Improved encode fallback behavior. Recommendations remain advisory and do not prevent starting an encode.
+
+### Reliability
+
+- Corrected adaptive sample seeks for sources with a non-zero video start and added duration validation against the available source-video interval.
+- Require reliable complete evidence that all acceptable candidates miss the storage objective before skipping production encoding; actual output-size validation remains authoritative before promotion.
+- Persist V2 history and statistics through the shared lifecycle exactly once, and improve isolation and lifecycle handling for headless saved-job execution.
+
+### Notes
+
+- Estimated output size is advisory and can vary with source complexity and encoder behavior.
+
+## [1.8.0] - 2026-10-03
+
+### Added
+
+- Added optional adaptive quality selection for Storage Savings Mode. Eligible automatic HEVC jobs compare a bounded set of quality samples and start a full encode only when a candidate is projected to meet the configured storage target.
+- Added sample comparison tools for reviewing candidate clips and projected sizes before choosing encoding settings.
+
+### Improved
+
+- Improved Storage Savings estimates and ensured completed encodes meet the actual output-size contract before an output is promoted.
+- Improved FFmpeg audio timestamp failure diagnostics and encode/job lifecycle reporting.
+
+## [1.7.3] - 2026-09-27
+
+### Added
+
+- Added **Add Selected to Encode Queue** to the Library Analyzer Files context menu for sending eligible indexed files to the encode queue.
+
+### Fixed
+
+- Kept the Library Analyzer toolbar and Files context-menu queue commands synchronized for the same effective selection, including right-click selection behavior.
+
+## [1.7.2] - 2026-09-27
+
+### Fixed
+
+- Corrected FPS, Video bitrate, and Bit depth in the normal Library Analyzer Indexed Files view when that metadata is already in the catalog; no re-analysis is required. Video bitrate remains the selected video stream's bitrate and stays unavailable when that value is unknown, rather than using Total bitrate.
+- Kept queue estimate summaries stable while rows are encoding or analyzing. Available partial estimates remain visible, temporary status labels no longer clear valid estimates, and queues with no eligible estimates now say so.
+- Hardened exact-duplicate member refresh during selection changes and form closure. Refresh failures are handled without escaping the selection event, and the selected group's members update more reliably.
+
+## [1.7.1] - 2026-09-27
+
+### Fixed
+
+- Fixed an upgrade-related startup failure when previously configured FFmpeg and FFprobe executables could no longer be resolved. MediaFlux now starts normally and keeps media operations unavailable until the tools are restored through the existing Install, Locate, or Settings workflow.
+- Made Library Analyzer metadata probing handle unavailable FFprobe safely, reporting probe failures without terminating application startup or analyzer construction.
+
+## [1.7.0] - 2026-09-27
+
+### Advanced Media Search
+
+- Added catalog-backed Advanced Search to Library Analyzer's Files view, combining Quick Filters with detailed conditions for codec, resolution, frame rate, selected-video-stream bitrate, bit depth, scan type, HDR/SDR, audio and subtitle properties, and file and location facts.
+- Added Saved Searches, technical video columns, asynchronous and cancelable searches, and an explicit handoff for selected visible Files-grid rows to the Encode Queue.
+- Improved search responsiveness for large catalogs. Existing libraries can enrich technical metadata in the background without rebuilding the catalog; additional technical matches may appear as enrichment completes.
+- Kept video bitrate distinct from total/container bitrate. Video bitrate uses a positive bitrate reported for the selected video stream by FFprobe; when that value is unavailable, the property remains Unknown.
+- Prevented attached cover-art streams from being treated as the primary video and rejected stale metadata results when the indexed file identity changes.
+
+### Encoding Reliability and Recovery
+
+- Improved source-recovery eligibility, cancellation, and diagnostics, including clearer FFmpeg failure details across recovery attempts.
+- Corrected target-size precedence in automatic encoding and NVENC software-frame fallback reconfiguration.
+- Improved benchmark validation and FFmpeg compatibility diagnostics.
+
+## [1.6.4] - 2026-09-24
+
+### Encoding Reliability
+
+- Corrected NVENC runtime capability probes to use supported frame dimensions, avoiding false reports that H.264 or HEVC NVENC is unavailable on capable systems.
+- Use the same runtime capability check before Library Analyzer and normal encoding workflows start an NVENC encode, and provide actionable diagnostics when a requested encoder is unavailable.
+- Added focused coverage for capability classification, cache behavior, encoder gating, and live NVENC workflows.
+
+## [1.6.3] - 2026-09-24
+
+### Library Analyzer
+
+- Made scheduled maintenance more dependable across application restarts, missed schedule times, daylight-saving changes, encoding conflicts, and multiple due locations. Maintenance history now records the scheduled occurrence and clearer reasons for runs that wait, defer, skip, fail, or find a location unavailable.
+- Added a guided schedule editor with a live schedule summary and Quick Scrub options, plus a clearer maintenance workspace with per-location details and readable run history.
+- Dispose the maintenance tooltip with the Library Analyzer form to avoid retaining its native UI resource after the form closes.
+- Expanded duplicate-family comparison with navigation between eligible families and the ability to change the keeper from the comparison view.
+
+### Encoding Reliability
+
+- Check NVENC runtime availability before encoding and report when the installed driver cannot support the FFmpeg build's NVENC API, with guidance for resolving the issue.
+
+### Queue Workspace
+
+- Improved queue workspace sizing, responsive layout, and settings persistence. Source file size can now be sorted from the queue's size columns.
+- Refined first-run encoding defaults, including Automatic quality, Auto output container, and source-aware target sizing, while preserving existing saved preferences.
+
+## [1.6.2] - 2026-09-23
+
+### Main Window
+
+- Replaced the large progress panel with a compact status bar for encoding, audio, and background queue work, showing progress and ETA when available.
+
+### Library Analyzer
+
+- Added Families comparison against the designated keeper, clearer keeper and candidate roles, and immediate presentation refresh when changing the keeper.
+- Improved contrast for Families warning text.
+
+## [1.6.1] - 2026-09-23
+
+### Fixed
+
+- Improved queue-selection responsiveness by using retained and cached metadata for interactive previews while advisory quality probing runs in the background.
+- Reduced duplicate queue-selection updates and overlapping same-row advisory preview requests.
+- Fixed staged repaint artifacts in Plan & Analysis by batching selection updates and compositing its encoding-plan section while preserving frozen-plan and presentation-cache behavior.
+
+## [1.6.0] - 2026-09-23
+
+### Queue Workspace
+
+- Redesigned the encoding queue as an operational workspace with Total, Ready, Running, and Attention summaries and a consolidated Queue Inspector.
+- Added Summary, Plan & Analysis, Media, and Diagnostics & Logs inspector views, plus customizable columns with persisted visibility, widths, and order.
+- Improved source-size-to-estimate presentation and protected active queue rows from accidental removal.
+
+### Search & Operational Views
+
+- Added filename/path search and All, Ready, Running, Attention, Encode, Skip, and Review views, with a visible `Showing X of Y` count.
+- Kept presentation filtering independent of queue eligibility and execution order.
+
+### Execution Order & Priority
+
+- Added stable logical execution ordering independent of grid sorting and filtering; Start Queue and Start Selected follow that order.
+- Preserved execution order through queue import/export and saved jobs, and added the Order column and Queue Priority commands: Encode Next, Move to Top, Move Up, Move Down, and Move to Bottom.
+- Added multi-selection block moves and safe active-run reprioritization limited to undispatched jobs.
+
+### Reliability
+
+- Prevented estimate and recommendation refreshes from overwriting active encode or recovery state.
+- Added synchronized dispatch, reorder, append, retry, duplicate-removal, and admission-closing operations, including safe ownership of appends racing queue completion.
+- Stabilized queue concurrency handling and UI regression coverage.
+
+## [1.5.10] - 2026-09-22
+
+### Encoding Insights
+
+- Added advisory Encode, Skip, and Review recommendations with estimated savings, confidence, quality-risk context, and clear reasons.
+- Added an Encoding Results dashboard for size and ETA prediction accuracy across comparable encoding cohorts.
+
+### Prediction Calibration
+
+- Added versioned adaptive calibration of historical output-size predictions, with separate training and evaluation evidence, effectiveness safeguards, and harmful-calibration suppression. Calibration affects estimates only; it does not change encoding settings or FFmpeg execution.
+
+### Encoding Estimates and Stability
+
+- Improved Source Adaptive output-size estimates for same-codec, unchanged-resolution jobs, including a measured-source-bitrate ceiling on optimistic estimates.
+- Stabilized the Encoding Plan display during background updates to prevent continuous repainting and visible jitter.
+
+### Storage and Updater Compatibility
+
+- Preserved custom storage locations across restarts and updater replacement, and moved default backups outside the UserData folder.
+- Added safe, copy-only migration of backups from former default locations without overwriting existing archives or removing source copies.
+
+## [1.5.9] - 2026-09-22
+
+### Source Adaptive Quality
+
+- Simplified Automatic · Source Adaptive quality configuration to one authoritative five-level preference: Smaller File, Efficient, Balanced, High Quality, or Maximum Quality.
+- Removed contradictory automatic quality selections while retaining manual quality and explicit target-size behavior in their appropriate modes.
+- Fixed Automatic · Source Adaptive output estimates so they follow the resolved adaptive CRF/CQ/ICQ decision for each source.
+- Refreshed estimates now propagate through per-file savings, Encode/Skip recommendations, and queue totals.
+
+## [1.5.8] - 2026-09-21
+
+### AI Runtime Dashboard
+
+- Modernized the AI Runtime Dashboard with a professional card-based layout, clearer Ready/Idle/Active/Attention/Error states, and improved resizing and DPI behavior.
+- Added persistent capability and configuration visibility while idle, clearer hardware/runtime/backend information, live AI session performance telemetry, and a bounded last-session summary.
+- Improved benchmark, health, and diagnostics presentation with direct Benchmark Manager and diagnostics actions.
+- Corrected idle AI health semantics so an inactive session is not reported as unhealthy solely because validation is disabled.
+- Fixed an intermittent Library Analyzer UI lifecycle failure where asynchronous refresh errors could attempt to display a dialog after form teardown.
+
+## [1.5.7] - 2026-09-21
+
+### Highlights
+
+- Added guided FFmpeg setup, managed provisioning, existing-installation location, and reinstall support.
+- Strengthened FFmpeg/FFprobe installation validation and capability refresh behavior.
+- Improved damaged-source recovery, degraded salvage, source protection, and Job History outcomes.
+- Improved FFmpeg diagnostics and timeline reconstruction correctness.
+
+### FFmpeg Setup
+
+- Added pinned package verification with SHA-256 validation, cancellable installation progress, and Settings status reporting.
+- FFmpeg and FFprobe must come from the same installation; setup does not download at startup or modify PATH.
+
+### Recovery and Reliability
+
+- Improved source corruption detection, recovery/remux validation, degraded salvage, and terminal status persistence.
+- Disk-full evidence, hardware acceleration, downstream encoder failures, and DTS validation are classified more accurately.
+
+### Validation
+
+- Release test suite: 1387/1387 passed.
+- Release build: 0 warnings, 0 errors.
+
+## [1.5.6] - 2026-09-19
+
+### AI Restoration
+
+- Added guided detection and installation of the pinned official Real-ESRGAN NCNN/Vulkan Windows package with SHA-256 verification.
+- Added managed installation, automatic rediscovery, existing-installation location, readiness reporting, contextual setup, and execution safeguards.
+
+### Encoding Reliability
+
+- Improved damaged-source recovery, recovered-output promotion, source timeline handling, stream mapping, and recovery status reporting.
+
+### Diagnostics and Logging
+
+- Improved FFmpeg failure diagnostics and log viewing, including clearer log access, clear-log handling, and Copy All support.
+
+### Documentation
+
+- Modernized the README and refreshed product screenshots.
+
+## [1.5.5] - 2026-09-18
+
+### Encoding Reliability
+
+- Improved recovery for malformed or corrupt source video, including safer handling of repaired inputs before recovered output is promoted.
+- Added resilient source-timeline handling and deterministic reconstruction for eligible malformed CFR timestamps.
+- Preserved strict validation while making container-aware stream mapping safer for audio, subtitles, attachments, metadata, chapters, and unsupported data streams.
+- Improved concurrent encoding-job logging and strengthened recovery-related validation coverage.
+
+### Quality and Stability
+
+- Stabilized deterministic WinForms test hosts and related UI validation workflows.
+
+## [1.5.4] - 2026-09-16
+
+### Duplicate Manager
+
+- Fixed manual Duplicate Manager deletion workflow so unresolved duplicate groups can be selected directly in the grid without requiring prior keeper review. Bulk review now acknowledges groups without manufacturing keeper decisions, while keeper and final-survivor safeguards remain enforced.
+
+## [1.5.3] - 2026-09-16
+
+### Duplicate Manager
+
+- Fixed manual Delete? selections being lost when the Duplicate Manager grid refreshed or rebound. Keeper and protected-row deletion safeguards remain enforced.
+
+## [1.5.2] - 2026-09-15
+
+### Encoding Reliability
+
+- Improved software-decoded media handling when encoding with NVIDIA NVENC.
+- Improved compatibility with legacy WMV/ASF and other host-decoded sources.
+- Improved recovery from certain malformed or corrupt video packets.
+- Improved frame-completeness validation around normal end-of-stream timing boundaries.
+
+## [1.5.1] - 2026-09-15
+
+### Encoding Reliability
+
+- Added conservative recovery for localized malformed CFR source timelines capable of causing large frame loss during otherwise successful FFmpeg encodes.
+- Recovery reconstructs the provable presentation timeline using deterministic frame-index timestamps while preserving NVENC and encode intent.
+- Fixed a lifecycle issue that could incorrectly report `FinalizationFailed` after recovery, validation, promotion, and final verification had actually succeeded.
+- Strict output validation remains enforced.
+
+## [1.5.0] - 2026-09-15
+
+### Encoding Reliability
+
+- Added Intelligent recovery for CFR encodes that complete successfully but produce a material unexplained video-frame deficit.
+- Recovery uses software decode and CFR timestamp normalization while retaining NVENC encoding and the original encoding intent, including quality, geometry, container, stream mappings, audio, subtitles, metadata, and restoration settings.
+- Recovery is strictly one-shot, and invalid staged output is safely discarded before retry.
+- Existing strict output validation remains unchanged; validation tolerances were not weakened.
+- Added regression coverage for recovery decisions, command construction, validation, finalization, cancellation, and failure behavior.
+
+## [1.4.3] - 2026-09-13
+
+### Compare Samples
+
+- Fixed Compare Samples failures when seeked samples begin at problematic video decode boundaries on otherwise valid media.
+- Added bounded tolerant decode recovery and a small pre-roll retry for eligible sample decode failures.
+- Improved Compare Samples diagnostics with sample timestamps, recovery attempts, decode modes, and failure classification.
+- Normal production encoding behavior is unchanged.
+
+## [1.4.2] - 2026-09-13
+
+### Encoding Reliability
+
+- Improved target-size accuracy and Auto/manual target handling.
+- Target-size jobs now report clearly when source duration is unavailable instead of silently switching to quality-based encoding.
+- Improved Auto sizing decisions for already-efficient HEVC sources.
+- Improved progress and ETA reliability across recovery retries.
+
+### Queue Analysis
+
+- Added persistent Queue Analysis details to the Encoding Plan view.
+- Improved savings/increase wording and recommendation explanations.
+
+## [1.4.1] - 2026-09-12
+
+### Compare Samples
+
+- Fixed side-by-side comparison previews failing for encoded samples with six-channel audio and an unspecified channel layout by normalizing preview audio to stereo before AAC encoding.
+
+### Reliability
+
+- Hardened focused UI test synchronization for hosted Windows runners.
+
+## [1.4.0] - 2026-09-12
+
+### Encoding Intelligence
+
+- Added a structured Encoding Plan experience showing planned video, encoder, resolution, container, audio, subtitle, and target-size decisions.
+- Added human-readable decision explanations, source-health and recovery-capability reporting, and preflight, recovery, validation, finalization, and terminal lifecycle outcomes.
+- Added hardware-aware historical encoding predictions with expected speed, duration, output size, compression, confidence, and comparable-job counts.
+- Historical estimates remain advisory only and never alter encoding behavior.
+- Stabilized the Encoding Plan presentation so routine progress, FPS, ETA, elapsed-time, and bitrate updates do not rebuild or clear it.
+
+### Reliability
+
+- Preserved existing recovery, validation, finalization, and staged-output safety behavior.
+- Added consistency diagnostics between planned and actual execution outcomes.
+- Historical predictions isolate materially different GPU hardware and exclude failed or incomplete jobs from clean-performance cohorts.
+
+## [1.3.14] - 2026-09-11
+
+### AI Benchmark Manager
+
+- Modernized the AI Benchmark Manager with responsive summary cards, structured Details and Comparison inspectors, and an integrated FPS comparison chart.
+- Added supplied SVG iconography across benchmark cards, toolbar commands, and analysis headers.
+- Fixed summary/grid layout clipping and improved responsive splitter behavior.
+- Added remembered AI Benchmark Manager window sizing with safe minimum-size and maximized-state handling.
+- Strengthened focused UI regression coverage for layout, icons, comparison semantics, and window-size persistence.
+
+## [1.3.13] - 2026-09-11
+
+### Encoding Reliability
+
+- Added Intelligent recovery for localized source-video corruption that would otherwise abort an encode.
+- MediaFlux now retries once with tolerant source-video decoding while preserving the requested encoder, quality, bitrate, mappings, audio, subtitles, and container settings.
+- Strict mode continues to fail immediately on source decode corruption.
+- Existing output validation and staged finalization remain authoritative, preventing incomplete or invalid recovered outputs from being promoted.
+- Improved encode/recovery timing diagnostics and removed validation timing double-counting.
+
+## [1.3.12] - 2026-09-10
+
+### Encoding Reliability & Performance
+
+- Removed an unnecessary full audio-decode preflight that could delay encoding before the actual encoder started.
+- Added automatic Intelligent-mode recovery for damaged source audio by safely transcoding only the affected audio stream when possible.
+- Preserved strict validation safeguards so incomplete or corrupt outputs are never finalized.
+- Improved encode diagnostics and timing telemetry to distinguish source analysis, recovery, encoding, validation, and finalization overhead.
+
+## [1.3.11] - 2026-09-10
+
+### Library Analyzer
+
+- Repaired Visual Duplicates keeper and cleanup workflow with clear Manual Keeper, Suggested Keeper, and Delete Candidate states.
+- Restored Review Files to Delete and file-selection-rules review; fixed More Actions commands.
+- Strengthened cleanup validation and destructive-operation safeguards; global reviewed cleanup no longer depends on the current page or filter.
+- Fixed Library Analyzer navigation so Exact, Visual, and Families remain accessible when no results exist.
+
+## [1.3.10] - 2026-09-10
+
+### Library Analyzer Visual Duplicates
+
+- Repaired the Visual duplicate keeper workflow with explicit manual and suggested keeper presentation.
+- Restored the reviewed `Review Files to Delete` workflow with global scope independent of the current page or filter.
+- Repaired file-selection-rules review and More Actions command execution.
+- Strengthened cleanup eligibility and keeper/candidate revalidation safeguards.
+
+## [1.3.9] - 2026-09-10
+
+### Queue Details and Encoding Diagnostics
+
+- Added a read-only Pre-Encode Encoding Plan showing resolved video, audio, subtitle, restoration, geometry, encoder, and compatibility decisions.
+- Added deterministic Encode Failure Analysis with likely failure stage/cause, conservative corrective guidance, bounded FFmpeg evidence, and relevant Encoding Plan context.
+- Distinguished user cancellation from actual encode failure without changing encode settings or adding automatic remediation.
+
+### Library Analyzer
+
+- Corrected Library Insights card layout behavior after the Overview dashboard update.
+
+## [1.3.6] - 2026-09-08
+
+### Library Analyzer Overview
+
+- Redesigned the Library Analyzer Overview dashboard with Videos, Library Size, Duplicate Sets, and estimated reclaimable-space KPIs.
+- Added Exact, Visual, and Family duplicate/review summaries, library health and enrichment status, storage-by-location visualization, and resolution/codec/container composition.
+- Added persisted 30-day library growth history and catalog insights including average bitrate.
+- Added direct navigation into Analyzer workflows with responsive, DPI-aware empty/no-history states.
+- Added asynchronous DB-only aggregation with safe debounced refresh and lifecycle handling.
+
+## [1.3.5] - 2026-09-08
+
+### Library Analyzer Review & Compare
+
+- Improved duplicate-review action organization, labels, guidance, tooltips, dynamic actions, and responsive layout.
+- Eliminated clipping and unnecessary internal action-area scrollbars across supported window sizes and DPI scaling.
+- Improved Review & Compare presentation and general Library Analyzer UI stability.
+
+## [1.3.4] - 2026-09-07
+
+### Library Analyzer Duplicate Review
+
+- Clarified duplicate-review workflow with grouped Review, Cleanup, Automation, and Advanced actions.
+- Improved labels, guidance, tooltips, dynamic actions, responsive layout, and DPI behavior without internal action scrollbars.
+- Corrected Visual Duplicate selection and splitter-persistence test expectations after refresh and layout changes.
+
+## [1.3.3] - 2026-09-07
+
+### Library Analyzer Duplicate Review
+
+- Grouped duplicate-review actions into review, cleanup, automation, and advanced/destructive workflows with clearer labels and responsive layout.
+- Added clearer Cleanup Role terminology, contextual guidance, plain-language tooltips, and dynamic protection/ignore action labels.
+- Restored Visual Duplicate multi-selection reliably after results refreshes.
+
+## [1.3.2] - 2026-09-07
+
+### Visual Match Relocation
+
+- Either compared video can now be moved directly into the other video's directory while preserving catalog identity and existing analysis/review information.
+- Visual Match refreshes the displayed path after relocation.
+- Filename collisions are handled safely without silent overwrite, with filesystem/catalog validation and rollback protection.
+
+### Queue Controls
+
+- Fixed responsive Queue Controls layout behavior, preventing circular preferred-height inflation and improving stability during responsive resizing.
+
+## [1.3.1] - 2026-09-07
+
+### Encoding and Update Reliability
+
+- Hardened encoding validation for timestamp/VFR normalization, damaged or truncated sources, A/V and stream integrity, subtitles, hardware/storage failures, and output decode validation.
+- Improved diagnostics for corrupt or undecodable media and updater failures.
+- Added SQLite-safe pre-update backups that consistently capture committed WAL data without copying live `-wal` or `-shm` sidecars.
+- Corrected updater error classification so local database/filesystem failures are not reported as private-repository problems.
+
+> **Upgrade note for v1.3.0 users:** Existing v1.3.0 installations contain the older pre-update backup implementation. If an update reports that `ai-benchmarks.db` is being used by another process, temporarily disable **Automatically backup before updates** and retry, or manually install v1.3.1. Do not delete or recreate the database. After v1.3.1 is installed, automatic updates with pre-update backups enabled work with active idle SQLite-backed services.
+
+## [1.3.0] - 2026-09-07
+
+### Encoding Integrity and Reliability
+
+- Hardened encoding validation for incomplete, corrupt, or unexpectedly altered media while preserving safe recovery behavior.
+- Improved timestamp, variable-frame-rate, audio/video, subtitle, hardware, and storage failure diagnostics.
+- Added output stream-topology and staged decode-integrity checks to prevent false-success finalization.
+
+## [1.2.0] - 2026-09-05
+
+### Storage Migration Reliability
+
+- Accepted folder-picker-created empty directories as safe migration destinations.
+- Rejected destination files, nonempty folders, links, and races without changing the authoritative root.
+
+## [1.1.0] - 2026-09-05
+
+### Configurable Managed Storage
+
+- Added a configurable MediaFlux userdata/storage root with backward-compatible defaults.
+- Added safe, verified storage migration with collision, free-space, cancellation, and active-work protection.
+- Added Storage & Cache management UI with categorized usage and drive free-space reporting.
+- Added safe cleanup of explicitly owned inactive temporary and regenerable data while protecting persistent state.
+- Improved AI intermediate and storage lifecycle management to bound abandoned forensic workspaces.
 
 ## [0.1.96] - 2026-09-04
 
@@ -583,7 +1055,16 @@ capabilities.
 - Folder imports, watch folders, Explorer integration, audio tools, history,
   backups, and configurable application settings.
 
-[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v0.1.41...HEAD
+[Unreleased]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.3...HEAD
+[1.7.3]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.2...v1.7.3
+[1.7.2]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.1...v1.7.2
+[1.7.1]: https://github.com/SuperBee516/MediaFlux/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.4...v1.7.0
+[1.6.4]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.3...v1.6.4
+[1.6.3]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.2...v1.6.3
+[1.6.2]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.1...v1.6.2
+[1.6.1]: https://github.com/SuperBee516/MediaFlux/compare/v1.6.0...v1.6.1
+[1.6.0]: https://github.com/SuperBee516/MediaFlux/compare/v1.5.10...v1.6.0
 [0.1.3]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.3
 [0.1.2]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.2
 [0.1.1]: https://github.com/SuperBee516/MediaFlux/releases/tag/v0.1.1

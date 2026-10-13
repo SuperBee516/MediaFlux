@@ -24,7 +24,7 @@ namespace MediaFlux.Services.LibraryCatalog
             FfmpegToolPaths paths = FfmpegToolResolver.Resolve(
                 applicationDirectory,
                 configuredFfprobePath: configuredFfprobePath);
-            _service = new FfprobeService(paths.FfprobePath, processRunner ?? new MediaToolProcessRunner(), timeout);
+            _service = new FfprobeService(paths, processRunner ?? new MediaToolProcessRunner(), timeout);
             ToolVersion = ReadToolVersion(paths.FfprobePath);
         }
 
@@ -90,7 +90,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     public sealed class LibraryEnrichmentCoordinator : ILibraryEnrichmentSink, IAsyncDisposable
     {
-        public const int CurrentMetadataVersion = 1;
+        public const int CurrentMetadataVersion = 2;
         private readonly ILibraryCatalog _catalog;
         private readonly ILibraryMetadataProbe _probe;
         private readonly LibraryEnrichmentOptions _options;
@@ -211,7 +211,8 @@ namespace MediaFlux.Services.LibraryCatalog
                         candidate.VolumeId,
                         candidate.SizeBytes,
                         candidate.LastWriteUtc,
-                        candidate.AttemptCount),
+                        candidate.AttemptCount,
+                        candidate.FileIdentity),
                     cancellationToken).ConfigureAwait(false);
                 queued++;
             }
@@ -245,6 +246,7 @@ namespace MediaFlux.Services.LibraryCatalog
             {
                 Interlocked.Increment(ref _active);
                 Interlocked.Decrement(ref _queued);
+                bool slotReleased = false;
                 try
                 {
                     while (_isEncodingActive())
@@ -273,7 +275,11 @@ namespace MediaFlux.Services.LibraryCatalog
                             result.Success || request.AttemptCount >= _options.MaxAttempts
                                 ? null
                                 : now + RetryDelay(request.AttemptCount));
-                        _catalog.SaveMediaMetadata(metadata);
+                        // Once probing is complete, release the in-memory slot before
+                        // saving: a stale save can make this file pending again.
+                        _queuedFiles.TryRemove(request.FileId, out _);
+                        slotReleased = true;
+                        _catalog.SaveMediaMetadata(metadata, request.VolumeId, request.FileIdentity);
                         if (result.Success)
                             Interlocked.Increment(ref _completed);
                         else
@@ -287,19 +293,27 @@ namespace MediaFlux.Services.LibraryCatalog
                 catch (Exception ex)
                 {
                     DateTime now = DateTime.UtcNow;
+                    if (!slotReleased)
+                    {
+                        _queuedFiles.TryRemove(request.FileId, out _);
+                        slotReleased = true;
+                    }
                     _catalog.SaveMediaMetadata(LibraryMetadataMapper.Map(
                         request,
                         MediaProbeResult.Failed(ex.Message),
                         CurrentMetadataVersion,
                         _probe.ToolVersion,
                         now,
-                        request.AttemptCount >= _options.MaxAttempts ? null : now + RetryDelay(request.AttemptCount)));
+                        request.AttemptCount >= _options.MaxAttempts ? null : now + RetryDelay(request.AttemptCount)),
+                        request.VolumeId,
+                        request.FileIdentity);
                     Interlocked.Increment(ref _failed);
                 }
                 finally
                 {
                     Volatile.Write(ref _encodingThrottled, 0);
-                    _queuedFiles.TryRemove(request.FileId, out _);
+                    if (!slotReleased)
+                        _queuedFiles.TryRemove(request.FileId, out _);
                     Interlocked.Decrement(ref _active);
                     RaiseProgress(request.FullPath, "Metadata item finished");
                     if (QueuedCount < _options.QueueCapacity / 2)
@@ -347,6 +361,7 @@ namespace MediaFlux.Services.LibraryCatalog
         {
             MediaProbeStreamInfo? video = probe.Streams
                 .Where(stream => string.Equals(stream.CodecType, "video", StringComparison.OrdinalIgnoreCase))
+                .Where(stream => !stream.Dispositions.TryGetValue("attached_pic", out bool attachedPicture) || !attachedPicture)
                 .OrderByDescending(stream => stream.Dispositions.TryGetValue("default", out bool isDefault) && isDefault)
                 .FirstOrDefault();
             var audio = probe.Streams
@@ -355,7 +370,9 @@ namespace MediaFlux.Services.LibraryCatalog
                     stream.CodecName,
                     stream.Channels,
                     stream.ChannelLayout,
-                    stream.Language))
+                    stream.Language,
+                    stream.BitRate is > 0 ? stream.BitRate : null,
+                    stream.SampleRateHz is > 0 ? stream.SampleRateHz : null))
                 .ToArray();
             var subtitles = probe.Streams
                 .Where(stream => string.Equals(stream.CodecType, "subtitle", StringComparison.OrdinalIgnoreCase))
@@ -363,9 +380,22 @@ namespace MediaFlux.Services.LibraryCatalog
                 .ToArray();
             int attachments = probe.Streams.Count(stream =>
                 string.Equals(stream.CodecType, "attachment", StringComparison.OrdinalIgnoreCase));
-            int? bitDepth = video?.BitsPerRawSample is > 0
-                ? video.BitsPerRawSample
-                : InferBitDepth(video?.PixelFormat);
+            int? reportedBitDepth = video?.BitsPerRawSample is > 0 ? video.BitsPerRawSample : null;
+            int? pixelFormatBitDepth = InferBitDepth(video?.PixelFormat);
+            int? bitDepth = reportedBitDepth.HasValue && pixelFormatBitDepth.HasValue &&
+                            reportedBitDepth != pixelFormatBitDepth
+                ? null
+                : reportedBitDepth ?? pixelFormatBitDepth;
+            int videoStreamCount = probe.Streams.Count(stream =>
+                string.Equals(stream.CodecType, "video", StringComparison.OrdinalIgnoreCase));
+            double? averageFrameRate = PositiveFinite(video?.AverageFrameRate);
+            double? nominalFrameRate = PositiveFinite(video?.NominalFrameRate);
+            double? effectiveFrameRate = PositiveFinite(video?.FrameRate);
+            string? frameRateBasis = averageFrameRate.HasValue && effectiveFrameRate == averageFrameRate
+                ? "average"
+                : nominalFrameRate.HasValue && effectiveFrameRate == nominalFrameRate
+                    ? "nominal"
+                    : null;
             long? totalBitRate = probe.BitRate;
             if (totalBitRate is not > 0 && probe.DurationSeconds is > 0)
             {
@@ -393,7 +423,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 probe.Success ? video?.Level : null,
                 probe.Success ? video?.Width : null,
                 probe.Success ? video?.Height : null,
-                probe.Success ? video?.FrameRate : null,
+                probe.Success ? effectiveFrameRate : null,
                 probe.Success ? video?.PixelFormat ?? "" : "",
                 probe.Success ? bitDepth : null,
                 probe.Success ? video?.FieldOrder ?? "" : "",
@@ -405,19 +435,54 @@ namespace MediaFlux.Services.LibraryCatalog
                 probe.Success ? subtitles : Array.Empty<LibrarySubtitleStreamMetadata>(),
                 probe.Success ? probe.Chapters.Count : 0,
                 probe.Success ? attachments : 0,
-                probe.Success ? "" : probe.ErrorMessage);
+                probe.Success ? "" : probe.ErrorMessage,
+                probe.Success && video?.BitRate is > 0 ? video.BitRate : null,
+                probe.Success && video is { Index: >= 0 } ? video.Index : null,
+                probe.Success ? videoStreamCount : null,
+                probe.Success ? averageFrameRate : null,
+                probe.Success ? nominalFrameRate : null,
+                probe.Success ? frameRateBasis : null,
+                probe.Success ? ValidAspectRatio(video?.SampleAspectRatio) : null,
+                probe.Success ? ValidAspectRatio(video?.DisplayAspectRatio) : null);
+        }
+
+        private static double? PositiveFinite(double? value) =>
+            value is > 0 && double.IsFinite(value.Value) ? value : null;
+
+        private static string? ValidAspectRatio(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+            string[] parts = value.Trim().Split(':');
+            return parts.Length == 2 &&
+                   int.TryParse(parts[0], out int numerator) && numerator > 0 &&
+                   int.TryParse(parts[1], out int denominator) && denominator > 0
+                ? $"{numerator}:{denominator}"
+                : null;
         }
 
         private static int? InferBitDepth(string? pixelFormat)
         {
             if (string.IsNullOrWhiteSpace(pixelFormat))
                 return null;
-            if (pixelFormat.Contains("12", StringComparison.OrdinalIgnoreCase))
-                return 12;
-            if (pixelFormat.Contains("10", StringComparison.OrdinalIgnoreCase) ||
-                pixelFormat.Contains("p010", StringComparison.OrdinalIgnoreCase))
-                return 10;
-            return 8;
+            string format = pixelFormat.Trim().ToLowerInvariant();
+            if (format is "p010le" or "p010be") return 10;
+            if (format is "p012le" or "p012be") return 12;
+            if (format is "p016le" or "p016be") return 16;
+            if (format is "yuv420p" or "yuv422p" or "yuv444p" or
+                "yuvj420p" or "yuvj422p" or "yuvj444p" or
+                "nv12" or "nv21" or "gray" or "gbrp" or
+                "rgb24" or "bgr24" or "rgba" or "bgra" or "argb" or "abgr")
+                return 8;
+            foreach (string family in new[] { "yuv420p", "yuv422p", "yuv444p", "gbrp", "gray" })
+            {
+                foreach (int depth in new[] { 10, 12, 14, 16 })
+                {
+                    if (format == $"{family}{depth}le" || format == $"{family}{depth}be")
+                        return depth;
+                }
+            }
+            return null;
         }
     }
 }

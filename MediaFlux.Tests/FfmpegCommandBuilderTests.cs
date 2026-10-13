@@ -8,6 +8,28 @@ namespace MediaFlux.Tests;
 public sealed class FfmpegCommandBuilderTests
 {
     [Fact]
+    public void MixedAudioRecoveryTranscodesOnlyTheAffectedOutputStream()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(1, "audio", "aac", StreamCompatibilityAction.Copy, "copy"),
+                new StreamCompatibilityPlan(3, "audio", "aac", StreamCompatibilityAction.Transcode, "recovery", "aac")
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-c:a copy", arguments);
+        Assert.Contains("-c:a:1 aac", arguments);
+        Assert.DoesNotContain("-c:a aac -b:a 192k", arguments);
+    }
+
+    [Fact]
     public void NvencHevcQualityCommandMatchesExistingBehavior()
     {
         FfmpegCommandRequest request = CreateRequest(
@@ -18,9 +40,75 @@ public sealed class FfmpegCommandBuilderTests
         string arguments = CreateBuilder().Build(request);
 
         Assert.Contains("-hwaccel cuda -i ", arguments);
-        Assert.Contains("-vf format=nv12 ", arguments);
-        Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
+        Assert.Contains("-vf format=nv12,hwupload_cuda ", arguments);
+        Assert.Contains("-profile:v main ", arguments);
+        Assert.DoesNotContain("-pix_fmt nv12", arguments);
         Assert.Contains("-metadata:s:v:0 BPS= ", arguments);
+        Assert.Contains("-xerror -err_detect explode", arguments);
+        Assert.DoesNotContain("ignore_err", arguments, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AutomaticTargetPlanMapsDirectlyToNvencVbrWithoutAConflictingCqValue()
+    {
+        var target = new AutomaticTargetPlan
+        {
+            Disposition = AutomaticTargetDisposition.Ready,
+            QualityTarget = QualityTarget.Balanced,
+            TargetVideoBitrateKbps = 2500,
+            MaximumVideoBitrateKbps = 2700,
+            VideoBufferSizeKbps = 3500,
+            PlannedAudioBitrateKbps = 384,
+            PlannedMappedAncillaryBitrateKbps = 12,
+            ContainerOverheadBitrateKbps = 30,
+            TargetOutputBudgetKbps = 4000,
+            TargetTotalBitrateKbps = 2926,
+            ProjectedOutputBytes = 36_575_000
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, preset: "p6", qualityValue: 24,
+            audioChannels: 6, automaticTargetPlan: target));
+
+        Assert.Contains("-b:v 2500k -maxrate 2700k -bufsize 3500k -rc vbr -preset p6", arguments);
+        Assert.DoesNotContain("-cq", arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-crf", arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-c:a aac -b:a 384k -ac 6", arguments);
+    }
+
+    [Fact]
+    public void VideoDecodeRecoveryRelaxesOnlyStrictDecodeFailureHandling()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, preset: "p6",
+            sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideo));
+
+        Assert.Contains("-y -hwaccel cuda", arguments);
+        Assert.DoesNotContain("-xerror", arguments);
+        Assert.DoesNotContain("-err_detect", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-preset p6", arguments);
+    }
+
+    [Fact]
+    public void TolerantDecodeReencodeForcesSoftwareDecodeAndKeepsFrozenEncoderSettings()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, preset: "p6", disableHardwareDecode: true,
+            sourceDecodeMode: FfmpegSourceDecodeMode.TolerantDecodeReencode));
+
+        Assert.Contains("-err_detect ignore_err -fflags +discardcorrupt", arguments);
+        Assert.DoesNotContain("-hwaccel cuda", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-preset p6", arguments);
+    }
+
+    [Fact]
+    public void StrictDecodeModeRemainsTheDefault()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false));
+
+        Assert.Contains("-xerror -err_detect explode", arguments);
     }
 
     [Fact]
@@ -34,8 +122,29 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Contains("-c:v hevc_nvenc", arguments);
         Assert.Contains("-preset p6", arguments);
         Assert.Contains("-b:v", arguments);
-        Assert.Contains("-profile:v main10 -pix_fmt p010le", arguments);
+        Assert.Contains("-profile:v main10", arguments);
+        Assert.DoesNotContain("-pix_fmt p010le", arguments);
         Assert.Contains("-f mp4", arguments);
+    }
+
+    [Fact]
+    public void KnownCudaFilterFallbackBuildsHostP010UploadWhileKeepingAutomaticNvencQuality()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, tenBit: true, preset: "p5", qualityValue: 27,
+            sourcePixelFormat: "yuv420p", nvencHighBitDepthOutputSupported: true,
+            nvencCudaFormatConversionSupported: true, useNvencHostFrames: true,
+            disableHardwareDecode: true));
+
+        Assert.DoesNotContain("-hwaccel cuda", arguments);
+        Assert.DoesNotContain("scale_cuda", arguments);
+        Assert.Contains("-vf format=p010le ", arguments);
+        Assert.Contains("-pix_fmt p010le", arguments);
+        Assert.DoesNotContain("hwupload_cuda", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-cq 27", arguments);
+        Assert.Contains("-preset p5", arguments);
+        Assert.Contains("-profile:v main10", arguments);
     }
 
     [Fact]
@@ -83,7 +192,78 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Contains("-c:a aac -b:a 192k", arguments);
         Assert.Contains("-metadata:s:a:0 language=\"jpn\"", arguments);
         Assert.Contains("-metadata:s:a:0 title=\"Japanese\"", arguments);
-        Assert.Contains("-disposition:a:0 0 -disposition:a:0 +default -disposition:a:0 +forced", arguments);
+        Assert.Contains("-disposition:a:0 default+forced", arguments);
+        Assert.Equal(1, arguments.Split("-disposition:a:0", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void PlannedMovTextConversionPreservesSubtitleMetadataAndDispositions()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Mp4, Resolved = OutputContainer.Mp4, Reason = "test",
+            StreamPlans = new[] { new StreamCompatibilityPlan(4, "subtitle", "ass", StreamCompatibilityAction.Transcode, "test", "mov_text", Language: "eng", Title: "Signs", Dispositions: new Dictionary<string, bool> { ["default"] = true, ["forced"] = true }) }
+        };
+        string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-c:s:0 mov_text", arguments);
+        Assert.Contains("-metadata:s:s:0 language=\"eng\"", arguments);
+        Assert.Contains("-metadata:s:s:0 title=\"Signs\"", arguments);
+        Assert.Contains("-disposition:s:0 default+forced", arguments);
+    }
+
+    [Fact]
+    public void PlannedSubtitleMetadataUsesOutputOrdinalsNotSourceIndexes()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Matroska,
+            Resolved = OutputContainer.Matroska,
+            Reason = "test",
+            CopySubtitles = true,
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(3, "subtitle", "hdmv_pgs_subtitle", StreamCompatibilityAction.Copy,
+                    "test", Language: "ENG", SourceTypeOrdinal: 0, OutputTypeOrdinal: 0),
+                new StreamCompatibilityPlan(4, "subtitle", "hdmv_pgs_subtitle", StreamCompatibilityAction.Copy,
+                    "test", Language: "eng", SourceTypeOrdinal: 1, OutputTypeOrdinal: 1)
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest("libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-map 0:3 -map 0:4", arguments);
+        Assert.Contains("-metadata:s:s:0 language=\"eng\"", arguments);
+        Assert.Contains("-metadata:s:s:1 language=\"eng\"", arguments);
+        Assert.DoesNotContain("metadata:s:s:3", arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("metadata:s:s:4", arguments, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MatroskaCommandUsesTheResolvedContainerAndCopiesPlannedSubtitles()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Matroska,
+            Resolved = OutputContainer.Matroska,
+            Reason = "test",
+            CopySubtitles = true,
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(4, "subtitle", "subrip", StreamCompatibilityAction.Copy, "test"),
+                new StreamCompatibilityPlan(5, "subtitle", "hdmv_pgs_subtitle", StreamCompatibilityAction.Copy, "test")
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "libx265", useGpu: false, containerDecision: decision));
+
+        Assert.Contains("-map 0:4", arguments);
+        Assert.Contains("-map 0:5", arguments);
+        Assert.Contains("-c:s copy", arguments);
+        Assert.Contains("-f matroska", arguments);
+        Assert.Equal(".mkv", decision.Extension);
+        Assert.DoesNotContain("mov_text", arguments, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -198,9 +378,9 @@ public sealed class FfmpegCommandBuilderTests
         string arguments = CreateBuilder().Build(request);
 
         Assert.Contains("-hwaccel cuda -i ", arguments);
-        Assert.Contains("-vf format=p010le ", arguments);
+        Assert.Contains("-vf format=p010le,hwupload_cuda ", arguments);
         Assert.Contains(
-            "-profile:v main10 -pix_fmt p010le -highbitdepth 1 ",
+            "-profile:v main10 -highbitdepth 1 ",
             arguments);
     }
 
@@ -216,7 +396,7 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=p010le ", arguments);
+        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=p010le,hwupload_cuda ", arguments);
         Assert.Contains("-highbitdepth 1 ", arguments);
         Assert.DoesNotContain("scale_cuda", arguments);
     }
@@ -230,9 +410,10 @@ public sealed class FfmpegCommandBuilderTests
             sourcePixelFormat: "yuv420p10le"));
 
         Assert.Contains("-hwaccel cuda -i ", arguments);
-        Assert.Contains("-vf format=nv12 ", arguments);
+        Assert.Contains("-vf format=nv12,hwupload_cuda ", arguments);
         Assert.DoesNotContain("scale_cuda", arguments);
-        Assert.Contains("-profile:v main -pix_fmt nv12 ", arguments);
+        Assert.Contains("-profile:v main ", arguments);
+        Assert.DoesNotContain("-pix_fmt nv12", arguments);
     }
 
     [Fact]
@@ -244,7 +425,7 @@ public sealed class FfmpegCommandBuilderTests
             sourcePixelFormat: "yuv420p10le",
             scaleMode: EncodingService.ScaleMode.To1080p));
 
-        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=nv12 ", arguments);
+        Assert.Contains("-vf scale=-2:1080:flags=lanczos,format=nv12,hwupload_cuda ", arguments);
         Assert.DoesNotContain("scale_cuda", arguments);
     }
 
@@ -258,12 +439,65 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.StartsWith("-y -hwaccel cuda -i ", arguments);
-        Assert.Contains("-vf format=p010le ", arguments);
+        Assert.StartsWith("-y -xerror -err_detect explode -hwaccel cuda -i ", arguments);
+        Assert.Contains("-vf format=p010le,hwupload_cuda ", arguments);
         Assert.Contains(
-            "-profile:v main10 -pix_fmt p010le ",
+            "-profile:v main10 ",
             arguments);
         Assert.DoesNotContain("-highbitdepth", arguments);
+    }
+
+    [Fact]
+    public void NvencSoftwareFrameFallbackFeedsHostTenBitFramesDirectly()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            tenBit: true,
+            nvencHighBitDepthOutputSupported: true,
+            useNvencHostFrames: true));
+
+        Assert.Contains("-hwaccel cuda -i ", arguments);
+        Assert.Contains("-vf format=p010le ", arguments);
+        Assert.DoesNotContain("hwupload_cuda", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-profile:v main10 ", arguments);
+        Assert.Contains("-pix_fmt p010le", arguments);
+    }
+
+    [Fact]
+    public void NvencSupportedCudaConversionKeepsBitDepthConversionOnGpu()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            tenBit: true,
+            nvencHighBitDepthOutputSupported: true,
+            nvencCudaFormatConversionSupported: true,
+            sourcePixelFormat: "yuv420p"));
+
+        Assert.Contains("-hwaccel cuda -hwaccel_output_format cuda ", arguments);
+        Assert.Contains("-vf scale_cuda=format=p010le ", arguments);
+        Assert.DoesNotContain("-vf format=p010le", arguments);
+        Assert.DoesNotContain("-pix_fmt p010le ", arguments);
+    }
+
+    [Fact]
+    public void AsfSoftwareDecodeUsesHostConversionAndCudaUploadForNvenc()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, tenBit: true,
+            nvencHighBitDepthOutputSupported: true,
+            inputPath: "C:\\Media\\source.wmv",
+            nvencCudaFormatConversionSupported: true));
+
+        // The helper's default is MKV; use a WMV path to exercise the
+        // generalized software-decode residency decision.
+        Assert.DoesNotContain("-hwaccel cuda", arguments);
+        Assert.DoesNotContain("scale_cuda", arguments);
+        Assert.Contains("-vf format=p010le,hwupload_cuda ", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-profile:v main10", arguments);
     }
 
     [Fact]
@@ -275,12 +509,57 @@ public sealed class FfmpegCommandBuilderTests
 
         string arguments = CreateBuilder().Build(request);
 
-        Assert.Contains("-y -hwaccel qsv ", arguments);
+        Assert.Contains("-y -xerror -err_detect explode -hwaccel qsv ", arguments);
         Assert.Contains(
             "-c:v hevc_qsv -rc_mode icq -global_quality 19 " +
             "-preset slow -mbbrc 1 ",
             arguments);
         Assert.DoesNotContain("cuda", arguments);
+    }
+
+    [Theory]
+    [InlineData(VideoEncoderIds.Nvenc, "hevc_nvenc", true, "-cq 19")]
+    [InlineData(VideoEncoderIds.Libx265, "libx265", false, "-crf 20")]
+    [InlineData(VideoEncoderIds.Qsv, "hevc_qsv", true, "-global_quality 21")]
+    public void ResolvedQualityIsTheQualityArgumentSentToFfmpeg(
+        string encoderId, string ffmpegCodec, bool useGpu, string expected)
+    {
+        VideoEncoderSelection selection = new(encoderId, VideoCodecFamily.Hevc, ffmpegCodec);
+        string arguments = CreateBuilder().Build(CreateRequest(
+            selection, useGpu, qualityValue: expected.Contains("19") ? 19 : expected.Contains("20") ? 20 : 21));
+
+        Assert.Contains(expected, arguments);
+    }
+
+    [Fact]
+    public void TargetSizeDoesNotEmitConstantQualityArgument()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            new VideoEncoderSelection(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"),
+            useGpu: true, qualityValue: 19, targetMb: 500));
+
+        Assert.DoesNotContain("-cq ", arguments);
+        Assert.DoesNotContain("-crf ", arguments);
+        Assert.DoesNotContain("-global_quality ", arguments);
+    }
+
+    [Fact]
+    public void AutomaticQualityWithActiveManualTargetUsesTargetSizeArguments()
+    {
+        double? targetMb = EncodingTargetSizeResolver.ResolveAutomaticQualityTargetMb(
+            automaticQuality: true,
+            autoTargetSize: false,
+            configuredManualTarget: "500");
+        string arguments = CreateBuilder().Build(CreateRequest(
+            new VideoEncoderSelection(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"),
+            useGpu: true, qualityValue: 19, targetMb: targetMb,
+            knownDuration: TimeSpan.FromSeconds(100), knownAudioBitrateKbps: 160));
+
+        Assert.Contains("-b:v ", arguments);
+        Assert.Contains("-rc vbr", arguments);
+        Assert.DoesNotContain("-cq ", arguments);
+        Assert.DoesNotContain("-crf ", arguments);
+        Assert.DoesNotContain("-global_quality ", arguments);
     }
 
     [Theory]
@@ -432,7 +711,7 @@ public sealed class FfmpegCommandBuilderTests
     [InlineData("hevc_nvenc", false, "nv12", "main")]
     [InlineData("hevc_nvenc", true, "p010le", "main10")]
     [InlineData("h264_nvenc", false, "nv12", "high")]
-    public void NvencAlwaysExplicitlySelectsRequestedOutputFormat(
+    public void NvencFilterAndProfileExpressRequestedOutputFormat(
         string encoder,
         bool tenBit,
         string pixelFormat,
@@ -445,7 +724,8 @@ public sealed class FfmpegCommandBuilderTests
             nvencHighBitDepthOutputSupported: tenBit));
 
         Assert.Contains($"format={pixelFormat}", arguments);
-        Assert.Contains($"-profile:v {profile} -pix_fmt {pixelFormat}", arguments);
+        Assert.Contains($"-profile:v {profile}", arguments);
+        Assert.DoesNotContain($"-pix_fmt {pixelFormat}", arguments);
     }
 
     [Fact]
@@ -556,6 +836,39 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void TargetSizeDoesNotSilentlyFallBackToQualityWhenDurationIsUnknown()
+    {
+        FfmpegCommandRequest request = CreateRequest(
+            "hevc_nvenc",
+            useGpu: true,
+            targetMb: 700,
+            knownDuration: TimeSpan.Zero);
+
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            () => CreateBuilder().Build(request));
+
+        Assert.Contains("target-size encode", error.Message);
+        Assert.Contains("duration", error.Message);
+    }
+
+    [Theory]
+    [InlineData("h264_nvenc")]
+    [InlineData("hevc_nvenc")]
+    public void NvencTargetSizeUsesBitrateBudgetWithoutConstantQualityOverride(
+        string codec)
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            codec,
+            useGpu: true,
+            targetMb: 100,
+            knownDuration: TimeSpan.FromSeconds(100),
+            knownAudioBitrateKbps: 160));
+
+        Assert.Contains("-b:v 7950k -maxrate 8586k -bufsize 11130k -rc vbr ", arguments);
+        Assert.DoesNotContain("-cq ", arguments);
+    }
+
+    [Fact]
     public void Libx265RetainsSharedAudioAndSubtitleHandling()
     {
         FfmpegCommandRequest request = CreateRequest(
@@ -597,7 +910,7 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
-    public void UnknownDurationRetainsQualityFallback()
+    public void UnknownDurationRejectsTargetSizeInsteadOfUsingQualityFallback()
     {
         var log = new List<string>();
         FfmpegCommandRequest request = CreateRequest(
@@ -610,14 +923,11 @@ public sealed class FfmpegCommandBuilderTests
             _ => 160,
             log.Add);
 
-        string arguments = builder.Build(request);
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            () => builder.Build(request));
 
-        Assert.Contains("-c:v libx265 -crf 24 -preset slow ", arguments);
-        Assert.Contains(
-            log,
-            message => message.Contains(
-                "using quality-based encoding instead",
-                StringComparison.Ordinal));
+        Assert.Contains("target-size encode", error.Message);
+        Assert.Empty(log);
     }
 
     [Fact]
@@ -730,6 +1040,23 @@ public sealed class FfmpegCommandBuilderTests
         Assert.DoesNotContain("-map 0:t?", arguments);
     }
 
+    [Fact]
+    public void TimelineRecoveryUsesExactFrameIndexedTimestampsAndRetainsNvenc()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, tenBit: true, sourcePixelFormat: "yuv420p",
+            sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction,
+            disableHardwareDecode: true, recoveryFrameRateRational: "30000/1001",
+            timestampReconstructionFilter: "setpts=N*1001/30000/TB"));
+
+        Assert.Contains("setpts=N*1001/30000/TB", arguments);
+        Assert.Contains("-fps_mode passthrough", arguments);
+        Assert.DoesNotContain("-fps_mode cfr", arguments);
+        Assert.DoesNotContain(" -r ", arguments);
+        Assert.DoesNotContain("-hwaccel cuda", arguments);
+        Assert.Contains("hevc_nvenc", arguments);
+    }
+
     private static FfmpegCommandRequest CreateRequest(
         string ffmpegCodec,
         bool useGpu,
@@ -755,7 +1082,14 @@ public sealed class FfmpegCommandBuilderTests
         string? restorationFilterOverride = null,
         bool disableHardwareDecode = false,
         OutputContainerDecision? containerDecision = null,
-        VideoOutputGeometryPlan? plannedVideoGeometry = null)
+        FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
+        VideoOutputGeometryPlan? plannedVideoGeometry = null,
+        bool nvencCudaFormatConversionSupported = false,
+        bool useNvencHostFrames = false,
+        string? recoveryFrameRateRational = null,
+        string? timestampReconstructionFilter = null,
+        string inputPath = "C:\\Media\\source.mkv",
+        AutomaticTargetPlan? automaticTargetPlan = null)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -784,7 +1118,14 @@ public sealed class FfmpegCommandBuilderTests
              restorationFilterOverride,
              disableHardwareDecode,
              containerDecision,
-             plannedVideoGeometry);
+             sourceDecodeMode,
+            plannedVideoGeometry,
+            nvencCudaFormatConversionSupported,
+            useNvencHostFrames,
+            recoveryFrameRateRational,
+             timestampReconstructionFilter,
+             inputPath,
+             automaticTargetPlan);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -812,7 +1153,14 @@ public sealed class FfmpegCommandBuilderTests
         string? restorationFilterOverride = null,
         bool disableHardwareDecode = false,
         OutputContainerDecision? containerDecision = null,
-        VideoOutputGeometryPlan? plannedVideoGeometry = null)
+        FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
+        VideoOutputGeometryPlan? plannedVideoGeometry = null,
+        bool nvencCudaFormatConversionSupported = false,
+        bool useNvencHostFrames = false,
+        string? recoveryFrameRateRational = null,
+        string? timestampReconstructionFilter = null,
+        string inputPath = "C:\\Media\\source.mkv",
+        AutomaticTargetPlan? automaticTargetPlan = null)
     {
 
         return new FfmpegCommandRequest
@@ -820,8 +1168,8 @@ public sealed class FfmpegCommandBuilderTests
             Input = new EncodingInputSource
             {
                 Kind = EncodingInputKind.File,
-                InputPath = "C:\\Media\\source.mkv",
-                SourcePath = "C:\\Media\\source.mkv",
+                InputPath = inputPath,
+                SourcePath = inputPath,
                 OutputBaseName = "source",
                 KnownAudioBitrateKbps = knownAudioBitrateKbps,
                 KnownAudioStreamCount = knownAudioStreamCount,
@@ -832,6 +1180,7 @@ public sealed class FfmpegCommandBuilderTests
             Encoder = selection,
             UseGpu = useGpu,
             TargetMb = targetMb,
+            AutomaticTargetPlan = automaticTargetPlan,
             ScaleMode = scaleMode,
             Restoration = restoration ?? new VideoRestorationSettings(),
             EncoderPreset = preset,
@@ -858,7 +1207,13 @@ public sealed class FfmpegCommandBuilderTests
             KnownDuration = knownDuration ?? TimeSpan.FromMinutes(10),
             NvencHighBitDepthOutputSupported =
                 nvencHighBitDepthOutputSupported,
+            NvencCudaFormatConversionSupported =
+                nvencCudaFormatConversionSupported,
+            UseNvencHostFrames = useNvencHostFrames,
             DisableHardwareDecode = disableHardwareDecode,
+            SourceDecodeMode = sourceDecodeMode,
+            RecoveryFrameRateRational = recoveryFrameRateRational,
+            TimestampReconstructionFilter = timestampReconstructionFilter,
             SourcePixelFormat = sourcePixelFormat,
             PlannedVideoGeometry = plannedVideoGeometry,
             SplitSource = splitSource,

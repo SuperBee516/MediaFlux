@@ -1,0 +1,238 @@
+using MediaFlux.Services;
+using MediaFlux.Models;
+using Xunit;
+
+namespace MediaFlux.Tests;
+
+public sealed class FfmpegSourceDecodeCorruptionClassifierTests
+{
+    [Fact]
+    public void CorroboratedH264BitstreamAndDecoderFailuresAreReliable()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "[h264] Invalid NAL unit size\n[h264] missing picture in access unit\nError submitting packet to decoder: Invalid data found when processing input");
+
+        Assert.True(result.IsReliable);
+        Assert.Equal(3, result.MatchedEvidence.Count);
+    }
+
+    [Fact]
+    public void DecoderInvalidDataDiagnosticIsReliableWithoutCodecSpecificBitstreamText()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Error submitting packet to decoder: Invalid data found when processing input");
+
+        Assert.True(result.IsReliable);
+    }
+
+    [Fact]
+    public void DecoderProcessingFailureIsReliable()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Error processing packet in decoder: Invalid data found when processing input");
+
+        Assert.True(result.IsReliable);
+    }
+
+    [Fact]
+    public void MatroskaEbmlCorruptionIsReliableEvenWhenFfmpegExitsSuccessfully()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "[matroska,webm @ 000001] invalid as first byte of an EBML number");
+
+        Assert.True(result.IsReliable);
+        Assert.Contains("invalid as first byte of an EBML number", result.MatchedEvidence);
+    }
+
+    [Fact]
+    public void StrongStructuralEvidenceRequiresMoreThanOneStructuralSignal()
+    {
+        FfmpegSourceDecodeCorruption isolated = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "[h264] Invalid NAL unit size\nError submitting packet to decoder: Invalid data found when processing input");
+        FfmpegSourceDecodeCorruption corroborated = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "[h264] Invalid NAL unit size\n[h264] missing picture in access unit\n" +
+            "Error splitting the input into NAL units\nError processing packet in decoder: Invalid data found when processing input");
+
+        Assert.False(isolated.IsStrongSourceIntegrityEvidence);
+        Assert.True(corroborated.IsStrongSourceIntegrityEvidence);
+    }
+
+    [Fact]
+    public void ExitCodeAloneIsNotSourceIntegrityEvidence()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "FFmpeg exit -1094995529");
+
+        Assert.False(result.IsReliable);
+        Assert.False(result.IsStrongSourceIntegrityEvidence);
+    }
+
+    [Theory]
+    [InlineData("Packet corrupt (stream = 0, dts = 30030).\nInvalid NAL unit size (39140 > 28165).\nmissing picture in access unit with size 28190\ncorrupt input packet in stream 0\nTask finished with error code: -1094995529")]
+    [InlineData("Packet corrupt (stream = 0, dts = 8070).\nInvalid NAL unit size (14426 > 467).\nmissing picture in access unit with size 477\ncorrupt input packet in stream 0\nTask finished with error code: -1094995529")]
+    public void EarlyVideoPacketCorruptionIsStrongEnoughForExistingBoundedRecovery(string stderr)
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(stderr);
+        Assert.True(result.IsStrongSourceIntegrityEvidence);
+        Assert.True(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(result, null));
+    }
+
+    [Fact]
+    public void IsolatedPacketCorruptionDoesNotEnterStrongSourceRecovery()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "corrupt input packet in stream 0\nError writing trailer: Invalid argument");
+        Assert.False(result.IsReliable);
+        Assert.False(result.IsStrongSourceIntegrityEvidence);
+    }
+
+    [Fact]
+    public void IsolatedPacketCorruptWarningDoesNotEnableAutomaticSourceRecovery()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Packet corrupt (stream = 0, dts = 30030).\nError writing trailer: Invalid argument");
+
+        Assert.False(result.IsStrongSourceIntegrityEvidence);
+        Assert.False(FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
+            automaticRecoveryDisabled: false,
+            isFileInput: true,
+            cancellationRequested: false,
+            strongSourceIntegrityEvidence: result.IsStrongSourceIntegrityEvidence));
+    }
+
+    [Fact]
+    public void GenericFailureAndPacketWarningRemainInsufficientForSourceRecovery()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Packet corrupt (stream = 0, dts = 30030).\nConversion failed!");
+
+        Assert.False(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+            result, FfmpegSourceDecodeCorruptionClassifier.SummarizeDiagnostics(
+                "Packet corrupt (stream = 0, dts = 30030).\nConversion failed!"),
+            "Packet corrupt (stream = 0, dts = 30030).\nConversion failed!"));
+        Assert.False(FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
+            automaticRecoveryDisabled: false,
+            isFileInput: true,
+            cancellationRequested: false,
+            strongSourceIntegrityEvidence: result.IsStrongSourceIntegrityEvidence));
+    }
+
+    [Fact]
+    public void CorroboratedSourceEvidenceBeforeMuxTeardownRemainsEligible()
+    {
+        const string stderr = "Invalid NAL unit size (0 > 10)\n" +
+            "missing picture in access unit\n" +
+            "Error splitting the input into NAL units\n" +
+            "Error submitting packet to decoder: Invalid data found when processing input\n" +
+            "Error writing trailer: Invalid argument";
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(stderr);
+
+        Assert.True(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+            result, FfmpegSourceDecodeCorruptionClassifier.SummarizeDiagnostics(stderr), stderr));
+    }
+
+    [Fact]
+    public void CorroboratedSourceTextAfterMuxFailureCannotAuthorizeRecovery()
+    {
+        const string stderr = "Starting second pass: moving the moov atom to the beginning of the file\n" +
+            "Error writing trailer: Invalid argument\n" +
+            "Invalid NAL unit size (0 > 10)\n" +
+            "missing picture in access unit\n" +
+            "Error splitting the input into NAL units\n" +
+            "Error submitting packet to decoder: Invalid data found when processing input";
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(stderr);
+
+        Assert.True(result.IsStrongSourceIntegrityEvidence);
+        Assert.False(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+            result, FfmpegSourceDecodeCorruptionClassifier.SummarizeDiagnostics(stderr), stderr));
+    }
+
+    [Theory]
+    [InlineData(false, true, false, true, true)]
+    [InlineData(true, true, false, true, false)]
+    [InlineData(false, false, false, true, false)]
+    [InlineData(false, true, true, true, false)]
+    [InlineData(false, true, false, false, false)]
+    public void AutomaticSourceRecoveryGateUsesExistingEligibilityFacts(
+        bool disabled, bool fileInput, bool canceled, bool strongEvidence, bool expected)
+    {
+        Assert.Equal(expected, FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
+            disabled, fileInput, canceled, strongEvidence));
+    }
+
+    [Fact]
+    public void DownstreamEncoderAbortIsNotHardwareEvidence()
+    {
+        EncodingSourceFailureClassification result = EncodingSourceFailureClassifier.Classify(
+            "Could not open encoder before EOF");
+
+        Assert.NotEqual(EncodingSourceFailureType.GpuEncoderFailure, result.Type);
+        Assert.False(result.IsRecoveryCandidate);
+    }
+
+    [Fact]
+    public void StreamDecodeInvalidDataCountsAsDecoderEvidenceWhenStructuralCorruptionIsPresent()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Invalid NAL unit size\nError splitting the input into NAL units\n" +
+            "Error while decoding stream #0:0: Invalid data found when processing input");
+
+        Assert.True(result.IsStrongSourceIntegrityEvidence);
+    }
+
+    [Fact]
+    public void StructuralAndContainerCorruptionPreemptsTolerantDecodeWhenStrictXerrorStopsEarly()
+    {
+        FfmpegSourceDecodeCorruption result = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "stream 1, missing mandatory atoms, broken header\n" +
+            "Invalid NAL unit size\nError splitting the input into NAL units");
+
+        Assert.True(result.IsStrongSourceIntegrityEvidence);
+    }
+
+    [Fact]
+    public void MediaFluxCaptureMarkerDoesNotOverrideStrongSourceCorruption()
+    {
+        EncodingSourceFailureClassification result = EncodingSourceFailureClassifier.Classify(
+            "Invalid NAL unit size\nError splitting the input into NAL units\n" +
+            "Error while decoding stream #0:0: Invalid data found when processing input\n" +
+            "[Additional FFmpeg diagnostic output truncated by MediaFlux.]");
+
+        Assert.Equal(EncodingSourceFailureType.VideoBitstreamCorruption, result.Type);
+        Assert.True(result.IsRecoveryCandidate);
+    }
+
+    [Fact]
+    public void HighConfidenceDiagnosticSummarySuppliesInitialDecoderEvidence()
+    {
+        FfmpegSourceDecodeCorruption raw = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Invalid NAL unit size\nError splitting the input into NAL units");
+        var summary = new FfmpegDiagnosticSummary(
+            Array.Empty<FfmpegDiagnosticFamilySummary>(),
+            new FfmpegDiagnosticClassification(
+                FfmpegDiagnosticCategory.SourceIntegrity,
+                "Malformed source",
+                FfmpegDiagnosticConfidence.High,
+                ["Invalid NAL unit size", "Error splitting input into NAL units", "Invalid input data"]),
+            0, 0, false);
+
+        Assert.True(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(raw, summary));
+    }
+
+    [Fact]
+    public void LowConfidenceSummaryDoesNotPreemptGenericVideoRecovery()
+    {
+        FfmpegSourceDecodeCorruption raw = FfmpegSourceDecodeCorruptionClassifier.Classify(
+            "Invalid NAL unit size");
+        var summary = new FfmpegDiagnosticSummary(
+            Array.Empty<FfmpegDiagnosticFamilySummary>(),
+            new FfmpegDiagnosticClassification(
+                FfmpegDiagnosticCategory.SourceDecode,
+                "Uncertain source decode failure",
+                FfmpegDiagnosticConfidence.Moderate,
+                ["Invalid NAL unit size"]),
+            0, 0, false);
+
+        Assert.False(FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(raw, summary));
+    }
+}

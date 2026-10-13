@@ -27,6 +27,7 @@ namespace MediaFlux.Services
                     null,
                     null,
                     "Required media metadata is unavailable.",
+                    intent.EstimateConfidenceCeiling,
                     "MediaFlux will not invent resolution, duration, frame-rate, or size values.");
             }
 
@@ -84,16 +85,19 @@ namespace MediaFlux.Services
             }
 
             AddEfficiencyReasons(source, intent, reasons);
+            if (intent.EstimateConfidenceCeiling == SmartEncodeConfidence.Low)
+                reasons.Add("Size and savings use a low-confidence Generic BPP fallback estimate.");
 
             if (reviewReasons.Count > 0)
             {
                 reasons.InsertRange(0, reviewReasons);
                 return Create(
                     SmartEncodeRecommendationKind.Review,
-                    ResolveConfidence(source),
+                    ResolveConfidence(source, intent.EstimateConfidenceCeiling),
                     savingsPercent,
                     savingsMb,
                     reviewReasons[0],
+                    intent.EstimateConfidenceCeiling,
                     reasons.ToArray());
             }
 
@@ -108,10 +112,11 @@ namespace MediaFlux.Services
                     "A lossless MKV stream copy should preserve the video, audio, subtitles, metadata, and chapters with little size change.");
                 return Create(
                     SmartEncodeRecommendationKind.RemuxOnly,
-                    ResolveConfidence(source),
+                    ResolveConfidence(source, intent.EstimateConfidenceCeiling),
                     savingsPercent,
                     savingsMb,
                     remuxReason,
+                    intent.EstimateConfidenceCeiling,
                     reasons.ToArray());
             }
 
@@ -142,10 +147,11 @@ namespace MediaFlux.Services
             reasons.Insert(0, primaryReason);
             return Create(
                 kind,
-                ResolveConfidence(source),
+                ResolveConfidence(source, intent.EstimateConfidenceCeiling),
                 savingsPercent,
                 savingsMb,
                 primaryReason,
+                intent.EstimateConfidenceCeiling,
                 reasons.ToArray());
         }
 
@@ -189,14 +195,11 @@ namespace MediaFlux.Services
                 }
                 else
                 {
-                    kind = SmartEncodeRecommendationKind.Review;
                     confidence = SmartEncodeConfidence.Medium;
-                    primaryReason =
-                        "Sample encoding disagrees substantially with the current size estimate.";
-                    reasons.Insert(
-                        0,
+                    reasons.Add(
                         $"Beginning/middle/end samples project {analysis.ProjectedOutputMb.Value:0.#} MB " +
-                        $"instead of {intendedOutputMb:0.#} MB ({differencePercent:0}% difference).");
+                        $"instead of {intendedOutputMb:0.#} MB ({differencePercent:0}% difference); " +
+                        "the estimate disagreement lowers confidence but does not indicate a source issue.");
                 }
 
                 if (analysis.ProjectedOutputLowerMb is > 0 &&
@@ -268,10 +271,14 @@ namespace MediaFlux.Services
             foreach (string note in analysis.Notes)
                 reasons.Add(note);
 
+            if (baseline.ConfidenceCeiling is { } ceiling && (int)confidence > (int)ceiling)
+                confidence = ceiling;
+
             return new SmartEncodeRecommendation
             {
                 Kind = kind,
                 Confidence = confidence,
+                ConfidenceCeiling = baseline.ConfidenceCeiling,
                 EstimatedSavingsPercent = baseline.EstimatedSavingsPercent,
                 EstimatedSavingsMb = baseline.EstimatedSavingsMb,
                 PrimaryReason = primaryReason,
@@ -352,19 +359,39 @@ namespace MediaFlux.Services
                    value is not "progressive" and not "unknown" and not "unspecified";
         }
 
-        private static SmartEncodeConfidence ResolveConfidence(
-            SmartEncodeSourceInfo source)
+        internal static SmartEncodeConfidence? ResolveEstimateConfidenceCeiling(
+            EncodingSizePredictionCalibration? calibration)
         {
+            if (calibration is { EstimateModelId: "GenericBppV1", EstimateStatus: "LowConfidenceGenericFallback:PreviewUnavailable" })
+                return SmartEncodeConfidence.Low;
+            if (calibration is not { EstimateModelId: "GenericBppV1", EstimateStatus: var status, Applied: false } ||
+                !status.StartsWith("LowConfidenceGenericFallback:", StringComparison.Ordinal))
+                return null;
+            string directStatus = status["LowConfidenceGenericFallback:".Length..];
+            return directStatus is "NotEligible" or "Ineligible" ? null : SmartEncodeConfidence.Low;
+        }
+
+        private static SmartEncodeConfidence ResolveConfidence(
+            SmartEncodeSourceInfo source,
+            SmartEncodeConfidence? confidenceCeiling = null)
+        {
+            SmartEncodeConfidence confidence;
             if (source.VideoBitrateKbps > 0 &&
                 source.TotalBitrateKbps > 0 &&
                 (source.AudioStreamCount == 0 || source.AudioBitrateKbps > 0))
             {
-                return SmartEncodeConfidence.High;
+                confidence = SmartEncodeConfidence.High;
             }
-
-            return source.VideoBitrateKbps > 0
+            else
+            {
+                confidence = source.VideoBitrateKbps > 0
                 ? SmartEncodeConfidence.Medium
                 : SmartEncodeConfidence.Low;
+            }
+
+            return confidenceCeiling is { } ceiling && (int)confidence > (int)ceiling
+                ? ceiling
+                : confidence;
         }
 
         private static double GetCodecEfficiency(string codec)
@@ -452,12 +479,14 @@ namespace MediaFlux.Services
             double? savingsPercent,
             double? savingsMb,
             string primaryReason,
+            SmartEncodeConfidence? confidenceCeiling,
             params string[] reasons)
         {
             return new SmartEncodeRecommendation
             {
                 Kind = kind,
                 Confidence = confidence,
+                ConfidenceCeiling = confidenceCeiling,
                 EstimatedSavingsPercent = savingsPercent,
                 EstimatedSavingsMb = savingsMb,
                 PrimaryReason = primaryReason,

@@ -123,6 +123,121 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
 
         catalog.SetFileProtection(catalog.GetFileByPath(candidatePath)!.Id, true, "test");
         Assert.Empty(cleanup.BuildProposal().Items);
+
+        catalog.SetFileProtection(catalog.GetFileByPath(candidatePath)!.Id, false, "");
+        VisualSimilarityGroupRecord currentGroup = catalog.GetVisualGroup(group.GroupId)!;
+        VisualSimilarityMemberRecord currentKeeper = catalog.GetVisualGroupMembers(group.GroupId)
+            .Single(member => member.FileId == currentGroup.ManualKeeperFileId);
+        var malformed = new VisualCleanupProposalItem(currentGroup, currentKeeper, currentKeeper,
+            "malformed same-file plan", false, null);
+        VisualCleanupPlanRecord malformedPlan = cleanup.CreatePlan(new[] { malformed }, DuplicateCleanupAction.PermanentDelete);
+        DuplicateCleanupExecutionResult malformedResult = await cleanup.ExecutePlanAsync(malformedPlan.PlanId);
+        Assert.Equal(0, malformedResult.Succeeded);
+        Assert.Equal(1, malformedResult.Excluded);
+        Assert.True(File.Exists(currentKeeper.FullPath));
+    }
+
+    [Fact]
+    public async Task ReviewedVisualCleanupRequiresPersistedKeeperAndExcludesIgnoredProtectedAndMissingCandidates()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "reviewed-visual-cleanup"); Directory.CreateDirectory(library);
+        string first = Write(library, "first.mkv", 1_200), second = Write(library, "second.mp4", 800);
+        AddInventoryAndMetadata(catalog, library, new[] { first, second }, path =>
+            path == first ? ("hevc", 1920, 1080, 60d) : ("h264", 1280, 720, 60d));
+        ulong[] hashes = Enumerable.Range(0, 6).Select(i => 0x2222222222222222UL + (ulong)i).ToArray();
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog, new FakeVisualExtractor(_ => hashes),
+                   new LibraryVisualAnalysisOptions(1, 2, 8, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+
+        VisualSimilarityGroupRecord group = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery()).Groups);
+        IReadOnlyList<VisualSimilarityMemberRecord> members = catalog.GetVisualGroupMembers(group.GroupId);
+        long manualKeeperId = members.Single(member => member.FileId != group.SuggestedKeeperFileId).FileId;
+        long candidateId = members.Single(member => member.FileId != manualKeeperId).FileId;
+        string candidatePath = members.Single(member => member.FileId == candidateId).FullPath;
+        var cleanup = new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, manualKeeperId, true, false));
+        VisualCleanupProposalItem manual = Assert.Single(cleanup.BuildProposal().Items);
+        Assert.Equal(manualKeeperId, manual.Keeper.FileId);
+        Assert.Equal(candidateId, manual.Candidate.FileId);
+        Assert.Equal("Manual keeper selection", manual.KeeperReason);
+
+        catalog.SetVisualSuggestedKeeper(group.GroupId, null);
+        VisualSimilarityGroupRecord manualWithoutSuggestion = catalog.GetVisualGroup(group.GroupId)!;
+        Assert.Equal(manualKeeperId, manualWithoutSuggestion.ManualKeeperFileId);
+        Assert.Null(manualWithoutSuggestion.SuggestedKeeperFileId);
+        Assert.Single(catalog.GetVisualGroupMembers(group.GroupId), member => member.IsManualKeeper && !member.IsSuggestedKeeper);
+        Assert.Equal(manualKeeperId, Assert.Single(cleanup.BuildProposal().Items).Keeper.FileId);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, candidateId, true, false));
+        VisualCleanupProposalItem swapped = Assert.Single(cleanup.BuildProposal().Items);
+        Assert.Equal(candidateId, swapped.Keeper.FileId);
+        Assert.Equal(manualKeeperId, swapped.Candidate.FileId);
+        Assert.NotEqual(swapped.Keeper.FileId, swapped.Candidate.FileId);
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, manualKeeperId, true, false));
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, manualKeeperId, true, true));
+        Assert.Equal(manualKeeperId, catalog.GetVisualGroup(group.GroupId)!.ManualKeeperFileId);
+        Assert.Empty(cleanup.BuildProposal().Items);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, manualKeeperId, true, false));
+        catalog.SetFileProtection(candidateId, true, "test candidate protection");
+        Assert.Empty(cleanup.BuildProposal().Items);
+        catalog.SetFileProtection(candidateId, false, "");
+
+        File.Delete(candidatePath);
+        Assert.Empty(cleanup.BuildProposal().Items);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, null, true, false));
+        Assert.Empty(cleanup.BuildProposal().Items);
+    }
+
+    [Fact]
+    public async Task GlobalReviewedVisualCleanupIgnoresCurrentUiPageSelectionAndFilters()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "global-reviewed-cleanup"); Directory.CreateDirectory(library);
+        var paths = new List<string>();
+        var fingerprints = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase);
+        var random = new Random(61723);
+        for (int pair = 0; pair < 101; pair++)
+        {
+            var hashes = new ulong[6];
+            for (int index = 0; index < hashes.Length; index++)
+                hashes[index] = ((ulong)(uint)random.Next() << 32) | (uint)random.Next();
+            string keeper = Write(library, $"pair-{pair:D3}-keeper.mkv", 160);
+            string candidate = Write(library, $"pair-{pair:D3}-candidate.mp4", 120);
+            paths.Add(keeper); paths.Add(candidate);
+            fingerprints[keeper] = hashes;
+            fingerprints[candidate] = hashes;
+        }
+        AddInventoryAndMetadata(catalog, library, paths, path =>
+            path.EndsWith("keeper.mkv", StringComparison.OrdinalIgnoreCase)
+                ? ("hevc", 1920, 1080, 60d)
+                : ("h264", 1280, 720, 60d));
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog, new FakeVisualExtractor(path => fingerprints[path]),
+                   new LibraryVisualAnalysisOptions(1, paths.Count, 16, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+        VisualSimilarityGroupRecord[] groups = catalog.QueryVisualGroups(new VisualGroupQuery(Limit: 500)).Groups.ToArray();
+        Assert.Equal(101, groups.Length);
+        foreach (VisualSimilarityGroupRecord group in groups)
+            catalog.SaveVisualDecision(new VisualGroupDecision(group.GroupId, group.SuggestedKeeperFileId, true, false));
+
+        using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv", ".mp4" }, new EmptyMetadataProbe(),
+            new FakeVisualExtractor(_ => Array.Empty<ulong>()));
+        using var form = new LibraryAnalyzerForm(runtime);
+        SetPrivateField(form, "_visualPage", 1);
+        GetPrivateField<TextBox>(form, "_visualSearch").Text = "filter-that-matches-nothing";
+        GetPrivateField<ComboBox>(form, "_visualReview").SelectedIndex = 1;
+
+        VisualCleanupProposal proposal = await form.BuildVisualCleanupPreviewAsync(null, deleteBoth: false);
+
+        Assert.Equal(101, proposal.Items.Count);
+        Assert.Contains(proposal.Items, item => item.Group.GroupId == groups[0].GroupId);
+        Assert.Contains(proposal.Items, item => item.Group.GroupId == groups[^1].GroupId);
+        HashSet<long> keeperIds = proposal.Items.Select(item => item.Keeper.FileId).ToHashSet();
+        Assert.DoesNotContain(proposal.Items, item => keeperIds.Contains(item.Candidate.FileId));
     }
 
     [Fact]
@@ -196,6 +311,49 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
         VisualSimilarityGroupRecord restored = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: true)).Groups);
         catalog.SaveVisualDecision(new VisualGroupDecision(restored.GroupId, restored.ManualKeeperFileId, restored.Reviewed, restored.Ignored, false));
         Assert.False(Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: false)).Groups).NotMatch);
+    }
+
+    [Fact]
+    public async Task VisualResolvedQueriesArePairScopedAndDecisionsAreMutuallyExclusive()
+    {
+        using SqliteLibraryCatalog catalog = CreateCatalog();
+        string library = Path.Combine(_root, "visual-resolved-queries"); Directory.CreateDirectory(library);
+        string a = Write(library, "a.mkv", 1000), b = Write(library, "b.mp4", 800), c = Write(library, "c.mp4", 700);
+        AddInventoryAndMetadata(catalog, library, new[] { a, b, c }, _ => ("hevc", 1920, 1080, 60d));
+        ulong[] first = Enumerable.Range(0, 6).Select(i => 0x3030303030303030UL + (ulong)i).ToArray();
+        using (var analysis = new LibraryVisualAnalysisCoordinator(catalog,
+            new FakeVisualExtractor(_ => first),
+            new LibraryVisualAnalysisOptions(1, 3, 16, 128, 3, 70)))
+            await analysis.AnalyzeAsync();
+
+        VisualSimilarityGroupRecord[] all = catalog.QueryVisualGroups(new VisualGroupQuery(IncludeFamilyPairs: true)).Groups.ToArray();
+        Assert.True(all.Length >= 2);
+        VisualSimilarityGroupRecord ab = all.Single(group =>
+            catalog.GetVisualGroupMembers(group.GroupId).Select(member => member.FullPath).ToHashSet()
+                .SetEquals(new[] { a, b }));
+        VisualSimilarityGroupRecord ac = all.Single(group =>
+            catalog.GetVisualGroupMembers(group.GroupId).Select(member => member.FullPath).ToHashSet()
+                .SetEquals(new[] { a, c }));
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(ab.GroupId, ab.SuggestedKeeperFileId, true, true, false));
+        Assert.DoesNotContain(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: false, NotMatch: false, IncludeFamilyPairs: true)).Groups,
+            group => group.GroupId == ab.GroupId);
+        Assert.Contains(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: true, IncludeFamilyPairs: true)).Groups,
+            group => group.GroupId == ab.GroupId);
+        Assert.Contains(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: false, NotMatch: false, IncludeFamilyPairs: true)).Groups,
+            group => group.GroupId == ac.GroupId);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(ab.GroupId, ab.SuggestedKeeperFileId, true, false, true));
+        VisualSimilarityGroupRecord notMatch = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(NotMatch: true, IncludeFamilyPairs: true)).Groups);
+        Assert.Equal(ab.GroupId, notMatch.GroupId);
+        Assert.False(notMatch.Ignored);
+        Assert.Contains(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: false, NotMatch: false, IncludeFamilyPairs: true)).Groups,
+            group => group.GroupId == ac.GroupId);
+
+        catalog.SaveVisualDecision(new VisualGroupDecision(ab.GroupId, ab.SuggestedKeeperFileId, true, true, false));
+        VisualSimilarityGroupRecord ignored = Assert.Single(catalog.QueryVisualGroups(new VisualGroupQuery(Ignored: true, IncludeFamilyPairs: true)).Groups);
+        Assert.Equal(ab.GroupId, ignored.GroupId);
+        Assert.False(ignored.NotMatch);
     }
 
     [Fact]
@@ -722,8 +880,10 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             return;
 
         Exception? failure = null;
+        string stage = "starting";
         var thread = new Thread(() =>
         {
+            LibraryAnalyzerForm? activeForm = null;
             try
             {
                 SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
@@ -748,10 +908,12 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                     new[] { ".mkv", ".mp4" },
                     new EmptyMetadataProbe(),
                     extractor);
-                using var form = new LibraryAnalyzerForm(
+                activeForm = new LibraryAnalyzerForm(
                     runtime,
                     reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(VideoLauncher: played.Enqueue, PreviewCacheRoot: _root));
+                LibraryAnalyzerForm form = activeForm;
                 form.Show();
+                stage = "initial refresh";
                 TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
                 tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Duplicates — Visual");
                 form.Size = form.MinimumSize;
@@ -766,86 +928,169 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
 
                 DataGridView groups = GetPrivateField<DataGridView>(form, "_visualGroupsGrid");
                 DataGridView members = GetPrivateField<DataGridView>(form, "_visualMembersGrid");
+                PumpUntil(() => groups.Rows.Count == 2);
                 Assert.Equal(2, groups.Rows.Count);
                 PumpUntil(() => members.Rows.Count == 2);
                 long initialGroupId = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
+                Control visualActions = Descendants<Control>(form).Single(control => control.Name == "VisualActionArea");
+                foreach (string label in new[]
+                {
+                    "Review & Compare…", "Keep Selected File", "Protect Selected File", "Mark Match as Reviewed", "Ignore This Match",
+                    "Recheck This Match", "Preview Files to Delete…", "Review Files to Delete…"
+                })
+                    Assert.Contains(label, Descendants<Button>(visualActions).Select(button => button.Text));
+                Assert.DoesNotContain("Remove Recommended Duplicates…", Descendants<Button>(visualActions).Select(button => button.Text));
+                Assert.Equal("Keeper decision", groups.Columns["Decision"].HeaderText);
+                Assert.Equal("Keeper / cleanup state", members.Columns["Keeper"].HeaderText);
+                Assert.Contains("Suggested Keeper", string.Join(" ", members.Rows.Cast<DataGridViewRow>().Select(row => row.Cells["Keeper"].Value)));
+                Assert.Equal("Suggested keeper only", groups.SelectedRows[0].Cells["Decision"].Value);
+                Assert.Equal("Review Matches Using File Selection Rules…", GetPrivateField<ToolStripMenuItem>(form, "_visualMoreAutomation").Text);
+                Assert.Equal("Delete Both Files…", GetPrivateField<ToolStripMenuItem>(form, "_visualMoreDeleteBoth").Text);
+                Button reviewFiles = Descendants<Button>(visualActions).Single(button => button.Name == "VisualReviewFilesToDeleteButton");
+                Assert.True(reviewFiles.Visible);
+                Assert.True(reviewFiles.Enabled);
+                var cleanupCommandInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                form.VisualBulkCleanupCommandOverride = () =>
+                {
+                    cleanupCommandInvoked.TrySetResult(true);
+                    return Task.FromResult(false);
+                };
+                reviewFiles.PerformClick();
+                PumpTaskNoSleep(cleanupCommandInvoked.Task);
+                Assert.True(cleanupCommandInvoked.Task.Result);
+                var rulesCommandInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                form.VisualRulesReviewCommandOverride = () =>
+                {
+                    rulesCommandInvoked.TrySetResult(true);
+                    return Task.CompletedTask;
+                };
+                GetPrivateField<ToolStripMenuItem>(form, "_visualMoreAutomation").PerformClick();
+                PumpTaskNoSleep(rulesCommandInvoked.Task);
+                Assert.True(rulesCommandInvoked.Task.Result);
+
+                var releaseCleanupCommand = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                int cleanupInvocationCount = 0;
+                form.VisualBulkCleanupCommandOverride = async () =>
+                {
+                    cleanupInvocationCount++;
+                    await releaseCleanupCommand.Task;
+                    return false;
+                };
+                Task<bool> firstCleanupCommand = form.ReviewBulkVisualCleanupAsync();
+                Task<bool> duplicateCleanupCommand = form.ReviewBulkVisualCleanupAsync();
+                Assert.True(duplicateCleanupCommand.IsCompletedSuccessfully);
+                Assert.False(duplicateCleanupCommand.Result);
+                Assert.Equal(1, cleanupInvocationCount);
+                Assert.False(reviewFiles.Enabled);
+                releaseCleanupCommand.SetResult(true);
+                PumpTaskNoSleep(firstCleanupCommand);
+                Assert.True(reviewFiles.Enabled);
+
+                var releaseRulesCommand = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                int rulesInvocationCount = 0;
+                form.VisualRulesReviewCommandOverride = async () =>
+                {
+                    rulesInvocationCount++;
+                    await releaseRulesCommand.Task;
+                };
+                Task firstRulesCommand = form.ReviewMatchesUsingFileSelectionRulesAsync();
+                Task duplicateRulesCommand = form.ReviewMatchesUsingFileSelectionRulesAsync();
+                Assert.True(duplicateRulesCommand.IsCompletedSuccessfully);
+                Assert.Equal(1, rulesInvocationCount);
+                Assert.False(GetPrivateField<ToolStripMenuItem>(form, "_visualMoreAutomation").Enabled);
+                releaseRulesCommand.SetResult(true);
+                PumpTaskNoSleep(firstRulesCommand);
+                Assert.True(GetPrivateField<ToolStripMenuItem>(form, "_visualMoreAutomation").Enabled);
+                Assert.Contains("Selected:", GetPrivateField<Label>(form, "_visualReviewGuidance").Text);
+                Button reviewCompare = Descendants<Button>(visualActions).Single(button => button.Name == "VisualReviewCompareButton");
+                Assert.True(reviewCompare.Enabled);
+                ToolTip visualToolTip = GetPrivateField<ToolTip>(form, "_visualActionToolTip");
+                Assert.Equal(
+                    "Open the Review & Compare window to inspect the matched files side by side before deciding which file to keep.",
+                    visualToolTip.GetToolTip(reviewCompare));
+                Assert.True(reviewCompare.Font.Bold);
+                Assert.DoesNotContain(Descendants<Button>(visualActions).Where(button => button != reviewCompare), button => button.Font.Bold);
+                DataGridViewRow selectedGroupRow = groups.SelectedRows.Cast<DataGridViewRow>().Single();
+                groups.ClearSelection();
+                InvokePrivate(form, "UpdateVisualActionState");
+                Assert.False(reviewCompare.Enabled);
+                selectedGroupRow.Selected = true;
+                groups.CurrentCell = selectedGroupRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                InvokePrivate(form, "UpdateVisualActionState");
+                Assert.True(reviewCompare.Enabled);
 
                 ContextMenuStrip groupMenu = GetPrivateField<ContextMenuStrip>(form, "_visualGroupsMenu");
                 ContextMenuStrip memberMenu = GetPrivateField<ContextMenuStrip>(form, "_visualMembersMenu");
                 InvokePrivate(form, "VisualGroupsMenu_Opening", groupMenu, new CancelEventArgs());
-                InvokePrivate(form, "VisualMembersMenu_Opening", memberMenu, new CancelEventArgs());
                 Assert.True(groupMenu.Items.Find("Review", false).Single().Enabled);
+                Assert.Equal("Review & Compare…", groupMenu.Items.Find("Review", false).Single().Text);
+                Assert.Equal("Review & Compare…", memberMenu.Items.Find("Review", false).Single().Text);
                 Assert.True(groupMenu.Items.Find("Cleanup", false).Single().Enabled);
                 Assert.True(groupMenu.Items.Find("DeleteBoth", false).Single().Enabled);
                 Assert.True(groupMenu.Items.Find("NotMatch", false).Single().Enabled);
                 Assert.True(groupMenu.Items.Find("Next", false).Single().Enabled);
+                PumpUntil(() => members.Rows.Count == 2);
+                members.ClearSelection();
+                DataGridViewRow firstMember = members.Rows[0];
+                firstMember.Selected = true;
+                members.CurrentCell = firstMember.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                Application.DoEvents();
+                InvokePrivate(form, "VisualMembersMenu_Opening", memberMenu, new CancelEventArgs());
+                VisualSimilarityMemberRecord memberForMenu = members.SelectedRows.Cast<DataGridViewRow>().Single().Tag as VisualSimilarityMemberRecord
+                    ?? throw new Xunit.Sdk.XunitException("The visual member row was not selected before opening its context menu.");
+                Assert.True(File.Exists(memberForMenu.FullPath), $"The selected visual member path was not present: {memberForMenu.FullPath}");
                 Assert.True(memberMenu.Items.Find("Play", false).Single().Enabled);
                 Assert.True(memberMenu.Items.Find("Keeper", false).Single().Enabled);
                 Assert.True(memberMenu.Items.Find("KeepDeleteOther", false).Single().Enabled);
                 Assert.Equal("Protect", memberMenu.Items.Find("Protect", false).Single().Text);
 
-                bool sawComparison = false;
-                bool navigated = false;
-                bool ignoreClicked = false;
-                bool restoreClicked = false;
-                string? firstReviewTitle = null;
-                using var timer = new System.Windows.Forms.Timer { Interval = 50 };
-                timer.Tick += (_, _) =>
+                var reviewCommandInvoked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                form.VisualReviewCommandOverride = () => { reviewCommandInvoked.TrySetResult(true); return Task.CompletedTask; };
+                stage = "review and compare command";
+                reviewCompare.PerformClick();
+                PumpTaskNoSleep(reviewCommandInvoked.Task);
+                Assert.True(reviewCommandInvoked.Task.Result);
+
+                foreach (DataGridViewRow memberRow in members.Rows)
                 {
-                    Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Match", StringComparison.Ordinal));
-                    if (review == null)
-                        return;
-                    Panel[] cards = Descendants<Panel>(review).Where(panel => panel.AccessibleName?.StartsWith("Visual review file:", StringComparison.Ordinal) == true).ToArray();
-                    if (cards.Length != 2)
-                        return;
-                    if (!sawComparison)
-                    {
-                        sawComparison = true;
-                        firstReviewTitle = review.Text;
-                        foreach (Panel card in cards)
-                            Descendants<Button>(card).Single(button => button.Text == "Play video").PerformClick();
-                        Descendants<Button>(review).Single(button => button.Text == "Next >").PerformClick();
-                        return;
-                    }
-                    if (!navigated && review.Text != firstReviewTitle)
-                    {
-                        navigated = true;
-                        Descendants<Button>(review).Single(button => button.Text == "Ignore").PerformClick();
-                        ignoreClicked = true;
-                        return;
-                    }
-                    if (ignoreClicked && !restoreClicked && Descendants<Button>(review).FirstOrDefault(button => button.Text == "Restore") is { } restore)
-                    {
-                        restore.PerformClick();
-                        restoreClicked = true;
-                        return;
-                    }
-                    if (restoreClicked && Descendants<Button>(review).Any(button => button.Text == "Ignore"))
-                    {
-                        review.Close();
-                    }
-                };
-                timer.Start();
-                Task reviewTask = InvokePrivateTask(form, "OpenVisualReviewAsync");
-                PumpTask(reviewTask, TimeSpan.FromSeconds(10));
-                timer.Stop();
-                Assert.True(sawComparison);
-                Assert.True(navigated);
-                Assert.True(ignoreClicked);
-                Assert.True(restoreClicked);
+                    members.ClearSelection();
+                    memberRow.Selected = true;
+                    members.CurrentCell = memberRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                    InvokePrivate(form, "PlaySelectedVisualMember");
+                }
                 Assert.Equal(2, played.Count);
                 Assert.Contains(a, played.Concat(new[] { "" }), StringComparer.OrdinalIgnoreCase);
                 Assert.Contains(b, played.Concat(new[] { "" }), StringComparer.OrdinalIgnoreCase);
 
+                stage = "refreshing initial group after modal";
+                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { initialGroupId }));
                 DataGridViewRow initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
                 groups.ClearSelection();
                 initialRow.Selected = true;
                 groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-                PumpUntil(() => members.Rows.Count == 2 && members.SelectedRows.Count == 1);
+                PumpUntil(() => members.Rows.Count == 2);
+                members.ClearSelection();
+                DataGridViewRow refreshedMemberRow = members.Rows[0];
+                refreshedMemberRow.Selected = true;
+                members.CurrentCell = refreshedMemberRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                Application.DoEvents();
                 VisualSimilarityMemberRecord selectedMember = (VisualSimilarityMemberRecord)members.SelectedRows[0].Tag!;
+                VisualSimilarityMemberRecord otherMember = members.Rows.Cast<DataGridViewRow>()
+                    .Select(row => (VisualSimilarityMemberRecord)row.Tag!)
+                    .Single(member => member.FileId != selectedMember.FileId);
+                LibraryAnalyzerForm.VisualReviewMovePresentation leftMove =
+                    LibraryAnalyzerForm.CreateVisualReviewMovePresentation(selectedMember, otherMember, sourceIsLeft: true);
+                LibraryAnalyzerForm.VisualReviewMovePresentation rightMove =
+                    LibraryAnalyzerForm.CreateVisualReviewMovePresentation(otherMember, selectedMember, sourceIsLeft: false);
+                Assert.Equal("Move to Right Folder →", leftMove.ButtonText);
+                Assert.Equal("← Move to Left Folder", rightMove.ButtonText);
+                Assert.Contains(Path.GetFileName(otherMember.FullPath), leftMove.ToolTipText);
+                Assert.Contains(Path.GetDirectoryName(otherMember.FullPath)!, leftMove.ToolTipText);
+                Assert.Contains(Path.GetFileName(selectedMember.FullPath), rightMove.ToolTipText);
                 long expectedNextGroupId = ((VisualSimilarityGroupRecord)groups.Rows[Math.Min(initialRow.Index + 1, groups.Rows.Count - 1)].Tag!).GroupId;
                 ContextMenuStrip visualMemberMenu = GetPrivateField<ContextMenuStrip>(form, "_visualMembersMenu");
                 InvokePrivate(form, "VisualMembersMenu_Opening", visualMemberMenu, new CancelEventArgs());
+                stage = "saving keeper and advancing";
                 PumpTask(InvokePrivateTask(form, "SetSelectedVisualKeeperAsync", true));
                 Assert.Equal(selectedMember.FileId, catalog.GetVisualGroup(initialGroupId)!.ManualKeeperFileId);
                 Assert.True(catalog.GetVisualGroup(initialGroupId)!.Reviewed);
@@ -856,63 +1101,92 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 initialRow.Selected = true;
                 groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
                 PumpTask(InvokePrivateTask(form, "RefreshVisualMembersAsync"));
+                Assert.Equal("Manual keeper selected", initialRow.Cells["Decision"].Value);
+                Assert.Equal("Manual Keeper", members.Rows.Cast<DataGridViewRow>()
+                    .Single(row => ((VisualSimilarityMemberRecord)row.Tag!).FileId == selectedMember.FileId).Cells["Keeper"].Value);
+                Assert.Equal("Delete Candidate", members.Rows.Cast<DataGridViewRow>()
+                    .Single(row => ((VisualSimilarityMemberRecord)row.Tag!).FileId != selectedMember.FileId).Cells["Keeper"].Value);
 
+                stage = "protection command";
                 PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualProtectionAsync"));
-                Assert.True(catalog.GetVisualGroupMembers(initialGroupId).Single(member => member.FileId == selectedMember.FileId).IsProtected);
-                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualIgnoredAsync"));
-                Assert.True(catalog.GetVisualGroup(initialGroupId)!.Ignored);
-                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualIgnoredAsync"));
+                stage = "protection rows";
+                Assert.True(members.Rows.Cast<DataGridViewRow>()
+                    .Select(row => (VisualSimilarityMemberRecord)row.Tag!)
+                    .Single(member => member.FileId == selectedMember.FileId).IsProtected);
+                stage = "protection button";
+                Assert.Equal("Remove Protection", Descendants<Button>(visualActions).Single(button => button.Name == "VisualProtectionButton").Text);
+                stage = "protection complete";
+                PumpUiIdle(form);
+                ComboBox reviewFilter = GetPrivateField<ComboBox>(form, "_visualReview");
+                stage = "ignore filter selection";
+                reviewFilter.SelectedIndex = 5;
+                stage = "ignore command";
+                PumpTask(InvokePrivateTaskOnUi(form, form, "ToggleSelectedVisualIgnoredAsync"));
+                stage = "ignore assertion";
+                stage = "ignore catalog assertion";
+                Assert.True(groups.Rows.Cast<DataGridViewRow>()
+                    .Select(row => (VisualSimilarityGroupRecord)row.Tag!)
+                    .Single(group => group.GroupId == initialGroupId).Ignored);
+                Assert.Equal(selectedMember.FileId, catalog.GetVisualGroup(initialGroupId)!.ManualKeeperFileId);
+                Assert.Empty(form.BuildVisualCleanupPreviewAsync(new[] { initialGroupId }, deleteBoth: false).GetAwaiter().GetResult().Items);
+                stage = "ignore button assertion";
+                Assert.Equal("Restore Ignored Match", Descendants<Button>(visualActions).Single(button => button.Name == "VisualIgnoredButton").Text);
+                reviewFilter.SelectedIndex = 0;
+                PumpTask(InvokePrivateTaskOnUi(form, form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpUntil(() => groups.Rows.Count == 1);
+                Assert.DoesNotContain(groups.Rows.Cast<DataGridViewRow>(), row =>
+                    ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                reviewFilter.SelectedIndex = 3;
+                PumpTask(InvokePrivateTaskOnUi(form, form, "RefreshVisualGroupsAsync", new object?[] { initialGroupId }));
+                PumpUntil(() => groups.Rows.Count == 1);
+                Assert.Equal(initialGroupId, ((VisualSimilarityGroupRecord)groups.Rows[0].Tag!).GroupId);
+                groups.Rows[0].Selected = true;
+                groups.CurrentCell = groups.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                stage = "restore ignore command";
+                PumpTask(InvokePrivateTaskOnUi(form, form, "ToggleSelectedVisualIgnoredAsync"));
+                stage = "restore ignore assertion";
+                reviewFilter.SelectedIndex = 0;
+                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpUntil(() => groups.Rows.Count == 2);
+                Assert.Contains(groups.Rows.Cast<DataGridViewRow>(), row =>
+                    ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
                 Assert.False(catalog.GetVisualGroup(initialGroupId)!.Ignored);
+                PumpUiIdle(form);
 
-                bool sawCleanupPreview = false;
-                using (var cleanupTimer = new System.Windows.Forms.Timer { Interval = 50 })
-                {
-                    cleanupTimer.Tick += (_, _) =>
-                    {
-                        Form? preview = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open.Text == "Review Visual Duplicate Cleanup Plan");
-                        if (preview == null) return;
-                        DataGridView previewGrid = Descendants<DataGridView>(preview).Single(grid => grid.Name == "VisualCleanupPreviewGrid");
-                        Assert.Single(previewGrid.Rows.Cast<DataGridViewRow>());
-                        Assert.Contains("PERMANENT DELETE", Descendants<Label>(preview).Select(label => label.Text).First(text => text.Contains("PERMANENT DELETE")));
-                        sawCleanupPreview = true;
-                        Descendants<Button>(preview).Single(button => button.Text == "Cancel").PerformClick();
-                    };
-                    cleanupTimer.Start();
-                    PumpTask(InvokePrivateTask(form, "PreviewVisualCleanupAsync", new long[] { initialGroupId }, null));
-                    cleanupTimer.Stop();
-                }
-                Assert.True(sawCleanupPreview);
+                stage = "cleanup preview command";
+                VisualCleanupProposal cleanupPreview = form.BuildVisualCleanupPreviewAsync(new[] { initialGroupId }, deleteBoth: false).GetAwaiter().GetResult();
+                VisualCleanupProposalItem cleanupItem = Assert.Single(cleanupPreview.Items);
+                Assert.Equal(initialGroupId, cleanupItem.Group.GroupId);
+                Assert.Equal(VisualCleanupIntent.DeleteCandidate, cleanupItem.Intent);
+                stage = "cleanup assertions complete";
 
-                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualProtectionAsync"));
-                bool sawDeleteBothPreview = false;
-                using (var deleteBothTimer = new System.Windows.Forms.Timer { Interval = 50 })
-                {
-                    deleteBothTimer.Tick += (_, _) =>
-                    {
-                        Form? preview = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open.Text == "Review Visual Duplicate Cleanup Plan");
-                        if (preview == null) return;
-                        DataGridView previewGrid = Descendants<DataGridView>(preview).Single(grid => grid.Name == "VisualCleanupPreviewGrid");
-                        DataGridViewRow row = Assert.Single(previewGrid.Rows.Cast<DataGridViewRow>());
-                        Assert.Equal("DELETE BOTH", row.Cells["Intent"].Value);
-                        Assert.Contains("NO KEEPER", Convert.ToString(row.Cells["Keeper"].Value), StringComparison.OrdinalIgnoreCase);
-                        Assert.Contains("DELETE BOTH", Descendants<Label>(preview).Select(label => label.Text).First(text => text.Contains("DELETE BOTH")));
-                        sawDeleteBothPreview = true;
-                        Descendants<Button>(preview).Single(button => button.Text == "Cancel").PerformClick();
-                    };
-                    deleteBothTimer.Start();
-                    PumpTask(InvokePrivateTask(form, "PreviewDeleteBothAsync", initialGroupId));
-                    deleteBothTimer.Stop();
-                }
-                Assert.True(sawDeleteBothPreview);
+                PumpUiIdle(form);
+                stage = "delete-both protection";
+                PumpTask(InvokePrivateTaskOnUi(form, form, "ToggleSelectedVisualProtectionAsync"));
+                stage = "delete-both preview command";
+                VisualCleanupProposal deleteBothPreview = form.BuildVisualCleanupPreviewAsync(new[] { initialGroupId }, deleteBoth: true).GetAwaiter().GetResult();
+                VisualCleanupProposalItem deleteBothItem = Assert.Single(deleteBothPreview.Items);
+                Assert.Equal(VisualCleanupIntent.DeleteBoth, deleteBothItem.Intent);
+                Assert.Equal(initialGroupId, deleteBothItem.Group.GroupId);
+                Assert.NotEqual(deleteBothItem.Keeper.FileId, deleteBothItem.Candidate.FileId);
+                Assert.True(deleteBothItem.ReclaimableBytes > 0);
 
+                reviewFilter.SelectedIndex = 0;
+                PumpTask(InvokePrivateTaskOnUi(form, form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpUntil(() => groups.Rows.Count == 2);
+                PumpUiIdle(form);
                 Assert.True(groups.MultiSelect);
                 initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
                 groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-                typeof(Control).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .Invoke(groups, new object[] { new KeyEventArgs(Keys.Control | Keys.A) });
-                PumpTask(InvokePrivateTask(form, "MarkSelectedVisualReviewedAsync"));
-                Assert.All(groups.Rows.Cast<DataGridViewRow>(), row =>
-                    Assert.True(catalog.GetVisualGroup(((VisualSimilarityGroupRecord)row.Tag!).GroupId)!.Reviewed));
+                foreach (DataGridViewRow row in groups.Rows)
+                    row.Selected = true;
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                Assert.Equal(2, groups.SelectedRows.Count);
+                PumpUiIdle(form);
+                stage = "bulk review refresh";
+                PumpTask(InvokePrivateTaskOnUi(form, form, "MarkSelectedVisualReviewedAsync"));
+                PumpUntil(() => groups.SelectedRows.Count == 2);
+                Assert.All(groups.Rows.Cast<DataGridViewRow>(), row => Assert.True(((VisualSimilarityGroupRecord)row.Tag!).Reviewed));
                 Assert.Equal(2, groups.SelectedRows.Count);
                 Assert.Equal(initialGroupId, ((VisualSimilarityGroupRecord)groups.CurrentRow!.Tag!).GroupId);
                 groups.ClearSelection();
@@ -920,20 +1194,36 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
                 initialRow.Selected = true;
                 groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
 
-                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualNotMatchAsync"));
+                PumpUiIdle(form);
+                stage = "not-match refresh";
+                PumpTask(InvokePrivateTaskOnUi(form, form, "ToggleSelectedVisualNotMatchAsync"));
                 Assert.True(catalog.GetVisualGroup(initialGroupId)!.NotMatch);
+                Assert.Equal(selectedMember.FileId, catalog.GetVisualGroup(initialGroupId)!.ManualKeeperFileId);
+                Assert.Empty(form.BuildVisualCleanupPreviewAsync(new[] { initialGroupId }, deleteBoth: false).GetAwaiter().GetResult().Items);
                 Assert.Single(groups.Rows.Cast<DataGridViewRow>());
-                ComboBox reviewFilter = GetPrivateField<ComboBox>(form, "_visualReview");
                 reviewFilter.SelectedIndex = 4;
-                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpTask(InvokePrivateTaskOnUi(form, form, "RefreshVisualGroupsAsync", new object?[] { initialGroupId }));
+                PumpUntil(() => groups.Rows.Count == 1);
                 Assert.Single(groups.Rows.Cast<DataGridViewRow>());
-                PumpTask(InvokePrivateTask(form, "ToggleSelectedVisualNotMatchAsync"));
+                if (!groups.Rows.Cast<DataGridViewRow>().Any(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId))
+                    throw new Xunit.Sdk.XunitException($"Expected not-match group {initialGroupId}; visible group IDs: {string.Join(",", groups.Rows.Cast<DataGridViewRow>().Select(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId))}.");
+                initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                groups.ClearSelection();
+                initialRow.Selected = true;
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                PumpTask(InvokePrivateTaskOnUi(form, form, "ToggleSelectedVisualNotMatchAsync"));
                 Assert.False(catalog.GetVisualGroup(initialGroupId)!.NotMatch);
                 reviewFilter.SelectedIndex = 0;
-                PumpTask(InvokePrivateTask(form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpTask(InvokePrivateTaskOnUi(form, form, "RefreshVisualGroupsAsync", new object?[] { null }));
+                PumpUntil(() => groups.Rows.Count == 2);
                 Assert.Equal(2, groups.Rows.Count);
+                initialRow = groups.Rows.Cast<DataGridViewRow>().Single(row => ((VisualSimilarityGroupRecord)row.Tag!).GroupId == initialGroupId);
+                groups.ClearSelection();
+                initialRow.Selected = true;
+                groups.CurrentCell = initialRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
 
                 long beforeNavigation = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
+                stage = "final navigation";
                 PumpTask(InvokePrivateTask(form, "NavigateVisualSelectionAsync", 1));
                 long afterNavigation = ((VisualSimilarityGroupRecord)groups.SelectedRows[0].Tag!).GroupId;
                 Assert.NotEqual(beforeNavigation, afterNavigation);
@@ -945,10 +1235,14 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             {
                 failure = ex;
             }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(activeForm);
+            }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(20)), "The visual review UI test did not finish.");
+        Assert.True(thread.Join(TimeSpan.FromSeconds(20)), $"The visual review UI test did not finish during: {stage}.");
         if (failure != null)
             throw new Xunit.Sdk.XunitException("The visual review UI workflow failed.", failure);
     }
@@ -999,6 +1293,10 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
             catch (Exception ex)
             {
                 failure = ex;
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(null);
             }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -1089,6 +1387,13 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
         (T)(instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(instance)
             ?? throw new MissingFieldException(instance.GetType().FullName, name));
 
+    private static void SetPrivateField<T>(object instance, string name, T value)
+    {
+        FieldInfo field = instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(instance.GetType().FullName, name);
+        field.SetValue(instance, value);
+    }
+
     private static object? InvokePrivate(object instance, string name, params object?[] arguments)
     {
         MethodInfo method = instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
@@ -1100,10 +1405,55 @@ public sealed class LibraryAnalyzerPhase5Tests : IDisposable
         (Task)(instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(instance, arguments)
             ?? throw new MissingMethodException(instance.GetType().FullName, name));
 
+    private static Task InvokePrivateTaskOnUi(Control control, object instance, string name, params object?[] arguments)
+    {
+        TaskCompletionSource<object?> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        control.BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                await InvokePrivateTask(instance, name, arguments);
+                completion.TrySetResult(null);
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        }));
+        return completion.Task;
+    }
+
     private static void PumpTask(Task task, TimeSpan? timeout = null)
     {
         PumpUntil(() => task.IsCompleted, timeout);
         task.GetAwaiter().GetResult();
+    }
+
+    private static void PumpTaskNoSleep(Task task)
+    {
+        while (!task.IsCompleted)
+        {
+            Application.DoEvents();
+            Thread.Yield();
+        }
+        task.GetAwaiter().GetResult();
+    }
+
+    private static void PumpUiIdle(LibraryAnalyzerForm form)
+    {
+        SemaphoreSlim memberRefreshLock = GetPrivateField<SemaphoreSlim>(form, "_visualMemberRefreshLock");
+        PumpUntil(() => memberRefreshLock.CurrentCount > 0 && !GetPrivateField<bool>(form, "_loadingVisualGroups"));
+        DateTime stableUntil = DateTime.UtcNow.AddMilliseconds(150);
+        while (DateTime.UtcNow < stableUntil)
+        {
+            Application.DoEvents();
+            if (memberRefreshLock.CurrentCount == 0 || GetPrivateField<bool>(form, "_loadingVisualGroups"))
+            {
+                PumpUntil(() => memberRefreshLock.CurrentCount > 0 && !GetPrivateField<bool>(form, "_loadingVisualGroups"));
+                stableUntil = DateTime.UtcNow.AddMilliseconds(150);
+            }
+            Thread.Sleep(10);
+        }
     }
 
     private static void PumpUntil(Func<bool> condition, TimeSpan? timeout = null)

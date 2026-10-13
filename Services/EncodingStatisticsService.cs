@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services
 {
@@ -11,7 +12,9 @@ namespace MediaFlux.Services
         Cancelled = 3,
         ValidationFailed = 4,
         PromotionFailed = 5,
-        FinalVerificationFailed = 6
+        FinalVerificationFailed = 6,
+        StoragePolicyRejected = 7,
+        AdaptiveStorageSavingsSkipped = 8
     }
 
     public enum EncodingStatisticsPeriod
@@ -26,7 +29,9 @@ namespace MediaFlux.Services
 
     public sealed record EncodingStatisticsRecord
     {
-        public int SchemaVersion { get; set; } = 3;
+        public int SchemaVersion { get; set; } = 5;
+        // Legacy/single-production-encode JSON has no value and defaults to one.
+        public int ProductionEncodeCount { get; set; } = 1;
         public string Id { get; set; } = Guid.NewGuid().ToString("N");
         public DateTime StartUtc { get; set; }
         public DateTime EndUtc { get; set; }
@@ -36,8 +41,13 @@ namespace MediaFlux.Services
         public string Codec { get; set; } = "";
         public string Encoder { get; set; } = "";
         public long? SourceSizeBytes { get; set; }
+        // Durable final output only. Rejected/failed candidate bytes live in the retry trace.
         public long? OutputSizeBytes { get; set; }
+        // Original frozen selection and samples actually executed; retry quality is separate.
+        public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; set; }
         public double? MediaDurationSeconds { get; set; }
+        // Logical processing across attempts and validation/handoff, excluding sampling once.
+        // Individual production FFmpeg durations remain in the immutable attempt trace.
         public double ProcessingSeconds { get; set; }
         public string EncoderId { get; set; } = "";
         public string EncoderPreset { get; set; } = "";
@@ -49,6 +59,64 @@ namespace MediaFlux.Services
         public bool IsSampleJob { get; set; }
         public EncodingDiagnosticSummary? DiagnosticSummary { get; set; }
         public string Notes { get; set; } = "";
+        public string HardwareKey { get; set; } = "";
+        public bool RecoveredSuccessful { get; set; }
+        // Frozen before execution. These nullable fields are observational only and
+        // intentionally share the bounded finalized-statistics journal.
+        public string PredictionPlanId { get; set; } = "";
+        public string PredictionSourceCodec { get; set; } = "";
+        public string PredictionTargetCodec { get; set; } = "";
+        public bool? PredictionSameCodec { get; set; }
+        public long? PredictedOutputSizeBytes { get; set; }
+        public long? BasePredictedOutputSizeBytes { get; set; }
+        public bool? CalibrationApplied { get; set; }
+        public double? CalibrationCorrectionPercent { get; set; }
+        public double? CalibrationMedianSignedErrorPercent { get; set; }
+        public string CalibrationConfidence { get; set; } = "";
+        public int? CalibrationSampleCount { get; set; }
+        public string CalibrationCohortKey { get; set; } = "";
+        public string CalibrationReason { get; set; } = "";
+        public long? HypotheticalCalibratedOutputSizeBytes { get; set; }
+        public DateTime? CalibrationEvidenceCutoffUtc { get; set; }
+        public DateTime? CalibrationDecisionUtc { get; set; }
+        public string CalibrationDecision { get; set; } = "";
+        public string CalibrationEffectivenessState { get; set; } = "";
+        public int? CalibrationEvaluationCount { get; set; }
+        public double? CalibrationMedianImprovementPercent { get; set; }
+        public double? CalibrationImprovedRatePercent { get; set; }
+        public double? CalibrationWorsenedRatePercent { get; set; }
+        public DateTime? CalibrationEffectivenessSinceUtc { get; set; }
+        public string CalibrationPolicyId { get; set; } = "";
+        public double? CalibrationLearningStrength { get; set; }
+        public double? CalibrationRawHistoricalCorrectionPercent { get; set; }
+        public double? CalibrationAppliedCorrectionPercent { get; set; }
+        public double? PredictedCompressionRatio { get; set; }
+        public double? PredictedProcessingSeconds { get; set; }
+        public string PredictionConfidence { get; set; } = "";
+        public string PredictionRecommendation { get; set; } = "";
+        public string PredictionQuality { get; set; } = "";
+        public string PredictionAssessment { get; set; } = "";
+        public string TerminalResult { get; set; } = "";
+        public StorageSavingsEvaluation? StorageSavings { get; set; }
+        // Nullable additive evidence; a non-null trace also marks a multi-attempt job.
+        public AdaptiveStorageSavingsRetryTrace? AdaptiveStorageSavingsRetry { get; set; }
+        [JsonIgnore]
+        public bool IsMultiAttempt => ProductionEncodeCount > 1 || AdaptiveStorageSavingsRetry is not null;
+        [JsonIgnore]
+        // Fail closed for explicit zero/invalid counts and any Policy C trace, including pre-launch failure.
+        public bool IsEligibleForSingleEncodeLearning => ProductionEncodeCount == 1 && AdaptiveStorageSavingsRetry is null;
+        // Additive JSONL field; older schema versions deserialize with null.
+        public SourceAdaptiveShadowOutcome? SourceAdaptiveShadow { get; set; }
+        // Versioned effective NVENC quality-mode settings; absent on legacy records.
+        public string QualityModeSettingsSignature { get; set; } = "";
+        // Additive production estimate provenance; absent on historical JSONL records.
+        public string EstimateModelId { get; set; } = "";
+        public string EstimateStatus { get; set; } = "";
+        public int? EstimateIndependentFamilyCount { get; set; }
+        public int? EstimateHeldOutCount { get; set; }
+        public int? EstimateHeldOutEligibleCount { get; set; }
+        public double? EstimateMedianAbsoluteErrorPercent { get; set; }
+        public double? EstimatePredictedVideoBitrateKbps { get; set; }
     }
 
     public readonly record struct EncodingStatisticsUtcRange(
@@ -105,6 +173,7 @@ namespace MediaFlux.Services
             WriteIndented = false,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
         };
+        private const int MaximumHistoricalRecords = 3000;
 
         public EncodingStatisticsService(string storagePath)
         {
@@ -112,7 +181,6 @@ namespace MediaFlux.Services
                 throw new ArgumentException("A statistics storage path is required.", nameof(storagePath));
 
             _path = Path.GetFullPath(storagePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             LoadExistingRecords();
         }
 
@@ -130,9 +198,17 @@ namespace MediaFlux.Services
                 if (_recordIds.Contains(record.Id))
                     return false;
 
+                Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
                 File.AppendAllText(_path, line + Environment.NewLine);
                 _records.Add(record);
                 _recordIds.Add(record.Id);
+                if (_records.Count > MaximumHistoricalRecords)
+                {
+                    EncodingStatisticsRecord[] retained = _records.OrderByDescending(value => value.EndUtc).Take(MaximumHistoricalRecords).ToArray();
+                    File.WriteAllLines(_path, retained.Select(value => JsonSerializer.Serialize(value, _jsonOptions)));
+                    _records.Clear(); _records.AddRange(retained); _recordIds.Clear();
+                    foreach (EncodingStatisticsRecord value in retained) _recordIds.Add(value.Id);
+                }
                 return true;
             }
         }
@@ -194,6 +270,33 @@ namespace MediaFlux.Services
             record.OutputResolutionTier = record.OutputResolutionTier?.Trim() ?? "";
             if (record.OutputBitDepth is not (8 or 10 or 12 or 16)) record.OutputBitDepth = null;
             record.Notes ??= "";
+            record.HardwareKey = record.HardwareKey?.Trim() ?? "";
+            record.PredictionPlanId = record.PredictionPlanId?.Trim() ?? "";
+            record.PredictionSourceCodec = record.PredictionSourceCodec?.Trim() ?? "";
+            record.PredictionTargetCodec = record.PredictionTargetCodec?.Trim() ?? "";
+            record.PredictionConfidence = record.PredictionConfidence?.Trim() ?? "";
+            record.PredictionRecommendation = record.PredictionRecommendation?.Trim() ?? "";
+            record.PredictionQuality = record.PredictionQuality?.Trim() ?? "";
+            record.PredictionAssessment = record.PredictionAssessment?.Trim() ?? "";
+            record.CalibrationConfidence = record.CalibrationConfidence?.Trim() ?? "";
+            record.CalibrationCohortKey = record.CalibrationCohortKey?.Trim() ?? "";
+            record.CalibrationReason = record.CalibrationReason?.Trim() ?? "";
+            record.CalibrationDecision = record.CalibrationDecision?.Trim() ?? "";
+            record.CalibrationEffectivenessState = record.CalibrationEffectivenessState?.Trim() ?? "";
+            record.CalibrationPolicyId = record.CalibrationPolicyId?.Trim() ?? "";
+            record.TerminalResult = record.TerminalResult?.Trim() ?? "";
+            record.QualityModeSettingsSignature = record.QualityModeSettingsSignature?.Trim() ?? "";
+            record.EstimateModelId = record.EstimateModelId?.Trim() ?? "";
+            record.EstimateStatus = record.EstimateStatus?.Trim() ?? "";
+            if (record.EstimateIndependentFamilyCount is < 0) record.EstimateIndependentFamilyCount = null;
+            if (record.EstimateHeldOutCount is < 0) record.EstimateHeldOutCount = null;
+            if (record.EstimateHeldOutEligibleCount is < 0) record.EstimateHeldOutEligibleCount = null;
+            if (record.EstimateMedianAbsoluteErrorPercent is { } estimateError &&
+                (!double.IsFinite(estimateError) || estimateError < 0))
+                record.EstimateMedianAbsoluteErrorPercent = null;
+            if (record.EstimatePredictedVideoBitrateKbps is { } estimateVideo &&
+                (!double.IsFinite(estimateVideo) || estimateVideo <= 0))
+                record.EstimatePredictedVideoBitrateKbps = null;
             if (record.DiagnosticSummary is { } diagnostic)
             {
                 record.DiagnosticSummary = diagnostic with
@@ -221,8 +324,55 @@ namespace MediaFlux.Services
                 record.SourceSizeBytes = null;
             if (record.OutputSizeBytes is < 0)
                 record.OutputSizeBytes = null;
+            if (record.PredictedOutputSizeBytes is < 0)
+                record.PredictedOutputSizeBytes = null;
+            if (record.BasePredictedOutputSizeBytes is < 0)
+                record.BasePredictedOutputSizeBytes = null;
+            if (record.HypotheticalCalibratedOutputSizeBytes is < 0)
+                record.HypotheticalCalibratedOutputSizeBytes = null;
+            if (record.CalibrationCorrectionPercent is { } correction && !double.IsFinite(correction))
+                record.CalibrationCorrectionPercent = null;
+            if (record.CalibrationMedianSignedErrorPercent is { } bias && !double.IsFinite(bias))
+                record.CalibrationMedianSignedErrorPercent = null;
+            if (record.CalibrationSampleCount is < 0)
+                record.CalibrationSampleCount = null;
+            if (record.CalibrationEvaluationCount is < 0)
+                record.CalibrationEvaluationCount = null;
+            if (record.CalibrationMedianImprovementPercent is { } improvement && !double.IsFinite(improvement))
+                record.CalibrationMedianImprovementPercent = null;
+            if (record.CalibrationImprovedRatePercent is { } improvedRate && !double.IsFinite(improvedRate))
+                record.CalibrationImprovedRatePercent = null;
+            if (record.CalibrationWorsenedRatePercent is { } worsenedRate && !double.IsFinite(worsenedRate))
+                record.CalibrationWorsenedRatePercent = null;
+            if (record.CalibrationLearningStrength is { } learningStrength && !double.IsFinite(learningStrength))
+                record.CalibrationLearningStrength = null;
+            if (record.CalibrationRawHistoricalCorrectionPercent is { } rawCorrection && !double.IsFinite(rawCorrection))
+                record.CalibrationRawHistoricalCorrectionPercent = null;
+            if (record.CalibrationAppliedCorrectionPercent is { } appliedCorrection && !double.IsFinite(appliedCorrection))
+                record.CalibrationAppliedCorrectionPercent = null;
+            if (record.PredictedCompressionRatio is not >= 0 ||
+                !double.IsFinite(record.PredictedCompressionRatio.Value))
+                record.PredictedCompressionRatio = null;
+            if (record.PredictedProcessingSeconds is not > 0 ||
+                !double.IsFinite(record.PredictedProcessingSeconds.Value))
+                record.PredictedProcessingSeconds = null;
 
+            EncodingRetryPersistence.Apply(record);
+            // Cancellation and the terminal retry attempt remain authoritative.
+            if (record.Outcome != EncodingStatisticsOutcome.Cancelled &&
+                record.StorageSavings?.Acceptance == StorageSavingsAcceptance.Rejected)
+            {
+                record.Outcome = EncodingStatisticsOutcome.StoragePolicyRejected;
+                record.TerminalResult = EncodingTerminalResult.StoragePolicyRejected.ToString();
+            }
             // Incomplete failed/cancelled output files are not durable encoded output.
+            if (record.AdaptiveSelection?.Disposition == AdaptiveSelectionDisposition.Skipped)
+            {
+                record.Outcome = EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped;
+                record.TerminalResult = EncodingTerminalResult.AdaptiveStorageSavingsSkipped.ToString();
+                record.SourceAdaptiveShadow = null;
+                record.ProcessingSeconds = 0;
+            }
             if (record.Outcome != EncodingStatisticsOutcome.Success)
                 record.OutputSizeBytes = null;
         }
@@ -415,7 +565,7 @@ namespace MediaFlux.Services
 
             EncodingStatisticsRecord[] timedAttempts = all
                 .Where(record =>
-                    record.Outcome != EncodingStatisticsOutcome.Skipped &&
+                    record.Outcome is not (EncodingStatisticsOutcome.Skipped or EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped) &&
                     record.ProcessingSeconds > 0)
                 .ToArray();
             EncodingStatisticsRecord[] speedSamples = successful
@@ -431,7 +581,7 @@ namespace MediaFlux.Services
                 FilesProcessed = all.Length,
                 Successful = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Success),
                 Failed = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Failed),
-                Skipped = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Skipped),
+                Skipped = all.Count(record => record.Outcome is EncodingStatisticsOutcome.Skipped or EncodingStatisticsOutcome.StoragePolicyRejected or EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped),
                 Cancelled = all.Count(record => record.Outcome == EncodingStatisticsOutcome.Cancelled),
                 FinalizationFailed = all.Count(record =>
                     record.Outcome is

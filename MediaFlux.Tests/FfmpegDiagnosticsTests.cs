@@ -1,0 +1,231 @@
+using MediaFlux.Services;
+using Xunit;
+
+namespace MediaFlux.Tests;
+
+public sealed class FfmpegDiagnosticsTests
+{
+    [Fact]
+    public void VolatileAddressesAndNalSizesCollapseWhileRetainingRanges()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        string first = "[h264 @ 000001d6df9649c0] Invalid NAL unit size (0 > 26098).";
+        string second = "[h264 @ 000001d6df965340] Invalid NAL unit size (0 > 30228).";
+        collector.Observe(first, FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe(second, FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticFamilySummary family = Assert.Single(collector.Complete().Families);
+        Assert.Equal("Invalid NAL unit size", family.Family);
+        Assert.Equal(2, family.Occurrences);
+        Assert.Equal((0L, 0L), family.ValueRanges["invalid-size"]);
+        Assert.Equal((26098L, 30228L), family.ValueRanges["expected-size"]);
+        Assert.Contains(first, family.RepresentativeRawMessages);
+        Assert.Contains(second, family.RepresentativeRawMessages);
+    }
+
+    [Fact]
+    public void RepetitionIsBoundedAndRawEvidenceRemainsUnchanged()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        for (int i = 0; i < 2000; i++)
+            collector.Observe($"[h264 @ {i:x8}] Invalid NAL unit size (0 > {26000 + i}).", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticFamilySummary family = Assert.Single(collector.Complete().Families);
+        Assert.Equal(2000, family.Occurrences);
+        Assert.True(family.SamplesTruncated);
+        Assert.True(family.RepresentativeRawMessages.Count <= 6);
+        Assert.Equal("[h264 @ 00000000] Invalid NAL unit size (0 > 26000).", family.RepresentativeRawMessages[0]);
+    }
+
+    [Fact]
+    public void CorrelatedH264EvidenceIsConservativelyClassified()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("[h264 @ 000001d6df9649c0] Invalid NAL unit size (0 > 26098).", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("[h264 @ 000001d6df9649c0] Error splitting the input into NAL units.", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("[vist#0:0/h264 @ 000001d6e0114040] [dec:h264 @ 000001d6df96c7c0] Error submitting packet to decoder: Invalid data found when processing input", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.Equal(FfmpegDiagnosticCategory.SourceIntegrity, summary.Classification.PrimaryCategory);
+        Assert.Equal(FfmpegDiagnosticConfidence.High, summary.Classification.Confidence);
+        Assert.Contains("Malformed or corrupt H.264 bitstream data", summary.Classification.ProbableCause);
+    }
+
+    [Fact]
+    public void UnknownAndMalformedInputAreSafeAndNotMergedWithKnownFamilies()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        const string unknown = "[strange @ xyz] unanticipated fish-shaped diagnostic";
+        collector.Observe(unknown, FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe(null!, FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("[h264 @ 12345678] Invalid NAL unit size (0 > 7).", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.Contains(summary.Families, x => x.Family == "Unknown" && x.RepresentativeRawMessages.Contains(unknown));
+        Assert.Contains(summary.Families, x => x.Family == "Invalid NAL unit size");
+    }
+
+    [Fact]
+    public void FamilyLimitCountsOverflowWithoutFailingCollection()
+    {
+        var aggregator = new FfmpegDiagnosticAggregator();
+        for (int i = 0; i < 140; i++)
+            aggregator.Add(new FfmpegDiagnosticEvent(i, DateTimeOffset.UtcNow, FfmpegDiagnosticComponent.Ffmpeg,
+                $"raw {i}", $"fingerprint-{i}", $"family-{i}", FfmpegDiagnosticCategory.Unknown,
+                FfmpegDiagnosticSeverity.Warning, null, new Dictionary<string, long>()));
+
+        FfmpegDiagnosticSummary summary = aggregator.CreateSummary();
+        Assert.Equal(140, summary.TotalEvents);
+        Assert.Equal(128, summary.Families.Count);
+        Assert.Equal(12, summary.DroppedNewFamilies);
+    }
+
+    [Fact]
+    public void BannerMetadataDoesNotBecomeUnknownFailureEvidence()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("ffmpeg version N-12345 built with gcc", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("built with gcc 14", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("libavutil      59. 39.100 / 59. 39.100", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("a genuinely unfamiliar decoder warning", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.Equal(1, summary.TotalEvents);
+        Assert.Equal("Unknown", Assert.Single(summary.Families).Family);
+    }
+
+    [Fact]
+    public void AffirmativeCudaDeviceFailureRemainsHardwareClassification()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Error splitting the input into NAL units", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("[h264 @ 000001d6df9649c0] missing picture in access unit with size 477", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("[hevc_nvenc @ 000001d6df9649c0] CUDA_ERROR_NO_DEVICE", FfmpegDiagnosticComponent.Ffmpeg);
+
+        Assert.Equal(FfmpegDiagnosticCategory.HardwareAcceleration, collector.Complete().Classification.PrimaryCategory);
+    }
+
+    [Fact]
+    public void NormalOutputStatisticsDoNotBecomeMuxingOrSubtitleFailure()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("[out#0/mp4 @ 000001cf69c69480] video:70782KiB audio:5511KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.199976%", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.DoesNotContain(summary.Families, family => family.Family == "Muxing failure");
+        Assert.DoesNotContain(summary.Families, family => family.Family == "Subtitle processing failure");
+    }
+
+    [Fact]
+    public void AffirmativeSubtitleErrorRemainsSubtitleFailure()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Error while converting subtitle stream: subtitle codec is not supported", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.Contains(summary.Families, family => family.Family == "Subtitle processing failure");
+    }
+
+    [Theory]
+    [InlineData("Error initializing the muxer")]
+    [InlineData("Could not write header (incorrect codec parameters ?): Invalid data found when processing input")]
+    [InlineData("Error writing trailer")]
+    [InlineData("Error muxing a packet")]
+    public void AffirmativeMuxingErrorsRemainMuxingFailures(string message)
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe(message, FfmpegDiagnosticComponent.Ffmpeg);
+
+        Assert.Contains(collector.Complete().Families, family => family.Family == "Muxing failure");
+    }
+
+    [Fact]
+    public void EarlyCorruptionRetainsCausalSourceClassificationAfterMuxTeardown()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Packet corrupt (stream = 0, dts = 30030).", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Invalid NAL unit size (39140 > 28165).", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("missing picture in access unit with size 28190", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("corrupt input packet in stream 0", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error muxing a packet", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error writing trailer: Invalid argument", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticClassification classification = collector.Complete().Classification;
+        Assert.Equal(FfmpegDiagnosticCategory.SourceIntegrity, classification.PrimaryCategory);
+        Assert.Equal(FfmpegDiagnosticConfidence.High, classification.Confidence);
+    }
+
+    [Fact]
+    public void CompletedMp4FaststartFailureHasExplicitDiagnosis()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("frame=115821 time=01:04:20.60", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Starting second pass: moving the moov atom to the beginning of the file", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error writing trailer: Invalid argument", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error closing file: Invalid argument", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("frame=115867 time=01:04:22.13", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Conversion failed!", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticClassification classification = collector.Complete().Classification;
+        Assert.Equal(FfmpegDiagnosticCategory.Muxing, classification.PrimaryCategory);
+        Assert.Equal(FfmpegDiagnosticConfidence.High, classification.Confidence);
+        Assert.Contains("faststart", classification.ProbableCause, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void IncompatibleFormatAndReinitializationFailureHaveStructuredClassification()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Reconfiguring filter graph because video input parameters changed", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Impossible to convert between the formats supported by the filter 'Parsed_scale_cuda_0' and the filter 'auto_scale_0'", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error reinitializing filters!", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Conversion failed!", FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.Contains(summary.Families, family =>
+            family.Family == "Incompatible filter graph formats" &&
+            family.Category == FfmpegDiagnosticCategory.FilterGraphNegotiation &&
+            family.Severity == FfmpegDiagnosticSeverity.Error);
+        Assert.Equal(FfmpegDiagnosticCategory.FilterGraphNegotiation, summary.Classification.PrimaryCategory);
+        Assert.Contains("filter graph formats", summary.Classification.ProbableCause, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("Reconfiguring filter graph")]
+    [InlineData("[Parsed_scale_0 @ 000001d6df9649c0] Error applying option 'flags' to filter 'scale': Invalid argument")]
+    [InlineData("Error reinitializing filters!")]
+    public void InformationalOrGenericFilterMessagesDoNotBecomeNegotiationFailures(string message)
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe(message, FfmpegDiagnosticComponent.Ffmpeg);
+
+        FfmpegDiagnosticSummary summary = collector.Complete();
+        Assert.DoesNotContain(summary.Families, family => family.Category == FfmpegDiagnosticCategory.FilterGraphNegotiation);
+        Assert.NotEqual(FfmpegDiagnosticCategory.FilterGraphNegotiation, summary.Classification.PrimaryCategory);
+    }
+
+    [Fact]
+    public void CorroboratedSourceCorruptionRetainsPrecedenceOverFilterGraphFailure()
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Impossible to convert between the formats supported by the filter 'scale' and the filter 'auto_scale'", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Invalid NAL unit size (0 > 26098).", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error splitting the input into NAL units", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe("Error submitting packet to decoder: Invalid data found when processing input", FfmpegDiagnosticComponent.Ffmpeg);
+
+        Assert.Equal(FfmpegDiagnosticCategory.SourceIntegrity, collector.Complete().Classification.PrimaryCategory);
+    }
+
+    [Theory]
+    [InlineData("[hevc_nvenc @ 000001d6df9649c0] No NVENC capable devices found", FfmpegDiagnosticCategory.HardwareAcceleration)]
+    [InlineData("Error initializing output stream 0:0 -- Error while opening encoder for output stream", FfmpegDiagnosticCategory.EncoderInitialization)]
+    [InlineData("Error writing trailer: Invalid argument", FfmpegDiagnosticCategory.Muxing)]
+    public void ExistingSpecificFailuresRetainPrecedenceOverFilterGraphFailure(string strongerEvidence, FfmpegDiagnosticCategory expected)
+    {
+        var collector = new FfmpegDiagnosticCollector();
+        collector.Observe("Impossible to convert between the formats supported by the filter 'scale' and the filter 'auto_scale'", FfmpegDiagnosticComponent.Ffmpeg);
+        collector.Observe(strongerEvidence, FfmpegDiagnosticComponent.Ffmpeg);
+
+        Assert.Equal(expected, collector.Complete().Classification.PrimaryCategory);
+    }
+}

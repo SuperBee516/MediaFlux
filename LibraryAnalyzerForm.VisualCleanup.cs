@@ -10,15 +10,22 @@ namespace MediaFlux
         private async Task<bool> PreviewDeleteBothAsync(long groupId) =>
             await PreviewVisualCleanupCoreAsync(new[] { groupId }, null, deleteBoth: true);
 
+        internal Task<VisualCleanupProposal> BuildVisualCleanupPreviewAsync(IReadOnlyCollection<long>? groupIds, bool deleteBoth)
+        {
+            bool allowUnreviewed = groupIds == null && _cleanupOptions.AllowUnreviewedVisualBulkCleanup;
+            double minimumConfidence = _cleanupOptions.VisualBulkCleanupMinimumConfidence;
+            return Task.Run(() => deleteBoth
+                ? _runtime.VisualDuplicateCleanup.BuildDeleteBothProposal(groupIds?.Single() ?? throw new InvalidOperationException("Delete Both requires one visual match."))
+                : _runtime.VisualDuplicateCleanup.BuildProposal(allowUnreviewed, minimumConfidence, groupIds));
+        }
+
         private async Task<bool> PreviewVisualCleanupCoreAsync(IReadOnlyCollection<long>? groupIds, long? requiredCandidateId, bool deleteBoth)
         {
             try
             {
                 bool allowUnreviewed = groupIds == null && _cleanupOptions.AllowUnreviewedVisualBulkCleanup;
                 double minimumConfidence = _cleanupOptions.VisualBulkCleanupMinimumConfidence;
-                VisualCleanupProposal proposal = await Task.Run(() => deleteBoth
-                    ? _runtime.VisualDuplicateCleanup.BuildDeleteBothProposal(groupIds?.Single() ?? throw new InvalidOperationException("Delete Both requires one visual match."))
-                    : _runtime.VisualDuplicateCleanup.BuildProposal(allowUnreviewed, minimumConfidence, groupIds));
+                VisualCleanupProposal proposal = await BuildVisualCleanupPreviewAsync(groupIds, deleteBoth);
                 VisualCleanupProposalItem[] initial = proposal.Items
                     .Where(item => deleteBoth || !requiredCandidateId.HasValue || item.Candidate.FileId == requiredCandidateId.Value)
                     .ToArray();

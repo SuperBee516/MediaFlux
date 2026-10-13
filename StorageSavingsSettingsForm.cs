@@ -9,6 +9,8 @@ namespace MediaFlux
         private readonly RadioButton _bitrateTarget = new();
         private readonly NumericUpDown _qualityValue = new();
         private readonly NumericUpDown _bitratePercent = new();
+        private readonly CheckBox _strictManual = new();
+        private readonly CheckBox _allowRiskyBorderline = new();
 
         public StorageSavingsOptions Options { get; private set; }
 
@@ -22,7 +24,7 @@ namespace MediaFlux
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(570, 315);
+            ClientSize = new Size(570, 375);
             Padding = new Padding(14);
 
             var title = new Label
@@ -89,13 +91,23 @@ namespace MediaFlux
                 Location = new Point(300, 185)
             };
 
+            _strictManual.Text = "Reject valid Manual output when it misses the savings target";
+            _strictManual.AutoSize = true;
+            _strictManual.Location = new Point(28, 220);
+            _strictManual.Checked = Options.StrictEnforcementForManual;
+
+            _allowRiskyBorderline.Text = "Allow one Automatic encode when the upper sample projection is materially over target";
+            _allowRiskyBorderline.AutoSize = true;
+            _allowRiskyBorderline.Location = new Point(28, 247);
+            _allowRiskyBorderline.Checked = Options.AllowRiskyBorderlineProduction;
+
             var scope = new Label
             {
                 Text =
                     "Explicit per-file targets and manual target sizes still take priority. " +
                     "Audio, subtitles, and mapped data are budgeted separately.",
                 ForeColor = SystemColors.GrayText,
-                Location = new Point(28, 220),
+                Location = new Point(28, 276),
                 Size = new Size(515, 38)
             };
 
@@ -103,14 +115,14 @@ namespace MediaFlux
             {
                 Text = "OK",
                 DialogResult = DialogResult.OK,
-                Location = new Point(388, 274),
+                Location = new Point(388, 330),
                 Size = new Size(78, 27)
             };
             var cancel = new Button
             {
                 Text = "Cancel",
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(476, 274),
+                Location = new Point(476, 330),
                 Size = new Size(78, 27)
             };
 
@@ -121,6 +133,8 @@ namespace MediaFlux
                 _bitrateTarget.Enabled = enabled;
                 _qualityValue.Enabled = enabled && _qualityTarget.Checked;
                 _bitratePercent.Enabled = enabled && _bitrateTarget.Checked;
+                _strictManual.Enabled = enabled;
+                _allowRiskyBorderline.Enabled = enabled;
             }
 
             _enabled.CheckedChanged += (_, _) => ToggleInputs();
@@ -131,6 +145,9 @@ namespace MediaFlux
                 Options = new StorageSavingsOptions
                 {
                     Enabled = _enabled.Checked,
+                    StrictEnforcementForManual = _strictManual.Checked,
+                    AllowRiskyBorderlineProduction = _allowRiskyBorderline.Checked,
+                    ExperimentalPolicyCRetryEnabled = Options.ExperimentalPolicyCRetryEnabled,
                     TargetMode = _qualityTarget.Checked
                         ? StorageSavingsOptions.QualityTarget
                         : StorageSavingsOptions.SourceBitrateTarget,
@@ -149,6 +166,8 @@ namespace MediaFlux
             Controls.Add(_bitrateTarget);
             Controls.Add(_bitratePercent);
             Controls.Add(percent);
+            Controls.Add(_strictManual);
+            Controls.Add(_allowRiskyBorderline);
             Controls.Add(scope);
             Controls.Add(ok);
             Controls.Add(cancel);

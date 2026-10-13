@@ -155,7 +155,7 @@ public sealed class EncodingRuntimeEstimatorService
     }
 
     private static bool IsUseful(EncodingStatisticsRecord record) =>
-        record.Outcome == EncodingStatisticsOutcome.Success && !record.IsSampleJob &&
+        record.IsEligibleForSingleEncodeLearning && record.Outcome == EncodingStatisticsOutcome.Success && !record.IsSampleJob &&
         record.MediaDurationSeconds is >= 60 && record.ProcessingSeconds >= 5 &&
         double.IsFinite(record.MediaDurationSeconds.Value) && double.IsFinite(record.ProcessingSeconds);
 

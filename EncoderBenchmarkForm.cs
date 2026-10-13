@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using MediaFlux.Services;
 using MediaFlux.Models;
 
@@ -93,7 +94,7 @@ internal sealed class EncoderBenchmarkForm : MediaFluxForm
         _run.Click += async (_, _) => await RunAsync();
         _cancel.Click += (_, _) => _cancellation?.Cancel();
         var copy = new Button { Text = "Copy Technical Details", AutoSize = true };
-        copy.Click += (_, _) => { if (!string.IsNullOrWhiteSpace(_details.Text)) Clipboard.SetText(_details.Text); };
+        copy.Click += (_, _) => CopyTechnicalDetails();
         commands.Controls.AddRange(new Control[] { _run, _cancel, copy, _status });
         Controls.Add(split); Controls.Add(commands); Controls.Add(options); Controls.Add(source);
         FormClosing += (_, e) =>
@@ -123,7 +124,7 @@ internal sealed class EncoderBenchmarkForm : MediaFluxForm
                 _definition, presets, concurrency, (int)_sampleSeconds.Value), progress, _cancellation.Token);
             foreach (EncoderBenchmarkConfigurationResult result in _report.Results)
             {
-                int row = _results.Rows.Add(result.Preset, result.Concurrency, result.Success ? "Passed" : "Failed",
+                int row = _results.Rows.Add(result.Preset, result.Concurrency, result.Status,
                     Number(result.AverageJobFps), $"{result.AverageJobRealtimeMultiplier:0.00}x", Number(result.AggregateFps),
                     $"{result.AggregateRealtimeMultiplier:0.00}x", result.Elapsed.ToString("g"),
                     result.EstimatedFullFileTime?.ToString("g") ?? "Unavailable",
@@ -147,6 +148,51 @@ internal sealed class EncoderBenchmarkForm : MediaFluxForm
     {
         if (_report != null && _results.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault()?.Tag is EncoderBenchmarkConfigurationResult result)
             _details.Text = EncoderBenchmarkService.BuildTechnicalDetails(_definition, _report.Sample, result);
+    }
+
+    private void CopyTechnicalDetails()
+    {
+        if (_report is null || _report.Results.Count == 0)
+        {
+            _status.Text = "No benchmark technical details are available yet.";
+            return;
+        }
+
+        EncoderBenchmarkConfigurationResult[] selected = _results.SelectedRows
+            .Cast<DataGridViewRow>()
+            .OrderBy(row => row.Index)
+            .Select(row => row.Tag as EncoderBenchmarkConfigurationResult)
+            .Where(result => result is not null)
+            .Cast<EncoderBenchmarkConfigurationResult>()
+            .ToArray();
+        if (selected.Length == 0 && _results.CurrentRow?.Tag is EncoderBenchmarkConfigurationResult current)
+            selected = new[] { current };
+        if (selected.Length == 0)
+            selected = _report.Results.ToArray();
+
+        string text = EncoderBenchmarkService.BuildTechnicalDetailsForResults(_definition, _report.Sample, selected);
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _status.Text = "No benchmark technical details are available yet.";
+            return;
+        }
+
+        Exception? last = null;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                Clipboard.SetText(text);
+                _status.Text = "Technical details copied to clipboard.";
+                return;
+            }
+            catch (Exception ex) when (ex is ExternalException or InvalidOperationException)
+            {
+                last = ex;
+                if (attempt < 2) Thread.Sleep(50);
+            }
+        }
+        _status.Text = $"Could not copy technical details: {last?.Message ?? "clipboard is unavailable"}";
     }
 
     private void AddColumn(string name, int width) => _results.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = name, Width = width, SortMode = DataGridViewColumnSortMode.Automatic });

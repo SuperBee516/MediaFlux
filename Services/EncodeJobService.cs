@@ -13,23 +13,41 @@ public sealed class EncodeJobService
     {
         try
         {
-            if (!File.Exists(_path)) return new();
-            string json = File.ReadAllText(_path);
-            List<EncodeJob> jobs = JsonSerializer.Deserialize<List<EncodeJob>>(json, _json) ?? new();
-            foreach (EncodeJob job in jobs)
-            {
-                job.Settings.Restoration ??= new VideoRestorationSettings();
-                if (!json.Contains("\"Mode\"", StringComparison.OrdinalIgnoreCase) &&
-                    job.Settings.Restoration.Preset != VideoRestorationPreset.Off)
-                    job.Settings.Restoration.Mode = VideoRestorationMode.Custom;
-            }
-            return jobs;
+            return LoadStrict();
         }
         catch (Exception ex)
         {
             ErrorLogService.Append(AppPaths.UserDataDirectory, "Load encode jobs failed", _path, ex);
             return new();
         }
+    }
+
+    /// <summary>Loads persisted jobs without converting corruption into an empty list or writing an error log.</summary>
+    public List<EncodeJob> LoadStrict()
+        => LoadCore(required: false);
+
+    /// <summary>Requires a prepared isolated job store without changing normal missing-store behavior.</summary>
+    internal List<EncodeJob> LoadRequired()
+        => LoadCore(required: true);
+
+    private List<EncodeJob> LoadCore(bool required)
+    {
+        if (!required && !File.Exists(_path)) return new();
+        string json = File.ReadAllText(_path);
+        List<EncodeJob>? jobs = JsonSerializer.Deserialize<List<EncodeJob>>(json, _json);
+        if (required && jobs is null)
+            throw new InvalidDataException("The isolated encode-jobs.json must contain a saved-job array.");
+        jobs ??= new();
+        foreach (EncodeJob job in jobs)
+        {
+            job.Files ??= new();
+            job.Settings ??= new EncodeJobSettings();
+            job.Settings.Restoration ??= new VideoRestorationSettings();
+            if (!json.Contains("\"Mode\"", StringComparison.OrdinalIgnoreCase) &&
+                job.Settings.Restoration.Preset != VideoRestorationPreset.Off)
+                job.Settings.Restoration.Mode = VideoRestorationMode.Custom;
+        }
+        return jobs;
     }
 
     public void Save(IEnumerable<EncodeJob> jobs)
@@ -79,7 +97,8 @@ public sealed class EncodeJobService
         {
             SourcePath = file.SourcePath,
             CustomCompressionProfile = file.CustomCompressionProfile,
-            CustomTargetMb = file.CustomTargetMb
+            CustomTargetMb = file.CustomTargetMb,
+            PredictionShadowExperimentAssignment = file.PredictionShadowExperimentAssignment
         }).ToList(),
         Settings = job.Settings.Clone(),
         ScheduleType = job.ScheduleType,

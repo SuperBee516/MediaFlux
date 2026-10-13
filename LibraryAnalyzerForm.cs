@@ -10,21 +10,65 @@ namespace MediaFlux
         private static readonly Color LibraryAnalyzerAccentColor = Color.FromArgb(0, 92, 160);
         private const int PageSize = 200;
         private readonly LibraryAnalyzerRuntime _runtime;
+        private readonly LibraryAdvancedSearchStore _advancedSearchStore;
         private readonly LibraryAnalyzerCleanupOptions _cleanupOptions;
         private readonly LibraryAnalyzerReviewOptions _reviewOptions;
         private readonly LibraryAnalyzerLayoutController _layoutController;
         private readonly LibraryGeneralFileRemovalService _generalFileRemoval;
         private readonly LibraryFileBrowser _statisticsFileBrowser;
         private MediaFlux.Models.DuplicateKeeperPreferences _visualKeeperPreferences;
-        private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
+        private readonly TabControl _tabs = new() { Name = "LibraryAnalyzerTabs", Dock = DockStyle.Fill };
+        private readonly AnalyzerNavigationRail _navigationRail = new();
+        private readonly IReadOnlyList<AnalyzerNavigationEntry> _navigationEntries = CreateNavigationEntries();
+        private bool _synchronizingNavigation;
         private readonly DataGridView _locationsGrid = CreateGrid("LocationsGrid");
         private readonly DataGridView _filesGrid = CreateGrid("FilesGrid");
-        private readonly Label _overviewFiles = ValueLabel();
-        private readonly Label _overviewSize = ValueLabel();
-        private readonly Label _overviewActivity = ValueLabel();
-        private readonly Label _overviewPending = ValueLabel();
-        private readonly Label _overviewUnavailable = ValueLabel();
-        private readonly Label _overviewLastScan = ValueLabel();
+        private readonly AnalyzerMetricCard _locationsSourcesCard = new("Sources");
+        private readonly AnalyzerMetricCard _locationsAvailableCard = new("Availability");
+        private readonly AnalyzerMetricCard _locationsFilesCard = new("Indexed files");
+        private readonly AnalyzerMetricCard _locationsActivityCard = new("Last activity");
+        private readonly Label _filesSummary = new() { Dock = DockStyle.Fill, AutoEllipsis = true, Padding = new Padding(6, 5, 6, 3), ForeColor = SystemColors.GrayText };
+        private Button? _locationRemove;
+        private Button? _locationToggle;
+        private Button? _locationScan;
+        private Button? _locationPause;
+        private Button? _locationResume;
+        private Button? _locationCancel;
+        private Button? _reanalysisMetadata;
+        private Button? _reanalysisExact;
+        private Button? _reanalysisVisual;
+        private readonly OverviewMetricCard _overviewVideosCard = new("Videos");
+        private readonly OverviewMetricCard _overviewSizeCard = new("Library size");
+        private readonly OverviewMetricCard _overviewDuplicatesCard = new("Duplicate sets");
+        private readonly OverviewMetricCard _overviewReclaimCard = new("Reclaimable space");
+        private readonly Label _overviewHeaderSummary = new() { AutoEllipsis = true, AutoSize = false, Dock = DockStyle.Fill };
+        private readonly OverviewStatusBadge _overviewHealthState = new();
+        private readonly LinkLabel _overviewExactLink = OverviewLinkLabel();
+        private readonly LinkLabel _overviewVisualLink = OverviewLinkLabel();
+        private readonly LinkLabel _overviewFamilyLink = OverviewLinkLabel();
+        private readonly LinkLabel _overviewDuplicateProgress = OverviewLinkLabel();
+        private readonly OverviewProgressBar _overviewDuplicateProgressBar = new() { Dock = DockStyle.Fill, Height = 6 };
+        private readonly TableLayoutPanel _overviewHealthSummary = new() { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(4), AccessibleRole = AccessibleRole.Grouping };
+        private readonly Label _overviewLiveStatus = new() { Text = "Live: Idle", AutoEllipsis = true, Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(0, 0, 4, 0) };
+        private readonly OverviewBarChart _overviewLocationChart = new() { Dock = DockStyle.Fill };
+        private readonly OverviewBarChart _overviewCompositionChart = new() { Dock = DockStyle.Fill };
+        private readonly ComboBox _overviewCompositionSelector = DropDown();
+        private readonly OverviewSparkline _overviewGrowthChart = new() { Dock = DockStyle.Fill };
+        private readonly ComboBox _overviewGrowthMetricSelector = DropDown();
+        private readonly Label _overviewGrowthSummary = new() { Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = SystemColors.GrayText, Padding = new Padding(4, 2, 4, 0) };
+        private readonly Label _overviewGrowthEmpty = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = SystemColors.GrayText, Visible = false, Padding = new Padding(12) };
+        private readonly TableLayoutPanel _overviewInsights = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(8) };
+        private LibraryOverviewSnapshot? _overviewSnapshot;
+        private IReadOnlyList<LibraryOverviewScanHistoryEntry> _overviewHistory = Array.Empty<LibraryOverviewScanHistoryEntry>();
+        private bool _loadingOverview;
+        private bool _overviewRefreshQueued;
+        private readonly System.Windows.Forms.Timer _overviewRefreshDebounceTimer = new() { Interval = 250 };
+        private long[] _overviewLocationIds = Array.Empty<long>();
+        private readonly ToolTip _overviewToolTip = new();
+        private readonly CancellationTokenSource _overviewRefreshCancellation = new();
+        private bool _overviewDuplicateWasRunning;
+        private bool _overviewVisualWasRunning;
+        private bool _overviewEnrichmentWasRunning;
         private readonly Label _scanStatus = new() { AutoEllipsis = true, Dock = DockStyle.Fill, Text = "Ready", Padding = new Padding(6, 2, 6, 0) };
         private readonly Label _scanDetail = new() { AutoEllipsis = true, Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Padding = new Padding(6, 0, 6, 2) };
         private readonly ProgressBar _scanProgress = new() { Dock = DockStyle.Fill, Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 25, Visible = false };
@@ -41,7 +85,7 @@ namespace MediaFlux
         private readonly System.Windows.Forms.Timer _activityTimer = new() { Interval = 250 };
         private int _page;
         private long _totalFiles;
-        private bool _loadingFiles;
+        private bool _renderingFiles;
         private bool _scanning;
         private bool _loadingLocations;
         private long? _preferredLocationSelectionId;
@@ -51,14 +95,19 @@ namespace MediaFlux
         private volatile LibraryVisualAnalysisProgress? _latestVisualProgress;
         private string _scanTerminalStatus = "Ready";
         private DateTime _scanTerminalStatusUntilUtc;
+        // This becomes true at the beginning of a real close, before WinForms starts
+        // tearing down handles.  It is the single boundary for form-owned callbacks.
+        private bool _lifecycleClosing;
         private bool _lifecycleCleanupCompleted;
 
         public LibraryAnalyzerForm(
             LibraryAnalyzerRuntime runtime,
             LibraryAnalyzerCleanupOptions? cleanupOptions = null,
-            LibraryAnalyzerReviewOptions? reviewOptions = null)
+            LibraryAnalyzerReviewOptions? reviewOptions = null,
+            LibraryAdvancedSearchStore? advancedSearchStore = null)
         {
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+            _advancedSearchStore = advancedSearchStore ?? new LibraryAdvancedSearchStore();
             _cleanupOptions = cleanupOptions ?? new LibraryAnalyzerCleanupOptions();
             _reviewOptions = reviewOptions ?? new LibraryAnalyzerReviewOptions();
             _reviewOptions = _reviewOptions with { UiState = _reviewOptions.UiState ?? new LibraryAnalyzerUiState() };
@@ -66,18 +115,17 @@ namespace MediaFlux
             _layoutController = new LibraryAnalyzerLayoutController(_reviewOptions.UiState);
             _statisticsFileBrowser = new LibraryFileBrowser(query => _runtime.Catalog.QueryFiles(query));
             _generalFileRemoval = new LibraryGeneralFileRemovalService(ResolveGeneralFileSnapshot,
-                new JsonLibraryGeneralFileRemovalAudit(Path.Combine(AppPaths.DataDirectory, "library-file-removal-audit.jsonl")),
+                new JsonLibraryGeneralFileRemovalAudit(AppPaths.LibraryFileRemovalAuditFile),
                 reconcileSuccessfulRemoval: (fileId, path, reason) =>
                     ((ILibraryRecoveryCatalog)_runtime.Catalog).MarkFileRemovedByCleanup(fileId, path, reason));
             _visualKeeperPreferences = (_reviewOptions.KeeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences()).Clone();
             _visualKeeperPreferences.Normalize();
             Text = "Library Analyzer";
-            MinimumSize = new Size(980, 620);
-            Size = new Size(1280, 780);
+            MinimumSize = new Size(1100, 700);
+            Size = new Size(1360, 840);
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
 
-            Controls.Add(_tabs);
             BuildOverviewTab();
             BuildLocationsTab();
             BuildFilesTab();
@@ -91,6 +139,12 @@ namespace MediaFlux
             BuildStorageReclamationTab();
             BuildMediaIntegrityTab();
             BuildScheduledMaintenanceTab();
+            foreach (TabPage page in _tabs.TabPages)
+            {
+                page.AccessibleName = $"Library Analyzer {page.Text} tab";
+                page.AccessibleRole = AccessibleRole.Pane;
+            }
+            BuildNavigationShell();
             ConfigurePrimaryContextMenus();
             ConfigurePhase3ContextMenus();
             ConfigureSharedGridLayouts();
@@ -100,17 +154,99 @@ namespace MediaFlux
             _runtime.VisualSimilarity.ProgressChanged += VisualSimilarity_ProgressChanged;
             _runtime.Integrity.ProgressChanged += Integrity_ProgressChanged;
             _runtime.Maintenance.ProgressChanged += Maintenance_ProgressChanged;
-            _tabs.SelectedIndexChanged += async (_, _) => await RefreshSelectedTabAsync();
+            _tabs.SelectedIndexChanged += async (_, _) =>
+            {
+                SynchronizeNavigationSelection();
+                await RefreshSelectedTabAsync();
+            };
             _refreshTimer.Tick += async (_, _) => await RefreshCurrentStateAsync();
             _activityTimer.Tick += (_, _) => RefreshActivityDisplay();
             _refreshTimer.Start();
             _activityTimer.Start();
             Shown += async (_, _) =>
             {
+                EnsureVisualWorkspaceLayout();
                 _layoutController.ApplySplitterLayouts();
                 await RefreshAllAsync();
             };
             FormClosed += (_, _) => CleanupLifecycle();
+        }
+
+        private static IReadOnlyList<AnalyzerNavigationEntry> CreateNavigationEntries() =>
+            new[]
+            {
+                new AnalyzerNavigationEntry("OVERVIEW", "Overview", 0),
+                new AnalyzerNavigationEntry("LIBRARY", "Locations", 1),
+                new AnalyzerNavigationEntry("LIBRARY", "Files", 2),
+                new AnalyzerNavigationEntry("LIBRARY", "Statistics", 3),
+                new AnalyzerNavigationEntry("DUPLICATES", "Exact", 4),
+                new AnalyzerNavigationEntry("DUPLICATES", "Visual", 5),
+                new AnalyzerNavigationEntry("DUPLICATES", "Families", 6),
+                new AnalyzerNavigationEntry("INSIGHTS", "Health", 7),
+                new AnalyzerNavigationEntry("INSIGHTS", "Recommendations", 8),
+                new AnalyzerNavigationEntry("INSIGHTS", "Policies", 9),
+                new AnalyzerNavigationEntry("OPERATIONS", "Storage", 10),
+                new AnalyzerNavigationEntry("OPERATIONS", "Integrity", 11),
+                new AnalyzerNavigationEntry("OPERATIONS", "Maintenance", 12)
+            };
+
+        private void BuildNavigationShell()
+        {
+            _tabs.Appearance = TabAppearance.Buttons;
+            _tabs.SizeMode = TabSizeMode.Fixed;
+            _tabs.ItemSize = new Size(0, 1);
+            _tabs.Multiline = true;
+            _tabs.Padding = new Point(0, 0);
+            _tabs.TabStop = false;
+            _tabs.AccessibleName = "Library Analyzer workspace";
+            _tabs.AccessibleRole = AccessibleRole.Pane;
+
+            _navigationRail.SetEntries(_navigationEntries);
+            _navigationRail.DestinationActivated += NavigationRail_DestinationActivated;
+
+            var shell = new TableLayoutPanel
+            {
+                Name = "LibraryAnalyzerNavigationShell",
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                Padding = new Padding(8),
+                Margin = Padding.Empty,
+                AccessibleName = "Library Analyzer navigation and workspace",
+                AccessibleRole = AccessibleRole.Pane
+            };
+            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            shell.Controls.Add(_navigationRail, 0, 0);
+            shell.Controls.Add(_tabs, 1, 0);
+            Controls.Add(shell);
+            SynchronizeNavigationSelection();
+        }
+
+        private void NavigationRail_DestinationActivated(object? sender, int itemIndex)
+        {
+            if (_synchronizingNavigation || itemIndex < 0 || itemIndex >= _navigationEntries.Count) return;
+            _navigationRail.SelectedIndex = itemIndex;
+            _tabs.SelectedIndex = _navigationEntries[itemIndex].PageIndex;
+        }
+
+        private void SynchronizeNavigationSelection()
+        {
+            int selectedPage = _tabs.SelectedIndex;
+            int itemIndex = -1;
+            for (int i = 0; i < _navigationEntries.Count; i++)
+            {
+                if (_navigationEntries[i].PageIndex == selectedPage)
+                {
+                    itemIndex = i;
+                    break;
+                }
+            }
+            if (itemIndex < 0) return;
+            _synchronizingNavigation = true;
+            try { _navigationRail.SelectedIndex = itemIndex; }
+            finally { _synchronizingNavigation = false; }
         }
 
         protected override void Dispose(bool disposing)
@@ -119,18 +255,97 @@ namespace MediaFlux
             base.Dispose(disposing);
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // Raise FormClosing first so a caller may still cancel the close.  Once it
+            // is accepted, close the lifetime gate before any child handles are torn
+            // down; FormClosed/Dispose are too late for queued WinForms callbacks.
+            base.OnFormClosing(e);
+            if (e.Cancel)
+                return;
+
+            _lifecycleClosing = true;
+            CleanupLifecycle();
+        }
+
+        private bool CanUseFormUi =>
+            !_lifecycleClosing &&
+            !_lifecycleCleanupCompleted &&
+            !IsDisposed &&
+            !Disposing;
+
+        private void PostToFormUi(Action action)
+        {
+            if (!CanUseFormUi || !IsHandleCreated)
+                return;
+
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    if (CanUseFormUi)
+                        action();
+                });
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
+        private void InvokeOnFormUi(Action action)
+        {
+            if (!CanUseFormUi)
+                return;
+
+            if (!InvokeRequired)
+            {
+                action();
+                return;
+            }
+
+            if (!IsHandleCreated)
+                return;
+
+            try
+            {
+                Invoke(() =>
+                {
+                    if (CanUseFormUi)
+                        action();
+                });
+            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
         private void CleanupLifecycle()
         {
             if (_lifecycleCleanupCompleted) return;
+            _lifecycleClosing = true;
             _lifecycleCleanupCompleted = true;
             Interlocked.Increment(ref _visualMemberLoadVersion);
             Interlocked.Increment(ref _duplicateMemberLoadVersion);
+            _duplicateGroupsGrid.SelectionChanged -= DuplicateGroupsGrid_SelectionChanged;
+            _duplicateMemberRefreshCancellation.Cancel();
             _exactCleanupCancellation?.Cancel();
             _familyCleanupCancellation?.Cancel();
             _visualEmbeddedPreviewCancellation?.Cancel();
             _reclamationBuildCancellation?.Cancel();
             _refreshTimer.Stop();
             _activityTimer.Stop();
+            _overviewRefreshDebounceTimer.Stop();
+            _refreshTimer.Dispose();
+            _activityTimer.Dispose();
+            _overviewRefreshDebounceTimer.Dispose();
+            _overviewRefreshQueued = false;
+            _overviewToolTip.Dispose();
+            _visualActionToolTip.Dispose();
+            _maintenanceToolTip?.Dispose();
+            _maintenanceToolTip = null;
+            _overviewRefreshCancellation.Cancel();
+            _overviewRefreshCancellation.Dispose();
+            CleanupAdvancedSearchUi();
+            CleanupSavedSearchUi();
+            if (_visualPreviewFocus) RestoreVisualWorkspace();
             _runtime.Enrichment.ProgressChanged -= Enrichment_ProgressChanged;
             _runtime.Duplicates.ProgressChanged -= Duplicates_ProgressChanged;
             _runtime.VisualSimilarity.ProgressChanged -= VisualSimilarity_ProgressChanged;
@@ -149,68 +364,25 @@ namespace MediaFlux
 
         private void BuildOverviewTab()
         {
-            var tab = new TabPage("Overview") { Padding = new Padding(18) };
-            var content = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
-                AutoScroll = true
-            };
-            var title = new Label
-            {
-                Text = "Media library catalog",
-                Font = new Font(Font, FontStyle.Bold),
-                AutoSize = true,
-                Margin = new Padding(0, 0, 0, 12)
-            };
-            var table = new TableLayoutPanel
-            {
-                AutoSize = true,
-                ColumnCount = 2,
-                RowCount = 6,
-                Dock = DockStyle.Top,
-                Padding = new Padding(0, 14, 0, 0)
-            };
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            AddOverviewRow(table, 0, "Indexed video files", _overviewFiles);
-            AddOverviewRow(table, 1, "Indexed logical size", _overviewSize);
-            AddOverviewRow(table, 2, "Scanner / enrichment", _overviewActivity);
-            AddOverviewRow(table, 3, "Pending enrichment", _overviewPending);
-            AddOverviewRow(table, 4, "Unavailable locations", _overviewUnavailable);
-            AddOverviewRow(table, 5, "Last completed scan", _overviewLastScan);
-            var refresh = new Button { Text = "Refresh", AutoSize = true, Margin = new Padding(0, 22, 0, 0) };
-            refresh.Click += async (_, _) => await RefreshAllAsync();
-            content.Controls.Add(title);
-            content.Controls.Add(table);
-            content.Controls.Add(refresh);
-            var userData = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 10, 0, 0) };
-            AddButton(userData, "Backup decisions…", BackupUserDecisions_Click);
-            AddButton(userData, "Restore decisions…", RestoreUserDecisions_Click);
-            content.Controls.Add(userData);
-            tab.Controls.Add(content);
-            _tabs.TabPages.Add(tab);
+            BuildOverviewDashboard();
         }
 
         private void BuildLocationsTab()
         {
             var tab = new TabPage("Locations") { Padding = new Padding(10) };
-            var buttons = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 40,
-                AutoSize = false,
-                WrapContents = false
-            };
+            var buttons = AnalyzerUi.ActionBar();
             Button add = AddButton(buttons, "Add folder / drive…", AddLocation_Click);
-            Button remove = AddButton(buttons, "Remove", RemoveLocation_Click);
-            Button toggle = AddButton(buttons, "Enable / Disable", ToggleLocation_Click);
-            Button scan = AddButton(buttons, "Scan selected", ScanSelected_Click);
-            Button pause = AddButton(buttons, "Pause", (_, _) => { _runtime.Scanner.Pause(); RefreshActivityDisplay(); });
-            Button resume = AddButton(buttons, "Resume", (_, _) => { _runtime.Scanner.Resume(); RefreshActivityDisplay(); });
-            Button cancel = AddButton(buttons, "Cancel", (_, _) => { _scanTerminalStatus = "Canceling scan…"; _runtime.Scanner.Cancel(); RefreshActivityDisplay(); });
-            _ = add; _ = remove; _ = toggle; _ = scan; _ = pause; _ = resume; _ = cancel;
+            AnalyzerUi.StylePrimary(add);
+            _locationRemove = AddButton(buttons, "Remove", RemoveLocation_Click);
+            _locationToggle = AddButton(buttons, "Enable / Disable", ToggleLocation_Click);
+            _locationScan = AddButton(buttons, "Scan selected", ScanSelected_Click);
+            AnalyzerUi.StylePrimary(_locationScan);
+            _locationPause = AddButton(buttons, "Pause", (_, _) => { _runtime.Scanner.Pause(); RefreshActivityDisplay(); });
+            _locationResume = AddButton(buttons, "Resume", (_, _) => { _runtime.Scanner.Resume(); RefreshActivityDisplay(); });
+            _locationCancel = AddButton(buttons, "Cancel", (_, _) => { _scanTerminalStatus = "Canceling scan…"; _runtime.Scanner.Cancel(); RefreshActivityDisplay(); });
+
+            Control summary = AnalyzerUi.MetricRow(76,
+                _locationsSourcesCard, _locationsAvailableCard, _locationsFilesCard, _locationsActivityCard);
 
             var statusPanel = new TableLayoutPanel
             {
@@ -241,9 +413,11 @@ namespace MediaFlux
             _locationsGrid.Columns.Add("Error", "Status / error");
             _locationsGrid.Columns[1].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             _locationsGrid.Columns[6].Width = 260;
+            _locationsGrid.SelectionChanged += (_, _) => UpdateAnalyzerActionState();
 
-            tab.Controls.Add(_locationsGrid);
+            tab.Controls.Add(new AnalyzerSectionPanel("Library sources", _locationsGrid) { Dock = DockStyle.Fill });
             tab.Controls.Add(statusPanel);
+            tab.Controls.Add(summary);
             tab.Controls.Add(buttons);
             _tabs.TabPages.Add(tab);
         }
@@ -251,13 +425,7 @@ namespace MediaFlux
         private void BuildFilesTab()
         {
             var tab = new TabPage("Files") { Padding = new Padding(10) };
-            var filters = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 72,
-                AutoScroll = true,
-                WrapContents = true
-            };
+            var filters = AnalyzerUi.FilterBar();
             filters.Controls.AddRange(new Control[]
             {
                 Labeled("Search", _search),
@@ -268,11 +436,36 @@ namespace MediaFlux
                 _descending
             });
             var apply = new Button { Text = "Apply", AutoSize = true, Margin = new Padding(8, 19, 3, 3) };
+            AnalyzerUi.StylePrimary(apply);
             apply.Click += async (_, _) => { _page = 0; await RefreshFilesAsync(); };
             filters.Controls.Add(apply);
-            AddButton(filters, "Re-analyze metadata", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.Metadata));
-            AddButton(filters, "Re-analyze exact", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.ExactHash));
-            AddButton(filters, "Re-analyze visual", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.VisualFingerprint));
+            var reanalysis = AnalyzerUi.ActionBar();
+            reanalysis.Dock = DockStyle.None;
+            reanalysis.AutoSize = true;
+            reanalysis.MinimumSize = new Size(0, 0);
+            _addSelectedToEncodeQueueButton = AddButton(
+                reanalysis,
+                "Add Selected to Encode Queue",
+                AddSelectedFilesToEncodeQueue_Click);
+            _addSelectedToEncodeQueueButton.Name = "AddSelectedToEncodeQueue";
+            _addSelectedToEncodeQueueButton.AccessibleName = "Add selected Files-grid rows to the Encode queue";
+            _addSelectedToEncodeQueueButton.Enabled = false;
+            AnalyzerUi.StylePrimary(_addSelectedToEncodeQueueButton);
+            reanalysis.Controls.Add(new Label { Text = "Re-analysis", AutoSize = true, ForeColor = LibraryAnalyzerAccentColor, Margin = new Padding(8, 10, 3, 0) });
+            _reanalysisMetadata = AddButton(reanalysis, "Metadata", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.Metadata));
+            _reanalysisExact = AddButton(reanalysis, "Exact", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.ExactHash));
+            _reanalysisVisual = AddButton(reanalysis, "Visual", (_, _) => QueueSelectedFiles(LibraryReanalysisWork.VisualFingerprint));
+            _queueHandoffStatusLabel = new Label
+            {
+                Name = "QueueHandoffStatus",
+                AutoSize = true,
+                AutoEllipsis = true,
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(8, 10, 3, 0),
+                Visible = false
+            };
+            reanalysis.Controls.Add(_queueHandoffStatusLabel);
+            filters.Controls.Add(reanalysis);
             _search.KeyDown += async (_, e) =>
             {
                 if (e.KeyCode == Keys.Enter)
@@ -287,8 +480,10 @@ namespace MediaFlux
             _availability.SelectedIndex = 0;
             _probeStatus.Items.AddRange(new object[] { "All", "Pending", "In progress", "Succeeded", "Failed" });
             _probeStatus.SelectedIndex = 0;
-            _sort.Items.AddRange(new object[] { "Path", "Name", "Size", "Modified", "Codec", "Duration", "Bitrate" });
+            _sort.Items.AddRange(new object[] { "Path", "Name", "Size", "Modified", "Codec", "Duration", "Total bitrate" });
             _sort.SelectedIndex = 0;
+            _sort.AccessibleDescription = "Total bitrate is the container bitrate, separate from video-stream bitrate.";
+            _advancedSearchToolTip.SetToolTip(_sort, "Total bitrate sorts the container/format bitrate, not the video stream bitrate.");
 
             AddFileColumn("Name", "Filename", 180);
             AddFileColumn("Path", "Path", 360);
@@ -299,9 +494,21 @@ namespace MediaFlux
             AddFileColumn("Container", "Container", 100);
             AddFileColumn("Codec", "Video codec", 90);
             AddFileColumn("Resolution", "Resolution", 90);
-            AddFileColumn("Bitrate", "Bitrate", 90);
+            AddFileColumn("EffectiveFps", "FPS", 80);
+            AddFileColumn("VideoBitrate", "Video bitrate", 110);
+            AddFileColumn("BitDepth", "Bit depth", 80);
+            AddFileColumn("DynamicRange", "HDR/SDR", 85);
+            AddFileColumn("Bitrate", "Total bitrate", 110);
             AddFileColumn("Duration", "Duration", 90);
             AddFileColumn("Probe", "Probe status", 110);
+            _filesGrid.Columns["Resolution"].ToolTipText = "Coded width × height; display rotation is not applied.";
+            _filesGrid.Columns["EffectiveFps"].ToolTipText = "Effective frame rate from current catalog metadata.";
+            _filesGrid.Columns["VideoBitrate"].ToolTipText = "Selected video stream bitrate from FFprobe; never total bitrate. Decimal Mbps (1,000,000 bps).";
+            _filesGrid.Columns["BitDepth"].ToolTipText = "Reliable selected-video-stream bit depth when available.";
+            _filesGrid.Columns["Bitrate"].ToolTipText = "Container/format total bitrate. This is separate from video bitrate.";
+            _filesGrid.MultiSelect = true;
+            _filesGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            _filesGrid.SelectionChanged += (_, _) => { if (!_renderingFiles) UpdateAnalyzerActionState(); };
 
             var pager = new FlowLayoutPanel
             {
@@ -316,8 +523,12 @@ namespace MediaFlux
             pager.Controls.Add(_previous);
             pager.Controls.Add(_pageLabel);
 
-            tab.Controls.Add(_filesGrid);
+            tab.Controls.Add(new AnalyzerSectionPanel("Indexed files", _filesGrid) { Dock = DockStyle.Fill });
             tab.Controls.Add(pager);
+            var fileSummaryPanel = new Panel { Dock = DockStyle.Bottom, Height = 30, Padding = new Padding(0, 2, 0, 0) };
+            fileSummaryPanel.Controls.Add(_filesSummary);
+            tab.Controls.Add(fileSummaryPanel);
+            tab.Controls.Add(BuildAdvancedSearchPanel());
             tab.Controls.Add(filters);
             _tabs.TabPages.Add(tab);
         }
@@ -429,6 +640,7 @@ namespace MediaFlux
                 _scanning = false;
                 _latestScanProgress = null;
                 RefreshActivityDisplay();
+                QueueOverviewRefresh();
             }
         }
 
@@ -483,27 +695,9 @@ namespace MediaFlux
                 await RefreshMaintenanceAsync();
         }
 
-        private async Task RefreshOverviewAsync()
-        {
-            LibraryOverview overview = await Task.Run(() =>
-                _runtime.Catalog.GetOverview(LibraryEnrichmentCoordinator.CurrentMetadataVersion));
-            if (IsDisposed)
-                return;
-            _overviewFiles.Text = overview.IndexedFiles.ToString("N0");
-            _overviewSize.Text = FormatBytes(overview.LogicalSizeBytes);
-            _overviewActivity.Text = _scanning || overview.ActiveScans > 0
-                ? "Scanning"
-                : _runtime.Enrichment.IsRunning
-                    ? $"Enriching ({_runtime.Enrichment.QueuedCount:N0} queued)"
-                    : "Idle";
-            _overviewPending.Text = overview.PendingEnrichment.ToString("N0");
-            _overviewUnavailable.Text = overview.UnavailableLocations.ToString("N0");
-            _overviewLastScan.Text = overview.LastCompletedScanUtc?.ToLocalTime().ToString("g") ?? "Never";
-        }
-
         private async Task RefreshLocationsAsync()
         {
-            if (_loadingLocations || IsDisposed) return;
+            if (_loadingLocations || _lifecycleCleanupCompleted || IsDisposed || Disposing) return;
             _loadingLocations = true;
             try
             {
@@ -513,9 +707,16 @@ namespace MediaFlux
                     IReadOnlyDictionary<long, long> counts = _runtime.Catalog.GetLocationFileCounts();
                     return (locations, counts);
                 });
-                if (IsDisposed) return;
+                if (_lifecycleCleanupCompleted || IsDisposed || Disposing) return;
                 long[] selectedIds = SelectedLocationIds().ToArray();
                 ReconcileLocationRows(snapshot.locations, snapshot.counts, selectedIds, _preferredLocationSelectionId);
+                long indexedFiles = snapshot.counts.Values.Sum();
+                int available = snapshot.locations.Count(location => location.Availability == LibraryLocationAvailability.Available);
+                int unavailable = snapshot.locations.Count - available;
+                _locationsSourcesCard.SetValue(snapshot.locations.Count.ToString("N0"), $"{snapshot.locations.Count(location => location.IsEnabled):N0} enabled");
+                _locationsAvailableCard.SetValue(available.ToString("N0"), unavailable == 0 ? "All sources available" : $"{unavailable:N0} unavailable or errored");
+                _locationsFilesCard.SetValue(indexedFiles.ToString("N0"), "Across configured sources");
+                _locationsActivityCard.SetValue(_scanStatus.Text.StartsWith("Ready", StringComparison.OrdinalIgnoreCase) ? "Idle" : "Active", _scanStatus.Text);
                 _preferredLocationSelectionId = null;
                 RefreshLocationFilter(snapshot.locations);
                 RefreshDuplicateLocationFilter(snapshot.locations);
@@ -572,19 +773,63 @@ namespace MediaFlux
 
         private async Task RefreshFilesAsync()
         {
-            if (_loadingFiles || IsDisposed)
+            if (!CanUseFormUi)
                 return;
-            _loadingFiles = true;
+            _advancedSearchDebounceTimer.Stop();
+            LibraryFileQuery query;
             try
             {
-                LibraryFileQuery query = BuildFileQuery();
-                LibraryFilePage result = await Task.Run(() => _runtime.Catalog.QueryFiles(query));
-                if (IsDisposed)
+                query = BuildFileQuery();
+                SetAdvancedSearchValidation("");
+            }
+            catch (ArgumentException exception)
+            {
+                _fileRequests.Invalidate();
+                SetAdvancedSearchValidation(exception.Message);
+                _filesSummary.Text = "Fix the Advanced Search input to run this search.";
+                return;
+            }
+
+            long[] selectedIds = _filesGrid.SelectedRows.Cast<DataGridViewRow>()
+                .Select(row => row.Tag).OfType<LibraryFileViewRecord>()
+                .Select(file => file.FileId).Distinct().ToArray();
+            LibraryFilesRequestCoordinator.Request request = _fileRequests.Start();
+            _filesSummary.Text = query.AdvancedSearch == null ? "Loading files…" : "Searching…";
+            try
+            {
+                LibraryFilePage result = await Task.Run(
+                    () => _runtime.Catalog.QueryFiles(query, request.Token), request.Token);
+                if (!_fileRequests.IsCurrent(request) || !CanUseFormUi)
                     return;
-                _totalFiles = result.TotalCount;
+                RenderFilesPage(result, selectedIds, query.AdvancedSearch);
+            }
+            catch (OperationCanceledException) when (request.Token.IsCancellationRequested) { }
+            catch (Exception exception)
+            {
+                if (_fileRequests.IsCurrent(request) && CanUseFormUi)
+                {
+                    _filesSummary.Text = "The Files search could not complete. See the error log.";
+                    ErrorLogService.Append(AppPaths.UserDataDirectory, "Library Analyzer Files search failed.", exception: exception);
+                }
+            }
+            finally { _fileRequests.Complete(request); }
+        }
+
+        private void RenderFilesPage(
+            LibraryFilePage result,
+            IReadOnlyCollection<long> selectedIds,
+            CatalogSearchDefinition? advancedSearch)
+        {
+            _totalFiles = result.TotalCount;
+            var selected = new HashSet<long>(selectedIds);
+            _renderingFiles = true;
+            _filesGrid.SuspendLayout();
+            try
+            {
                 _filesGrid.Rows.Clear();
                 foreach (LibraryFileViewRecord file in result.Files)
                 {
+                    LibraryFileTechnicalFacts? facts = file.TechnicalFacts;
                     int row = _filesGrid.Rows.Add(
                         file.FileName,
                         file.FullPath,
@@ -592,26 +837,49 @@ namespace MediaFlux
                         FormatBytes(file.SizeBytes),
                         file.LastWriteUtc.ToLocalTime().ToString("g"),
                         file.Availability,
-                        file.FormatName,
-                        file.VideoCodec,
-                        file.Width.HasValue && file.Height.HasValue ? $"{file.Width}×{file.Height}" : "",
-                        file.TotalBitRate.HasValue ? $"{file.TotalBitRate.Value / 1_000_000d:0.##} Mbps" : "",
-                        file.DurationSeconds.HasValue ? FormatDuration(file.DurationSeconds.Value) : "",
+                        string.IsNullOrWhiteSpace(file.FormatName) ? "--" : file.FormatName,
+                        string.IsNullOrWhiteSpace(file.VideoCodec) ? "--" : file.VideoCodec,
+                        file.Width is > 0 && file.Height is > 0 ? $"{file.Width}×{file.Height}" : "--",
+                        facts?.EffectiveFps is double fps && double.IsFinite(fps) && fps > 0 ? $"{fps:0.###}" : "--",
+                        facts?.VideoBitRateBps is > 0 ? $"{facts.VideoBitRateBps.Value / 1_000_000d:0.###} Mbps" : "--",
+                        facts?.BitDepth is > 0 ? $"{facts.BitDepth} bit" : "--",
+                        file.DynamicRange is "HDR" or "SDR" ? file.DynamicRange : "--",
+                        file.TotalBitRate is > 0 ? $"{file.TotalBitRate.Value / 1_000_000d:0.##} Mbps" : "--",
+                        file.DurationSeconds is double seconds && double.IsFinite(seconds) && seconds > 0 ? FormatDuration(seconds) : "--",
                         file.ProbeStatus == LibraryProbeStatus.Failed && !string.IsNullOrWhiteSpace(file.ProbeError)
                             ? $"Failed: {file.ProbeError}"
                             : file.ProbeStatus.ToString());
                     _filesGrid.Rows[row].Tag = file;
                 }
-                long first = _totalFiles == 0 ? 0 : (long)_page * PageSize + 1;
-                long last = Math.Min(_totalFiles, ((long)_page + 1) * PageSize);
-                _pageLabel.Text = $"{first:N0}–{last:N0} of {_totalFiles:N0}";
-                _previous.Enabled = _page > 0;
-                _next.Enabled = last < _totalFiles;
+                _filesGrid.ClearSelection();
+                DataGridViewRow[] matching = _filesGrid.Rows.Cast<DataGridViewRow>()
+                    .Where(row => row.Tag is LibraryFileViewRecord file && selected.Contains(file.FileId)).ToArray();
+                if (matching.Length > 0)
+                {
+                    _filesGrid.CurrentCell = matching[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                    foreach (DataGridViewRow row in matching)
+                        row.Selected = true;
+                }
+                else
+                    _filesGrid.CurrentCell = null;
             }
             finally
             {
-                _loadingFiles = false;
+                _filesGrid.ResumeLayout();
+                _renderingFiles = false;
             }
+            long first = _totalFiles == 0 ? 0 : (long)_page * PageSize + 1;
+            long last = Math.Min(_totalFiles, ((long)_page + 1) * PageSize);
+            _pageLabel.Text = $"{first:N0}–{last:N0} of {_totalFiles:N0}";
+            bool metadataIncomplete = HasIncompleteMetadataForSearch(advancedSearch);
+            _filesSummary.Text = metadataIncomplete
+                ? $"Technical metadata is still being enriched; {(_totalFiles == 0 ? "no current matches" : $"{_totalFiles:N0} current matches")}. More matches may appear."
+                : _totalFiles == 0
+                    ? "No indexed files match the current filters."
+                    : $"Showing {result.Files.Count:N0} on this page · {_totalFiles:N0} total indexed files";
+            _previous.Enabled = _page > 0;
+            _next.Enabled = last < _totalFiles;
+            UpdateAnalyzerActionState();
         }
 
         private LibraryFileQuery BuildFileQuery()
@@ -637,10 +905,11 @@ namespace MediaFlux
                 locationId,
                 availability,
                 probeStatus,
-                _sort.Text.ToLowerInvariant(),
+                _sort.Text == "Total bitrate" ? "bitrate" : _sort.Text.ToLowerInvariant(),
                 _descending.Checked,
                 _page * PageSize,
-                PageSize);
+                PageSize,
+                AdvancedSearch: BuildAdvancedSearchDefinition());
         }
 
         private void RefreshLocationFilter(IReadOnlyList<LibraryLocationRecord> locations)
@@ -669,9 +938,32 @@ namespace MediaFlux
             _runtime.Reanalysis.QueueFiles(fileIds, work);
         }
 
+        private void UpdateAnalyzerActionState()
+        {
+            bool hasLocations = SelectedLocationIds().Count > 0;
+            bool hasFiles = _filesGrid.SelectedRows.Cast<DataGridViewRow>().Any(row => row.Tag is LibraryFileViewRecord);
+            bool scanning = _scanning || _runtime.Scanner.IsScanning;
+            if (_locationRemove != null) _locationRemove.Enabled = hasLocations && !scanning;
+            if (_locationToggle != null) _locationToggle.Enabled = hasLocations && !scanning;
+            if (_locationScan != null) _locationScan.Enabled = !scanning;
+            if (_locationPause != null) _locationPause.Enabled = scanning && !_runtime.Scanner.IsPaused;
+            if (_locationResume != null) _locationResume.Enabled = scanning && _runtime.Scanner.IsPaused;
+            if (_locationCancel != null) _locationCancel.Enabled = scanning;
+            // These commands operate on selected indexed files. Navigation destinations
+            // deliberately remain enabled regardless of catalog contents.
+            if (_reanalysisMetadata != null) _reanalysisMetadata.Enabled = hasFiles;
+            if (_reanalysisExact != null) _reanalysisExact.Enabled = hasFiles;
+            if (_reanalysisVisual != null) _reanalysisVisual.Enabled = hasFiles;
+            if (_addSelectedToEncodeQueueButton != null)
+                _addSelectedToEncodeQueueButton.Enabled = CanAddSelectedFilesToEncodeQueue();
+        }
+
         private void Enrichment_ProgressChanged(object? sender, LibraryEnrichmentProgress e)
         {
             _latestEnrichmentProgress = e;
+            bool running = _runtime.Enrichment.IsRunning;
+            if (_overviewEnrichmentWasRunning && !running) QueueOverviewRefresh();
+            _overviewEnrichmentWasRunning = running;
         }
 
         private void RefreshActivityDisplay()
@@ -705,6 +997,8 @@ namespace MediaFlux
             {
                 string phase = _runtime.Duplicates.IsPaused
                     ? "Exact duplicate analysis paused"
+                    : _runtime.Duplicates.IsWaitingForAnalyzer
+                        ? $"Exact duplicate analysis queued — waiting for {_runtime.Duplicates.ActiveAnalyzer?.ToString().ToLowerInvariant() ?? "the other analyzer"} analysis"
                     : _runtime.Duplicates.IsWaitingForEncoding
                         ? "Exact duplicate analysis waiting for active encoding"
                         : $"Analyzing exact duplicates — {duplicate?.Stage ?? "starting"}";
@@ -714,6 +1008,11 @@ namespace MediaFlux
                 long completed = duplicate?.Stage == "Quick fingerprints" ? duplicate.QuickHashed : 0;
                 SetActivity(status, detail, active: true, completed, total, determinate: completed > 0 && total > 0);
                 UpdateDuplicateActivity(status, detail, completed, total);
+                if (_runtime.VisualSimilarity.IsRunning && _runtime.VisualSimilarity.IsWaitingForAnalyzer)
+                {
+                    string queued = $"Visual analysis queued — waiting for exact analysis: {_latestVisualProgress?.FingerprintedFiles ?? 0:N0}/{_latestVisualProgress?.EligibleFiles ?? 0:N0} fingerprinted";
+                    UpdateVisualActivity(queued, "The shared duplicate-analysis slot is owned by Exact.", 0, 0, false);
+                }
                 return;
             }
 
@@ -722,6 +1021,8 @@ namespace MediaFlux
             {
                 string phase = _runtime.VisualSimilarity.IsPaused
                     ? "Visual analysis paused"
+                    : _runtime.VisualSimilarity.IsWaitingForAnalyzer
+                        ? $"Visual analysis queued — waiting for {_runtime.VisualSimilarity.ActiveAnalyzer?.ToString().ToLowerInvariant() ?? "the other analyzer"} analysis"
                     : _runtime.VisualSimilarity.IsWaitingForEncoding
                         ? "Visual analysis waiting for active encoding"
                         : visual?.Stage == "Extracting visual fingerprints"
@@ -733,6 +1034,11 @@ namespace MediaFlux
                 bool determinate = visual?.Stage == "Extracting visual fingerprints" && visual.EligibleFiles > 0;
                 SetActivity(status, detail, active: true, visual?.FingerprintedFiles ?? 0, visual?.EligibleFiles ?? 0, determinate);
                 UpdateVisualActivity(status, detail, visual?.FingerprintedFiles ?? 0, visual?.EligibleFiles ?? 0, determinate);
+                if (_runtime.Duplicates.IsRunning && _runtime.Duplicates.IsWaitingForAnalyzer)
+                {
+                    string queued = $"Exact duplicate analysis queued — waiting for visual analysis: {_latestDuplicateProgress?.QuickHashed ?? 0:N0} quick · {_latestDuplicateProgress?.FullHashed ?? 0:N0} full hashes";
+                    UpdateDuplicateActivity(queued, "The shared duplicate-analysis slot is owned by Visual.", 0, 0);
+                }
                 return;
             }
 
@@ -754,12 +1060,28 @@ namespace MediaFlux
             }
 
             SetActivity(_scanTerminalStatus, "", active: false);
+            _duplicateProgress.Visible = false;
+            _visualProgress.Visible = false;
+            if (!_runtime.Duplicates.IsRunning && (_duplicateStatus.Text.StartsWith("Analyzing exact duplicates", StringComparison.OrdinalIgnoreCase) || _duplicateStatus.Text.StartsWith("Exact duplicate analysis queued", StringComparison.OrdinalIgnoreCase)))
+                _duplicateStatus.Text = "Exact analysis idle.";
+            if (!_runtime.VisualSimilarity.IsRunning && (_visualStatus.Text.StartsWith("Analyzing visual similarity", StringComparison.OrdinalIgnoreCase) || _visualStatus.Text.StartsWith("Visual analysis queued", StringComparison.OrdinalIgnoreCase)))
+                _visualStatus.Text = "Visual analysis idle.";
         }
 
         private void SetActivity(string status, string detail, bool active, long completed = 0, long total = 0, bool determinate = false)
         {
             _scanStatus.Text = status;
             _scanDetail.Text = detail;
+            _locationsActivityCard.SetValue(active ? "Active" : "Idle", status);
+            UpdateAnalyzerActionState();
+            if (!IsDisposed && IsHandleCreated)
+            {
+                _overviewLiveStatus.Text = active
+                    ? $"Live: {status}{(string.IsNullOrWhiteSpace(detail) ? "" : $" · {detail}")}"
+                    : string.IsNullOrWhiteSpace(status) || status == "Ready" ? "Live: Idle" : $"Live: {status}";
+                _overviewLiveStatus.ForeColor = active ? LibraryAnalyzerAccentColor : SystemColors.GrayText;
+                _overviewToolTip.SetToolTip(_overviewLiveStatus, string.IsNullOrWhiteSpace(detail) ? status : detail);
+            }
             ConfigureProgress(_scanProgress, active, completed, total, determinate);
         }
 
@@ -792,6 +1114,20 @@ namespace MediaFlux
             RowHeadersVisible = false,
             BackgroundColor = SystemColors.Window,
             BorderStyle = BorderStyle.FixedSingle,
+            EnableHeadersVisualStyles = false,
+            ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = Color.FromArgb(239, 244, 248),
+                ForeColor = Color.FromArgb(45, 55, 65),
+                SelectionBackColor = Color.FromArgb(220, 232, 242),
+                Font = new Font("Segoe UI Semibold", 9F)
+            },
+            DefaultCellStyle = new DataGridViewCellStyle
+            {
+                SelectionBackColor = Color.FromArgb(210, 229, 242),
+                SelectionForeColor = SystemColors.ControlText
+            },
+            AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(248, 250, 252) },
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             AutoGenerateColumns = false
         };
@@ -808,13 +1144,6 @@ namespace MediaFlux
             Font = new Font("Segoe UI Semibold", 10F),
             Padding = new Padding(4)
         };
-
-        private static void AddOverviewRow(TableLayoutPanel table, int row, string name, Label value)
-        {
-            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            table.Controls.Add(new Label { Text = name, AutoSize = true, Padding = new Padding(4, 6, 4, 4) }, 0, row);
-            table.Controls.Add(value, 1, row);
-        }
 
         private static Button AddButton(Control parent, string text, EventHandler handler)
         {
@@ -857,12 +1186,27 @@ namespace MediaFlux
         private static string FormatDuration(double seconds) =>
             TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 86_400 ? @"d\.hh\:mm\:ss" : @"hh\:mm\:ss");
 
-        private void ShowError(string message, Exception exception) => MessageBox.Show(
-            this,
-            message + "\r\n\r\n" + exception.Message,
-            "Library Analyzer",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Error);
+        private void ShowError(string message, Exception exception)
+        {
+            if (!CanUseFormUi || !IsHandleCreated)
+            {
+                ErrorLogService.Append(AppPaths.UserDataDirectory, message, exception: exception);
+                return;
+            }
+
+            try
+            {
+                MessageBox.Show(this, message + "\r\n\r\n" + exception.Message, "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (ObjectDisposedException)
+            {
+                ErrorLogService.Append(AppPaths.UserDataDirectory, message, exception: exception);
+            }
+            catch (InvalidOperationException)
+            {
+                ErrorLogService.Append(AppPaths.UserDataDirectory, message, exception: exception);
+            }
+        }
 
         private sealed record LocationChoice(long Id, string Name)
         {
@@ -895,6 +1239,7 @@ namespace MediaFlux
             EncodingRuntimeEstimatorService? RuntimeEstimator = null,
             LibraryAnalyzerUiState? UiState = null,
             Action<LibraryAnalyzerUiState>? UiStateChanged = null,
-            Func<string, IReadOnlyList<string>, Task>? ComparisonLauncher = null);
+            Func<string, IReadOnlyList<string>, Task>? ComparisonLauncher = null,
+            Func<IReadOnlyList<string>, Task>? AddToEncodeQueueAsync = null);
     }
 }

@@ -3,6 +3,14 @@ namespace MediaFlux.Services;
 /// <summary>Calculates encode ETA from the same media-time and FFmpeg speed values used for progress.</summary>
 public static class EncodeEtaCalculator
 {
+    public static double? CalculateFrameSeconds(long totalFrames, long encodedFrames, double fps)
+    {
+        if (totalFrames <= 0 || encodedFrames < 0 || !double.IsFinite(fps) || fps <= 0)
+            return null;
+        double eta = Math.Max(0, totalFrames - encodedFrames) / fps;
+        return double.IsFinite(eta) && eta >= 0 ? eta : null;
+    }
+
     public static double? CalculateSeconds(double authoritativeDurationSeconds, double encodedMediaSeconds, double ffmpegSpeed)
     {
         if (!double.IsFinite(authoritativeDurationSeconds) || authoritativeDurationSeconds <= 0 ||

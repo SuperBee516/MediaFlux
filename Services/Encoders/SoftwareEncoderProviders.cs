@@ -48,7 +48,11 @@ namespace MediaFlux.Services.Encoders
             double bufferSizeKbps)
         {
             EncoderProviderUtilities.AppendCodecAndTenBitFlags(builder, context);
-            builder.Append($"-b:v {videoKbps:F0}k -preset slow ");
+            builder.Append(
+                $"-b:v {videoKbps:F0}k " +
+                $"-maxrate {maxRateKbps:F0}k " +
+                $"-bufsize {bufferSizeKbps:F0}k " +
+                $"-preset {context.Preset} ");
         }
 
         public abstract void AppendQualityArguments(

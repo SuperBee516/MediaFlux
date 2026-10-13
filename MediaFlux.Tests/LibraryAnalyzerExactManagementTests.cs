@@ -54,6 +54,49 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
     }
 
     [Fact]
+    public void FamilyComparisonSelectionSkipsInvalidFamiliesAndKeepsMemberOrderAndRoleSemantics()
+    {
+        VisualFamilyRecord automaticFamily = Family(10, suggestedKeeper: 1, manualKeeper: null);
+        VisualFamilyRecord unresolvedFamily = Family(20, suggestedKeeper: null, manualKeeper: null);
+        VisualFamilyRecord unavailableFamily = Family(30, suggestedKeeper: null, manualKeeper: 4);
+        VisualFamilyMemberRecord keeper = FamilyMember(1, "keeper", suggested: true);
+        VisualFamilyMemberRecord firstCandidate = FamilyMember(2, "candidate-a");
+        VisualFamilyMemberRecord preferredCandidate = FamilyMember(3, "candidate-b");
+        VisualFamilyMemberRecord unavailableKeeper = FamilyMember(4, "missing-keeper", manual: true);
+        VisualFamilyMemberRecord unavailableCandidate = FamilyMember(5, "missing-candidate");
+        var files = new HashSet<string>(StringComparer.Ordinal) { "keeper", "candidate-a", "candidate-b" };
+        IReadOnlyList<VisualFamilyMemberRecord>[] familyMembers =
+        {
+            new[] { keeper, firstCandidate, preferredCandidate },
+            new[] { FamilyMember(6, "unresolved-a"), FamilyMember(7, "unresolved-b") },
+            new[] { unavailableKeeper, unavailableCandidate }
+        };
+        var byFamily = new Dictionary<long, IReadOnlyList<VisualFamilyMemberRecord>>
+        {
+            [10] = familyMembers[0], [20] = familyMembers[1], [30] = familyMembers[2]
+        };
+
+        Assert.Equal(new long[] { 10 }, LibraryAnalyzerForm.ResolveEligibleFamilyComparisonOrder(
+            new[] { automaticFamily, unresolvedFamily, unavailableFamily }, byFamily, files.Contains));
+        Assert.Equal(preferredCandidate, LibraryAnalyzerForm.ResolveFamilyComparisonCandidate(
+            familyMembers[0], keeper.FileId, preferredCandidate.FileId, files.Contains));
+        Assert.Equal(firstCandidate, LibraryAnalyzerForm.ResolveFamilyComparisonCandidate(
+            familyMembers[0], keeper.FileId, preferredMemberFileId: 99, fileExists: files.Contains));
+        Assert.Null(LibraryAnalyzerForm.ResolveFamilyComparisonCandidate(
+            familyMembers[2], unavailableKeeper.FileId, preferredMemberFileId: null, fileExists: files.Contains));
+
+        long[] eligibleOrder = { 10, 40 };
+        Assert.Null(LibraryAnalyzerForm.ResolveAdjacentFamilyComparisonIndex(eligibleOrder, 10, -1));
+        Assert.Equal(1, LibraryAnalyzerForm.ResolveAdjacentFamilyComparisonIndex(eligibleOrder, 10, 1));
+        Assert.Equal(0, LibraryAnalyzerForm.ResolveAdjacentFamilyComparisonIndex(eligibleOrder, 40, -1));
+        Assert.Null(LibraryAnalyzerForm.ResolveAdjacentFamilyComparisonIndex(eligibleOrder, 40, 1));
+        Assert.Equal("Keeper (Automatic)", LibraryAnalyzerForm.ResolveVisualFamilyMemberRole(automaticFamily, keeper));
+        Assert.Equal("Candidate", LibraryAnalyzerForm.ResolveVisualFamilyMemberRole(automaticFamily, firstCandidate));
+        Assert.Equal("Keeper (Manual)", LibraryAnalyzerForm.ResolveVisualFamilyMemberRole(
+            Family(40, suggestedKeeper: 1, manualKeeper: 3), preferredCandidate with { IsManualKeeper = true }));
+    }
+
+    [Fact]
     public void LocationSelectionSurvivesPollingAndUpdatesAndHandlesAddRemove()
     {
         Assert.Equal(new long[] { 2 }, LibraryLocationSelectionPolicy.Resolve(new long[] { 2 }, new long[] { 1, 2, 3 }));
@@ -315,8 +358,8 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
             TabPage exactTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Exact");
             TabPage visualTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Visual");
-            Assert.Contains(Descendants<Button>(exactTab), button => button.Text == "Run Analysis");
-            Assert.Contains(Descendants<Button>(visualTab), button => button.Text == "Run Analysis");
+            Assert.Contains(Descendants<Button>(exactTab), button => button.Text == "Analyze Library");
+            Assert.Contains(Descendants<Button>(visualTab), button => button.Text == "Analyze Library");
             tabs.SelectedTab = exactTab;
             DataGridView groups = GetPrivateField<DataGridView>(form, "_duplicateGroupsGrid");
             DataGridView members = GetPrivateField<DataGridView>(form, "_duplicateMembersGrid");
@@ -335,8 +378,33 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             groups.ClearSelection();
             groups.Rows[0].Selected = true;
             groups.CurrentCell = groups.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-            PumpTask(InvokePrivateTask(form, "RefreshDuplicateMembersAsync"));
-            Assert.Equal(2, members.Rows.Count);
+            long selectedGroupId = ((ExactDuplicateGroupRecord)groups.Rows[0].Tag!).GroupId;
+            PumpUntil(() => MembersMatchSelectedGroup(groups, members, selectedGroupId, 2));
+
+            // SelectionChanged starts its own refreshes. The newest selection must
+            // win even while earlier member lookups are still pending.
+            groups.ClearSelection();
+            groups.Rows[1].Selected = true;
+            groups.CurrentCell = groups.Rows[1].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            long otherGroupId = ((ExactDuplicateGroupRecord)groups.Rows[1].Tag!).GroupId;
+            PumpUntil(() => MembersMatchSelectedGroup(groups, members, otherGroupId, 2));
+            SemaphoreSlim refreshLock = GetPrivateField<SemaphoreSlim>(form, "_duplicateMemberRefreshLock");
+            PumpUntil(() => refreshLock.CurrentCount == 1);
+            Assert.True(refreshLock.Wait(0));
+            try
+            {
+                groups.ClearSelection();
+                groups.Rows[0].Selected = true;
+                groups.CurrentCell = groups.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                groups.ClearSelection();
+                groups.Rows[1].Selected = true;
+                groups.CurrentCell = groups.Rows[1].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+                groups.ClearSelection();
+                groups.Rows[0].Selected = true;
+                groups.CurrentCell = groups.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            }
+            finally { refreshLock.Release(); }
+            PumpUntil(() => MembersMatchSelectedGroup(groups, members, selectedGroupId, 2));
             Assert.Contains("Created", members.Columns.Cast<DataGridViewColumn>().Select(column => column.Name));
             Assert.Contains("Modified", members.Columns.Cast<DataGridViewColumn>().Select(column => column.Name));
             Assert.All(members.Rows.Cast<DataGridViewRow>(), row =>
@@ -382,6 +450,155 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
             Assert.Equal(selected.FileId, catalog.GetDuplicateGroup(groupId)!.ManualKeeperFileId);
             Assert.Equal(expectedNextGroupId, ((ExactDuplicateGroupRecord)groups.SelectedRows.Cast<DataGridViewRow>().Single().Tag!).GroupId);
             PumpFor(TimeSpan.FromMilliseconds(100));
+            form.Close();
+        });
+    }
+
+    [Fact]
+    public void PendingExactMemberRefreshIsCanceledDuringFormClose()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        RunSta(() =>
+        {
+            using SqliteLibraryCatalog catalog = CreateCatalog(Path.Combine(_root, "pending-exact-ui.db"));
+            using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" },
+                new EmptyMetadataProbe(), new EmptyVisualExtractor());
+            using var form = new LibraryAnalyzerForm(runtime);
+            form.Show();
+
+            DataGridView groups = GetPrivateField<DataGridView>(form, "_duplicateGroupsGrid");
+            SemaphoreSlim refreshLock = GetPrivateField<SemaphoreSlim>(form, "_duplicateMemberRefreshLock");
+            PumpUntil(() => refreshLock.CurrentCount == 1);
+            Assert.True(refreshLock.Wait(0));
+            Task pending = Task.CompletedTask;
+            try
+            {
+                DataGridViewRow row = groups.Rows[groups.Rows.Add()];
+                groups.ClearSelection();
+                row.Selected = true;
+                pending = InvokePrivateTask(form, "RefreshDuplicateMembersAsync");
+                Assert.False(pending.IsCompleted);
+                form.Close();
+            }
+            finally { refreshLock.Release(); }
+
+            PumpTask(pending);
+            Application.DoEvents();
+        });
+    }
+
+    [Fact]
+    public void VisualFamilyCompareAndKeeperActionsUseSelectedMemberAndRefreshRoles()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        RunSta(() =>
+        {
+            using SqliteLibraryCatalog catalog = CreateCatalog(Path.Combine(_root, "family-ui.db"));
+            string library = Path.Combine(_root, "family-ui");
+            Directory.CreateDirectory(library);
+            string[] files = Enumerable.Range(0, 3).Select(index => Write(library, $"family-{index}.mkv", Enumerable.Repeat((byte)(70 + index), 2048).ToArray())).ToArray();
+            AddInventory(catalog, library, files);
+            VisualAnalysisHandle run = catalog.BeginVisualAnalysis("family-ui", 1);
+            catalog.PrepareVisualSimilarityGroups(run);
+            catalog.AppendVisualSimilarityGroups(run, new[]
+            {
+                (0, 1, 98d), (0, 2, 97d), (1, 2, 96d)
+            }.Select(pair => new VisualMatchWrite(catalog.GetFileByPath(files[pair.Item1])!.Id,
+                catalog.GetFileByPath(files[pair.Item2])!.Id, pair.Item3, 6, 6, 1, 0, "family UI test")).ToArray());
+            catalog.PublishVisualSimilarityGroups(run);
+            catalog.CompleteVisualAnalysis(run, new VisualAnalysisCompletion(DuplicateAnalysisStatus.Completed, 3, 3, 3, 3, 0));
+            catalog.RebuildVisualFamilies();
+            VisualFamilyRecord family = Assert.Single(catalog.QueryVisualFamilies(new VisualFamilyQuery()).Families);
+            long keeperId = catalog.GetFileByPath(files[0])!.Id;
+            catalog.SetVisualFamilySuggestedKeeper(family.FamilyId, null);
+
+            var comparisons = new ConcurrentQueue<IReadOnlyList<string>>();
+            using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyMetadataProbe(), new EmptyVisualExtractor());
+            using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
+                ComparisonLauncher: (_, paths) => { comparisons.Enqueue(paths); return Task.CompletedTask; }));
+            form.Show();
+            TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
+            TabPage tab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Duplicates — Families");
+            tabs.SelectedTab = tab;
+            form.Size = new System.Drawing.Size(1100, 700);
+            PumpTask(InvokePrivateTask(form, "RefreshVisualFamiliesAsync"));
+            DataGridView members = GetPrivateField<DataGridView>(form, "_familyMembersGrid");
+            PumpUntil(() => members.Rows.Count == 3);
+            Button compare = Descendants<Button>(tab).Single(button => button.Text == "Compare with keeper");
+            FlowLayoutPanel actionBar = (FlowLayoutPanel)compare.Parent!;
+            Assert.True(actionBar.WrapContents);
+            Assert.True(actionBar.AutoScroll);
+            Assert.True(compare.Visible);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.False(compare.Enabled);
+            catalog.SetVisualFamilySuggestedKeeper(family.FamilyId, keeperId);
+            PumpTask(InvokePrivateTask(form, "RefreshVisualFamiliesAsync"));
+            PumpUntil(() => members.Rows.Count == 3 && members.Rows.Cast<DataGridViewRow>().Any(row => row.Cells["Role"].Value?.ToString() == "Keeper (Automatic)"));
+            DataGridView families = GetPrivateField<DataGridView>(form, "_familyGrid");
+            string potentialSpaceBeforeKeeperChange = Convert.ToString(families.Rows[0].Cells["Space"].Value)!;
+            DataGridViewRow keeperRow = members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == keeperId);
+            Assert.Equal("Keeper (Automatic)", keeperRow.Cells["Role"].Value);
+
+            VisualFamilyMemberRecord candidate = members.Rows.Cast<DataGridViewRow>().Select(row => (VisualFamilyMemberRecord)row.Tag!).First(member => member.FileId != keeperId);
+            Assert.Equal("Candidate", members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == candidate.FileId).Cells["Role"].Value);
+            DataGridViewRow candidateRow = members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == candidate.FileId);
+            candidateRow.Selected = true;
+            members.CurrentCell = candidateRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.True(compare.Enabled);
+            PumpTask(InvokePrivateTask(form, "CompareFamilyMemberWithKeeperAsync"));
+            Assert.Equal(new[] { files[0], candidate.FullPath }, comparisons.Single());
+            typeof(DataGridView).GetMethod("OnCellDoubleClick", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(members, new object[] { new DataGridViewCellEventArgs(candidateRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible).ColumnIndex, candidateRow.Index) });
+            PumpUntil(() => comparisons.Count == 2);
+
+            ContextMenuStrip menu = GetPrivateField<ContextMenuStrip>(form, "_familyMembersMenu");
+            InvokePrivate(form, "UpdateFamilyMembersMenuState", new CancelEventArgs());
+            Assert.True(menu.Items.Find("CompareKeeper", false).Single().Enabled);
+            Assert.True(menu.Items.Find("Keeper", false).Single().Enabled);
+            PumpTask(InvokePrivateTask(form, "SetSelectedFamilyKeeperAsync"));
+            VisualFamilyRecord changedFamily = catalog.GetVisualFamily(family.FamilyId)!;
+            Assert.Equal(candidate.FileId, changedFamily.ManualKeeperFileId);
+            Assert.True(changedFamily.Reviewed);
+            Assert.Equal(potentialSpaceBeforeKeeperChange, Convert.ToString(families.Rows[0].Cells["Space"].Value));
+            Assert.Equal(candidate.FileId, ((VisualFamilyMemberRecord)members.SelectedRows.Cast<DataGridViewRow>().Single().Tag!).FileId);
+            Assert.Equal("Keeper (Manual)", members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == candidate.FileId).Cells["Role"].Value);
+            Assert.All(members.Rows.Cast<DataGridViewRow>(), row => Assert.False(((VisualFamilyMemberRecord)row.Tag!).IsProtected));
+            var familyCleanup = new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog);
+            var familyService = new LibraryVisualFamilyService(catalog, familyCleanup);
+            VisualFamilyCleanupProposal cleanupProposal = familyService.BuildCleanupProposal(family.FamilyId);
+            Assert.Equal(2, cleanupProposal.Items.Count);
+            Assert.DoesNotContain(cleanupProposal.Items, item => item.Candidate.FileId == candidate.FileId);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.False(compare.Enabled);
+            int comparisonsBeforeKeeperSelfCheck = comparisons.Count;
+            PumpTask(InvokePrivateTask(form, "CompareFamilyMemberWithKeeperAsync"));
+            Assert.Equal(comparisonsBeforeKeeperSelfCheck, comparisons.Count);
+            InvokePrivate(form, "UpdateFamilyMembersMenuState", new CancelEventArgs());
+            Assert.False(menu.Items.Find("Keeper", false).Single().Enabled);
+            Assert.All(files, path => Assert.True(File.Exists(path)));
+
+            VisualFamilyMemberRecord otherCandidate = members.Rows.Cast<DataGridViewRow>().Select(row => (VisualFamilyMemberRecord)row.Tag!).First(member => member.FileId != candidate.FileId);
+            DataGridViewRow otherCandidateRow = members.Rows.Cast<DataGridViewRow>().Single(row => ((VisualFamilyMemberRecord)row.Tag!).FileId == otherCandidate.FileId);
+            members.ClearSelection();
+            otherCandidateRow.Selected = true;
+            members.CurrentCell = otherCandidateRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.True(compare.Enabled);
+            File.Delete(otherCandidate.FullPath);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.False(compare.Enabled);
+            File.WriteAllBytes(otherCandidate.FullPath, Enumerable.Repeat((byte)89, 2048).ToArray());
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.True(compare.Enabled);
+            File.Delete(candidate.FullPath);
+            InvokePrivate(form, "UpdateFamilyActionState");
+            Assert.False(compare.Enabled);
+            int comparisonCount = comparisons.Count;
+            typeof(DataGridView).GetMethod("OnCellDoubleClick", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(members, new object[] { new DataGridViewCellEventArgs(otherCandidateRow.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible).ColumnIndex, otherCandidateRow.Index) });
+            Application.DoEvents();
+            Assert.Equal(comparisonCount, comparisons.Count);
             form.Close();
         });
     }
@@ -470,6 +687,15 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
         new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2021, 1, 1, 0, 0, 0, DateTimeKind.Utc),
         "", "", fileId.ToString(), false, IndexedFileAvailability.Present, "", null, null, null, null, false, false, false);
 
+    private static VisualFamilyRecord Family(long familyId, long? suggestedKeeper, long? manualKeeper) =>
+        new(familyId, $"family-{familyId}", 3, 95, 100, suggestedKeeper, manualKeeper, false, false,
+            LibraryMatchEligibilityState.Active, "");
+
+    private static VisualFamilyMemberRecord FamilyMember(long fileId, string path, bool suggested = false, bool manual = false) =>
+        new(1, fileId, path, Path.GetDirectoryName(path) ?? "", 100,
+            new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc), IndexedFileAvailability.Present,
+            "h264", 1920, 1080, 1_000_000, 60, false, suggested, manual, false, "AAC", 95);
+
     private static int CountAuditRows(SqliteLibraryCatalog catalog, long planId)
     {
         using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={catalog.DatabasePath}");
@@ -535,6 +761,7 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
                 action();
             }
             catch (Exception ex) { failure = ex; }
+            finally { SynchronizationContext.SetSynchronizationContext(null); }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
@@ -572,6 +799,14 @@ public sealed class LibraryAnalyzerExactManagementTests : IDisposable
         while (!condition() && DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(10); }
         Assert.True(condition(), "UI condition did not become true.");
     }
+
+    private static bool MembersMatchSelectedGroup(
+        DataGridView groups, DataGridView members, long groupId, int memberCount) =>
+        groups.SelectedRows.Cast<DataGridViewRow>()
+            .Any(row => row.Tag is ExactDuplicateGroupRecord group && group.GroupId == groupId) &&
+        members.Rows.Count == memberCount &&
+        members.Rows.Cast<DataGridViewRow>()
+            .All(row => row.Tag is ExactDuplicateMemberRecord member && member.GroupId == groupId);
 
     private static void PumpFor(TimeSpan duration)
     {

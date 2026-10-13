@@ -6,30 +6,93 @@ namespace MediaFlux.Services
     internal static class AppPaths
     {
         private const string MigrationMarkerName = ".legacy-install-data-migrated-v1";
+        private static readonly MediaFluxStoragePathService NormalStorage = new();
+        private static MediaFluxStoragePathService? _testStorage;
+        private static MediaFluxStoragePathService? _headlessStorage;
+        private static MediaFluxStoragePathService Storage =>
+            Volatile.Read(ref _headlessStorage) ?? Volatile.Read(ref _testStorage) ?? NormalStorage;
+
+        /// <summary>
+        /// Installs a process-scoped UserData root for the automated test process. This is
+        /// deliberately separate from normal storage resolution and is only activated by the
+        /// test assembly bootstrap. A headless command can temporarily take precedence through
+        /// <see cref="UseIsolatedHeadlessStorage"/>.
+        /// </summary>
+        internal static IDisposable UseIsolatedTestStorage(MediaFluxStoragePathService storage)
+        {
+            if (!storage.IsProcessScoped)
+                throw new ArgumentException("An isolated test UserData root is required.", nameof(storage));
+            if (Interlocked.CompareExchange(ref _testStorage, storage, null) is not null)
+                throw new InvalidOperationException("An isolated test UserData root is already active.");
+            return new TestStorageScope(storage);
+        }
+
+        private sealed class TestStorageScope(MediaFluxStoragePathService storage) : IDisposable
+        {
+            public void Dispose() => Interlocked.CompareExchange(ref _testStorage, null, storage);
+        }
+
+        /// <summary>Selected before any headless services are constructed; never persisted.</summary>
+        internal static IDisposable UseIsolatedHeadlessStorage(MediaFluxStoragePathService storage)
+        {
+            if (!storage.IsProcessScoped)
+                throw new ArgumentException("A process-scoped headless storage root is required.", nameof(storage));
+            if (Interlocked.CompareExchange(ref _headlessStorage, storage, null) is not null)
+                throw new InvalidOperationException("An isolated headless storage root is already active.");
+            return new HeadlessStorageScope(storage);
+        }
+
+        private sealed class HeadlessStorageScope(MediaFluxStoragePathService storage) : IDisposable
+        {
+            public void Dispose() => Interlocked.CompareExchange(ref _headlessStorage, null, storage);
+        }
+
+        internal static string RuntimeTemporaryDirectory(string category) => Storage.IsProcessScoped
+            ? Path.Combine(Storage.Temp, category)
+            : Path.Combine(Path.GetTempPath(), "MediaFlux", category);
 
         public static string InstallDirectory =>
             Path.GetFullPath(AppContext.BaseDirectory)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-        public static string RootDirectory => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "MediaFlux");
-
-        public static string UserDataDirectory => Path.Combine(RootDirectory, "UserData");
+        // RootDirectory remains the legacy container for callers that need installation-scoped
+        // bootstrap state. All managed user data below is resolved by Storage.
+        public static string RootDirectory => Storage.IsProcessScoped ? Storage.Root : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaFlux");
+        public static string UserDataDirectory => Storage.Root;
         public static string DataDirectory => Path.Combine(UserDataDirectory, "data");
         public static string LibraryCatalogFile => Path.Combine(DataDirectory, "library-catalog.db");
         public static string LibraryCatalogBackupDirectory => Path.Combine(DataDirectory, "catalog-backups");
         public static string LibraryCatalogRecoveryDirectory => Path.Combine(DataDirectory, "catalog-recovery");
         public static string LibraryPolicyFile => Path.Combine(DataDirectory, "library-policies.json");
+        public static string LibraryAdvancedSearchesFile => Path.Combine(DataDirectory, "library-advanced-searches.json");
         public static string StorageReclamationPlanFile => Path.Combine(DataDirectory, "storage-reclamation-plan.json");
         public static string EncodeJobsFile => Path.Combine(DataDirectory, "encode-jobs.json");
         public static string RestorationProfilesDirectory => Path.Combine(DataDirectory, "restoration-profiles");
         public static string NcnnPerformanceTuningCacheFile => Path.Combine(DataDirectory, "ncnn-performance-tuning.json");
         public static string AiBenchmarkDatabaseFile => Path.Combine(DataDirectory, "ai-benchmarks.db");
         public static string CommercialDetectorAnalysisFile => Path.Combine(DataDirectory, "commercial-detector-analysis.json");
-        public static string TempDirectory => Path.Combine(UserDataDirectory, "temp");
-        public static string ConfigFile => Path.Combine(UserDataDirectory, "config.json");
-        public static string BackupDirectory => Path.Combine(RootDirectory, "Backups");
+        public static string TempDirectory => Storage.Temp;
+        public static string ConfigFile => Storage.Config;
+        public static string BackupDirectory => Storage.Backups;
+        public static string AiIntermediatesDirectory => Storage.AiIntermediates;
+        public static string RestorationPreviewsDirectory => Storage.RestorationPreviews;
+        public static string FramePreviewsDirectory => Storage.FramePreviews;
+        public static string DuplicatePreviewsDirectory => Storage.DuplicatePreviews;
+        public static string TensorRtEnginesDirectory => Storage.TensorRtEngines;
+        public static string ManagedProgramsDirectory => Path.Combine(InstallDirectory, "Programs");
+        public static string ManagedRealEsrganDirectory => Path.Combine(ManagedProgramsDirectory, "RealESRGAN");
+        public static string ManagedFfmpegDirectory => Path.Combine(ManagedProgramsDirectory, "FFmpeg");
+        public static string AiBenchmarkRerunsDirectory => Storage.AiBenchmarkReruns;
+        public static string LogsDirectory => Storage.Logs;
+        public static string SupportedVideoExtensionsFile => Path.Combine(DataDirectory, "supported_video_extensions.json");
+        public static string EncodingStatisticsFile => Path.Combine(DataDirectory, "encoding-statistics.jsonl");
+        public static string PredictionShadowObservationsFile => Path.Combine(DataDirectory, "prediction-shadow-observations.jsonl");
+        public static string HistoryFile => Path.Combine(DataDirectory, "history.json");
+        public static string EncodingPresetsFile => Path.Combine(DataDirectory, "encoding_presets.json");
+        public static string LibraryFileRemovalAuditFile => Path.Combine(DataDirectory, "library-file-removal-audit.jsonl");
+        public static string DuplicateActionsLogFile => Path.Combine(LogsDirectory, "duplicate-actions.csv");
+        public static string AiBenchmarkHistoryFile => Path.Combine(DataDirectory, "ai-benchmark-history.json");
+        internal static MediaFluxStoragePathService StoragePaths => Storage;
 
         public static string LauncherExecutablePath
         {
@@ -57,20 +120,26 @@ namespace MediaFlux.Services
 
         public static void Initialize()
         {
-            Directory.CreateDirectory(UserDataDirectory);
-            Directory.CreateDirectory(DataDirectory);
-            Directory.CreateDirectory(TempDirectory);
-            Directory.CreateDirectory(BackupDirectory);
+            if (Storage.IsProcessScoped)
+                throw new InvalidOperationException("Isolated headless execution cannot run GUI initialization or migrate normal user data.");
+            Storage.InitializeDirectories();
+            string marker = Path.Combine(UserDataDirectory, MigrationMarkerName);
+            InitializeBackupLocations(
+                UserDataDirectory,
+                Path.Combine(RootDirectory, "Backups"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Encode", "Backups"),
+                BackupDirectory,
+                migrateHistoricalEncodeBackups: !File.Exists(marker));
             DvdTempCleanupService.CleanupStaleOperations(
                 TempDirectory,
                 TimeSpan.FromDays(7));
+            // Named generated artifacts only. It runs off the UI thread and never deletes user state.
+            _ = new UserDataStorageManagementService(UserDataDirectory).CleanupAsync(UserDataCleanupScope.ExpiredGeneratedData);
 
-            string marker = Path.Combine(UserDataDirectory, MigrationMarkerName);
             if (File.Exists(marker))
                 return;
 
             MigrateLegacyInstallData();
-            MigrateLegacyBackups();
 
             File.WriteAllText(
                 marker,
@@ -87,26 +156,47 @@ namespace MediaFlux.Services
             CopyDirectoryIfMissing(legacyData, DataDirectory);
         }
 
-        private static void MigrateLegacyBackups()
+        internal static void InitializeBackupLocations(
+            string userDataDirectory,
+            string legacyMediaFluxBackupDirectory,
+            string legacyEncodeBackupDirectory,
+            string destinationDirectory,
+            bool migrateHistoricalEncodeBackups)
         {
-            string legacyBackupDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Encode",
-                "Backups");
-
-            if (!Directory.Exists(legacyBackupDirectory))
+            string internalBackupDirectory = Path.Combine(userDataDirectory, "Backups");
+            bool destinationWouldBeCreatedInsideSource = !Directory.Exists(destinationDirectory) &&
+                (IsExistingSourceAncestor(legacyMediaFluxBackupDirectory, destinationDirectory) ||
+                 IsExistingSourceAncestor(internalBackupDirectory, destinationDirectory) ||
+                 (migrateHistoricalEncodeBackups && IsExistingSourceAncestor(legacyEncodeBackupDirectory, destinationDirectory)));
+            if (destinationWouldBeCreatedInsideSource)
                 return;
 
-            foreach (string archive in Directory.EnumerateFiles(legacyBackupDirectory, "*.zip", SearchOption.TopDirectoryOnly))
-            {
-                string destination = Path.Combine(BackupDirectory, Path.GetFileName(archive));
-                CopyFileIfMissing(archive, destination);
-            }
+            Directory.CreateDirectory(destinationDirectory);
+            // The former install-root directory could contain arbitrary files and nested data;
+            // retain its historical recursive, copy-only migration behavior.
+            CopyDirectoryIfMissing(legacyMediaFluxBackupDirectory, destinationDirectory);
+            MigrateBackupArchives(internalBackupDirectory, destinationDirectory);
+            if (migrateHistoricalEncodeBackups)
+                MigrateBackupArchives(legacyEncodeBackupDirectory, destinationDirectory);
         }
 
-        private static void CopyDirectoryIfMissing(string sourceDirectory, string destinationDirectory)
+        private static bool IsExistingSourceAncestor(string sourceDirectory, string destinationDirectory) =>
+            Directory.Exists(sourceDirectory) &&
+            MediaFluxStoragePathService.IsWithin(destinationDirectory, sourceDirectory);
+
+        internal static void MigrateBackupArchives(string sourceDirectory, string destinationDirectory)
         {
-            if (!Directory.Exists(sourceDirectory))
+            if (!Directory.Exists(sourceDirectory) || MediaFluxStoragePathService.PathsOverlap(sourceDirectory, destinationDirectory))
+                return;
+
+            Directory.CreateDirectory(destinationDirectory);
+            foreach (string archive in Directory.EnumerateFiles(sourceDirectory, "*.zip", SearchOption.TopDirectoryOnly))
+                CopyFileIfMissing(archive, Path.Combine(destinationDirectory, Path.GetFileName(archive)));
+        }
+
+        internal static void CopyDirectoryIfMissing(string sourceDirectory, string destinationDirectory)
+        {
+            if (!Directory.Exists(sourceDirectory) || MediaFluxStoragePathService.PathsOverlap(sourceDirectory, destinationDirectory))
                 return;
 
             Directory.CreateDirectory(destinationDirectory);

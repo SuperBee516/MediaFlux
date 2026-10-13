@@ -52,7 +52,7 @@ public sealed class TensorRtAiRestorationBackend : IAiRestorationBackend
     public TensorRtAiRestorationBackend(string applicationDirectory, Func<bool>? nvidiaGpuPresent = null, Func<IEnumerable<string>>? runtimeDirectories = null, Func<TensorRtGpuInfo>? gpuInfo = null, IMediaToolProcessRunner? runner = null, string? bridgePath = null, string? engineDirectory = null, Action<string>? log = null)
     {
         _runtime = new TensorRtRuntimeService(applicationDirectory, nvidiaGpuPresent, runtimeDirectories, gpuInfo);
-        _engines = new TensorRtEngineManager(engineDirectory ?? Path.Combine(AppPaths.DataDirectory, "tensorrt-engines"), _runtime, log: log);
+        _engines = new TensorRtEngineManager(engineDirectory ?? AppPaths.TensorRtEnginesDirectory, _runtime, log: log);
         _models = new AiModelManager(log: log);
         _onnxDirectory = Path.Combine(applicationDirectory, "tensorrt-models");
         _bridge = new TensorRtProcessBridge(bridgePath ?? Path.Combine(applicationDirectory, "mediaflux-tensorrt.exe"), runner, log);

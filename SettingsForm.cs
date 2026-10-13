@@ -17,6 +17,7 @@ namespace MediaFlux
         private readonly string _supportedVideoExtsPath;
         private readonly IReadOnlyList<string> _defaultVideoExts;
         private readonly string _currentOutputFolder;
+        private readonly Func<bool> _hasActiveStorageWork;
         private GroupBox grpExplorerIntegration = null!;
         private CheckBox chkExplorerFiles = null!;
         private CheckBox chkExplorerFolders = null!;
@@ -29,11 +30,16 @@ namespace MediaFlux
         private Button btnDuplicateKeeperPreferences = null!;
         private Label lblFfmpegStatus = null!;
         private Label lblFfprobeStatus = null!;
+        private GroupBox _ffmpegSetupCard = null!;
+        private Label _ffmpegSetupSummary = null!;
+        private Button _installFfmpeg = null!;
+        private Button _locateFfmpeg = null!;
         private TextBox txtDvdOutputNamingPattern = null!;
         private GroupBox grpSmartRecommendations = null!;
+        private GroupBox _storageManagementGroup = null!;
         private CheckBox chkSmartRecommendations = null!;
+        private CheckBox chkHistoricalSizeCalibration = null!;
         private NumericUpDown nudMinimumExpectedSavings = null!;
-        private CheckBox chkWarnBeforeEncodingRecommendations = null!;
         private StorageSavingsOptions _storageSavingsOptions = new();
         private DuplicateKeeperPreferences _duplicateKeeperPreferences = new();
         private readonly ToolTip _settingsToolTip = new();
@@ -47,6 +53,9 @@ namespace MediaFlux
         private NumericUpDown nudVisualMassReviewMinimumMargin = null!;
         private NumericUpDown nudVisualMassReviewMinimumConfidence = null!;
         private FlowLayoutPanel? _libraryAnalyzerSettingsPanel;
+        private ListBox? _settingsNavigation;
+        private Panel? _settingsContentHost;
+        private readonly Dictionary<string, Control> _settingsPages = new(StringComparer.Ordinal);
         internal const string VisualBulkCleanupRiskWarning = "Visual similarity is probabilistic. Enabling this option may propose unreviewed false positives for permanent deletion. Every plan is previewed and requires confirmation, but you must verify each proposed keeper and deletion.";
 
         public SettingsForm(
@@ -54,7 +63,8 @@ namespace MediaFlux
             string supportedVideoExtsPath,
             IEnumerable<string> defaultVideoExts,
             string currentOutputFolder,
-            bool focusMediaTools = false)
+            bool focusMediaTools = false,
+            Func<bool>? hasActiveStorageWork = null)
         {
             InitializeComponent();
             AutoScroll = true;
@@ -67,10 +77,12 @@ namespace MediaFlux
             InitializeDvdSettingsControls(cfg);
             _duplicateKeeperPreferences = (cfg.DuplicateKeeperPreferences ?? new DuplicateKeeperPreferences()).Clone();
             InitializeDuplicateKeeperPreferenceControls();
+            InitializeStorageControls();
 
             _supportedVideoExtsPath = supportedVideoExtsPath;
             _defaultVideoExts = (defaultVideoExts ?? Array.Empty<string>()).ToList();
             _currentOutputFolder = currentOutputFolder?.Trim() ?? string.Empty;
+            _hasActiveStorageWork = hasActiveStorageWork ?? (() => false);
 
             txtUpdateFolder.Text = "https://github.com/SuperBee516/MediaFlux/releases";
             txtUpdateFolder.ReadOnly = true;
@@ -131,6 +143,8 @@ namespace MediaFlux
 
             LoadSupportedExtensionsIntoUi();
             RefreshFfmpegStatus();
+            _ = RefreshFfmpegSetupStatusAsync();
+            BuildTwoPaneSettingsLayout();
 
             if (focusMediaTools)
             {
@@ -142,6 +156,142 @@ namespace MediaFlux
             }
         }
 
+        private void BuildTwoPaneSettingsLayout()
+        {
+            Control[] existing = Controls.Cast<Control>().ToArray();
+            var categories = SettingsCategoryCatalog.Names;
+            _settingsNavigation = new ListBox { Name = "SettingsCategoryNavigation", Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, IntegralHeight = false, Font = new Font(Font, FontStyle.Regular) };
+            _settingsNavigation.Items.AddRange(categories.Cast<object>().ToArray());
+            _settingsNavigation.SelectedIndexChanged += (_, _) => ShowSettingsCategory(_settingsNavigation.SelectedItem?.ToString());
+            _settingsContentHost = new Panel { Name = "SettingsCategoryContent", Dock = DockStyle.Fill, AutoScroll = false, Padding = new Padding(8), BackColor = SystemColors.Control };
+
+            var split = new SplitContainer { Name = "SettingsTwoPane", Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1, IsSplitterFixed = false, SplitterWidth = 5 };
+            split.Panel1.Padding = new Padding(8, 8, 4, 8); split.Panel2.Padding = new Padding(4, 8, 8, 8);
+            split.Panel1.Controls.Add(_settingsNavigation); split.Panel2.Controls.Add(_settingsContentHost);
+            split.Resize += (_, _) =>
+            {
+                if (split.Width >= 760)
+                    split.SplitterDistance = Math.Clamp(220, 150, split.Width - 360);
+            };
+
+            var footer = new Panel { Name = "SettingsActions", Dock = DockStyle.Bottom, Height = 48, Padding = new Padding(8, 8, 8, 8) };
+            btnCancel.Dock = DockStyle.Right; btnCancel.Margin = new Padding(6, 0, 0, 0); btnOK.Dock = DockStyle.Right; btnOK.Margin = new Padding(0);
+            footer.Controls.Add(btnCancel); footer.Controls.Add(btnOK);
+
+            SuspendLayout();
+            try
+            {
+                Controls.Clear(); AutoScroll = true; FormBorderStyle = FormBorderStyle.Sizable; MaximizeBox = true; MinimumSize = new Size(760, 560); ClientSize = new Size(Math.Max(ClientSize.Width, 980), Math.Max(ClientSize.Height, 700));
+                Controls.Add(split); Controls.Add(footer);
+                foreach (string category in categories)
+                {
+                    var page = new Panel { Name = "SettingsPage" + category.Replace(" ", ""), Dock = DockStyle.Fill, AutoScroll = true, BackColor = SystemColors.Control, Visible = false };
+                    page.Resize += (_, _) =>
+                    {
+                        int width = Math.Max(360, page.ClientSize.Width - page.Padding.Horizontal);
+                        foreach (Control child in page.Controls)
+                            if (child.Dock == DockStyle.Top) child.Width = width;
+                    };
+                    _settingsPages[category] = page;
+                    _settingsContentHost.Controls.Add(page);
+                }
+
+                var assigned = new HashSet<Control>();
+                AddCategory("General", assigned, FindExisting(existing, "lblPattern", "txtPattern", "lblSuffix", "txtSuffix", "chkEnableSuffix", "chkEnableCodecSuffix", "grpExtensions", "chkRememberCheckboxes", "chkPreventSleepDuringEncoding", "chkMinimizeToSystemTray"));
+                AddCategory("Encoding", assigned, FindExisting(existing, "chkLimitGpuEncodingQueueToOneJob", "lblLargeQueueThreshold", "nudLargeQueueThreshold", "chkAutoAnalyzeLargeQueues", "grpIncompleteOutputCleanup"));
+                AddCategory("Encoding", assigned, FindGroup(existing, "DVD Output Naming"));
+                AddCategory("FFmpeg & Tools", assigned, FindExisting(existing, "lblFfmpegPath", "txtFfmpegPath", "btnBrowseFfmpeg", "lblFfmpegStatus", "lblFfprobePath", "txtFfprobePath", "btnBrowseFfprobe", "lblFfprobeStatus", "chkEnablePersistentMediaInfoCache", "FfmpegSetupCard"));
+                AddCategory("Automation", assigned, FindExisting(existing, "grpWatchFolder"));
+                AddCategory("Duplicates", assigned, FindExisting(existing, "grpDuplicateManagement"));
+                AddCategory("Duplicates", assigned, _libraryAnalyzerSettingsPanel);
+                AddCategory("Storage & Cache", assigned, _storageManagementGroup, grpSmartRecommendations);
+                AddCategory("Backup & Restore", assigned, FindExisting(existing, "grpBackupRestore"));
+                AddCategory("Integrations", assigned, FindExisting(existing, "grpDiscordNotification"));
+                AddCategory("Integrations", assigned, grpExplorerIntegration);
+                AddCategory("Updates", assigned, FindExisting(existing, "lblUpdateFolder", "txtUpdateFolder", "btnBrowseUpdate"));
+
+                // Preserve any newly-added or less common settings controls by keeping them represented.
+                AddCategory("General", assigned, existing.Where(control => control != btnOK && control != btnCancel && !assigned.Contains(control)).ToArray());
+                _settingsNavigation.SelectedIndex = 0;
+            }
+            finally { ResumeLayout(true); }
+        }
+
+        private void AddCategory(string category, HashSet<Control> assigned, params Control?[] controls)
+        {
+            if (!_settingsPages.TryGetValue(category, out Control? page)) return;
+            foreach (Control? control in controls)
+            {
+                if (control == null || !assigned.Add(control)) continue;
+                control.Parent?.Controls.Remove(control); control.Dock = DockStyle.Top; control.Margin = new Padding(0, 0, 0, 10); control.Width = Math.Max(360, page.ClientSize.Width - 24); page.Controls.Add(control); control.BringToFront();
+            }
+        }
+
+        private void ShowSettingsCategory(string? category)
+        {
+            if (category == null || _settingsContentHost == null || !_settingsPages.TryGetValue(category, out Control? page)) return;
+            foreach (Control candidate in _settingsPages.Values) candidate.Visible = ReferenceEquals(candidate, page);
+            if (page.Parent != _settingsContentHost) _settingsContentHost.Controls.Add(page);
+            page.Dock = DockStyle.Fill;
+            if (page is Panel panel) panel.AutoScrollPosition = Point.Empty;
+        }
+
+        private static Control?[] FindExisting(IEnumerable<Control> controls, params string[] names) => names.Select(name => controls.FirstOrDefault(control => control.Name.Equals(name, StringComparison.OrdinalIgnoreCase))).ToArray();
+        private static Control? FindGroup(IEnumerable<Control> controls, string text) => controls.FirstOrDefault(control => control is GroupBox group && group.Text.Equals(text, StringComparison.Ordinal));
+
+        private void InitializeStorageControls()
+        {
+            var paths = AppPaths.StoragePaths;
+            var storage = new UserDataStorageManagementService(paths.Root, () => _hasActiveStorageWork());
+            _storageManagementGroup = new GroupBox { Name = "StorageManagementGroup", Text = "MediaFlux Storage", Location = new Point(820, 610), Size = new Size(560, 185) };
+            var root = new TextBox { Name = "StorageRoot", ReadOnly = true, Location = new Point(14, 24), Width = 530, Text = paths.Root };
+            var usage = new Label { Name = "StorageUsage", AutoSize = false, Location = new Point(14, 53), Size = new Size(530, 42), Text = "Calculating managed storage usage…" };
+            var change = new Button { Name = "ChangeStorageLocation", Text = "Change Location…", Location = new Point(14, 120), Size = new Size(130, 28) };
+            var open = new Button { Name = "OpenStorageFolder", Text = "Open Folder", Location = new Point(151, 120), Size = new Size(100, 28) };
+            var clean = new Button { Name = "CleanTemporaryData", Text = "Clean Temporary Data", Location = new Point(258, 120), Size = new Size(150, 28) };
+            _storageManagementGroup.Controls.AddRange(new Control[] { root, usage, change, open, clean }); Controls.Add(_storageManagementGroup);
+
+            async Task RefreshAsync()
+            {
+                try
+                {
+                    UserDataStorageSnapshot snap = await storage.GetSnapshotAsync();
+                    long free = new DriveInfo(Path.GetPathRoot(paths.Root)!).AvailableFreeSpace;
+                    string categories = string.Join("; ", snap.Items.GroupBy(item => item.Category).OrderByDescending(group => group.Sum(item => item.Bytes)).Take(3).Select(group => $"{group.Key}: {FormatStorageBytes(group.Sum(item => item.Bytes))}"));
+                    usage.Text = $"Used: {FormatStorageBytes(snap.TotalBytes)}   Free: {FormatStorageBytes(free)}{Environment.NewLine}{(categories.Length == 0 ? "No managed files yet." : categories)}";
+                }
+                catch (Exception ex) { usage.Text = "Storage usage is unavailable: " + ex.Message; }
+            }
+            change.Click += async (_, _) =>
+            {
+                using var dialog = new FolderBrowserDialog { Description = "Choose an empty folder for all MediaFlux-managed data." };
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                change.Enabled = false;
+                try
+                {
+                    MediaFluxStorageMigrationResult result = await new MediaFluxStorageMigrationService(paths, () => _hasActiveStorageWork()).MigrateAsync(dialog.SelectedPath);
+                    MessageBox.Show(this, result.Message, "MediaFlux Storage", MessageBoxButtons.OK, result.Succeeded ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                    if (result.Succeeded && result.PreviousRoot is not null && MessageBox.Show(this, "The copy is verified. Delete the previous MediaFlux storage folder now? This cannot be undone.", "Remove previous storage", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                    {
+                        try { Directory.Delete(result.PreviousRoot, true); } catch (Exception ex) { MessageBox.Show(this, "The new root remains active, but the previous folder could not be removed: " + ex.Message, "MediaFlux Storage", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+                    }
+                    if (result.Succeeded) { root.Text = result.NewRoot!; usage.Text = "Migration complete. Restart MediaFlux before further work."; }
+                }
+                finally { change.Enabled = true; }
+            };
+            open.Click += (_, _) => { Directory.CreateDirectory(paths.Root); Process.Start(new ProcessStartInfo("explorer.exe", $"\"{paths.Root}\"") { UseShellExecute = true }); };
+            clean.Click += async (_, _) =>
+            {
+                if (_hasActiveStorageWork()) { MessageBox.Show(this, "Temporary data cannot be cleaned while MediaFlux has active work.", "MediaFlux Storage", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                clean.Enabled = false;
+                try { UserDataCleanupResult result = await storage.CleanupAsync(UserDataCleanupScope.ExpiredGeneratedData); MessageBox.Show(this, $"Removed {result.DeletedFiles + result.DeletedDirectories:N0} inactive, explicitly generated item(s), freeing {FormatStorageBytes(result.FreedBytes)}. Persistent settings, jobs, catalogs, models, engines, and tuning state were kept.", "MediaFlux Storage"); await RefreshAsync(); }
+                finally { clean.Enabled = true; }
+            };
+            Shown += async (_, _) => await RefreshAsync();
+        }
+
+        private static string FormatStorageBytes(long bytes) => bytes >= 1024L * 1024 * 1024 ? $"{bytes / 1024d / 1024d / 1024d:0.0} GB" : bytes >= 1024 * 1024 ? $"{bytes / 1024d / 1024d:0.0} MB" : $"{bytes:N0} B";
+
         private void InitializeSmartRecommendationControls(Config config)
         {
             _storageSavingsOptions =
@@ -151,7 +301,7 @@ namespace MediaFlux
             {
                 Text = "Smart Encode Recommendations",
                 Location = new Point(820, 730),
-                Size = new Size(390, 105),
+                Size = new Size(390, 132),
                 TabStop = false
             };
 
@@ -220,12 +370,12 @@ namespace MediaFlux
                 Location = new Point(306, 52)
             };
 
-            chkWarnBeforeEncodingRecommendations = new CheckBox
+            chkHistoricalSizeCalibration = new CheckBox
             {
-                Text = "Warn before encoding Skip, Review, or unavailable files",
+                Text = "Use historical results to improve size predictions",
                 AutoSize = true,
                 Location = new Point(15, 78),
-                Checked = config.WarnBeforeEncodingSkippedOrReviewItems
+                Checked = config.UseHistoricalSizePredictionCalibration
             };
 
             chkSmartRecommendations.CheckedChanged += (_, __) =>
@@ -233,8 +383,6 @@ namespace MediaFlux
                 nudMinimumExpectedSavings.Enabled = chkSmartRecommendations.Checked;
                 minimumLabel.Enabled = chkSmartRecommendations.Checked;
                 percentLabel.Enabled = chkSmartRecommendations.Checked;
-                chkWarnBeforeEncodingRecommendations.Enabled =
-                    chkSmartRecommendations.Checked;
             };
 
             grpSmartRecommendations.Controls.Add(chkSmartRecommendations);
@@ -242,14 +390,12 @@ namespace MediaFlux
             grpSmartRecommendations.Controls.Add(minimumLabel);
             grpSmartRecommendations.Controls.Add(nudMinimumExpectedSavings);
             grpSmartRecommendations.Controls.Add(percentLabel);
-            grpSmartRecommendations.Controls.Add(chkWarnBeforeEncodingRecommendations);
+            grpSmartRecommendations.Controls.Add(chkHistoricalSizeCalibration);
             Controls.Add(grpSmartRecommendations);
 
             nudMinimumExpectedSavings.Enabled = chkSmartRecommendations.Checked;
             minimumLabel.Enabled = chkSmartRecommendations.Checked;
             percentLabel.Enabled = chkSmartRecommendations.Checked;
-            chkWarnBeforeEncodingRecommendations.Enabled =
-                chkSmartRecommendations.Checked;
             UpdateStorageSavingsButton();
         }
 
@@ -322,12 +468,117 @@ namespace MediaFlux
             grpIncompleteOutputCleanup.Top += 50;
             Controls.Add(lblFfmpegStatus);
             Controls.Add(lblFfprobeStatus);
+
+            _ffmpegSetupSummary = new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(520, 0),
+                ForeColor = SystemColors.GrayText,
+                Name = "FfmpegSetupSummary"
+            };
+            _installFfmpeg = new Button { Text = "Install / Reinstall", AutoSize = true, Name = "InstallFfmpeg" };
+            _locateFfmpeg = new Button { Text = "Locate Existing Installation", AutoSize = true, Name = "LocateFfmpeg" };
+            _installFfmpeg.Click += async (_, _) => await InstallFfmpegAsync();
+            _locateFfmpeg.Click += async (_, _) => await LocateFfmpegAsync();
+            var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+            actions.Controls.Add(_installFfmpeg); actions.Controls.Add(_locateFfmpeg);
+            var cardLayout = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+            cardLayout.Controls.Add(new Label { Text = "MediaFlux can install a compatible pinned FFmpeg package without changing Windows PATH.", AutoSize = true, ForeColor = SystemColors.GrayText }, 0, 0);
+            cardLayout.Controls.Add(_ffmpegSetupSummary, 0, 1); cardLayout.Controls.Add(actions, 0, 2);
+            _ffmpegSetupCard = new GroupBox { AutoSize = true, Dock = DockStyle.Fill, Name = "FfmpegSetupCard", Text = "FFmpeg", Padding = new Padding(10) };
+            _ffmpegSetupCard.Controls.Add(cardLayout);
+            _ffmpegSetupCard.Location = new Point(15, 730); _ffmpegSetupCard.Size = new Size(520, 140);
+            Controls.Add(_ffmpegSetupCard);
         }
 
         private void RefreshFfmpegStatus()
         {
             UpdateToolStatusLabel(lblFfmpegStatus, txtFfmpegPath.Text, "ffmpeg.exe", configuredFfmpegPath: true);
             UpdateToolStatusLabel(lblFfprobeStatus, txtFfprobePath.Text, "ffprobe.exe", configuredFfmpegPath: false);
+            if (_ffmpegSetupSummary != null) _ = RefreshFfmpegSetupStatusAsync();
+        }
+
+        private async Task RefreshFfmpegSetupStatusAsync()
+        {
+            if (_ffmpegSetupSummary == null || IsDisposed || Disposing) return;
+            FfmpegToolPaths tools = FfmpegToolResolver.Resolve(AppPaths.InstallDirectory, txtFfmpegPath?.Text, txtFfprobePath?.Text);
+            FfmpegManagedInstallationInspection managed = new FfmpegManagedComponentStateService(AppPaths.InstallDirectory).Inspect();
+            if (!tools.AreAllAvailable)
+            {
+                _ffmpegSetupSummary.Text = !tools.HasFfprobe && tools.HasFfmpeg
+                    ? "Status: FFprobe missing\r\nA paired ffmpeg.exe and ffprobe.exe installation is required."
+                    : managed.State == ManagedComponentInstallationState.Incomplete
+                        ? "Status: Installation incomplete\r\nComplete both ffmpeg.exe and ffprobe.exe are required."
+                        : managed.State == ManagedComponentInstallationState.Invalid
+                            ? "Status: Installation invalid\r\nMediaFlux could not inspect the managed FFmpeg installation."
+                            : "Status: Not installed / unavailable\r\nFFmpeg and FFprobe are required for media operations.";
+                _ffmpegSetupSummary.ForeColor = Color.Firebrick;
+                return;
+            }
+
+            FfmpegManagedRuntimeValidation runtime = await FfmpegManagedRuntimeValidator.ValidateAsync(tools.FfmpegPath, tools.FfprobePath);
+            string version = tools.Source == FfmpegToolSource.Managed ? FfmpegManagedComponents.Release.Version : (runtime.FfmpegVersion.Length == 0 ? "Unavailable" : runtime.FfmpegVersion);
+            FfmpegNvencRuntimeCapability[] nvenc = await Task.WhenAll(
+                FfmpegNvencRuntimeCapabilityService.Shared.CheckAsync(tools.FfmpegPath, "hevc_nvenc"),
+                FfmpegNvencRuntimeCapabilityService.Shared.CheckAsync(tools.FfmpegPath, "h264_nvenc"));
+            FfmpegNvencRuntimeCapability hevc = nvenc[0];
+            FfmpegNvencRuntimeCapability h264 = nvenc[1];
+            string NvencLine(FfmpegNvencRuntimeCapability capability) =>
+                $"{capability.Encoder}: {capability.State switch { FfmpegNvencRuntimeState.Available => "Ready", FfmpegNvencRuntimeState.DriverIncompatible => "Driver incompatible", FfmpegNvencRuntimeState.EncoderMissing => "Encoder missing", FfmpegNvencRuntimeState.TimedOut => "Probe timed out", FfmpegNvencRuntimeState.Unavailable => "Unavailable", _ => "Unknown" }}";
+            _ffmpegSetupSummary.Text = runtime.FfmpegSucceeded && runtime.FfprobeSucceeded
+                ? $"Status: Ready\r\nVersion: {version}\r\nFFmpeg: Available\r\nFFprobe: Available\r\n{NvencLine(hevc)}\r\n{NvencLine(h264)}\r\nSource: {tools.Source switch { FfmpegToolSource.Configured => "Configured / Manual", FfmpegToolSource.Managed => "Managed by MediaFlux", FfmpegToolSource.Legacy => "Legacy", FfmpegToolSource.SystemPath => "System / PATH", _ => "Configured / Manual" }}"
+                : "Status: Runtime validation failed\r\nFFmpeg or FFprobe could not be launched. See diagnostics for details.";
+            _ffmpegSetupSummary.ForeColor = runtime.FfmpegSucceeded && runtime.FfprobeSucceeded ? (hevc.IsAvailable && h264.IsAvailable ? Color.DarkGreen : Color.DarkOrange) : Color.Firebrick;
+            if (!hevc.IsAvailable) _ffmpegSetupSummary.Text += $"\r\n{hevc.Diagnostic}";
+            else if (!h264.IsAvailable) _ffmpegSetupSummary.Text += $"\r\n{h264.Diagnostic}";
+        }
+
+        private async Task InstallFfmpegAsync()
+        {
+            _installFfmpeg.Enabled = _locateFfmpeg.Enabled = false;
+            try
+            {
+                using var dialog = new FfmpegInstallationProgressForm((progress, token) => new FfmpegManagedComponentInstaller(AppPaths.InstallDirectory, log: message => ErrorLogService.Append(AppPaths.UserDataDirectory, "FFmpeg provisioning", details: message)).InstallAsync(progress, token));
+                DialogResult result = dialog.ShowDialog(this);
+                if (dialog.WasCanceled) { _ffmpegSetupSummary.Text = "Status: Installation canceled\r\nTemporary files were cleaned up."; return; }
+                if (result == DialogResult.OK && dialog.Result?.Succeeded == true)
+                {
+                    FfmpegSetupService.InvalidateCaches();
+                    await RefreshFfmpegSetupStatusAsync();
+                    MessageBox.Show(this, "FFmpeg was installed and is ready to use. No restart is required.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else if (dialog.Result is { } failed)
+                    MessageBox.Show(this, FfmpegUserFacingFailure(failed.Detail), "FFmpeg installation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally { if (!IsDisposed && !Disposing) { _installFfmpeg.Enabled = true; _locateFfmpeg.Enabled = true; await RefreshFfmpegSetupStatusAsync(); } }
+        }
+
+        private async Task LocateFfmpegAsync()
+        {
+            _installFfmpeg.Enabled = _locateFfmpeg.Enabled = false;
+            try
+            {
+                using var dialog = new OpenFileDialog { Title = "Locate FFmpeg installation", Filter = "FFmpeg executable (ffmpeg.exe)|ffmpeg.exe|Executable files (*.exe)|*.exe", CheckFileExists = true, Multiselect = false };
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                FfmpegLocateResult located = await FfmpegSetupService.LocateAndValidateAsync(dialog.FileName);
+                if (!located.Succeeded)
+                {
+                    MessageBox.Show(this, located.Detail, "FFmpeg installation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                txtFfmpegPath.Text = located.FfmpegPath!; txtFfprobePath.Text = located.FfprobePath!;
+                await RefreshFfmpegSetupStatusAsync();
+            }
+            finally { if (!IsDisposed && !Disposing) { _installFfmpeg.Enabled = true; _locateFfmpeg.Enabled = true; } }
+        }
+
+        private static string FfmpegUserFacingFailure(string detail)
+        {
+            if (detail.Contains("SHA-256", StringComparison.OrdinalIgnoreCase)) return "Package verification failed. The compatible FFmpeg package was not installed.";
+            if (detail.Contains("traversal", StringComparison.OrdinalIgnoreCase)) return "The package could not be safely extracted.";
+            if (detail.Contains("incomplete", StringComparison.OrdinalIgnoreCase)) return "The downloaded FFmpeg package is incomplete and was not installed.";
+            if (detail.Contains("download", StringComparison.OrdinalIgnoreCase) || detail.Contains("HTTP", StringComparison.OrdinalIgnoreCase)) return "The compatible FFmpeg package could not be downloaded.";
+            return "FFmpeg could not be installed. Review MediaFlux diagnostics for details.";
         }
 
         private void UpdateToolStatusLabel(
@@ -801,10 +1052,9 @@ namespace MediaFlux
             Config.LargeQueueThreshold = (int)nudLargeQueueThreshold.Value;
             Config.AutoAnalyzeLargeQueues = chkAutoAnalyzeLargeQueues.Checked;
             Config.SmartRecommendationsEnabled = chkSmartRecommendations.Checked;
+            Config.UseHistoricalSizePredictionCalibration = chkHistoricalSizeCalibration.Checked;
             Config.MinimumExpectedSavingsPercent =
                 (double)nudMinimumExpectedSavings.Value;
-            Config.WarnBeforeEncodingSkippedOrReviewItems =
-                chkWarnBeforeEncodingRecommendations.Checked;
             Config.StorageSavings =
                 _storageSavingsOptions.CloneNormalized();
             Config.FindDuplicatesOnImport = chkFindDuplicatesOnImport.Checked;

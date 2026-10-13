@@ -21,6 +21,7 @@ public sealed class StorageReclamationUiTests : IDisposable
         Exception? failure = null;
         var thread = new Thread(() =>
         {
+            LibraryAnalyzerForm? form = null;
             try
             {
                 SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
@@ -28,7 +29,7 @@ public sealed class StorageReclamationUiTests : IDisposable
                 catalog.Initialize();
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 string planPath = Path.Combine(_root, "saved-plan.json");
-                using var form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
+                form = new LibraryAnalyzerForm(runtime, reviewOptions: new LibraryAnalyzerForm.LibraryAnalyzerReviewOptions(
                     PolicyStore: new LibraryPolicyStore(Path.Combine(_root, "policies.json")),
                     PolicyCapabilities: new LibraryPolicyCapabilitySnapshot(),
                     ReclamationPlanStore: new StorageReclamationPlanStore(planPath)));
@@ -56,9 +57,9 @@ public sealed class StorageReclamationUiTests : IDisposable
                 Assert.Equal(0, saved.RequestedReclaimBytes);
                 Assert.Equal(0, saved.ReadyReclaimBytes);
                 Assert.Contains(saved.Warnings, warning => warning.Contains("advisory", StringComparison.OrdinalIgnoreCase));
-                form.Close(); Application.DoEvents();
             }
             catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Storage Optimization UI smoke test timed out.");

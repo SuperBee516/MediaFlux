@@ -6,7 +6,7 @@ separate from the existing Duplicate Finder caches and results.
 
 ## Catalog scope
 
-Schema version 12 keeps observed facts, derived analysis, user decisions, integrity,
+Schema version 17 keeps observed facts, derived analysis, user decisions, integrity,
 and maintenance state separate:
 
 - `library_locations` contains configured roots and their current scan generation.
@@ -75,6 +75,21 @@ duration, bitrate, video, audio, subtitle, chapter, attachment, and color/HDR fa
 Successful current metadata is reused when file facts, metadata version, and FFprobe
 tool identity remain current. Failed probes use durable capped retry state. Enrichment
 backs off while the main encode queue is active.
+
+Metadata version 2 adds selected-video-stream identity and bitrate, frame-rate
+provenance, and sample/display aspect ratios. Video bitrate is kept separate from
+format total bitrate. Existing metadata rows are upgraded by background enrichment;
+the schema migration preserves catalog facts and does not probe files.
+
+## Advanced Search
+
+Advanced Search stores versioned typed conditions outside SQL and validates them
+against an allowlisted property registry before compilation. User values are
+parameterized. The SQLite catalog returns the count and requested page from one read
+snapshot; derived values are calculated from persisted metadata, and predicates that
+require metadata version 2 exclude older or incomplete facts. Saved Searches persist
+definitions separately from transient paging and selection state. Queue handoff uses
+the existing explicit Library Analyzer file-selection boundary.
 
 After a successful authoritative scan, local NTFS roots retain the journal id and
 `NextUsn` observed before enumeration. A later scan may skip traversal only when the

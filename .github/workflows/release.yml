@@ -28,12 +28,12 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
 
@@ -64,6 +64,31 @@ jobs:
           }
           "packageVersion=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Verify GitHub release slot is available
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $uri = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
+          try {
+            $release = Invoke-RestMethod -Uri $uri -Headers @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = 'application/vnd.github+json'
+              'X-GitHub-Api-Version' = '2022-11-28'
+            } -ErrorAction Stop
+            throw "GitHub Release '$tag' already exists. Delete only the existing Release object before rerunning this workflow; do not recreate or move the tag."
+          }
+          catch {
+            $response = $_.Exception.Response
+            if ($null -ne $response -and [int]$response.StatusCode -eq 404) {
+              Write-Host "No existing GitHub Release found for '$tag'."
+            }
+            else {
+              throw
+            }
+          }
 
       - name: Restore and build
         shell: pwsh
@@ -110,6 +135,7 @@ jobs:
 
           $forbidden = Get-ChildItem .\artifacts\publish -Recurse -File | Where-Object {
             $_.Name -eq 'config.json' -or
+            $_.Name -eq 'storage-location.json' -or
             $_.Extension -eq '.pdb' -or
             $_.FullName -match '[\\/]data[\\/]'
           }
@@ -143,29 +169,18 @@ jobs:
       - name: Generate release notes
         shell: pwsh
         run: |
-          $currentTag = "${{ steps.version.outputs.tag }}"
-          $previousTag = git tag --sort=-version:refname | Where-Object { $_ -ne $currentTag } | Select-Object -First 1
-          $range = if ($previousTag) { "$previousTag..HEAD" } else { "HEAD" }
-          $changes = @(git log $range --pretty=format:'- %s (`%h`)')
-          if ($changes.Count -eq 0) {
-            $changes = @('- Maintenance and reliability improvements.')
-          }
-
           $changelog = Get-Content .\CHANGELOG.md -Raw
           $featureNotes = [regex]::Match($changelog, "(?ms)^## \[$([regex]::Escape('${{ steps.version.outputs.value }}'))\][^\r\n]*\s*(.*?)(?=^## |\z)").Groups[1].Value.Trim()
           if (-not $featureNotes) {
-            $featureNotes = [regex]::Match($changelog, '(?ms)^## 🎞️ Video Restoration Phase 4B[^\r\n]*\s*(.*?)(?=^## |\z)').Groups[1].Value.Trim()
-          }
-          if ($featureNotes) {
-            $changes = @($featureNotes, '', '### Commit summary', '') + $changes
+            throw "CHANGELOG.md has no release notes for version '${{ steps.version.outputs.value }}'."
           }
 
           @(
             "# MediaFlux ${{ steps.version.outputs.value }}",
             "",
             "## Changes",
-            ""
-          ) + $changes + @(
+            "",
+            $featureNotes,
             "",
             "Full project history is available in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/CHANGELOG.md)."
           ) | Set-Content .\artifacts\release-notes.md
@@ -263,7 +278,7 @@ jobs:
 
       - name: Upload workflow diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: MediaFlux-${{ steps.version.outputs.value }}-release-output
           path: |

@@ -6,6 +6,12 @@ namespace MediaFlux.Models
         public const string SourceBitrateTarget = "Source video bitrate";
 
         public bool Enabled { get; set; } = false;
+        /// <summary>Manual numeric quality normally preserves valid output when savings are below the contract.</summary>
+        public bool StrictEnforcementForManual { get; set; } = false;
+        /// <summary>Allows one full encode for a borderline candidate whose upper projection materially exceeds the byte ceiling.</summary>
+        public bool AllowRiskyBorderlineProduction { get; set; } = false;
+        /// <summary>Internal, default-off acceptance gate for the bounded Policy C retry.</summary>
+        public bool ExperimentalPolicyCRetryEnabled { get; set; } = false;
         public string TargetMode { get; set; } = SourceBitrateTarget;
         public int QualityValue { get; set; } = 28;
         public double SourceVideoBitratePercent { get; set; } = 50;
@@ -15,6 +21,9 @@ namespace MediaFlux.Models
             var clone = new StorageSavingsOptions
             {
                 Enabled = Enabled,
+                StrictEnforcementForManual = StrictEnforcementForManual,
+                AllowRiskyBorderlineProduction = AllowRiskyBorderlineProduction,
+                ExperimentalPolicyCRetryEnabled = ExperimentalPolicyCRetryEnabled,
                 TargetMode = TargetMode,
                 QualityValue = QualityValue,
                 SourceVideoBitratePercent = SourceVideoBitratePercent

@@ -6,6 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
         private readonly LibraryEnrichmentCoordinator _enrichment;
         private readonly LibraryDuplicateAnalysisCoordinator _duplicates;
         private readonly LibraryVisualAnalysisCoordinator _visual;
+        private readonly LibraryDuplicateAnalysisGate _duplicateAnalysisGate;
         private readonly LibraryReanalysisCoordinator _reanalysis;
         private bool _disposed;
 
@@ -46,7 +47,8 @@ namespace MediaFlux.Services.LibraryCatalog
             MediaFlux.Models.DuplicateKeeperPreferences? keeperPreferences = null,
             string integrityFfmpegPath = "",
             IMediaToolProcessRunner? integrityProcessRunner = null,
-            bool startBackgroundWork = false)
+            bool startBackgroundWork = false,
+            bool startMaintenanceScheduler = true)
         {
             _catalog = catalog;
             _catalog.Initialize();
@@ -56,6 +58,7 @@ namespace MediaFlux.Services.LibraryCatalog
             _catalog.RecoverInterruptedCleanupPlans();
             _catalog.RecoverInterruptedVisualCleanupPlans();
             LibraryStorageScheduler scheduler = storageScheduler ?? new LibraryStorageScheduler();
+            _duplicateAnalysisGate = new LibraryDuplicateAnalysisGate();
             _enrichment = new LibraryEnrichmentCoordinator(
                 _catalog,
                 probe,
@@ -72,20 +75,24 @@ namespace MediaFlux.Services.LibraryCatalog
                 isEncodingActive: isEncodingActive,
                 isProtectedPath: path => protectedRoots.Any(root => Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase)),
                 storageScheduler: scheduler,
-                keeperPreferences: keeperPreferences);
+                keeperPreferences: keeperPreferences,
+                analysisGate: _duplicateAnalysisGate);
             _visual = new LibraryVisualAnalysisCoordinator(
                 _catalog,
                 visualExtractor,
                 isEncodingActive: isEncodingActive,
                 storageScheduler: scheduler,
-                keeperPreferences: keeperPreferences);
+                keeperPreferences: keeperPreferences,
+                analysisGate: _duplicateAnalysisGate);
             DuplicateCleanup = new LibraryDuplicateCleanupService(_catalog, _catalog, keeperPreferences, isEncodingActive);
             VisualDuplicateCleanup = new LibraryVisualDuplicateCleanupService(_catalog, _catalog, _catalog, keeperPreferences, isEncodingActive);
+            FileRelocation = new LibraryFileRelocationService(_catalog, identity: identityProvider);
             MatchEligibility = new LibraryMatchEligibilityService(_catalog, _catalog);
             _reanalysis = new LibraryReanalysisCoordinator(_catalog, _enrichment, _duplicates, _visual);
             Reanalysis = _reanalysis;
             Decisions = new LibraryDecisionService(_catalog, _reanalysis);
             Insights = new LibraryInsightsService(_catalog);
+            Overview = new LibraryOverviewQueryService(_catalog);
             KeeperExplanations = new LibraryKeeperExplanationService();
             MassReview = new LibraryMassReviewService(_catalog, MatchEligibility, keeperPreferences ?? new MediaFlux.Models.DuplicateKeeperPreferences());
             Recommendations = new LibraryRecommendationService(_catalog, DuplicateCleanup, VisualDuplicateCleanup, _catalog);
@@ -111,7 +118,7 @@ namespace MediaFlux.Services.LibraryCatalog
                     $"Library Analyzer scan: {eventName}",
                     exception: exception,
                     details: details));
-            Maintenance = new LibraryMaintenanceCoordinator(_catalog, _catalog, Scanner, _enrichment, _duplicates, _visual, Integrity, isEncodingActive);
+            Maintenance = new LibraryMaintenanceCoordinator(_catalog, _catalog, Scanner, _enrichment, _duplicates, _visual, Integrity, isEncodingActive, start:startMaintenanceScheduler);
             if (startBackgroundWork)
             {
                 _ = QueuePendingSafelyAsync();
@@ -128,10 +135,12 @@ namespace MediaFlux.Services.LibraryCatalog
         public LibraryVisualAnalysisCoordinator VisualSimilarity => _visual;
         public LibraryDuplicateCleanupService DuplicateCleanup { get; }
         public LibraryVisualDuplicateCleanupService VisualDuplicateCleanup { get; }
+        public LibraryFileRelocationService FileRelocation { get; }
         public LibraryMatchEligibilityService MatchEligibility { get; }
         public LibraryReanalysisCoordinator Reanalysis { get; }
         public LibraryDecisionService Decisions { get; }
         public LibraryInsightsService Insights { get; }
+        public LibraryOverviewQueryService Overview { get; }
         public LibraryKeeperExplanationService KeeperExplanations { get; }
         public LibraryMassReviewService MassReview { get; }
         public LibraryRecommendationService Recommendations { get; }
@@ -167,6 +176,7 @@ namespace MediaFlux.Services.LibraryCatalog
                 return;
             _disposed = true;
             Maintenance.Dispose();
+            Overview.Dispose();
             Scanner.CancelAndWait(TimeSpan.FromSeconds(10));
             Integrity.Dispose();
             _reanalysis.Dispose();
@@ -180,6 +190,7 @@ namespace MediaFlux.Services.LibraryCatalog
             {
                 _duplicates.Dispose();
                 _visual.Dispose();
+                _duplicateAnalysisGate.Dispose();
                 _catalog.Checkpoint(LibraryCatalogCheckpointMode.Passive);
                 _catalog.Dispose();
             }

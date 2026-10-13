@@ -53,7 +53,7 @@ public partial class MainForm
                 encoder, capabilities.DisplayName, current.UseGpu, current.ProjectedTargetMb,
                 current.ScaleMode, current.EncoderPreset, current.QualityValue, current.TenBit,
                 current.AudioChannels, EncodingService.StreamMapMode.KeepAll,
-                CopySubtitles: true, CopyDataStreams: true, CopyAttachments: true,
+                CopySubtitles: false, CopyDataStreams: false, CopyAttachments: false,
                 GetSelectedOutputContainer(), ContainerCompatibilityConfirmed: true),
             presets, concurrency);
         var runner = new EncodingServiceBenchmarkJobRunner(

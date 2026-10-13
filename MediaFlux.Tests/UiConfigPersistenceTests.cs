@@ -1,5 +1,7 @@
 using MediaFlux.Models;
 using MediaFlux.Services;
+using System.Reflection;
+using System.Windows.Forms;
 using Xunit;
 
 namespace MediaFlux.Tests;
@@ -63,6 +65,394 @@ public sealed class UiConfigPersistenceTests : IDisposable
     {
         Assert.Equal(450, MainForm.CalculateStandardEncodeDetailsHeight(1000));
         Assert.Equal(0, MainForm.CalculateStandardEncodeDetailsHeight(0));
+    }
+
+    [Fact]
+    public void QueueControlsRefreshTheirWidthConstraintWhenWrapStateStaysTheSame()
+    {
+        using var card = new TableLayoutPanel();
+        using var behavior = new FlowLayoutPanel { Dock = DockStyle.Fill };
+        using var actions = new FlowLayoutPanel { Dock = DockStyle.Fill };
+
+        MainForm.ApplyQueueControlsCompactLayout(card, behavior, actions, wrapControls: true, contentWidth: 200);
+
+        Assert.Equal(DockStyle.Top, behavior.Dock);
+        Assert.Equal(DockStyle.Top, actions.Dock);
+        Assert.True(behavior.WrapContents);
+        Assert.True(actions.WrapContents);
+        Assert.Equal(200, behavior.MaximumSize.Width);
+        Assert.Equal(200, actions.MaximumSize.Width);
+
+        // A restored/resized window can remain in wrapping mode while gaining width.
+        // The width limit must follow the new bounds even though the wrap flag is unchanged.
+        MainForm.ApplyQueueControlsCompactLayout(card, behavior, actions, wrapControls: true, contentWidth: 620);
+        Assert.Equal(620, behavior.MaximumSize.Width);
+        Assert.Equal(620, actions.MaximumSize.Width);
+
+        MainForm.ApplyQueueControlsCompactLayout(card, behavior, actions, wrapControls: false, contentWidth: 800);
+        Assert.False(behavior.WrapContents);
+        Assert.False(actions.WrapContents);
+        Assert.Equal(System.Drawing.Size.Empty, behavior.MaximumSize);
+        Assert.Equal(System.Drawing.Size.Empty, actions.MaximumSize);
+    }
+
+    [Fact]
+    public void AutomaticQualityModeRoundTripsAndMissingPreferenceDefaultsToManual()
+    {
+        string path = Path.Combine(_root, "quality-mode.json");
+        new Config { LastQualityMode = "Automatic" }.Save(path);
+
+        Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+
+        File.WriteAllText(path, "{}");
+        Assert.Equal("Manual", Config.Load(path).LastQualityMode);
+    }
+
+    [Fact]
+    public void AutomaticQualityModeRestoresOnMainFormConstructionWithoutBeingOverwritten()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(_root, "automatic-quality-startup.json");
+        new Config { LastQualityMode = "Automatic" }.Save(path);
+
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                form = new MainForm(path);
+                Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+                Assert.Equal("Automatic", Field<Config>(form, "_config").LastQualityMode);
+                ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
+
+                Assert.Equal("Automatic", mode.Text);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Quality preference startup test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void FreshInstallMainFormUsesRequestedVisibleEncodingDefaults()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(_root, "fresh-encoding-ui.json");
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                Assert.Equal("Automatic", Field<ComboBox>(form, "comboQualityMode").Text);
+                Assert.Equal(QualityTarget.Balanced,
+                    Field<QualityTargetSegmentSelector>(form, "qualityTargetSelector").SelectedTarget);
+                Assert.True(Field<CheckBox>(form, "chkAutoTargetSize").Checked);
+                Assert.False(Field<CheckBox>(form, "chkProcessAll").Checked);
+                Assert.False(Field<CheckBox>(form, "chkRetryFailedJobs").Checked);
+                Assert.True(Field<CheckBox>(form, "chkFilterX264").Checked);
+                Assert.False(Field<CheckBox>(form, "chkFilterX265").Checked);
+                Assert.False(Field<CheckBox>(form, "chkFilterAv1").Checked);
+                Assert.True(Field<CheckBox>(form, "chkFilterOtherCodecs").Checked);
+                Assert.Equal("Auto", Field<ComboBox>(form, "comboOutputContainer").Text);
+                Assert.Equal("Compatibility: Intelligent (Automatic)", Field<ComboBox>(form, "comboContainerCompatibilityPolicy").Text);
+                Assert.Equal("Keep source layout", Field<ComboBox>(form, "comboAudioChannels").Text);
+                CheckBox tenBit = Field<CheckBox>(form, "chkTenBit");
+                if (tenBit.Enabled)
+                    Assert.True(tenBit.Checked);
+
+                Config fresh = Config.Load(path);
+                Assert.Equal(VideoEncoderIds.Nvenc, fresh.LastEncoderId);
+                Assert.Equal("Automatic", fresh.LastQualityMode);
+                Assert.Equal(VideoRestorationMode.Off, fresh.VideoRestoration.Mode);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), "Fresh encoding defaults UI test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void BlankSavedJobOutputFolderStillClearsGuiOutputControl()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(_root, "blank-job-output-folder.json");
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                ComboBox output = Field<ComboBox>(form, "cmbEncodeOutput");
+                output.Text = Path.Combine(_root, "previous-output");
+                typeof(MainForm).GetMethod("ApplyJobSettings", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(form, new object[] { new EncodeJobSettings { OutputFolder = "" } });
+
+                Assert.Equal("", output.Text);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Blank saved-job output-folder UI test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void ManualQualityModeSurvivesSaveReloadAndPresetOrJobRestoration()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(_root, "manual-quality-snapshot.json");
+        new Config { LastQualityMode = "Automatic" }.Save(path);
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
+                mode.SelectedIndex = 1;
+                Application.DoEvents();
+                Assert.Equal("Manual", Config.Load(path).LastQualityMode);
+
+                form.Dispose();
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+                mode = Field<ComboBox>(form, "comboQualityMode");
+                Assert.Equal("Manual", mode.Text);
+
+                mode.SelectedIndex = 0;
+                Application.DoEvents();
+                Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+
+                var preset = new EncodingPreset
+                {
+                    Name = "Manual snapshot",
+                    EncoderId = VideoEncoderIds.Nvenc,
+                    VideoCodec = nameof(VideoCodecFamily.Hevc),
+                    VideoFormat = "Hevc",
+                    EncoderPreset = "p5",
+                    QualityMode = "Manual",
+                    OutputContainer = nameof(OutputContainerSelection.Auto)
+                };
+                typeof(MainForm).GetMethod("ApplyPresetToUi", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(form, new object[] { preset });
+                Assert.Equal("Automatic", Field<Config>(form, "_config").LastQualityMode);
+                Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+
+                var jobSettings = new EncodeJobSettings
+                {
+                    EncoderId = VideoEncoderIds.Nvenc,
+                    VideoCodec = nameof(VideoCodecFamily.Hevc),
+                    EncoderPreset = "p5",
+                    OutputContainer = nameof(OutputContainerSelection.Auto),
+                    QualityMode = "Manual"
+                };
+                typeof(MainForm).GetMethod("ApplyJobSettings", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(form, new object[] { jobSettings });
+                Assert.Equal("Automatic", Field<Config>(form, "_config").LastQualityMode);
+                Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Quality mode persistence UI test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void QualityTargetSegmentOrderingMatchesTheExistingQualityPreferences()
+    {
+        Assert.Equal(
+            new[]
+            {
+                QualityTarget.SmallerFile, QualityTarget.Efficient, QualityTarget.Balanced,
+                QualityTarget.HighQuality, QualityTarget.MaximumQuality
+            },
+            QualityTargetSegmentSelector.Choices.Select(choice => choice.Target));
+        Assert.Equal(2, QualityTargetSegmentSelector.IndexOf(QualityTarget.Balanced));
+        Assert.Equal(QualityTarget.MaximumQuality, QualityTargetSegmentSelector.AtIndex(4));
+    }
+
+    [Fact]
+    public void QualityModeVisibilityCollapsesAndPreservesBothModes()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm();
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                TabControl tabs = Field<TabControl>(form, "_encodeInfoTabs");
+                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(page => page.Text == "Plan & Analysis");
+                Application.DoEvents();
+                ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
+                QualityTargetSegmentSelector target = Field<QualityTargetSegmentSelector>(form, "qualityTargetSelector");
+                NumericUpDown manual = Field<NumericUpDown>(form, "nudAutoQuality");
+                Label manualLabel = Field<Label>(form, "lblManualQuality");
+                Panel qualityIntent = Field<Panel>(form, "pnlQualityIntent");
+                Label fileSizeEstimateLabel = Field<Label>(form, "lblCompressionProfile");
+                ComboBox fileSizeEstimate = Field<ComboBox>(form, "comboCompressionProfile");
+                Label selectedPreference = Field<Label>(form, "lblQualityTargetValue");
+
+                target.SetSelectedTarget(QualityTarget.HighQuality);
+                manual.Value = 27;
+                fileSizeEstimate.SelectedItem = "Medium Quality (Default)";
+                mode.SelectedIndex = 0;
+                Application.DoEvents();
+                Assert.True(target.Visible);
+                Assert.Equal(5, target.Segments.Count);
+                Assert.All(target.Segments, segment => Assert.True(segment.Visible));
+                Assert.Equal("Quality: High Quality  (4 of 5)", selectedPreference.Text);
+                Assert.False(manual.Visible);
+                Assert.False(manualLabel.Visible);
+                Assert.False(fileSizeEstimateLabel.Visible);
+                Assert.False(fileSizeEstimate.Visible);
+                int automaticHeight = qualityIntent.PreferredSize.Height;
+
+                mode.SelectedIndex = 1;
+                Application.DoEvents();
+                Assert.False(target.Visible);
+                Assert.True(manual.Visible);
+                Assert.True(manualLabel.Visible);
+                Assert.True(fileSizeEstimateLabel.Visible);
+                Assert.True(fileSizeEstimate.Visible);
+                Assert.Equal(27, manual.Value);
+                Assert.True(qualityIntent.PreferredSize.Height < automaticHeight);
+
+                mode.SelectedIndex = 0;
+                Application.DoEvents();
+                Assert.Equal(QualityTarget.HighQuality, target.SelectedTarget);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Quality mode UI test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void EncodingProfileFieldsRehomeIntoResponsiveEncodingControlsGrid()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string configPath = Path.Combine(_root, "encoding-profile-layout.json");
+        new Config { LastQualityMode = "Manual" }.Save(configPath);
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm(configPath);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+                Label qualityLabel = Field<Label>(form, "lblCompressionProfile");
+                ComboBox quality = Field<ComboBox>(form, "comboCompressionProfile");
+                Label speedLabel = Field<Label>(form, "lblEncodingSpeed");
+                ComboBox speed = Field<ComboBox>(form, "comboEncoderPreset");
+                TableLayoutPanel profile = Field<TableLayoutPanel>(form, "tlEncodingProfileFields");
+                TableLayoutPanel encodingCard = Field<TableLayoutPanel>(form, "pnlEncodingProfileCard");
+                TabPage plan = Field<TabControl>(form, "_encodeInfoTabs").TabPages
+                    .Cast<TabPage>().Single(page => page.Text == "Plan & Analysis");
+
+                Assert.Same(qualityLabel.Parent, quality.Parent);
+                Assert.Same(speedLabel.Parent, speed.Parent);
+                Assert.Same(encodingCard, profile.Parent);
+                Assert.DoesNotContain(profile, Descendants(plan));
+                bool stacked = profile.ClientSize.Width < (int)Math.Round(620d * form.DeviceDpi / 96d);
+                Assert.Equal(stacked ? 2 : 4, profile.ColumnCount);
+                Assert.Equal(stacked ? 8 : 5, profile.RowCount);
+                Assert.True(Math.Abs(qualityLabel.Bounds.Top + qualityLabel.Height / 2 -
+                    (quality.Bounds.Top + quality.Height / 2)) <= 8);
+                Assert.True(speed.Bounds.Top >= quality.Bounds.Bottom);
+
+                Control left = qualityLabel.Parent!;
+                Control right = Field<Panel>(form, "pnlQualityIntent").Parent!.Parent!;
+                Assert.NotSame(left, right);
+                Assert.True(left.Bounds.Height > 0);
+                Assert.True(right.Bounds.Height > 0);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(form);
+                if (File.Exists(configPath))
+                    File.Delete(configPath);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "Independent profile layout test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    private static T Field<T>(MainForm form, string name) where T : class =>
+        (T)(typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(form)
+            ?? throw new MissingFieldException(name));
+
+    private static IEnumerable<Control> Descendants(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (Control descendant in Descendants(child))
+                yield return descendant;
+        }
     }
 
     [Fact]

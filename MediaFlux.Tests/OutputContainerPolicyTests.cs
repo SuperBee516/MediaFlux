@@ -15,6 +15,7 @@ public sealed class OutputContainerPolicyTests
             Stream("audio", "aac"));
 
         Assert.Equal(OutputContainer.Mp4, decision.Resolved);
+        Assert.Equal(OutputContainerSelection.Auto, decision.Requested);
         Assert.Empty(decision.CompatibilityWarnings);
         Assert.Equal(".mp4", decision.Extension);
     }
@@ -35,6 +36,7 @@ public sealed class OutputContainerPolicyTests
             Stream(type, codec));
 
         Assert.Equal(OutputContainer.Matroska, decision.Resolved);
+        Assert.Equal(OutputContainerSelection.Auto, decision.Requested);
         Assert.NotEmpty(decision.CompatibilityWarnings);
         Assert.Equal(".mkv", decision.Extension);
     }
@@ -73,6 +75,44 @@ public sealed class OutputContainerPolicyTests
         Assert.False(decision.CopyDataStreams);
     }
 
+    [Theory]
+    [InlineData("subrip")]
+    [InlineData("hdmv_pgs_subtitle")]
+    public void ExplicitMatroska_CopiesTextAndBitmapSubtitles(string codec)
+    {
+        OutputContainerDecision decision = Decide(
+            OutputContainerSelection.Matroska,
+            Stream("video", "hevc"),
+            Stream("subtitle", codec));
+
+        Assert.Equal(OutputContainer.Matroska, decision.Resolved);
+        Assert.True(decision.CopySubtitles);
+        StreamCompatibilityPlan subtitle = Assert.Single(
+            decision.StreamPlans,
+            plan => plan.StreamType == "subtitle");
+        Assert.Equal(StreamCompatibilityAction.Copy, subtitle.Action);
+        Assert.Null(subtitle.TargetCodec);
+        Assert.Empty(decision.CompatibilityWarnings);
+    }
+
+    [Fact]
+    public void ExplicitMatroska_MixedSubRipAndPgsNeverUsesMp4Policy()
+    {
+        OutputContainerDecision decision = Decide(
+            OutputContainerSelection.Matroska,
+            Stream("video", "hevc"),
+            Stream("subtitle", "subrip"),
+            Stream("subtitle", "hdmv_pgs_subtitle"));
+
+        Assert.Equal(OutputContainer.Matroska, decision.Resolved);
+        Assert.Equal(2, decision.StreamPlans.Count(plan => plan.StreamType == "subtitle"));
+        Assert.All(
+            decision.StreamPlans.Where(plan => plan.StreamType == "subtitle"),
+            plan => Assert.Equal(StreamCompatibilityAction.Copy, plan.Action));
+        Assert.DoesNotContain(decision.CompatibilityWarnings, warning =>
+            warning.Contains("subtitle", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public void Auto_DoesNotSelectMatroskaSolelyForUnsupportedDataStreams()
     {
@@ -85,6 +125,22 @@ public sealed class OutputContainerPolicyTests
         Assert.Equal(OutputContainer.Mp4, decision.Resolved);
         Assert.False(decision.CopyDataStreams);
         Assert.Empty(decision.CompatibilityWarnings);
+    }
+
+    [Fact]
+    public void Auto_ResolvesMatroskaAndPreservesAttachmentsInTheFinalPlan()
+    {
+        OutputContainerDecision decision = Decide(
+            OutputContainerSelection.Auto,
+            Stream("video", "h264"),
+            Stream("audio", "aac"),
+            Stream("attachment", "ttf"));
+
+        Assert.Equal(OutputContainer.Matroska, decision.Resolved);
+        Assert.True(decision.CopyAttachments);
+        StreamCompatibilityPlan attachment = Assert.Single(
+            decision.StreamPlans, plan => plan.StreamType == "attachment");
+        Assert.Equal(StreamCompatibilityAction.Copy, attachment.Action);
     }
 
     [Fact]
@@ -154,6 +210,20 @@ public sealed class OutputContainerPolicyTests
     }
 
     [Fact]
+    public void IntelligentCanExcludeOnlyFailedPlannedMovTextSubtitleWhileStrictCannotProceed()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"), new MediaProbeStreamInfo { Index = 3, CodecType = "subtitle", CodecName = "ass" });
+
+        OutputContainerDecision excluded = OutputContainerPolicy.ExcludeFailedTextSubtitle(decision, 3, "malformed");
+
+        Assert.Equal(StreamCompatibilityAction.Omit, Assert.Single(excluded.StreamPlans).Action);
+        Assert.False(excluded.CopySubtitles);
+        Assert.True(OutputContainerPolicy.CanProceedAutomatically(excluded, ContainerCompatibilityPolicy.Intelligent));
+        Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Strict));
+    }
+
+    [Fact]
     public void ExplicitMp4_IntelligentPlanSafelyConvertsKnownAncillaryAudio()
     {
         OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
@@ -191,6 +261,46 @@ public sealed class OutputContainerPolicyTests
         Assert.True(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Intelligent));
         Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.Strict));
         Assert.False(OutputContainerPolicy.CanProceedAutomatically(decision, ContainerCompatibilityPolicy.AlwaysAsk));
+    }
+
+    [Fact]
+    public void SampleComparisonEffectiveGlobalAacPlanConvertsEverySelectedAudioStream()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"),
+            new MediaProbeStreamInfo { Index = 1, CodecType = "audio", CodecName = "eac3", Language = "eng" },
+            new MediaProbeStreamInfo { Index = 2, CodecType = "audio", CodecName = "dts", Language = "jpn" });
+
+        OutputContainerDecision effective =
+            OutputContainerPolicy.ResolveEffectiveGlobalAacAudioPlan(decision, globalAacRequired: true);
+        StreamCompatibilityPlan[] audio = effective.StreamPlans
+            .Where(plan => plan.StreamType == "audio")
+            .ToArray();
+
+        Assert.Equal(2, audio.Length);
+        Assert.All(audio, plan =>
+        {
+            Assert.Equal(StreamCompatibilityAction.Transcode, plan.Action);
+            Assert.Equal("aac", plan.TargetCodec);
+        });
+        Assert.Equal("eng", audio[0].Language);
+        Assert.Equal("jpn", audio[1].Language);
+    }
+
+    [Fact]
+    public void EffectiveGlobalAacPlanDoesNotChangeProductionDecision()
+    {
+        OutputContainerDecision decision = Decide(OutputContainerSelection.Mp4,
+            Stream("video", "hevc"), Stream("audio", "eac3"));
+
+        OutputContainerDecision unchanged =
+            OutputContainerPolicy.ResolveEffectiveGlobalAacAudioPlan(decision, globalAacRequired: false);
+
+        Assert.Same(decision, unchanged);
+        StreamCompatibilityPlan audio = Assert.Single(
+            unchanged.StreamPlans, plan => plan.StreamType == "audio");
+        Assert.Equal(StreamCompatibilityAction.Copy, audio.Action);
+        Assert.Null(audio.TargetCodec);
     }
 
     [Fact]

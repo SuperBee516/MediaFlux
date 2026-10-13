@@ -950,14 +950,29 @@ internal sealed class CommercialDetectorForm : MediaFluxForm
         _adjustingSourceSplitter = true;
         try
         {
+            // OnShown can run before the nested auto-sized table has completed
+            // its first measurement (notably on slower CI/DPI configurations).
+            // Force the expanded editor and its parent to settle before using
+            // their preferred height as the persistence invariant.
+            _advancedHost.PerformLayout();
+            _sourceAnalysisContent?.PerformLayout();
+            _sourceWorkspaceSplit.Panel1.PerformLayout();
             _sourceWorkspaceSplit.Panel1MinSize = ScaleForDpi(145);
             int requiredReviewHeight = ScaleForDpi(300) + ScaleForDpi(260) + _workspaceSplit.SplitterWidth + _sourceWorkspaceSplit.Panel2.Padding.Vertical;
             _sourceWorkspaceSplit.Panel2MinSize = Math.Min(requiredReviewHeight, Math.Max(0, available - _sourceWorkspaceSplit.Panel1MinSize));
             int preferred = PreferredSourceHeight();
             int maximum = MaximumSourceHeight();
             int persisted = _config.CommercialDetectorSourceWorkspaceSplitterDistance;
+            int expandedContentMinimum = _sourceAnalysisContent == null
+                ? _sourceWorkspaceSplit.Panel1MinSize
+                : Math.Max(_sourceWorkspaceSplit.Panel1MinSize,
+                    _advancedHost.Bottom + _advancedHost.Margin.Vertical + _sourceWorkspaceSplit.Panel1.Padding.Vertical);
             int minimumUsablePersisted = _advancedHost.Visible
-                ? Math.Min(maximum, _sourceWorkspaceSplit.Panel1MinSize + ScaleForDpi(80))
+                // The expanded editor is a variable-height, DPI-scaled layout.  A
+                // fixed allowance can leave only its heading visible on machines
+                // where fonts/controls measure larger, so use the measured content
+                // height as the usability floor for legacy persisted values.
+                ? Math.Min(maximum, Math.Max(preferred, expandedContentMinimum))
                 : _sourceWorkspaceSplit.Panel1MinSize;
             bool persistedIsUsable = persisted >= minimumUsablePersisted && persisted <= maximum;
             _sourceWorkspaceSplit.SplitterDistance = persistedIsUsable ? persisted : Math.Clamp(preferred, _sourceWorkspaceSplit.Panel1MinSize, maximum);

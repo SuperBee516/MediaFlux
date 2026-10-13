@@ -145,6 +145,13 @@ namespace MediaFlux.Services
 
         public static string CreateEncodeStagingPath(string finalOutputPath)
         {
+            return CreateEncodeStagingPath(finalOutputPath, Guid.NewGuid());
+        }
+
+        public static string CreateEncodeStagingPath(string finalOutputPath, Guid stagingId)
+        {
+            if (stagingId == Guid.Empty)
+                throw new ArgumentException("A non-empty staging identity is required.", nameof(stagingId));
             string fullPath = Path.GetFullPath(finalOutputPath);
             string folder = Path.GetDirectoryName(fullPath) ??
                             throw new InvalidOperationException(
@@ -154,7 +161,7 @@ namespace MediaFlux.Services
             string extension = Path.GetExtension(fullPath);
             return Path.Combine(
                 folder,
-                $".{baseName}.mediaflux-{Guid.NewGuid():N}{extension}.partial");
+                $".{baseName}.mediaflux-{stagingId:N}{extension}.partial");
         }
 
         public static bool IsPathWithinDirectory(string path, string directory)

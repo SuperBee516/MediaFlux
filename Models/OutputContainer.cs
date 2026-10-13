@@ -20,7 +20,8 @@ namespace MediaFlux.Models
         int StreamIndex, string StreamType, string Codec, StreamCompatibilityAction Action,
         string Reason, string? TargetCodec = null, string RequestedAction = "copy",
         string? Language = null, string? Title = null,
-        IReadOnlyDictionary<string, bool>? Dispositions = null)
+        IReadOnlyDictionary<string, bool>? Dispositions = null,
+        int? SourceTypeOrdinal = null, int? OutputTypeOrdinal = null)
     {
         public bool IsDispositionSet(string name) =>
             Dispositions?.TryGetValue(name, out bool value) == true && value;
@@ -45,6 +46,9 @@ namespace MediaFlux.Models
             plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
             plan.Action == StreamCompatibilityAction.Transcode &&
             plan.TargetCodec == "aac");
+        public bool HasMixedAudioActions =>
+            StreamPlans.Any(plan => plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) && plan.Action == StreamCompatibilityAction.Copy) &&
+            StreamPlans.Any(plan => plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) && plan.Action == StreamCompatibilityAction.Transcode);
         public bool HasUnsupportedMeaningfulStreams => StreamPlans.Any(plan =>
             plan.Action == StreamCompatibilityAction.Unsupported &&
             (plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) || plan.StreamType.Equals("video", StringComparison.OrdinalIgnoreCase) || plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase)));

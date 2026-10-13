@@ -132,7 +132,8 @@ namespace MediaFlux.Services.LibraryCatalog
         long SizeBytes,
         long LastWriteUtcTicks,
         LibraryInventoryChangeKind ChangeKind,
-        bool RequiresEnrichment);
+        bool RequiresEnrichment,
+        string FileIdentity = "");
 
     public sealed record LibraryInventoryBatchResult(
         int Written,
@@ -149,7 +150,9 @@ namespace MediaFlux.Services.LibraryCatalog
         string Codec,
         int? Channels,
         string ChannelLayout,
-        string Language);
+        string Language,
+        long? BitRateBps = null,
+        int? SampleRateHz = null);
 
     public sealed record LibrarySubtitleStreamMetadata(
         string Codec,
@@ -186,7 +189,15 @@ namespace MediaFlux.Services.LibraryCatalog
         IReadOnlyList<LibrarySubtitleStreamMetadata> SubtitleStreams,
         int ChapterCount,
         int AttachmentCount,
-        string ErrorMessage);
+        string ErrorMessage,
+        long? VideoBitRateBps = null,
+        int? SelectedVideoStreamIndex = null,
+        int? VideoStreamCount = null,
+        double? AverageFrameRate = null,
+        double? NominalFrameRate = null,
+        string? FrameRateBasis = null,
+        string? SampleAspectRatio = null,
+        string? DisplayAspectRatio = null);
 
     public sealed record LibraryEnrichmentCandidate(
         long FileId,
@@ -194,7 +205,8 @@ namespace MediaFlux.Services.LibraryCatalog
         string VolumeId,
         long SizeBytes,
         DateTime LastWriteUtc,
-        int AttemptCount);
+        int AttemptCount,
+        string FileIdentity = "");
 
     public sealed record LibraryOverview(
         long IndexedFiles,
@@ -203,6 +215,55 @@ namespace MediaFlux.Services.LibraryCatalog
         long UnavailableLocations,
         DateTime? LastCompletedScanUtc,
         long ActiveScans);
+
+    // This is deliberately a read-only projection of durable catalog facts.  It must
+    // never be used as a trigger for probing, scanning, hashing, or visual analysis.
+    public sealed record LibraryOverviewDistribution(string Label, long FileCount, long LogicalSizeBytes);
+
+    public sealed record LibraryOverviewLocation(
+        long LocationId, string Path, bool IsEnabled, LibraryLocationAvailability Availability,
+        long FileCount, long LogicalSizeBytes, DateTime? LastCompletedScanUtc, string LastError);
+
+    public sealed record LibraryOverviewDuplicateSummary(
+        long ExactGroups, long ExactAffectedFiles, long VisualGroups, long VisualAffectedFiles,
+        long FamilyGroups, long FamilyAffectedFiles, long ReviewedGroups, long UnreviewedGroups,
+        long ExactReclaimableBytes, long VisualReclaimableBytes, long FamilyReclaimableBytes)
+    {
+        // Visual pairs represented by a family are excluded from VisualReclaimableBytes.
+        // Exact and visual evidence can overlap, so their sum is an estimate, not a
+        // deduplicated physical-storage promise.
+        public long EstimatedReclaimableBytes => ExactReclaimableBytes + VisualReclaimableBytes + FamilyReclaimableBytes;
+    }
+
+    public sealed record LibraryOverviewInsight(
+        long? LargestFileId, string LargestFilePath, long? LargestFileBytes,
+        double? AverageFileBytes, long? LongestDurationFileId, string LongestDurationPath,
+        double? LongestDurationSeconds, double? AverageBitrate, string MostCommonCodec,
+        string MostCommonResolution);
+
+    public sealed record LibraryOverviewHealth(
+        long UnavailableLocations, long ErrorLocations, long MissingFiles, long UnavailableFiles,
+        long MetadataFailures, long IntegrityWarnings, long IntegrityFailures);
+
+    public sealed record LibraryOverviewSnapshot(
+        DateTime CapturedUtc, long IndexedVideoCount, long LogicalSizeBytes,
+        long ConfiguredLocationCount, long AvailableLocationCount, long UnavailableLocationCount,
+        long ActiveScanCount, long PendingEnrichmentCount, DateTime? LastCompletedScanUtc,
+        LibraryOverviewDuplicateSummary Duplicates, IReadOnlyList<LibraryOverviewLocation> Locations,
+        IReadOnlyList<LibraryOverviewDistribution> ResolutionDistribution,
+        IReadOnlyList<LibraryOverviewDistribution> VideoCodecDistribution,
+        IReadOnlyList<LibraryOverviewDistribution> ContainerDistribution,
+        LibraryOverviewInsight Insights, LibraryOverviewHealth Health);
+
+    public sealed record LibraryOverviewScanHistoryEntry(
+        DateTime CompletedUtc, long IndexedVideoCount, long LogicalSizeBytes,
+        long DuplicateGroupCount, long ReclaimableBytes);
+
+    public interface ILibraryOverviewCatalog
+    {
+        LibraryOverviewSnapshot GetOverviewSnapshot(int metadataVersion);
+        IReadOnlyList<LibraryOverviewScanHistoryEntry> GetOverviewScanHistory(int limit = 365);
+    }
 
     public sealed record LibraryFileQuery(
         string Search = "",
@@ -213,7 +274,8 @@ namespace MediaFlux.Services.LibraryCatalog
         bool Descending = false,
         int Offset = 0,
         int Limit = 200,
-        LibraryStatisticDrillDown? Statistic = null);
+        LibraryStatisticDrillDown? Statistic = null,
+        CatalogSearchDefinition? AdvancedSearch = null);
 
     public enum LibraryStatisticCategory
     {
@@ -229,6 +291,11 @@ namespace MediaFlux.Services.LibraryCatalog
         bool IsRemainder = false,
         int TopCount = 10,
         IReadOnlyList<string>? ExcludedLabels = null);
+
+    public sealed record LibraryFileTechnicalFacts(
+        double? EffectiveFps,
+        long? VideoBitRateBps,
+        int? BitDepth);
 
     public sealed record LibraryFileViewRecord(
         long FileId,
@@ -248,7 +315,9 @@ namespace MediaFlux.Services.LibraryCatalog
         string ProbeError,
         bool IsProtected,
         DateTime? CreationUtc = null,
-        string DynamicRange = "");
+        string DynamicRange = "",
+        CatalogSearchProjection? SearchFacts = null,
+        LibraryFileTechnicalFacts? TechnicalFacts = null);
 
     public sealed record LibraryFilePage(
         long TotalCount,
@@ -325,9 +394,13 @@ namespace MediaFlux.Services.LibraryCatalog
             string probeToolVersion,
             DateTime utcNow);
         void SaveMediaMetadata(LibraryMediaMetadata metadata);
+        void SaveMediaMetadata(
+            LibraryMediaMetadata metadata,
+            string? expectedVolumeId,
+            string? expectedFileIdentity);
         LibraryMediaMetadata? GetMediaMetadata(long fileId);
         LibraryOverview GetOverview(int metadataVersion);
-        LibraryFilePage QueryFiles(LibraryFileQuery query);
+        LibraryFilePage QueryFiles(LibraryFileQuery query, CancellationToken cancellationToken = default);
 
         IndexedFileRecord? GetFileByPath(string path);
         IReadOnlyList<IndexedFileRecord> GetFilesByIdentity(string volumeId, string fileIdentity);
@@ -337,5 +410,15 @@ namespace MediaFlux.Services.LibraryCatalog
             int limit);
         IReadOnlyList<LibraryFileMembershipRecord> GetMembershipsForFile(long fileId);
         LibraryCatalogCounts GetCounts();
+    }
+
+    // This deliberately updates an existing indexed_files row.  Relocation must
+    // not be modeled as a scan because the row owns all analysis and review data.
+    public interface ILibraryFileRelocationCatalog
+    {
+        IndexedFileRecord? GetFile(long fileId);
+        IndexedFileRecord? GetFileByPath(string path);
+        void RelocateFile(long fileId, long destinationAnchorFileId, string expectedSourcePath,
+            string destinationPath, LibraryFileIdentity identity, DateTime lastWriteUtc);
     }
 }

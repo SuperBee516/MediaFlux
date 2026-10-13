@@ -49,6 +49,7 @@ public static class AiProductionHardeningService
     public static string ClassifyBackendFailure(string detail) => detail.Contains("vulkan", StringComparison.OrdinalIgnoreCase) || detail.Contains("gpu", StringComparison.OrdinalIgnoreCase) ? "AI backend failed to initialize the selected Vulkan GPU/device." : detail.Contains("memory", StringComparison.OrdinalIgnoreCase) || detail.Contains("alloc", StringComparison.OrdinalIgnoreCase) ? "AI backend likely ran out of GPU resources." : "AI backend process failed; review MediaFlux diagnostics.";
     public static void Register(string root) => ActiveRoots.TryAdd(root, 0);
     public static void Unregister(string root) => ActiveRoots.TryRemove(root, out _);
+    public static bool IsActive(string root) => ActiveRoots.ContainsKey(Path.GetFullPath(root));
     public static int CleanupOrphans(string stagingRoot, Action<string>? log = null, TimeSpan? age = null)
     {
         if (!Directory.Exists(stagingRoot)) return 0; int removed = 0; DateTime cutoff = DateTime.UtcNow - (age ?? TimeSpan.FromDays(2));

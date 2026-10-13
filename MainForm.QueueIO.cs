@@ -20,7 +20,7 @@ namespace MediaFlux
             public string Version { get; set; } = "1.5";
             public DateTime SavedUtc { get; set; } = DateTime.UtcNow;
             public QueueSettings Settings { get; set; } = new QueueSettings();
-            public List<QueueItem> Items { get; set; } = new List<QueueItem>();
+            public List<EncodeQueueItemState> Items { get; set; } = new List<EncodeQueueItemState>();
         }
 
         private sealed class QueueSettings
@@ -34,27 +34,12 @@ namespace MediaFlux
             public string VideoCodec { get; set; } = "";
             public string EncoderPreset { get; set; } = "";
             public int? QualityValue { get; set; }
+            public string? QualityMode { get; set; }
+            public string? QualityTarget { get; set; }
             public bool? TenBit { get; set; }
             public string AudioChannels { get; set; } = "";
             public string OutputFolder { get; set; } = "";       // cmbEncodeOutput.Text
             public string OutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
-        }
-
-        private sealed class QueueItem
-        {
-            public string Path { get; set; } = "";
-            public string? ContentHint { get; set; }
-            public LibraryPolicyQueueItem? LibraryPolicyIntent { get; set; }
-            public DvdQueueItem? Dvd { get; set; }
-        }
-
-        private sealed class DvdQueueItem
-        {
-            public string VideoTsFolder { get; set; } = "";
-            public string TitleSetId { get; set; } = "";
-            public string OutputPath { get; set; } = "";
-            public List<int> SelectedAudioStreamIndexes { get; set; } = new();
-            public List<int> SelectedSubtitleStreamIndexes { get; set; } = new();
         }
 
         // Centralized JSON options (pretty for readability)
@@ -84,6 +69,8 @@ namespace MediaFlux
                 QualityValue = nudAutoQuality == null
                     ? null
                     : (int)nudAutoQuality.Value,
+                QualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual",
+                QualityTarget = _config.LastQualityTarget,
                 TenBit = chkTenBit?.Checked,
                 AudioChannels = comboAudioChannels?.Text ?? "",
                 OutputFolder = cmbEncodeOutput.Text ?? "",
@@ -109,40 +96,7 @@ namespace MediaFlux
                 return;
             }
 
-            var items = new List<QueueItem>();
-            foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
-            {
-                var path = GetPathFromRow(row);
-                if (!string.IsNullOrWhiteSpace(path))
-                {
-                    DvdImportOptions? dvdOptions =
-                        (row.Tag as RowMeta)?.DvdEncodeOptions;
-                    items.Add(new QueueItem
-                    {
-                        Path = path,
-                        ContentHint = (row.Tag as RowMeta)?.ContentHint is
-                            SmartEncodeContentHint hint &&
-                            hint != SmartEncodeContentHint.Auto
-                                ? hint.ToString()
-                                : null,
-                        LibraryPolicyIntent = (row.Tag as RowMeta)?.LibraryPolicyIntent,
-                        Dvd = dvdOptions == null
-                            ? null
-                            : new DvdQueueItem
-                            {
-                                VideoTsFolder = Path.GetDirectoryName(
-                                    dvdOptions.Candidate.Segments[0].Path) ?? "",
-                                TitleSetId = dvdOptions.Candidate.TitleSetId,
-                                OutputPath = dvdOptions.OutputPath,
-                                SelectedAudioStreamIndexes =
-                                    dvdOptions.SelectedAudioStreamIndexes.ToList(),
-                                SelectedSubtitleStreamIndexes =
-                                    dvdOptions.SelectedSubtitleStreamIndexes.ToList()
-                            }
-                    });
-                }
-            }
-
+            var items = CaptureQueueItemsInExecutionOrder();
             if (items.Count == 0)
             {
                 MessageBox.Show("No valid items to export.", "Export Queue",
@@ -199,7 +153,7 @@ namespace MediaFlux
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-                snapshot.Items ??= new List<QueueItem>();
+                snapshot.Items ??= new List<EncodeQueueItemState>();
                 if (snapshot.Items.Any(item => item.Dvd != null) &&
                     !EnsureFfmpegToolsAvailable())
                 {
@@ -218,7 +172,7 @@ namespace MediaFlux
 
                 if (choice == DialogResult.No)
                 {
-                    if (_encodingActive)
+                    if (IsQueueEncodingActive())
                     {
                         MessageBox.Show(
                             this,
@@ -234,8 +188,14 @@ namespace MediaFlux
                     _rowsByPath.Clear();
                     _estimatedSizeMap.Clear();
                     _queueSourceSizeMap.Clear();
+                    _etaSpeedState.Clear();
                     _queueTotalSourceMb = 0;
                     _queueTotalEstimatedMb = 0;
+                    _queueTotalEstimatedSourceMb = 0;
+                    _queueTotalSavingsEstimateOutputMb = 0;
+                    _queueEstimatedFileCount = 0;
+                    _queueSavingsEstimateFileCount = 0;
+                    _queueEstimateEligibleFileCount = 0;
                     _queueFileCount = 0;
                     _queueTotalsDirty = false;
                     _suppressRowEvents = true;
@@ -277,6 +237,17 @@ namespace MediaFlux
                     {
                         if (AddEncodeItemIfNotPresent(qi.Path))
                             added++;
+
+                        if (_rowsByPath.TryGetValue(qi.Path, out DataGridViewRow? assignmentRow) &&
+                            assignmentRow != null && qi.PredictionShadowExperimentAssignment is { } savedAssignment)
+                        {
+                            RowMeta assignmentMeta = EnsureRowMeta(assignmentRow);
+                            assignmentMeta.PredictionShadowExperimentAssignment =
+                                PredictionShadowExperimentAssignmentPersistence.MatchesSource(savedAssignment, qi.Path)
+                                    ? savedAssignment
+                                    : null;
+                            UpdateResearchExperimentAssignmentPresentation(assignmentRow);
+                        }
 
                         if (Enum.TryParse(
                                 qi.ContentHint,
@@ -322,8 +293,51 @@ namespace MediaFlux
             }
         }
 
+        private List<EncodeQueueItemState> CaptureQueueItemsInExecutionOrder()
+        {
+            var items = new List<EncodeQueueItemState>();
+            foreach (DataGridViewRow row in GetEncodeRowsInExecutionOrder())
+            {
+                string? path = GetPathFromRow(row);
+                if (string.IsNullOrWhiteSpace(path))
+                    continue;
+
+                DvdImportOptions? dvdOptions = (row.Tag as RowMeta)?.DvdEncodeOptions;
+                items.Add(new EncodeQueueItemState
+                {
+                    Path = path,
+                    ContentHint = (row.Tag as RowMeta)?.ContentHint is
+                        SmartEncodeContentHint hint &&
+                        hint != SmartEncodeContentHint.Auto
+                            ? hint.ToString()
+                            : null,
+                    LibraryPolicyIntent = (row.Tag as RowMeta)?.LibraryPolicyIntent,
+                    PredictionShadowExperimentAssignment =
+                        (row.Tag as RowMeta)?.PredictionShadowExperimentAssignment is { } assignment &&
+                        PredictionShadowExperimentAssignmentPersistence.MatchesSource(assignment, path)
+                            ? assignment
+                            : null,
+                    Dvd = dvdOptions == null
+                        ? null
+                        : new EncodeQueueDvdItemState
+                        {
+                            VideoTsFolder = Path.GetDirectoryName(
+                                dvdOptions.Candidate.Segments[0].Path) ?? "",
+                            TitleSetId = dvdOptions.Candidate.TitleSetId,
+                            OutputPath = dvdOptions.OutputPath,
+                            SelectedAudioStreamIndexes =
+                                dvdOptions.SelectedAudioStreamIndexes.ToList(),
+                            SelectedSubtitleStreamIndexes =
+                                dvdOptions.SelectedSubtitleStreamIndexes.ToList()
+                        }
+                });
+            }
+
+            return items;
+        }
+
         private async Task<DvdImportOptions?> RestoreDvdQueueItemAsync(
-            DvdQueueItem saved)
+            EncodeQueueDvdItemState saved)
         {
             if (string.IsNullOrWhiteSpace(saved.VideoTsFolder) ||
                 !Directory.Exists(saved.VideoTsFolder) ||

@@ -508,7 +508,7 @@ namespace MediaFlux.Services.LibraryCatalog
             using SqliteDataReader reader = command.ExecuteReader();
             var result = new List<VisualSimilarityMemberRecord>(2);
             while (reader.Read())
-                result.Add(new VisualSimilarityMemberRecord(reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4), FromUtcTicks(reader.GetInt64(5)), (IndexedFileAvailability)reader.GetInt32(6), reader.GetString(7), reader.IsDBNull(8) ? null : reader.GetInt32(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetDouble(11), reader.GetInt32(12) != 0, reader.GetInt32(13) != 0, reader.GetInt32(14) != 0, IsHdrTransfer(reader.GetString(15), reader.GetString(16)), BuildAudioSummary(reader.GetString(17)), reader.IsDBNull(18) ? null : reader.GetDouble(18)));
+                result.Add(new VisualSimilarityMemberRecord(reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4), FromUtcTicks(reader.GetInt64(5)), (IndexedFileAvailability)reader.GetInt32(6), reader.GetString(7), reader.IsDBNull(8) ? null : reader.GetInt32(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.IsDBNull(10) ? null : reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetDouble(11), reader.GetInt32(12) != 0, !reader.IsDBNull(13) && reader.GetInt32(13) != 0, reader.GetInt32(14) != 0, IsHdrTransfer(reader.GetString(15), reader.GetString(16)), BuildAudioSummary(reader.GetString(17)), reader.IsDBNull(18) ? null : reader.GetDouble(18)));
             return result;
         }
 

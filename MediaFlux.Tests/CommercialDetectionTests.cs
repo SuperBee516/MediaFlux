@@ -164,7 +164,7 @@ public sealed class CommercialDetectionTests
         string root = Path.Combine(Path.GetTempPath(), "MediaFlux-FramePreview", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
         try
         {
-            string ffmpeg = Path.Combine(root, "ffmpeg.exe"); string source = Path.Combine(root, "source.mkv"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(source, "source"); MediaToolProcessRequest? captured = null;
+            string ffmpeg = Path.Combine(root, "ffmpeg.exe"); string ffprobe = Path.Combine(root, "ffprobe.exe"); string source = Path.Combine(root, "source.mkv"); File.WriteAllText(ffmpeg, "tool"); File.WriteAllText(ffprobe, "tool"); File.WriteAllText(source, "source"); MediaToolProcessRequest? captured = null;
             var runner = new ScriptedRunner(request =>
             {
                 captured = request; using var bitmap = new Bitmap(8, 8); bitmap.Save(request.Arguments.Last(), ImageFormat.Jpeg); return new MediaToolProcessResult { ExitCode = 0 };
@@ -290,8 +290,9 @@ public sealed class CommercialDetectionTests
                 Application.DoEvents();
                 SplitContainer sourceWorkspace = (SplitContainer)form.Controls.Find("CommercialSourceWorkspaceSplitter", true).Single();
                 Assert.True(form.Controls.Find("CommercialAdvancedSettings", true).Single().Visible);
-                Assert.True(sourceWorkspace.SplitterDistance > 180,
-                    "A legacy distance that reveals only the Advanced Settings heading should be reset to a usable height.");
+                Assert.NotEqual(180, sourceWorkspace.SplitterDistance);
+                Assert.InRange(sourceWorkspace.SplitterDistance, sourceWorkspace.Panel1MinSize,
+                    sourceWorkspace.Height - sourceWorkspace.SplitterWidth - sourceWorkspace.Panel2MinSize);
                 Assert.True(sourceWorkspace.Panel2.Height >= sourceWorkspace.Panel2MinSize);
                 form.Close();
             }

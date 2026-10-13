@@ -6,7 +6,7 @@ namespace MediaFlux.Services.LibraryCatalog
 
     internal static class LibraryCatalogMigrations
     {
-        public const int CurrentVersion = 14;
+        public const int CurrentVersion = 17;
 
         public static IReadOnlyList<LibraryCatalogMigration> All { get; } =
             new[]
@@ -764,6 +764,38 @@ namespace MediaFlux.Services.LibraryCatalog
                     ALTER TABLE library_maintenance_runs ADD COLUMN analysis_mode INTEGER NOT NULL DEFAULT 0 CHECK(analysis_mode BETWEEN 0 AND 1);
                     ALTER TABLE library_maintenance_runs ADD COLUMN conflict_behavior INTEGER NOT NULL DEFAULT 0 CHECK(conflict_behavior BETWEEN 0 AND 2);
                     ALTER TABLE library_maintenance_runs ADD COLUMN analyze_families INTEGER NOT NULL DEFAULT 0 CHECK(analyze_families IN(0,1));
+                    """),
+                new LibraryCatalogMigration(
+                    15,
+                    "Library overview scan snapshots",
+                    """
+                    CREATE TABLE library_overview_scan_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        completed_utc_ticks INTEGER NOT NULL,
+                        indexed_file_count INTEGER NOT NULL CHECK(indexed_file_count >= 0),
+                        logical_size_bytes INTEGER NOT NULL CHECK(logical_size_bytes >= 0),
+                        duplicate_group_count INTEGER NOT NULL CHECK(duplicate_group_count >= 0),
+                        reclaimable_bytes INTEGER NOT NULL CHECK(reclaimable_bytes >= 0)
+                    ) STRICT;
+                    CREATE INDEX ix_library_overview_history_completed
+                        ON library_overview_scan_history(completed_utc_ticks DESC);
+                    """),
+                new LibraryCatalogMigration(
+                    16,
+                    "Scheduled maintenance occurrence tracking",
+                    "ALTER TABLE library_maintenance_runs ADD COLUMN scheduled_occurrence_utc_ticks INTEGER NULL;"),
+                new LibraryCatalogMigration(
+                    17,
+                    "Selected-stream media facts",
+                    """
+                    ALTER TABLE media_metadata ADD COLUMN video_bitrate_bps INTEGER NULL CHECK(video_bitrate_bps > 0);
+                    ALTER TABLE media_metadata ADD COLUMN selected_video_stream_index INTEGER NULL CHECK(selected_video_stream_index >= 0);
+                    ALTER TABLE media_metadata ADD COLUMN video_stream_count INTEGER NULL CHECK(video_stream_count >= 0);
+                    ALTER TABLE media_metadata ADD COLUMN average_frame_rate REAL NULL CHECK(average_frame_rate > 0);
+                    ALTER TABLE media_metadata ADD COLUMN nominal_frame_rate REAL NULL CHECK(nominal_frame_rate > 0);
+                    ALTER TABLE media_metadata ADD COLUMN frame_rate_basis TEXT NULL CHECK(frame_rate_basis IN ('average', 'nominal'));
+                    ALTER TABLE media_metadata ADD COLUMN sample_aspect_ratio TEXT NULL;
+                    ALTER TABLE media_metadata ADD COLUMN display_aspect_ratio TEXT NULL;
                     """)
             };
 

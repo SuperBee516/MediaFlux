@@ -220,7 +220,10 @@ namespace MediaFlux.Services
             int sourceDataStreamCount = 0,
             int sourceAttachmentStreamCount = 0,
             long sourceAttachmentSizeBytes = 0,
-            StorageSavingsOptions? storageSavings = null)
+            StorageSavingsOptions? storageSavings = null,
+            bool sourceAdaptiveCeilingEligible = false,
+            bool useResolvedQualityTarget = false,
+            double presetRateMultiplier = 1d)
         {
             if (srcMb <= 0 || durationSec <= 0 || width <= 0 || height <= 0 || fps <= 0)
                 return SizeEstimateBreakdown.Unavailable;
@@ -250,7 +253,7 @@ namespace MediaFlux.Services
             // File size divided by duration is the most reliable total bitrate
             // because it includes every stream and the container. The ffprobe format
             // bitrate is retained in diagnostics as a useful cross-check.
-            double sourceTotalKbps = srcMb * 8192.0 / durationSec;
+            double sourceTotalKbps = srcMb * 8388.608 / durationSec;
             double measuredAudioKbps = sourceAudioBitrateKbps > 0
                 ? Math.Min(sourceAudioBitrateKbps, sourceTotalKbps)
                 : 0;
@@ -329,43 +332,96 @@ namespace MediaFlux.Services
                 0.55,
                 1.65);
 
-            int effectiveQuality = storageSavingsApplies && savings.UsesQualityTarget
+            bool usesStorageQualityTarget = storageSavingsApplies &&
+                savings.UsesQualityTarget && !useResolvedQualityTarget;
+            int effectiveQuality = usesStorageQualityTarget
                 ? savings.QualityValue
                 : Math.Clamp(quality, 0, 51);
             double targetVideoKbps;
             string mode;
-            if (storageSavingsApplies && !savings.UsesQualityTarget)
+            bool usesSourceVideoBitrateFloor = false;
+            bool usesSourceVideoBitrateCeiling = false;
             {
-                targetVideoKbps =
-                    sourceVideoKbps * savings.SourceVideoBitratePercent / 100d;
-                mode =
-                    $"storage bitrate target {savings.SourceVideoBitratePercent:0.#}% of source video";
-            }
-            else
-            {
+                // Storage Savings is an acceptance objective. Its bitrate
+                // percentage must not be projected as though it were a measured
+                // output-size estimate. A configured CQ target can still affect
+                // this estimate because it resolves to the actual quality plan.
                 double profileScale =
-                    storageSavingsApplies && savings.UsesQualityTarget
+                    storageSavingsApplies &&
+                    (savings.UsesQualityTarget || useResolvedQualityTarget)
                         ? 1d
                         : GetCompressionMultiplier(compressionProfile);
                 double qualityScale =
                     Math.Pow(2.0, (23 - effectiveQuality) / 12.0);
+                double effectivePresetRateMultiplier =
+                    double.IsFinite(presetRateMultiplier) && presetRateMultiplier > 0
+                        ? presetRateMultiplier
+                        : 1d;
                 double targetBpp =
                     GetCodecBpp(targetCodec) *
                     profileScale *
                     qualityScale *
-                    complexity;
+                    complexity *
+                    effectivePresetRateMultiplier;
                 targetVideoKbps =
                     ((double)outputWidth * outputHeight * fps * targetBpp) / 1000.0;
-                mode = storageSavingsApplies && savings.UsesQualityTarget
-                    ? $"storage quality target {effectiveQuality} (CQ/CRF/ICQ)"
-                    : $"conservative profile {compressionProfile}, quality {effectiveQuality}";
+                mode = useResolvedQualityTarget
+                    ? $"Source Adaptive quality target {effectiveQuality} (CQ/CRF/ICQ)"
+                    : usesStorageQualityTarget
+                        ? $"storage quality target {effectiveQuality} (CQ/CRF/ICQ)"
+                        : $"conservative profile {compressionProfile}, quality {effectiveQuality}";
+                if (Math.Abs(effectivePresetRateMultiplier - 1d) > 0.000001d)
+                    mode += $"; encoder preset rate multiplier {effectivePresetRateMultiplier:0.###}";
+
+                bool sameEfficientCodecUnchangedResolution =
+                    UsesSameEfficientCodecQualityFloor(
+                        sourceCodec,
+                        targetCodec,
+                        width,
+                        height,
+                        outputWidth,
+                        outputHeight);
+
+                // Source Adaptive is bounded for a straightforward same-codec,
+                // unchanged-resolution lossy re-encode. Increasing bitrate cannot
+                // restore information discarded by the source, while a projection
+                // far below the measured source bitrate can promise implausible
+                // savings when the deterministic content model underestimates.
+                if (sourceAdaptiveCeilingEligible &&
+                    !savings.Enabled &&
+                    usedMeasuredVideoBitrate &&
+                    sameEfficientCodecUnchangedResolution)
+                {
+                    if (targetVideoKbps > sourceVideoKbps)
+                    {
+                        targetVideoKbps = sourceVideoKbps;
+                        usesSourceVideoBitrateCeiling = true;
+                        mode += "; same-codec source ceiling applied; increasing bitrate would not recover source quality";
+                    }
+                    else if (targetVideoKbps < sourceVideoKbps * 0.90)
+                    {
+                        targetVideoKbps = sourceVideoKbps * 0.90;
+                        usesSourceVideoBitrateFloor = true;
+                        mode += "; same-codec 90% source floor applied to bound low projections";
+                    }
+                }
+                else if (sameEfficientCodecUnchangedResolution &&
+                    targetVideoKbps < sourceVideoKbps)
+                {
+                    // Legacy/manual callers retain the established floor. The
+                    // Source Adaptive path above deliberately uses a bounded
+                    // policy so legitimate lower estimates remain lower.
+                    targetVideoKbps = sourceVideoKbps;
+                    usesSourceVideoBitrateFloor = true;
+                    mode += "; retained source-video bitrate for equivalent-codec quality protection";
+                }
             }
 
             double plannedMappedKbps = plannedAudioKbps + mappedAncillaryKbps;
             double targetTotalKbps = CalculateTargetTotalBitrateKbps(
                 targetVideoKbps,
                 plannedMappedKbps);
-            double estimateMb = targetTotalKbps * durationSec / 8192.0;
+            double estimateMb = targetTotalKbps * durationSec / 8388.608;
             // Keep the projection honest when the selected settings are not
             // expected to save space. Smart Encode can then recommend Skip or
             // Review instead of turning a no-benefit encode into an artificial
@@ -398,9 +454,11 @@ namespace MediaFlux.Services
                 PlannedMappedAncillaryBitrateKbps = mappedAncillaryKbps,
                 TargetVideoBitrateKbps = targetVideoKbps,
                 TargetTotalBitrateKbps = targetTotalKbps,
+                EffectiveQuality = effectiveQuality,
                 UsedMeasuredVideoBitrate = usedMeasuredVideoBitrate,
-                UsesStorageQualityTarget =
-                    storageSavingsApplies && savings.UsesQualityTarget,
+                UsesSourceVideoBitrateFloor = usesSourceVideoBitrateFloor,
+                UsesSourceVideoBitrateCeiling = usesSourceVideoBitrateCeiling,
+                UsesStorageQualityTarget = usesStorageQualityTarget,
                 Diagnostic = diagnostic
             };
         }
@@ -415,6 +473,36 @@ namespace MediaFlux.Services
             return percentBasedTotal * 0.01 >= 16
                 ? percentBasedTotal
                 : subtotal + 16;
+        }
+
+        /// <summary>
+        /// Replaces only the video component. The existing mapped-stream and container
+        /// allowances remain authoritative; kb/s and seconds produce binary MiB here.
+        /// </summary>
+        internal static SizeEstimateBreakdown WithTargetVideoBitrate(
+            SizeEstimateBreakdown baseline, double durationSeconds, double videoKbps)
+        {
+            ArgumentNullException.ThrowIfNull(baseline);
+            if (!double.IsFinite(videoKbps) || videoKbps <= 0 ||
+                !double.IsFinite(durationSeconds) || durationSeconds <= 0 ||
+                baseline.EstimatedOutputMb <= 0)
+                return SizeEstimateBreakdown.Unavailable;
+            double mappedKbps = baseline.PlannedAudioBitrateKbps +
+                baseline.PlannedMappedAncillaryBitrateKbps;
+            double totalKbps = CalculateTargetTotalBitrateKbps(videoKbps, mappedKbps);
+            return new SizeEstimateBreakdown
+            {
+                EstimatedOutputMb = Math.Max(0.1, totalKbps * durationSeconds / 8388.608d),
+                SourceTotalBitrateKbps = baseline.SourceTotalBitrateKbps,
+                SourceVideoBitrateKbps = baseline.SourceVideoBitrateKbps,
+                PlannedAudioBitrateKbps = baseline.PlannedAudioBitrateKbps,
+                PlannedMappedAncillaryBitrateKbps = baseline.PlannedMappedAncillaryBitrateKbps,
+                TargetVideoBitrateKbps = videoKbps,
+                TargetTotalBitrateKbps = totalKbps,
+                UsedMeasuredVideoBitrate = baseline.UsedMeasuredVideoBitrate,
+                Diagnostic = $"Historical Direct video={videoKbps:0} kbps; mapped={mappedKbps:0} kbps; " +
+                    $"container included; output={totalKbps * durationSeconds / 8388.608d:0.##} MiB."
+            };
         }
 
         // ─────────────────────────────────────────────
@@ -500,6 +588,23 @@ namespace MediaFlux.Services
             return value.Contains("265", StringComparison.OrdinalIgnoreCase) ||
                    value.Contains("hevc", StringComparison.OrdinalIgnoreCase);
         }
+
+        private static bool UsesSameEfficientCodecQualityFloor(
+            string? sourceCodec,
+            string targetCodec,
+            int sourceWidth,
+            int sourceHeight,
+            int outputWidth,
+            int outputHeight)
+        {
+            if (sourceWidth != outputWidth || sourceHeight != outputHeight)
+                return false;
+
+            double sourceBpp = GetCodecBpp(sourceCodec);
+            double targetBpp = GetCodecBpp(targetCodec);
+            return sourceBpp is > 0 and <= 0.055 &&
+                   Math.Abs(sourceBpp - targetBpp) < 0.000001;
+        }
     }
 
     internal sealed class SizeEstimateBreakdown
@@ -513,7 +618,10 @@ namespace MediaFlux.Services
         public double PlannedMappedAncillaryBitrateKbps { get; init; }
         public double TargetVideoBitrateKbps { get; init; }
         public double TargetTotalBitrateKbps { get; init; }
+        public int? EffectiveQuality { get; init; }
         public bool UsedMeasuredVideoBitrate { get; init; }
+        public bool UsesSourceVideoBitrateFloor { get; init; }
+        public bool UsesSourceVideoBitrateCeiling { get; init; }
         public bool UsesStorageQualityTarget { get; init; }
         public string Diagnostic { get; init; } = "Required metadata is unavailable.";
     }

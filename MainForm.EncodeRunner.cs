@@ -8,34 +8,59 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediaFlux.Models;
 using MediaFlux.Services.Encoders;
+using MediaFlux.Services.EncodingV2;
+using MediaFlux.Services.EncodingV2Gui;
 using static MediaFlux.Services.EncodingService;
 
 namespace MediaFlux
 {
     public partial class MainForm : MediaFluxForm
     {
+        internal enum EncodeQueueStartOutcome
+        {
+            NotStarted,
+            Canceled,
+            Completed
+        }
+
+        private long _lastQueueCompletedTicks;
+        private bool _sequentialQueueTiming;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<DataGridViewRow, DateTime> _queueDispatchTimes = new();
+
+        internal static string ResolveFailureHistoryFinalizationOutcome(
+            EncodeFinalizationResult? finalizationResult,
+            bool assignmentValidationFailed,
+            bool researchEvidenceFailed,
+            bool adaptivePolicySkipped,
+            bool isCanceled) => EncodeExecutionLifecycleService.ResolveFailureFinalizationOutcome(
+                finalizationResult,
+                assignmentValidationFailed,
+                researchEvidenceFailed,
+                adaptivePolicySkipped,
+                isCanceled);
         private async void btnStartEncode_Click(object? sender, EventArgs e)
         {
             await StartEncodeAsync();
         }
 
-        private async Task StartEncodeAsync(bool? processAllOverride = null)
+        private async Task<EncodeQueueStartOutcome> StartEncodeAsync(bool? processAllOverride = null)
         {
+            DateTime startEncodeUtc = DateTime.UtcNow;
+            CriticalPathTiming.WriteLine(
+                $"[CriticalPathTiming] stage=start-encode utc={startEncodeUtc:O} queueCount={dgvEncodeQueue.Rows.Count}");
             // prevent re-entry
             if (_encodingActive)
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             if (_mediaRemuxCts != null)
             {
                 ShowStatusInfo("Wait for the active remux to finish or cancel it before encoding.");
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             }
 
-            var eligibleRows = GetEncodeRowsInVisualOrder()
-                .Where(row => row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true })
-                .ToList();
+            var eligibleRows = GetEligibleEncodeRowsInExecutionOrder().ToList();
             var scope = EncodingScopeResolver.Analyze(
                 eligibleRows,
-                dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>());
+                GetSelectedEncodeRowsInExecutionOrder());
 
             EncodingScopeChoice scopeChoice;
             if (processAllOverride == true)
@@ -65,7 +90,7 @@ namespace MediaFlux
 
             IReadOnlyList<DataGridViewRow>? resolvedRows = scope.Resolve(scopeChoice);
             if (resolvedRows == null)
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
 
             bool requestedAll = ReferenceEquals(resolvedRows, scope.EligibleJobs);
             var requestedRows = resolvedRows.ToList();
@@ -74,21 +99,25 @@ namespace MediaFlux
             if (!requestedAll && requestedRows.Count == 0)
             {
                 ShowStatusInfo("Select one or more files to encode.");
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             }
 
             if (!EnsureFfmpegToolsAvailable())
-                return;
-            if (!EnsureRequestedVideoEncodersAvailable(requestedRows))
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
+            if (!await EnsureRequestedVideoEncodersAvailable(requestedRows))
+                return EncodeQueueStartOutcome.NotStarted;
             if (!await ConfirmExplicitMp4CompatibilityAsync(requestedRows))
-                return;
-            _activeOutputContainer = GetSelectedOutputContainer();
+                return EncodeQueueStartOutcome.NotStarted;
+            // Capture the configured selection once for this run.  The preview is
+            // advisory and the mutable UI state must not be reread while workers
+            // are building authoritative production requests.
+            OutputContainerSelection runOutputContainer = GetSelectedOutputContainer();
+            _activeOutputContainer = runOutputContainer;
 
             if (requestedRows.Any(row => row.Tag is not RowMeta { IsDvdEncode: true }) &&
                 !ValidateOutputFolderAgainstWatchFolder(cmbEncodeOutput.Text, showMessage: true))
             {
-                return;
+                return EncodeQueueStartOutcome.NotStarted;
             }
             foreach (string dvdOutputFolder in requestedRows
                          .Select(row => (row.Tag as RowMeta)?.DvdEncodeOptions?.OutputPath)
@@ -100,27 +129,7 @@ namespace MediaFlux
                         dvdOutputFolder,
                         showMessage: true))
                 {
-                    return;
-                }
-            }
-
-            RecommendationStartChoice recommendationChoice =
-                ReviewRecommendationsBeforeStart(requestedRows);
-            if (recommendationChoice == RecommendationStartChoice.Cancel)
-                return;
-            if (recommendationChoice == RecommendationStartChoice.CandidatesOnly)
-            {
-                requestedRows = requestedRows
-                    .Where(row =>
-                        row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true } &&
-                        IsSmartEncodeCandidate(row))
-                    .ToList();
-                requestedAll = false;
-                if (requestedRows.Count == 0)
-                {
-                    ShowStatusInfo(
-                        "No Strong or Moderate candidates remain in the requested queue scope.");
-                    return;
+                    return EncodeQueueStartOutcome.NotStarted;
                 }
             }
 
@@ -131,6 +140,7 @@ namespace MediaFlux
             btnStopEncode.Enabled = true;
             _cancelEncode = false;
             _encodeFailedCount = 0;
+            _encodeStorageRejectedCount = 0;
             _encodeSucceededCount = 0;
             _encodeRetryCount = 0;
             _encodeCts?.Dispose();
@@ -142,20 +152,16 @@ namespace MediaFlux
             // Snapshot the requested rows before a possible scheduled wait. An explicit
             // context-menu choice must not be changed by the persisted checkbox setting.
             var requestedRowSet = requestedRows.ToHashSet();
-
             int maxParallel = requestedRows.Any(row => row.Tag is RowMeta { LibraryPolicyIntent: not null })
                 ? 1
-                : GetMaxConcurrentEncodes(); // Policy rows use conservative isolated scheduling.
+                : GetMaxConcurrentEncodes();
+            _sequentialQueueTiming = maxParallel == 1;
+            Interlocked.Exchange(ref _lastQueueCompletedTicks, 0);
 
-            ReapplyCurrentEncodeQueueSort();
-
-            // Gather rows to process in the same order the user sees in the grid.
-            var rowsToProcess = GetEncodeRowsInVisualOrder()
-                .Where(r =>
-                {
-                    bool duplicateExcluded = r.Tag is RowMeta meta && meta.ExcludedFromEncodeAsDuplicate;
-                    return (requestedAll || requestedRowSet.Contains(r)) && !duplicateExcluded;
-                })
+            // Gather rows to process in stable logical queue order. Presentation
+            // sorting is intentionally not consulted here.
+            var rowsToProcess = GetEligibleEncodeRowsInExecutionOrder()
+                .Where(r => requestedAll || requestedRowSet.Contains(r))
                 .ToList();
 
             DateTime statisticsRunStartedUtc = DateTime.UtcNow;
@@ -183,9 +189,15 @@ namespace MediaFlux
                 initiallyRequestedRows.Where(row => !rowsToProcessSet.Contains(row)));
 
             // Expose this list so the context menu can append rows while encoding
-            _activeEncodeQueue = rowsToProcess;
+            lock (_activeEncodeQueueLock)
+            {
+                _activeEncodeQueue = rowsToProcess;
+                _activeEncodeQueueDispatchedCount = 0;
+                _activeEncodeQueueAccepting = true;
+            }
             _encodeProcessedCount = 0;
             UpdateQueueEstimatedCompletion();
+            UpdateOperationProgressPresentation();
 
             try
             {
@@ -193,7 +205,7 @@ namespace MediaFlux
                 {
                     lblEncodeStatus.Text = "Nothing to encode.";
                     ResetEncodeMetrics();
-                    return;
+                    return EncodeQueueStartOutcome.NotStarted;
                 }
 
                 lblEncodeStatus.Text = "Encoding…";
@@ -202,13 +214,16 @@ namespace MediaFlux
                 {
                     await _encodeQueueRunner.RunAsync(
                         rowsToProcess,
-                        row => EncodeSingleRow(row, encodeToken),
+                        row => EncodeSingleRow(row, encodeToken, runOutputContainer),
                         maxParallel,
                         () => _encodeQueuePaused,
                         () => _cancelEncode,
                         encodeToken,
                         _activeEncodeQueueLock,
-                        () => Volatile.Read(ref _pendingEncodeImports) > 0);
+                        () => Volatile.Read(ref _pendingEncodeImports) > 0,
+                        dispatchedCount => _activeEncodeQueueDispatchedCount = dispatchedCount,
+                        TryCompleteActiveEncodeQueueWhenDrained,
+                        (row, utc) => _queueDispatchTimes[row] = utc);
                 }
 
                 if (_cancelEncode)
@@ -218,6 +233,8 @@ namespace MediaFlux
                     ? "Encoding stopped."
                     : _encodeFailedCount > 0
                         ? $"Done. {_encodeFailedCount} job(s) failed; see the failed rows and central error log."
+                        : _encodeStorageRejectedCount > 0
+                            ? $"Done. {_encodeStorageRejectedCount} job(s) skipped — insufficient savings; original sources retained."
                         : _encodeRetryCount > 0
                             ? $"All done! Retried {_encodeRetryCount} failed job(s)."
                         : "All done!";
@@ -226,13 +243,21 @@ namespace MediaFlux
 
                 if (!_cancelEncode)
                     await SendDiscordQueueCompleteNotificationAsync(queueStartedUtc);
+                return _cancelEncode
+                    ? EncodeQueueStartOutcome.Canceled
+                    : EncodeQueueStartOutcome.Completed;
             }
             finally
             {
                 _mp4CompatibilityConfirmedForRun = false;
                 _activeOutputContainer = OutputContainerSelection.Mp4;
-                _encodingActive = false;
-                _activeEncodeQueue = null;
+                lock (_activeEncodeQueueLock)
+                {
+                    _encodingActive = false;
+                    _activeEncodeQueue = null;
+                    _activeEncodeQueueDispatchedCount = 0;
+                    _activeEncodeQueueAccepting = false;
+                }
                 ApplyDuplicateCandidateViewFilter();
                 btnStartEncode.Enabled = true;
                 btnStopEncode.Enabled = false;
@@ -355,7 +380,360 @@ namespace MediaFlux
                 : "Encode queue resumed.";
         }
 
-        private async Task EncodeSingleRow(DataGridViewRow row, CancellationToken cancellationToken)
+        private async Task EncodeSingleRow(
+            DataGridViewRow row,
+            CancellationToken cancellationToken,
+            OutputContainerSelection runOutputContainer)
+        {
+            if (_cancelEncode || cancellationToken.IsCancellationRequested ||
+                row == null || row.IsNewRow || row.DataGridView == null ||
+                !TryGetRowPathAndDuration(row, out string sourcePath, out _))
+            {
+                if (row != null) _queueDispatchTimes.TryRemove(row, out _);
+                return;
+            }
+
+            PreparedProductionPlan preparedPlan;
+            bool invalidationAttempted = false;
+            bool repreparationAttempted = false;
+            IDisposable? previewExclusion = null;
+            try
+            {
+                previewExclusion = await PreviewSamplingCoordinator.Shared.EnterProductionAsync(cancellationToken);
+                while (true)
+                {
+                    var preparation = await PrepareQueueRowForProductionAsync(
+                        row, sourcePath, runOutputContainer, cancellationToken);
+                    preparedPlan = preparation.Plan;
+                    invalidationAttempted |= preparation.InvalidationAttempted;
+                    repreparationAttempted |= preparation.RepreparationAttempted;
+                    if (TryClaimQueueRowForProduction(row, sourcePath, preparedPlan))
+                        break;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                previewExclusion?.Dispose();
+                _queueDispatchTimes.TryRemove(row, out _);
+                return;
+            }
+            catch (Exception ex)
+            {
+                previewExclusion?.Dispose();
+                _queueDispatchTimes.TryRemove(row, out _);
+                AppendQueuePreparationFailure(row, ex);
+                return;
+            }
+
+            // TryClaimQueueRowForProduction is the single atomic ownership transition.
+            DateTime dispatchUtc = _queueDispatchTimes.TryRemove(row, out DateTime recordedDispatchUtc)
+                ? recordedDispatchUtc : DateTime.UtcNow;
+            try
+            {
+                await EncodeSingleRowCore(row, cancellationToken, runOutputContainer, dispatchUtc, preparedPlan,
+                    invalidationAttempted, repreparationAttempted);
+            }
+            finally
+            {
+                previewExclusion?.Dispose();
+                _runningEncodeJobs.TryRemove(row, out _);
+                UiInvoke(() => RestoreQueuedStateAfterEstimate(row));
+            }
+        }
+
+        private async Task<(PreparedProductionPlan Plan, bool InvalidationAttempted, bool RepreparationAttempted)> PrepareQueueRowForProductionAsync(
+            DataGridViewRow row,
+            string sourcePath,
+            OutputContainerSelection runOutputContainer,
+            CancellationToken cancellationToken)
+        {
+            bool invalidationAttempted = false;
+            bool repreparationAttempted = false;
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                RowMeta? meta = null;
+                EncodeExecutionSnapshotSettings? settings = null;
+                EncodeExecutionSnapshotItem? item = null;
+                PreparedProductionPlan? alreadyPrepared = null;
+                DvdImportOptions? dvdOptions = null;
+                long revision = 0;
+                Guid queueItemId = Guid.Empty;
+                string profile = "";
+
+                UiInvoke(() =>
+                {
+                    if (row.DataGridView != dgvEncodeQueue || row.Tag is not RowMeta current)
+                        return;
+                    meta = current;
+                    queueItemId = current.QueueItemId;
+                    dvdOptions = current.DvdEncodeOptions;
+                    alreadyPrepared = current.PreparedProductionPlan;
+                    string[] preparedSourcePaths = alreadyPrepared?.Snapshot.Input.SourceFiles.Count > 0
+                        ? alreadyPrepared.Snapshot.Input.SourceFiles.ToArray()
+                        : [sourcePath];
+                    if (alreadyPrepared is not null &&
+                        alreadyPrepared.QueueItemId == current.QueueItemId &&
+                        alreadyPrepared.EstimateAuthorityRevision == current.EstimateAuthorityRevision &&
+                        string.Equals(alreadyPrepared.Identity.SourceIdentity,
+                            ProductionPlanFingerprintService.CaptureSourceIdentity(preparedSourcePaths), StringComparison.Ordinal))
+                    {
+                        revision = current.EstimateAuthorityRevision;
+                        return;
+                    }
+
+                    if (alreadyPrepared is not null)
+                    {
+                        invalidationAttempted = true;
+                        repreparationAttempted = true;
+                    }
+                    _estimateService.CancelRefinement(current.QueueItemId);
+                    current.EstimateAuthorityRevision = checked(current.EstimateAuthorityRevision + 1);
+                    revision = current.EstimateAuthorityRevision;
+                    profile = !string.IsNullOrWhiteSpace(current.CustomCompressionProfile)
+                        ? current.CustomCompressionProfile!
+                        : IsAutomaticQualitySelected()
+                            ? "Medium Quality (Default)"
+                            : comboCompressionProfile.SelectedItem?.ToString() ?? "Medium";
+                    _ = CreateQueueEstimatePlanIdentity(
+                        current, sourcePath, profile,
+                        out settings, out item);
+                    if (settings is not null)
+                        settings = settings with { OutputContainer = runOutputContainer };
+                    if (item is not null)
+                    {
+                        item = item with
+                        {
+                            BoundEstimate = null,
+                            PreparedAdaptiveProductionPlan = null,
+                            EstimatedTargetMb = null,
+                            SizePredictionCalibration = null,
+                            SourceSizeBytes = current.SourceSizeBytes ?? TryGetFileSizeBytes(sourcePath),
+                            MediaDurationSeconds = current.DurationSec > 0 ? current.DurationSec : null
+                        };
+                        if (dvdOptions is { OutputMode: DvdOutputMode.EncodeUsingCurrentSettings })
+                        {
+                            EncodingInputSource dvdInput = new DvdEncodingInputFactory().Create(dvdOptions);
+                            DvdTitleCandidate candidate = dvdOptions.Candidate;
+                            item = item with
+                            {
+                                SourceFilePath = dvdInput.SourceFiles.FirstOrDefault() ?? item.SourceFilePath,
+                                LogicalSourcePath = dvdInput.SourcePath,
+                                PreparedInput = dvdInput,
+                                SourceMeasurements = new EncodeExecutionSourceMeasurements
+                                {
+                                    Width = candidate.VideoWidth,
+                                    Height = candidate.VideoHeight,
+                                    AudioStreamCount = candidate.AudioStreamCount,
+                                    SubtitleStreamCount = candidate.SubtitleStreamCount
+                                },
+                                SourceSizeBytes = candidate.CombinedSizeBytes,
+                                MediaDurationSeconds = candidate.CombinedDurationSeconds,
+                                Dvd = new EncodeExecutionDvdFacts(
+                                    dvdOptions.OutputPath,
+                                    candidate.CombinedSizeBytes,
+                                    candidate.CombinedDurationSeconds,
+                                    candidate.VideoWidth,
+                                    candidate.VideoHeight,
+                                    candidate.FrameRate,
+                                    candidate.VideoCodec)
+                            };
+                        }
+                    }
+                    current.EstimateState = QueueEstimateState.Measuring;
+                    current.BoundEstimate = null;
+                    current.PreparedProductionPlan = null;
+                    current.PreparedAdaptiveProductionPlan = null;
+                    current.IntelligencePlan = null;
+                    current.CurrentEstimatePlanIdentity = null;
+                    current.PlanBindingRequired = false;
+                    _estimatedSizeMap.Remove(sourcePath);
+                    row.Cells["colEstimatedSize"].Value = "Measuring…";
+                    row.Cells["colEstimatedSize"].Tag = null;
+                    row.Cells["colEstimatedSize"].ToolTipText =
+                        "Resolving and measuring the exact production plan before encoding.";
+                    RefreshQueueWorkspaceRow(row);
+                });
+
+                if (alreadyPrepared is not null && alreadyPrepared.EstimateAuthorityRevision == revision)
+                {
+                    string[] preparedSourcePaths = alreadyPrepared.Snapshot.Input.SourceFiles.Count > 0
+                        ? alreadyPrepared.Snapshot.Input.SourceFiles.ToArray()
+                        : [sourcePath];
+                    if (string.Equals(alreadyPrepared.Identity.SourceIdentity,
+                        ProductionPlanFingerprintService.CaptureSourceIdentity(preparedSourcePaths), StringComparison.Ordinal))
+                        return (alreadyPrepared, invalidationAttempted, repreparationAttempted);
+                }
+                if (meta is null || settings is null || item is null)
+                    throw new InvalidOperationException("The queue row could not resolve a production plan from its current settings.");
+
+                MediaInfoService.MediaInfo sourceInfo;
+                if (item.Dvd is { } dvdFacts)
+                {
+                    sourceInfo = new MediaInfoService.MediaInfo
+                    {
+                        VideoCodec = dvdFacts.VideoCodec,
+                        Width = dvdFacts.VideoWidth,
+                        Height = dvdFacts.VideoHeight,
+                        Fps = dvdFacts.FrameRate,
+                        DurationSeconds = dvdFacts.CombinedDurationSeconds,
+                        AudioStreamCount = item.PreparedInput?.AudioStreamIndexes.Count ?? 0,
+                        SubtitleStreamCount = item.PreparedInput?.SubtitleStreamIndexes.Count ?? 0
+                    };
+                }
+                else
+                {
+                    sourceInfo = await Task.Run(
+                        () => _mediaInfoService.GetInfo(sourcePath), cancellationToken).ConfigureAwait(false);
+                    item = item with
+                    {
+                        SourceMeasurements = new EncodeExecutionSourceMeasurements
+                        {
+                            AudioBitrateKbps = sourceInfo.AudioBitrateKbps,
+                            AudioStreamCount = sourceInfo.AudioStreamCount,
+                            SubtitleBitrateKbps = sourceInfo.SubtitleBitrateKbps,
+                            SubtitleStreamCount = sourceInfo.SubtitleStreamCount,
+                            EstimatedPlannedAudioBitrateKbps = meta.EstimatedPlannedAudioBitrateKbps,
+                            Width = sourceInfo.Width,
+                            Height = sourceInfo.Height
+                        },
+                        SourceSizeBytes = TryGetFileSizeBytes(sourcePath) ?? item.SourceSizeBytes
+                    };
+                }
+                item = item with
+                {
+                    PolicyEncodingPreset = meta.LibraryPolicyIntent is { } policy &&
+                        !string.IsNullOrWhiteSpace(policy.EncodingPresetName)
+                            ? _presetService.LoadAll().FirstOrDefault(value =>
+                                value.Name.Equals(policy.EncodingPresetName, StringComparison.OrdinalIgnoreCase))
+                            : null
+                };
+
+                QueueProductionPlanEstimate result = await _estimateService.PrepareProductionPlanAsync(
+                    settings, item, revision, cancellationToken, productionPriority: true).ConfigureAwait(false);
+                PreparedProductionPlan prepared = result.PreparedPlan with
+                {
+                    QueueItemId = queueItemId,
+                    QueueGeneration = result.PreparedPlan.QueueGeneration ?? _estimateService.CurrentGeneration
+                };
+                bool accepted = false;
+                UiInvoke(() =>
+                {
+                    if (row.DataGridView != dgvEncodeQueue || row.Tag is not RowMeta current ||
+                        current.EstimateAuthorityRevision != revision ||
+                        current.QueueItemId != queueItemId ||
+                        !PathsIdentifySameSource(current.Path, sourcePath))
+                        return;
+
+                    accepted = true;
+                    current.SourceSizeBytes = item.SourceSizeBytes;
+                    current.SrcMb = item.SourceSizeBytes is > 0
+                        ? item.SourceSizeBytes.Value / (1024d * 1024d)
+                        : current.SrcMb;
+                    current.DurationSec = sourceInfo.DurationSeconds is > 0
+                        ? sourceInfo.DurationSeconds.Value
+                        : current.DurationSec;
+                    current.Resolution = sourceInfo.Width is > 0 && sourceInfo.Height is > 0
+                        ? $"{sourceInfo.Width}x{sourceInfo.Height}"
+                        : current.Resolution;
+                    current.VideoCodec = sourceInfo.VideoCodec ?? current.VideoCodec;
+                    current.Fps = sourceInfo.Fps is > 0 ? (int)Math.Round(sourceInfo.Fps.Value) : current.Fps;
+                    current.EstimateDiagnostic = result.Diagnostic;
+                    current.PreparedProductionPlan = prepared;
+                    current.IntelligencePlan = prepared.Plan;
+                    current.PreparedAdaptiveProductionPlan = null;
+                    current.CurrentEstimatePlanIdentity = prepared.Identity;
+                    current.PlanBindingRequired = true;
+                    current.BoundEstimate = prepared.Estimate;
+                    current.EmpiricalPreview = result.Preview;
+                    current.EstimateState = prepared.Plan.AutomaticTarget?.Disposition switch
+                    {
+                        AutomaticTargetDisposition.Ready => QueueEstimateState.Ready,
+                        AutomaticTargetDisposition.Review => QueueEstimateState.Review,
+                        _ => prepared.Estimate?.Authority switch
+                        {
+                            EstimateAuthorityLevel.Measured => QueueEstimateState.Measured,
+                            EstimateAuthorityLevel.Preliminary => QueueEstimateState.Preliminary,
+                            _ => QueueEstimateState.Unavailable
+                        }
+                    };
+
+                    double sourceMb = current.SrcMb;
+                    double estimatedMb = prepared.Estimate is { ProjectedBytes: > 0 } measured
+                        ? measured.ProjectedBytes / (1024d * 1024d)
+                        : 0;
+                    row.Cells["colSize"].Value = sourceMb > 0 ? FormatSize(sourceMb) : "—";
+                    row.Cells["colEstimatedSize"].Value = estimatedMb > 0
+                        ? FormatSize(estimatedMb)
+                        : "Unavailable";
+                    row.Cells["colEstimatedSize"].Tag = estimatedMb > 0
+                        ? new Tuple<double, double>(sourceMb, estimatedMb)
+                        : null;
+                    row.Cells["colEstimatedSize"].ToolTipText = estimatedMb > 0
+                        ? BuildQueueEstimateTooltip(current, sourceMb, estimatedMb, prepared.Plan.Quality)
+                        : result.Diagnostic;
+                    if (estimatedMb > 0)
+                        _estimatedSizeMap[sourcePath] = estimatedMb;
+                    else
+                        _estimatedSizeMap.Remove(sourcePath);
+                    if (sourceMb > 0)
+                        _queueSourceSizeMap[sourcePath] = sourceMb;
+                    MarkQueueTotalsDirty();
+                    RefreshQueueWorkspaceRow(row);
+                });
+
+                if (accepted)
+                    return (prepared, invalidationAttempted, repreparationAttempted);
+            }
+        }
+
+        private void AppendQueuePreparationFailure(DataGridViewRow row, Exception exception)
+        {
+            string message = $"Production plan preparation failed: {exception.Message}";
+            UiInvoke(() =>
+            {
+                if (row.DataGridView != dgvEncodeQueue)
+                    return;
+                row.Cells["colEstimatedSize"].Value = "Unavailable";
+                row.Cells["colEstimatedSize"].Tag = null;
+                row.Cells["colEstimatedSize"].ToolTipText = message;
+                SetEncodeRowState(row, "Failed", "", "", message);
+                UpdateQueueWorkspaceShowingCount();
+            });
+            _activeJobLog.Value?.AppendLine("[PlanFirst] " + message);
+            Debug.WriteLine(message);
+        }
+
+        private bool TryClaimQueueRowForProduction(
+            DataGridViewRow row,
+            string sourcePath,
+            PreparedProductionPlan preparedPlan)
+        {
+            bool claimed = false;
+            UiInvoke(() =>
+            {
+                if (row.DataGridView != dgvEncodeQueue || row.Tag is not RowMeta meta ||
+                    meta.EstimateAuthorityRevision != preparedPlan.EstimateAuthorityRevision ||
+                    meta.QueueItemId != preparedPlan.QueueItemId)
+                    return;
+
+                meta.EstimateAuthorityRevision = checked(meta.EstimateAuthorityRevision + 1);
+                _runningEncodeJobs[row] = meta.IsDvdEncode && meta.DvdEncodeOptions != null
+                    ? meta.DvdEncodeOptions.OutputPath
+                    : sourcePath;
+                claimed = true;
+            });
+            return claimed;
+        }
+
+        private async Task EncodeSingleRowCore(
+            DataGridViewRow row,
+            CancellationToken cancellationToken,
+            OutputContainerSelection runOutputContainer,
+            DateTime dispatchUtc,
+            PreparedProductionPlan preparedPlan,
+            bool invalidationAttempted,
+            bool repreparationAttempted)
         {
             if (_cancelEncode || cancellationToken.IsCancellationRequested)
                 return;
@@ -369,6 +747,9 @@ namespace MediaFlux
                 return;
 
             RowMeta meta = EnsureRowMeta(row);
+            meta.FailureAnalysis = null;
+            meta.CuratedFailureDiagnosticReport = null;
+            meta.CurrentProcessingStage = "Queued";
             if (string.IsNullOrWhiteSpace(meta.StatisticsOperationId))
                 meta.StatisticsOperationId = Guid.NewGuid().ToString("N");
             DvdImportOptions? dvdOptions = meta.IsDvdEncode
@@ -433,20 +814,27 @@ namespace MediaFlux
                 lblEncodeStatus.Text =
                     $"Encoding: {displayName} ({_encodeProcessedCount}/{totalNow}) – Queued: {remaining}";
 
-                _currentEncodeDuration = TimeSpan.Zero;
-                _currentEncodeTotalDuration = TimeSpan.FromSeconds(durationSec > 0 ? durationSec : 0);
-                bool firstActive = BeginEncodeMetricsForRow(row);
-                if (firstActive)
-                    StartJobTimer();
-
+                BeginEncodeMetricsForRow(row);
                 _activeEncodeRow = row;
                 SetEncodeRowState(row, "Encoding", "0%", "--:--:--", "Encoding is in progress.");
+                UpdateOperationProgressPresentation();
             });
 
             // Start per-job log capture
             var jobLog = new StringBuilder();
-            _activeJobLogSb = jobLog;
+            var jobLogCapture = new JobLogCapture();
+            _activeJobLog.Value = jobLogCapture;
+            void AppendJobLog(string line)
+            {
+                lock (jobLog) jobLog.AppendLine(line);
+                meta.AppendInspectorLogLine(line);
+            }
             var jobStartUtc = DateTime.UtcNow;
+            var lifecycle = new EncodeLifecycleDiagnostics();
+            lifecycle.Record(EncodeLifecycleEvent.QueueDispatch, dispatchUtc);
+            long previousCompletionTicks = Interlocked.Read(ref _lastQueueCompletedTicks);
+            if (_sequentialQueueTiming && previousCompletionTicks > 0)
+                lifecycle.RecordPreviousQueueCompletion(new DateTime(previousCompletionTicks, DateTimeKind.Utc));
             if (meta.StatisticsStartUtc == default)
                 meta.StatisticsStartUtc = jobStartUtc;
             long? sourceSizeBytes = isDvdEncode
@@ -454,314 +842,146 @@ namespace MediaFlux
                 : TryGetFileSizeBytes(file);
             int? statisticsSourceHeight = isDvdEncode ? dvdOptions!.Candidate.VideoHeight : null;
 
-            // Capture encoder + codec as one immutable selection for this job.
-            // This prevents a UI change between reads from producing an invalid
-            // cross-backend combination.
-            ResolvedVideoEncoder fallbackEncoder =
-                EncoderRegistry.Default.Resolve(
-                    VideoEncoderIds.Nvenc,
-                    VideoCodecFamily.Hevc);
-            ValidatedEncoderSettings fallbackSettings =
-                EncodingRequestValidator.ValidateAndNormalize(
-                    EncoderRegistry.Default,
-                    fallbackEncoder.Selection,
-                    useGpu: true,
-                    targetMb: null,
-                    preset: "p5",
-                    qualityValue: 24,
-                    tenBit: false,
-                    audioChannels: null,
-                    concurrentEncoderSessions: false);
-            var encoderSnapshot = UiGet(
-                () =>
-                {
-                    EncoderCapabilities capabilities =
-                        GetSelectedEncoderCapabilities();
-                    int? audioChannels =
-                        GetSelectedAudioChannels();
-                    ValidatedEncoderSettings validated =
-                        GetValidatedEncoderSettingsFromUi(
-                            includeConcurrentSessions: true);
-                    return (
-                        DisplayText: capabilities.DisplayName,
-                        FormatText: comboVideoFormat.Text,
-                        Validated: validated,
-                        AudioChannels: audioChannels);
-                },
-                (
-                    DisplayText: "GPU (NVENC)",
-                    FormatText: "H.265 / HEVC (x265)",
-                    Validated: fallbackSettings,
-                    AudioChannels: (int?)null));
             LibraryPolicyQueueItem? policyIntent = meta.LibraryPolicyIntent;
-            EncodingPreset? policyEncodingPreset = null;
-            if (policyIntent != null)
-            {
-                policyEncodingPreset = string.IsNullOrWhiteSpace(policyIntent.EncodingPresetName)
-                    ? null
-                    : _presetService.LoadAll().FirstOrDefault(preset => preset.Name.Equals(policyIntent.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
-                VideoCodecFamily policyCodec = policyEncodingPreset == null
-                    ? policyIntent.ProposedCodec
-                    : VideoEncoderCompatibility.ParseCodecFamily(string.IsNullOrWhiteSpace(policyEncodingPreset.VideoCodec) ? policyEncodingPreset.VideoFormat : policyEncodingPreset.VideoCodec);
-                string policyEncoderId = policyEncodingPreset == null
-                    ? policyIntent.EncoderId
-                    : VideoEncoderCompatibility.ResolveEncoderId(string.IsNullOrWhiteSpace(policyEncodingPreset.EncoderId) ? policyEncodingPreset.EncoderMode : policyEncodingPreset.EncoderId, policyCodec);
-                ResolvedVideoEncoder resolvedPolicyEncoder = EncoderRegistry.Default.Resolve(policyEncoderId, policyCodec);
-                ValidatedEncoderSettings validatedPolicySettings = EncodingRequestValidator.ValidateAndNormalize(
-                    EncoderRegistry.Default,
-                    resolvedPolicyEncoder.Selection,
-                    useGpu: resolvedPolicyEncoder.Provider.Capabilities.IsHardware,
-                    targetMb: null,
-                    preset: policyEncodingPreset?.EncoderPreset ?? policyIntent.EncoderPreset,
-                    qualityValue: policyEncodingPreset?.QualityValue ?? policyIntent.QualityValue,
-                    tenBit: policyEncodingPreset?.TenBit ?? policyIntent.PreferredBitDepth >= 10,
-                    audioChannels: encoderSnapshot.AudioChannels,
-                    concurrentEncoderSessions: false);
-                encoderSnapshot = (
-                    DisplayText: resolvedPolicyEncoder.Provider.Capabilities.DisplayName,
-                    FormatText: CreateCodecDisplayOption(policyCodec).DisplayName,
-                    Validated: validatedPolicySettings,
-                    AudioChannels: encoderSnapshot.AudioChannels);
-            }
-            string encoderText = encoderSnapshot.DisplayText;
-            string videoCodec =
-                encoderSnapshot.Validated.Resolved.Selection.FfmpegCodec;
-            bool useGpu = encoderSnapshot.Validated.UseGpu;
-
-            // ==== TARGET SIZE (MB) ====
-            double? targetMb = null;
-            bool hasCustomTarget = meta.CustomTargetMb.HasValue;
-            bool hasCustomProfile = !string.IsNullOrWhiteSpace(meta.CustomCompressionProfile);
-            StorageSavingsOptions storageSavings =
-                _config.StorageSavings.CloneNormalized();
-
-            string profileText = hasCustomProfile
-                ? meta!.CustomCompressionProfile!
-                : UiGet(
-                    () => comboCompressionProfile!.SelectedItem?.ToString()
-                          ?? comboCompressionProfile.Text
-                          ?? string.Empty,
-                    string.Empty);
-            VideoEncoderSelection estimateTargetEncoder =
-                encoderSnapshot.Validated.Resolved.Selection;
-            int estimateQuality =
-                encoderSnapshot.Validated.QualityValue;
-            int? estimateTargetHeight = policyIntent == null
-                ? UiGet(GetEstimateTargetHeight, null)
-                : policyIntent.PreserveSourceResolution ? null : policyIntent.MaximumOutputHeight;
-            string targetText = hasCustomProfile
-                ? string.Empty
-                : UiGet(() => txtTargetSize.Text, string.Empty);
-            double manualTargetMb = 0;
-            bool hasManualTarget =
-                !hasCustomProfile &&
-                double.TryParse(targetText, out manualTargetMb) &&
-                manualTargetMb > 0;
-            bool storageSavingsApplies =
-                storageSavings.Enabled &&
-                SizeEstimateService.IsHevcCodec(videoCodec) &&
-                !hasCustomTarget &&
-                !hasCustomProfile &&
-                !hasManualTarget &&
-                !profileText.Equals(
-                    "No Compression",
-                    StringComparison.OrdinalIgnoreCase);
-            bool useStorageQualityTarget =
-                storageSavingsApplies && storageSavings.UsesQualityTarget;
-            if (useStorageQualityTarget)
-                estimateQuality = storageSavings.QualityValue;
-
-            if (policyIntent != null)
-            {
-                targetMb = policyEncodingPreset is { AutoTargetSize: false, ManualTargetMb: > 0 }
-                    ? policyEncodingPreset.ManualTargetMb
-                    : policyIntent.ProjectedOutputBytes is > 0
-                        ? policyIntent.ProjectedOutputBytes.Value / (1024d * 1024d)
-                        : null;
-            }
-            else if (hasCustomTarget)
-            {
-                targetMb = meta!.CustomTargetMb;
-            }
-            else if (profileText.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
-            {
-                // Try to keep roughly the same bitrate (with a small safety bump)
-                if (isDvdEncode)
-                {
-                    targetMb = dvdOptions!.Candidate.CombinedSizeBytes /
-                               (1024d * 1024d);
-                }
-                else
-                {
-                    int? srcKbps = ProbeSourceVideoBitrateKbps(file);
-                    if (srcKbps.HasValue && durationSec > 0)
-                    {
-                        // bits = kbps * 1000 * seconds; MB ≈ bits / 8 / 1024 / 1024
-                        //  => MB ≈ (kbps * seconds) / 8192
-                        targetMb = ((srcKbps.Value * 1.15) * durationSec) / 8192.0;
-                    }
-                }
-            }
-            else
-            {
-                // Manual override from UI?
-                if (hasManualTarget)
-                {
-                    targetMb = manualTargetMb;
-                }
-                else if (useStorageQualityTarget)
-                {
-                    // Quality-target storage mode must reach the encoder as CQ/CRF.
-                    // The queue estimate is a projection only and must not be turned
-                    // back into a fixed target-size command.
-                    targetMb = null;
-                }
-                else if (_estimatedSizeMap.TryGetValue(file, out var est) && est > 0)
-                {
-                    targetMb = est;
-                }
-                else
-                {
-                    // Fallback to the metadata-aware estimator. If duration remains
-                    // unavailable, leave targetMb unset so EncodingService safely uses
-                    // quality-based encoding instead of inventing a fixed percentage.
-                    double fallbackEstimate = isDvdEncode
-                        ? EstimateDvdEncodeTargetMb(
-                            meta!,
-                            profileText,
-                            estimateTargetEncoder,
-                            estimateQuality,
-                            estimateTargetHeight)
-                        : _sizeEstimateService.EstimateAutoTargetMbSmart(
-                            file,
-                            profileText,
-                            estimateTargetEncoder,
-                            estimateQuality,
-                            estimateTargetHeight,
-                            encoderSnapshot.AudioChannels,
-                            storageSavingsApplies ? storageSavings : null);
-                    if (fallbackEstimate > 0)
-                        targetMb = fallbackEstimate;
-                }
-            }
 
             _runningEncodeJobs[row] = isDvdEncode
                 ? dvdOptions!.OutputPath
                 : file;
+            ScheduleQueueWorkspaceRefresh();
             UpdateTrayStatus();
             string attemptedOutputPath = string.Empty;
             string stagedOutputPath = string.Empty;
             OutputContainerDecision? appliedContainerDecision = null;
             EncodingDiagnosticSummary? diagnosticSummary = null;
-            DateTime? finalizationStartedUtc = null;
+            System.Diagnostics.Stopwatch? activeFinalizationWatch = null;
+            double finalizationElapsedSeconds = 0;
+            void CompleteFinalizationSpan()
+            {
+                if (activeFinalizationWatch is null)
+                    return;
+                activeFinalizationWatch.Stop();
+                finalizationElapsedSeconds += activeFinalizationWatch.Elapsed.TotalSeconds;
+                activeFinalizationWatch = null;
+            }
+            void StartFinalizationSpan()
+            {
+                CompleteFinalizationSpan();
+                activeFinalizationWatch = System.Diagnostics.Stopwatch.StartNew();
+            }
             bool diagnosticStarted = false;
+            EncodeExecutionAttempt? executionAttempt = null;
+            string encoderText = string.Empty;
+            string videoCodec = string.Empty;
+            string analysisEncoderId = string.Empty;
+            string analysisEncoderPreset = string.Empty;
+            bool analysisTenBit = false;
+            string analysisOutputContainer = runOutputContainer.ToString();
+            string analysisRestoration = _config.VideoRestoration?.Preset.ToString() ?? "Off";
+            OutputContainerSelection requestedOutputContainer = runOutputContainer;
+            double? targetMb = null;
+            int estimateQuality = 0;
+            string encoderPreset = string.Empty;
+            bool tenBit = false;
+            ContainerCompatibilityPolicy compatibilityPolicy = ContainerCompatibilityPolicy.Intelligent;
             try
             {
-                // ==== CALL THE SERVICE ====
-                string formatChoice = encoderSnapshot.FormatText;
-                var scaleMode = policyIntent == null
-                    ? UiGet(() => GetSelectedScaleMode(), ScaleMode.None)
-                    : PolicyScaleMode(policyIntent);
-
-                string encoderPreset =
-                    encoderSnapshot.Validated.Preset;
-                bool tenBit = encoderSnapshot.Validated.TenBit;
-                int? audioChannels = encoderSnapshot.AudioChannels;
-                bool concurrentEncoderSessions =
-                    encoderSnapshot.Validated.ConcurrentEncoderSessions;
-                string outputFolder = isDvdEncode
-                    ? Path.GetDirectoryName(dvdOptions!.OutputPath) ?? string.Empty
-                    : UiGet(() => cmbEncodeOutput.Text, string.Empty);
-                string suffix = BuildOutputSuffix(formatChoice);
-
-                EncodingInputSource inputSource;
-                if (isDvdEncode)
+                AppendJobLog("[MediaFlux] Engine selected: V1 (shared Prepared Production Plan execution path).");
+                meta.CurrentProcessingStage = "Prepared plan validation";
+                string[] actualSourcePaths = isDvdEncode
+                    ? dvdOptions!.Candidate.Segments.Select(segment => segment.Path).ToArray()
+                    : [file];
+                PreparedProductionPlanValidationDiagnostic planValidation =
+                    PreparedProductionPlanValidator.ValidateQueueHandoff(
+                        preparedPlan,
+                        meta.QueueItemId,
+                        meta.EstimateAuthorityRevision,
+                        actualSourcePaths,
+                        _estimateService.CurrentGeneration,
+                        invalidationAttempted,
+                        repreparationAttempted);
+                AppendJobLog("[PreparedPlanValidation] " + planValidation.ToLogLine());
+                if (!string.Equals(planValidation.FailedPredicate, "none", StringComparison.Ordinal))
+                    throw new PreparedProductionPlanValidationException(planValidation);
+                meta.CurrentProcessingStage = "Encoding";
+                EncodeExecutionSnapshot preparedSnapshot = preparedPlan.Snapshot with
                 {
-                    UiInvoke(() => SetEncodeRowState(
-                        row,
-                        "Preparing DVD segments",
-                        "0%",
-                        "--:--:--",
-                        "Opening the selected DVD title as one continuous program stream."));
-                    var inputFactory = new DvdEncodingInputFactory();
-                    inputSource = inputFactory.Create(dvdOptions!);
-                    jobLog.AppendLine(
-                        $"DVD logical source: {logicalSourcePath} ({dvdOptions!.Candidate.TitleSetId}, " +
-                        $"{dvdOptions.Candidate.Segments.Count} segments)");
-                    jobLog.AppendLine(
-                        $"Selected audio streams: {string.Join(", ", dvdOptions.SelectedAudioStreamIndexes)}");
-                    jobLog.AppendLine(
-                        $"Selected subtitle streams: {string.Join(", ", dvdOptions.SelectedSubtitleStreamIndexes)}");
-                    jobLog.AppendLine("Source deletion: disabled");
-                }
-                else
+                    OperationId = meta.StatisticsOperationId,
+                    SavedJobId = _runningSavedJobId,
+                    QueueRowId = meta.QueueSequence,
+                    StatisticsStartUtc = meta.StatisticsStartUtc,
+                    MediaFluxVersion = Application.ProductVersion,
+                    StatisticsPath = AppPaths.EncodingStatisticsFile,
+                    ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
+                    ProductionPlan = preparedPlan.Identity,
+                    PreparedPlan = preparedPlan.Plan,
+                    BoundEstimate = preparedPlan.Estimate,
+                    PreparedAdaptiveProductionPlan = null
+                };
+                EncodeExecutionSnapshotBuildResult buildResult = preparedPlan.BuildResult with
                 {
-                    MediaInfoService.MediaInfo mediaInfo =
-                        _mediaInfoService.GetInfo(file);
-                    statisticsSourceHeight = mediaInfo.Height;
-                    inputSource = EncodingInputSource.FromFile(
-                        file,
-                        mediaInfo.AudioBitrateKbps is > 0
-                            ? mediaInfo.AudioBitrateKbps.Value
-                            : meta.EstimatedPlannedAudioBitrateKbps is > 0
-                                ? meta.EstimatedPlannedAudioBitrateKbps
-                                : null,
-                        mediaInfo.AudioStreamCount,
-                        (mediaInfo.SubtitleBitrateKbps ?? 0) +
-                        (mediaInfo.SubtitleBitrateKbps is > 0
-                            ? 0
-                            : mediaInfo.SubtitleStreamCount * 8d));
-                }
+                    Snapshot = preparedSnapshot
+                };
+                var builtSnapshot = buildResult.Snapshot;
+                bool storageSavingsApplies = buildResult.StorageSavingsApplies;
+                bool useStorageQualityTarget = buildResult.UsesStorageQualityTarget;
+                StorageSavingsOptions storageSavings = buildResult.StorageSavings;
+                EncodingInputSource inputSource = builtSnapshot.Input;
+                encoderText = builtSnapshot.EncoderText;
+                videoCodec = builtSnapshot.Codec;
+                analysisEncoderId = builtSnapshot.Encoder.EncoderId;
+                analysisEncoderPreset = builtSnapshot.EncoderPreset ?? string.Empty;
+                analysisTenBit = builtSnapshot.TenBit;
+                requestedOutputContainer = builtSnapshot.OutputContainer;
+                analysisOutputContainer = builtSnapshot.OutputContainer.ToString();
+                analysisRestoration = builtSnapshot.Restoration.Preset.ToString();
+                targetMb = builtSnapshot.TargetMb;
+                estimateQuality = builtSnapshot.QualityValue ?? 0;
+                encoderPreset = builtSnapshot.EncoderPreset ?? string.Empty;
+                tenBit = builtSnapshot.TenBit;
+                compatibilityPolicy = builtSnapshot.CompatibilityPolicy;
+                statisticsSourceHeight = builtSnapshot.SourceHeight;
 
                 string sourceResolution = !string.IsNullOrWhiteSpace(meta.Resolution)
                     ? meta.Resolution
                     : statisticsSourceHeight is > 0 ? $"{statisticsSourceHeight}p" : "Unknown";
-                int? diagnosticOutputHeight = RuntimeOutputHeight(statisticsSourceHeight, scaleMode);
+                int? diagnosticOutputHeight = builtSnapshot.OutputHeight;
                 _encodingDiagnosticsService.Start(new EncodingDiagnosticJob(
                     meta.StatisticsOperationId, displayName, encoderText,
-                    encoderSnapshot.Validated.Resolved.Selection.EncoderId, videoCodec, encoderPreset,
+                    builtSnapshot.Encoder.EncoderId, videoCodec, encoderPreset,
                     sourceResolution, diagnosticOutputHeight is > 0 ? $"{diagnosticOutputHeight}p" : sourceResolution,
                     tenBit ? 10 : 8, durationSec > 0 ? durationSec : null, logicalSourcePath), jobStartUtc);
+                _encodingDiagnosticsService.AttachLifecycle(meta.StatisticsOperationId, lifecycle);
                 diagnosticStarted = true;
 
                 // Per-job ffmpeg output callback
                 Action<string> jobCallback = line =>
                 {
-                    jobLog.AppendLine(line);
+                    AppendJobLog(line);
+                    if (line.StartsWith("Preparing production plan", StringComparison.Ordinal) ||
+                        line.StartsWith("Using prepared production plan", StringComparison.Ordinal) ||
+                        line.StartsWith("Analyzing compression", StringComparison.Ordinal) ||
+                        line.StartsWith("Testing compression", StringComparison.Ordinal) ||
+                        line.StartsWith("Encoding at CQ", StringComparison.Ordinal) || line.StartsWith("Encoding at CRF", StringComparison.Ordinal))
+                        UiInvoke(() => { if (row.DataGridView == dgvEncodeQueue) SetEncodeRowState(row, line, "", "", line); });
+                    if (line.StartsWith("[AdaptiveStorageSavingsRetry] Attempt 1 finalization completed", StringComparison.Ordinal))
+                        CompleteFinalizationSpan();
                     _encodingDiagnosticsService.UpdateProgress(meta.StatisticsOperationId, line, durationSec > 0 ? durationSec : null);
-                    HandleFfmpegProgressLineForRow(row, jobLog, durationSec, line);
                 };
 
-                ResolvedVideoEncoder selectedEncoder =
-                    encoderSnapshot.Validated.Resolved;
-                var encodeRequest = new EncodingRequest
+                executionAttempt = _encodeExecutionLifecycleService.CreateAttempt(builtSnapshot);
+                var executionCallbacks = new EncodeExecutionCallbacks
                 {
-                    Input = inputSource,
-                    OutputFolder = outputFolder,
-                    Suffix = suffix,
-                    Encoder = selectedEncoder.Selection,
-                    UseGpu = useGpu,
-                    TargetMb = targetMb,
-                    ScaleMode = scaleMode,
-                    Restoration = _config.VideoRestoration.Clone(),
-                    EncoderPreset = encoderPreset,
-                    QualityValue =
-                        estimateQuality,
-                    TenBit = tenBit,
-                    AudioChannels = audioChannels,
-                    ProgressCallback = jobCallback,
-                    AiProgressCallback = progress => ApplyAiIntermediateProgress(row, progress),
-                    ConcurrentEncoderSessions =
-                        concurrentEncoderSessions,
-                    CancellationToken = cancellationToken,
-                    OutputPathCallback =
-                        path => attemptedOutputPath = path,
-                    StagingPathCallback =
-                        path => stagedOutputPath = path,
-                    FinalizationStatusCallback = status =>
+                    Progress = jobCallback,
+                    StructuredProgress = progress =>
+                        Ui(() => ApplyStructuredEncodeProgress(row, progress)),
+                    AiProgress = progress => ApplyAiIntermediateProgress(row, progress),
+                    OutputPathChanged = path => attemptedOutputPath = path,
+                    StagingPathChanged = path => stagedOutputPath = path,
+                    FinalizationStatusChanged = status =>
                     {
-                        finalizationStartedUtc ??= DateTime.UtcNow;
-                        jobLog.AppendLine($"[MediaFlux] {status}.");
+                        if (status == "Verifying output")
+                            StartFinalizationSpan();
+                        AppendJobLog($"[MediaFlux] {status}.");
                         UiInvoke(() =>
                         {
                             if (row.DataGridView == dgvEncodeQueue)
@@ -772,14 +992,89 @@ namespace MediaFlux
                                     "99%",
                                     "00:00:00",
                                     $"{status}. The original source is retained until final verification completes.");
+                                UpdateOperationProgressPresentation();
                             }
                         });
                     },
-                    OutputContainer = PolicyOutputContainer(policyIntent),
-                    ContainerCompatibilityConfirmed = _mp4CompatibilityConfirmedForRun,
-                    CompatibilityPolicy = GetContainerCompatibilityPolicy(),
-                    ContainerDecisionCallback = decision => appliedContainerDecision = decision
+                    FaststartStarted = () => Ui(() =>
+                    {
+                        if (row.DataGridView == dgvEncodeQueue)
+                        {
+                            SetEncodeRowState(row, EncodeLifecycleDiagnostics.FaststartStatus,
+                                EncodeLifecycleDiagnostics.FaststartProgress, "--:--:--",
+                                "FFmpeg is relocating MP4 metadata; output verification follows.");
+                            UpdateOperationProgressPresentation();
+                        }
+                    }),
+                    ContainerDecision = decision => appliedContainerDecision = decision,
+                    PlanSnapshot = snapshot =>
+                    {
+                        CriticalPathTiming.WriteLine(
+                            $"[CriticalPathTiming] stage=encode-plan-ready item={meta.QueueItemId:N} " +
+                            $"elapsedMs={(DateTime.UtcNow - jobStartUtc).TotalMilliseconds:0} " +
+                            $"available={snapshot.Plan.IsAvailable} utc={DateTime.UtcNow:O}");
+                        meta.IntelligencePlan = snapshot.Plan;
+                        if (snapshot.Plan.ProductionPlan is { } productionPlan)
+                            AppendJobLog($"[ProductionPlan] SourceIdentity={productionPlan.SourceIdentity}; Fingerprint={productionPlan.PlanFingerprint}; BoundEstimate={meta.BoundEstimate?.ProjectedBytes.ToString() ?? "unavailable"}; EstimateAuthority={meta.BoundEstimate?.Authority.ToString() ?? "none"}; EstimateMatches={meta.BoundEstimate?.Matches(productionPlan).ToString() ?? "false"}.");
+                        if (snapshot.Plan.AdaptiveSelection is { } adaptiveSelection)
+                        {
+                            AppendJobLog($"[AdaptiveStorageSavings] Preferred={adaptiveSelection.PreferredQuality}; selected={adaptiveSelection.SelectedQuality}; worst={adaptiveSelection.WorstAcceptableQuality}; {adaptiveSelection.Reason}");
+                            foreach (string diagnostic in StorageSavingsSampleSelector.DescribeDiagnostics(adaptiveSelection,
+                                durationSec, builtSnapshot.StorageSavingsContract.MaximumAcceptedOutputBytes ?? 0))
+                                AppendJobLog(diagnostic);
+                        }
+                        AppendJobLog(EncodingPlanService.DescribeSummary(snapshot.Plan));
+                        bool retryPlan = BoundedRetryProgressPresentation.IsRetryPlan(snapshot.Plan);
+                        void ApplyPlanSnapshot()
+                        {
+                            if (row.DataGridView != dgvEncodeQueue)
+                                return;
+                            if (retryPlan && snapshot.Plan.Quality is { EffectiveQuality: not null } retryQuality)
+                                ApplyBoundedRetryProgressToRow(row, retryQuality);
+                            else
+                                ApplyAdaptivePlanSnapshotPresentation(row, meta, snapshot.Plan);
+                            ApplyProductionPlanBoundEstimate(row, meta, snapshot.Plan);
+                            RefreshQueueWorkspaceRow(row);
+                            RefreshCurrentEncodingIntelligence(row, meta);
+                        }
+
+                        if (retryPlan)
+                            UiInvoke(ApplyPlanSnapshot);
+                        else
+                            Ui(ApplyPlanSnapshot);
+                    },
+                    Diagnostic = line =>
+                    {
+                        Debug.WriteLine(line);
+                        if (line.Contains("Assigned attempt did not produce a Frozen event", StringComparison.Ordinal) ||
+                            line.Contains("Stored experiment assignment no longer matches", StringComparison.Ordinal))
+                            AppendJobLog(line);
+                    },
+                    PlanDiverged = divergence =>
+                        AppendJobLog($"[EncodingPlan] Shadow divergence: {divergence}"),
+                    ExecutionOutcome = outcome =>
+                     {
+                         meta.IntelligenceOutcome = outcome;
+                         AppendJobLog(EncodingPlanService.DescribeRecovery(outcome));
+                         AppendJobLog(EncodingPlanService.DescribeLifecycle(outcome));
+                         Ui(() => RefreshCurrentEncodingIntelligence(row, meta));
+                     },
+                    RecoveryStatus = update =>
+                         UiInvoke(() =>
+                         {
+                             string status = JobHistoryPresentation.ActiveRecoveryStatus(update);
+                             if (row.DataGridView == dgvEncodeQueue)
+                                 SetEncodeRowState(row, status, "", "", string.IsNullOrWhiteSpace(update.Detail) ? status : update.Detail);
+                         }),
+                    FailureDiagnosticReport = report =>
+                        meta.CuratedFailureDiagnosticReport = report
                 };
+
+                jobLog.AppendLine(
+                    $"[MediaFlux] Encode request: source='{inputSource.SourcePath}'; " +
+                    $"configured-container={requestedOutputContainer}; effective-container=authoritative resolution pending; " +
+                    $"compatibility-policy={compatibilityPolicy}; " +
+                    "ffmpeg-launched=false (pending preflight)." );
 
                 if (!string.IsNullOrWhiteSpace(meta.EstimateDiagnostic))
                     jobLog.AppendLine(meta.EstimateDiagnostic);
@@ -794,14 +1089,12 @@ namespace MediaFlux
                               "Visual quality may be reduced.");
                 }
 
-                var result = await _encodingService.EncodeWithResultAsync(
-                    encodeRequest);
-
-                if (!result.Success || !result.FinalizationSucceeded)
-                {
-                    throw new InvalidOperationException(
-                        "Encoding did not complete validated output finalization.");
-                }
+                EncodeExecutionResult executionResult = await _encodeExecutionLifecycleService.ExecuteAsync(
+                    executionAttempt,
+                    executionCallbacks,
+                    lifecycle,
+                    cancellationToken);
+                var result = executionResult.EncodedOutput;
 
                 if (!isDvdEncode)
                 {
@@ -811,119 +1104,90 @@ namespace MediaFlux
                 jobLog.AppendLine(
                     $"[MediaFlux] Validated and finalized: {result.ValidationSummary}");
 
-                bool deleteSource = UiGet(() => chkDeleteSource.Checked, false);
-                SourceDeletionResult sourceDeletion =
-                    SourceDeletionService.DeleteAfterFinalization(
-                        file,
-                        inputSource,
-                        deleteSource,
-                        result);
+                SourceDeletionResult sourceDeletion = executionResult.SourceDeletion;
                 jobLog.AppendLine($"[MediaFlux] {sourceDeletion.Message}");
 
-                // On success, mark 100% and clear ETA
-                System.Threading.Interlocked.Increment(ref _encodeSucceededCount);
-                Ui(() =>
-                {
-                    if (row.DataGridView != dgvEncodeQueue)
-                        return;
-
-                    SetEncodeRowState(
-                        row,
-                        "Done",
-                        "100%",
-                        "00:00:00",
-                        $"Output validated and finalized. {sourceDeletion.Message}");
-                });
-
                 DateTime jobEndUtc = DateTime.UtcNow;
-                diagnosticSummary = _encodingDiagnosticsService.Complete(
-                    meta.StatisticsOperationId,
-                    finalizationStartedUtc.HasValue ? Math.Max(0, (jobEndUtc - finalizationStartedUtc.Value).TotalSeconds) : 0);
-                meta!.StatisticsProcessingSeconds +=
-                    Math.Max(0, (jobEndUtc - jobStartUtc).TotalSeconds);
                 long? outputSizeBytes =
                     result.FinalOutputSizeBytes ??
                     TryGetFileSizeBytes(result.OutputPath);
 
-                // append success to history – never let this kill the job
-                try
+                // On success, mark 100% and clear ETA after validated finalization.
+                System.Threading.Interlocked.Increment(ref _encodeSucceededCount);
+                UiInvoke(() =>
                 {
-                    lock (_historyLock)
+                    if (row.DataGridView != dgvEncodeQueue)
+                        return;
+
+                    EncodingTerminalResult? completedTerminal = meta.IntelligenceOutcome?.TerminalResult;
+                    if (result.FinalizationSucceeded && result.FinalOutputSizeBytes is > 0)
                     {
-                        _historyService.Append(new JobHistoryRecord
-                        {
-                            Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
-                            Status = JobStatus.Success,
-                            StartUtc = jobStartUtc,
-                            EndUtc = jobEndUtc,
-                            SourcePath = logicalSourcePath,
-                            OutputPath = result.OutputPath,
-                            EncoderMode = encoderText,
-                            TargetMb = targetMb,
-                            DurationSec = durationSec,
-                            Log = isDvdEncode
-                                ? $"FFmpeg arguments: {result.DiagnosticArguments}{Environment.NewLine}" +
-                                  jobLog
-                                : jobLog.ToString(),
-                            Notes = isDvdEncode
-                                ? $"Codec={videoCodec}; TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
-                                  $"Segments={dvdOptions.Candidate.Segments.Count}; " +
-                                  $"Recommended={dvdOptions.Candidate.IsLikelyMainFeature}; " +
-                                  $"Validated and finalized; {sourceDeletion.Message}"
-                                : $"Codec={videoCodec}; Validated and finalized; {sourceDeletion.Message}",
-                            DvdTitleSet = isDvdEncode
-                                ? dvdOptions!.Candidate.TitleSetId
-                                : null,
-                            DvdSegmentCount = isDvdEncode
-                                ? dvdOptions!.Candidate.Segments.Count
-                                : null,
-                            DvdOutputMode = isDvdEncode
-                                ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
-                                : null,
-                            SourceSizeBytes = sourceSizeBytes,
-                            OutputSizeBytes = outputSizeBytes,
-                            WasRecommendedDvdTitle = isDvdEncode
-                                ? dvdOptions!.Candidate.IsLikelyMainFeature
-                                : null,
-                            FinalizationOutcome = "ValidatedAndFinalized",
-                            StagingPath = result.StagingPath,
-                            SourceDeletionResult = sourceDeletion.Message,
-                            RequestedOutputContainer = result.RequestedOutputContainer.ToString(),
-                            ResolvedOutputContainer = result.ResolvedOutputContainer.ToString(),
-                            ContainerDecisionReason = result.ContainerDecisionReason,
-                            DiagnosticSummary = diagnosticSummary
-                        });
+                        meta.EmpiricalPreview = null;
+                        meta.SizePredictionCalibration = null;
+                        double finalMb = result.FinalOutputSizeBytes.Value / (1024d * 1024);
+                        _estimatedSizeMap[meta.Path] = finalMb;
+                        row.Cells["colEstimatedSize"].Value = FormatSize(finalMb);
+                        row.Cells["colEstimatedSize"].Tag = new Tuple<double, double>(meta.SrcMb, finalMb);
+                        row.Cells["colEstimatedSize"].ToolTipText = "Actual validated final output size.";
+                        _queueTotalsDirty = true;
                     }
-                }
-                catch (Exception logEx)
+                    SetEncodeRowState(
+                        row,
+                        JobHistoryPresentation.TerminalLabel(JobStatus.Success, completedTerminal),
+                        "100%",
+                        "00:00:00",
+                        JobHistoryPresentation.SummaryFor(completedTerminal, $"Output validated and finalized. {sourceDeletion.Message}"));
+                    lifecycle.Record(EncodeLifecycleEvent.QueueCompleted);
+                    if (_sequentialQueueTiming)
+                        Interlocked.Exchange(ref _lastQueueCompletedTicks, DateTime.UtcNow.Ticks);
+                });
+
+                CompleteFinalizationSpan();
+                diagnosticSummary = _encodingDiagnosticsService.Complete(
+                    meta.StatisticsOperationId,
+                    finalizationElapsedSeconds,
+                    lifecycle.Snapshot(inputSource.SourcePath, result.OutputPath, outputSizeBytes));
+                meta!.StatisticsProcessingSeconds +=
+                    Math.Max(0, (jobEndUtc - jobStartUtc).TotalSeconds);
+
+                JobHistoryRecord successHistoryRecord = new()
                 {
-                    Debug.WriteLine($"History append (success) failed: {logEx}");
-                    // We ignore this; the encode itself succeeded.
+                    Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
+                    Log = isDvdEncode
+                        ? $"FFmpeg arguments: {result.DiagnosticArguments}{Environment.NewLine}" + jobLog
+                        : jobLog.ToString(),
+                    Notes = isDvdEncode
+                        ? $"Codec={videoCodec}; TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
+                          $"Segments={dvdOptions.Candidate.Segments.Count}; " +
+                          $"Recommended={dvdOptions.Candidate.IsLikelyMainFeature}; " +
+                          $"Validated and finalized; {sourceDeletion.Message}"
+                        : $"Codec={videoCodec}; Validated and finalized; {sourceDeletion.Message}",
+                    DvdTitleSet = isDvdEncode ? dvdOptions!.Candidate.TitleSetId : null,
+                    DvdSegmentCount = isDvdEncode ? dvdOptions!.Candidate.Segments.Count : null,
+                    DvdOutputMode = isDvdEncode ? DvdOutputMode.EncodeUsingCurrentSettings.ToString() : null,
+                    SourceSizeBytes = sourceSizeBytes,
+                    OutputSizeBytes = outputSizeBytes,
+                    WasRecommendedDvdTitle = isDvdEncode ? dvdOptions!.Candidate.IsLikelyMainFeature : null
+                };
+
+                if (meta.IntelligencePlan?.SourceAdaptiveShadow is { } shadowDecision)
+                {
+                    AppendJobLog(SourceAdaptiveShadowOutcome.FromOutput(
+                        shadowDecision, result.FinalOutputProbe, outputSizeBytes).Describe());
                 }
 
-                RecordEncodingStatistics(
-                    meta.StatisticsOperationId,
-                    meta.StatisticsStartUtc,
+                EncodeExecutionLifecycleCompletion lifecycleCompletion = _encodeExecutionLifecycleService.CompleteSuccessfulExecution(
+                    executionAttempt ?? throw new InvalidOperationException("The completed encode has no execution attempt snapshot."),
                     jobEndUtc,
-                    EncodingStatisticsOutcome.Success,
-                    logicalSourcePath,
-                    result.OutputPath,
-                    videoCodec,
-                    encoderText,
-                    sourceSizeBytes,
                     outputSizeBytes,
-                    durationSec > 0 ? durationSec : null,
                     meta.StatisticsProcessingSeconds,
                     $"Validated and finalized. {sourceDeletion.Message}",
-                    encoderId: encoderSnapshot.Validated.Resolved.Selection.EncoderId,
-                    encoderPreset: encoderSnapshot.Validated.Preset,
-                    sourceResolutionTier: EncodingRuntimeEstimatorService.ResolutionTier(statisticsSourceHeight),
-                    outputResolutionTier: EncodingRuntimeEstimatorService.ResolutionTier(RuntimeOutputHeight(statisticsSourceHeight, scaleMode)),
-                    outputBitDepth: encoderSnapshot.Validated.TenBit ? 10 : 8,
-                    scalingApplied: RuntimeOutputHeight(statisticsSourceHeight, scaleMode) is int outputHeight &&
-                        statisticsSourceHeight is int sourceHeight && outputHeight != sourceHeight,
-                    concurrentEncoderSessions: encoderSnapshot.Validated.ConcurrentEncoderSessions,
-                    diagnosticSummary: diagnosticSummary);
+                    diagnosticSummary: diagnosticSummary,
+                    recoveredSuccessful: jobLog.ToString().Contains("Result=Succeeded", StringComparison.Ordinal),
+                    finalOutputProbe: result.FinalOutputProbe,
+                    historyRecord: successHistoryRecord);
+                if (!lifecycleCompletion.HistoryRecorded || !lifecycleCompletion.StatisticsRecorded)
+                    Debug.WriteLine("[EncodeLifecycle] The encode completed, but one or more durable outcome records could not be confirmed.");
 
                 try
                 {
@@ -938,7 +1202,7 @@ namespace MediaFlux
                         {
                             RememberCompletedEncodePaths(file, result.OutputPath);
                         }
-                        RemoveRowAndCleanup(row);
+                        RemoveRowAndCleanup(row, allowCompletedEncodeJob: true);
 
                         // Re-scan the current input folder and merge any changes
                         RescanInputFolderAndMerge(recomputeEstimates: false);
@@ -959,103 +1223,140 @@ namespace MediaFlux
             catch (Exception ex)
             {
                 DateTime attemptEndUtc = DateTime.UtcNow;
+                CompleteFinalizationSpan();
                 diagnosticSummary = _encodingDiagnosticsService.Complete(
                     meta.StatisticsOperationId,
-                    finalizationStartedUtc.HasValue ? Math.Max(0, (attemptEndUtc - finalizationStartedUtc.Value).TotalSeconds) : 0);
+                    finalizationElapsedSeconds);
                 meta!.StatisticsProcessingSeconds +=
                     Math.Max(0, (attemptEndUtc - jobStartUtc).TotalSeconds);
                 bool isCanceled = _cancelEncode || ex is OperationCanceledException;
+                bool adaptivePolicySkipped = ex is AdaptiveStorageSavingsSkippedException;
+                bool researchEvidenceFailed = ex is AdaptivePreAttemptEvidenceCaptureException;
+                bool storagePolicyRejected = adaptivePolicySkipped || ex is EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected };
+                if (!isCanceled && !storagePolicyRejected && !researchEvidenceFailed)
+                {
+                    meta.FailureAnalysis = EncodeFailureAnalysisService.Analyze(
+                        new EncodeFailureAnalysisContext(
+                            ex,
+                            jobLog.ToString(),
+                            meta.CurrentProcessingStage,
+                            IsCanceled: false,
+                            logicalSourcePath,
+                            string.IsNullOrWhiteSpace(attemptedOutputPath) ? stagedOutputPath : attemptedOutputPath,
+                            analysisEncoderId,
+                            encoderText,
+                            videoCodec,
+                            analysisEncoderPreset,
+                            analysisTenBit,
+                            appliedContainerDecision?.Resolved.ToString() ?? analysisOutputContainer,
+                            analysisRestoration));
+                }
+                else
+                {
+                    meta.FailureAnalysis = null;
+                }
                 EncodeFinalizationException? finalizationFailure =
                     ex as EncodeFinalizationException;
                 EncodeFinalizationResult? finalizationResult =
                     finalizationFailure?.Result ??
                     (ex as EncodeFinalizationCanceledException)?.Result;
+                EncodeExecutionAssignmentValidationException? assignmentValidationFailure =
+                    ex as EncodeExecutionAssignmentValidationException;
+                EncodingTerminalResult? terminalResult = meta.IntelligenceOutcome?.TerminalResult;
+                if (researchEvidenceFailed)
+                {
+                    terminalResult = EncodingTerminalResult.NotRun;
+                    // Identity capture can fail while CreateAttempt is still constructing.
+                    // Keep the existing single terminal append truthful even in that case.
+                    meta.IntelligenceOutcome = executionAttempt?.ExecutionOutcome ?? new(
+                        meta.IntelligencePlan?.PlanId ?? Guid.Empty, [], [],
+                        TerminalResult: EncodingTerminalResult.NotRun, ProductionEncodeCount: 0);
+                }
+                if (ex is PreparedProductionPlanValidationException)
+                    terminalResult = EncodingTerminalResult.ValidationFailed;
+                if (storagePolicyRejected)
+                    terminalResult = adaptivePolicySkipped ? EncodingTerminalResult.AdaptiveStorageSavingsSkipped : EncodingTerminalResult.StoragePolicyRejected;
+                if (assignmentValidationFailure != null)
+                    terminalResult = EncodingTerminalResult.ValidationFailed;
+                if (isCanceled)
+                    terminalResult = EncodingTerminalResult.Canceled;
                 var notes = isCanceled
                     ? "Cancelled by user."
-                    : ex.Message;
+                    : JobHistoryPresentation.SummaryFor(terminalResult, ex.Message);
 
-                bool cleanupEnabled = isCanceled
-                    ? _config.DeleteCanceledEncodeOutputs
-                    : _config.DeleteFailedEncodeOutputs;
+                bool cleanupEnabled = _config.DeleteFailedEncodeOutputs;
                 string recoverableOutputPath =
                     finalizationResult?.RecoverableOutputPath ?? "";
-                string incompleteOutputPath =
-                    !string.IsNullOrWhiteSpace(recoverableOutputPath)
-                        ? recoverableOutputPath
-                        : stagedOutputPath;
-                string cleanupResult =
-                    await IncompleteEncodeOutputCleanupService.CleanupAsync(
-                    logicalSourcePath,
-                    incompleteOutputPath,
-                    cleanupEnabled,
-                    isCanceled ? "canceled" : "failed");
-                string sourceRetention =
-                    "Original source retained because validated finalization did not complete.";
-                string historyNotes =
-                    $"{notes} {sourceRetention} Incomplete output cleanup: {cleanupResult}";
-                if (isDvdEncode)
+                JobHistoryRecord failureHistoryRecord = new()
                 {
-                    historyNotes +=
-                        $" TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
-                        $"Segments={dvdOptions.Candidate.Segments.Count}; " +
-                        "Source deletion disabled.";
+                    Id = meta.StatisticsOperationId,
+                    Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
+                    StartUtc = jobStartUtc,
+                    SourcePath = logicalSourcePath,
+                    EncoderMode = encoderText,
+                    TargetMb = targetMb,
+                    DurationSec = durationSec,
+                    Log = !isCanceled && !string.IsNullOrWhiteSpace(meta.CuratedFailureDiagnosticReport)
+                        ? meta.CuratedFailureDiagnosticReport
+                        : jobLog.ToString(),
+                    Notes = isDvdEncode
+                        ? $"{notes} TitleSet={dvdOptions!.Candidate.TitleSetId}; " +
+                          $"Segments={dvdOptions.Candidate.Segments.Count}; Source deletion disabled."
+                        : notes,
+                    DvdTitleSet = isDvdEncode ? dvdOptions!.Candidate.TitleSetId : null,
+                    DvdSegmentCount = isDvdEncode ? dvdOptions!.Candidate.Segments.Count : null,
+                    DvdOutputMode = isDvdEncode ? DvdOutputMode.EncodeUsingCurrentSettings.ToString() : null,
+                    SourceSizeBytes = sourceSizeBytes,
+                    WasRecommendedDvdTitle = isDvdEncode ? dvdOptions!.Candidate.IsLikelyMainFeature : null,
+                    ErrorSummary = notes,
+                    RequestedOutputContainer = requestedOutputContainer.ToString(),
+                    ResolvedOutputContainer = appliedContainerDecision?.Resolved.ToString(),
+                    ContainerDecisionReason = appliedContainerDecision?.Reason,
+                    DiagnosticSummary = diagnosticSummary,
+                    TerminalResult = isCanceled ? EncodingTerminalResult.Canceled : terminalResult ?? EncodingTerminalResult.EncodeFailed
+                };
+
+                bool retryQueued = false;
+                if (!isCanceled)
+                {
+                    retryQueued = !researchEvidenceFailed && executionAttempt?.AdaptiveSelection is null && EncodingRetryPolicy.AllowsAutomaticRetry(
+                            terminalResult, meta.PredictionShadowExperimentAssignment is not null) &&
+                        ex is not PreparedProductionPlanValidationException &&
+                        TryQueueFailedRowForAutoRetry(row);
+                    if (storagePolicyRejected)
+                        System.Threading.Interlocked.Increment(ref _encodeStorageRejectedCount);
+                    else if (!retryQueued)
+                        System.Threading.Interlocked.Increment(ref _encodeFailedCount);
                 }
 
-                try
-                {
-                    lock (_historyLock)
-                    {
-                        _historyService.Append(new JobHistoryRecord
-                        {
-                            Type = isDvdEncode ? JobType.DvdEncode : JobType.Encode,
-                            Status = isCanceled
-                                ? JobStatus.Canceled
-                                : JobStatus.Failed,
-                            StartUtc = jobStartUtc,
-                            EndUtc = DateTime.UtcNow,
-                            SourcePath = logicalSourcePath,
-                            OutputPath = attemptedOutputPath,
-                            EncoderMode = encoderText,
-                            TargetMb = targetMb,
-                            DurationSec = durationSec,
-                            Log = jobLog.ToString(),
-                            Notes = historyNotes,
-                            DvdTitleSet = isDvdEncode
-                                ? dvdOptions!.Candidate.TitleSetId
-                                : null,
-                            DvdSegmentCount = isDvdEncode
-                                ? dvdOptions!.Candidate.Segments.Count
-                                : null,
-                            DvdOutputMode = isDvdEncode
-                                ? DvdOutputMode.EncodeUsingCurrentSettings.ToString()
-                                : null,
-                            SourceSizeBytes = sourceSizeBytes,
-                            OutputSizeBytes = TryGetFileSizeBytes(incompleteOutputPath),
-                            WasRecommendedDvdTitle = isDvdEncode
-                                ? dvdOptions!.Candidate.IsLikelyMainFeature
-                                : null,
-                            ErrorSummary = notes,
-                            FinalizationOutcome =
-                                finalizationResult?.FailureKind.ToString() ??
-                                (isCanceled ? "Canceled" : "FfmpegFailed"),
-                            StagingPath = stagedOutputPath,
-                            SourceDeletionResult = sourceRetention,
-                            RequestedOutputContainer = PolicyOutputContainer(policyIntent).ToString(),
-                            ResolvedOutputContainer = appliedContainerDecision?.Resolved.ToString(),
-                            ContainerDecisionReason = appliedContainerDecision?.Reason,
-                            DiagnosticSummary = diagnosticSummary
-                        });
-                    }
-                }
-                catch (Exception logEx)
-                {
-                    Debug.WriteLine($"History append (failure) failed: {logEx}");
-                    // Don't let logging errors mask the *real* encode error.
-                }
+                DateTime statisticsEndUtc = DateTime.UtcNow;
+                EncodeExecutionLifecycleCompletion lifecycleCompletion =
+                    await _encodeExecutionLifecycleService.CompleteFailedExecutionAsync(
+                        executionAttempt,
+                        failureHistoryRecord,
+                        statisticsEndUtc,
+                        isCanceled,
+                        storagePolicyRejected,
+                        cleanupEnabled,
+                        logicalSourcePath,
+                        attemptedOutputPath,
+                        stagedOutputPath,
+                        recoverableOutputPath,
+                        meta.StatisticsProcessingSeconds,
+                        diagnosticSummary,
+                        finalizationFailure?.Result.FailureKind ??
+                            (assignmentValidationFailure != null ? EncodeFinalizationFailureKind.Validation : null),
+                        retryQueued,
+                        ex.Message);
+                string cleanupResult = lifecycleCompletion.CleanupResult;
+                string sourceRetention = lifecycleCompletion.SourceRetentionResult;
+                string historyNotes = failureHistoryRecord.Notes;
 
                 var centralLogPath = ErrorLogService.Append(
                     Application.StartupPath,
-                    isCanceled ? "Encode job cancelled" : "Encode job failed",
+                    isCanceled ? "Encode job cancelled" : researchEvidenceFailed ? "Research evidence capture failed" :
+                        ex is PreparedProductionPlanValidationException ? "Prepared plan validation failed" :
+                        storagePolicyRejected ? "Encode skipped — insufficient savings" : "Encode job failed",
                     logicalSourcePath,
                     ex,
                     $"Encoder Mode: {encoderText}{Environment.NewLine}" +
@@ -1069,34 +1370,21 @@ namespace MediaFlux
                     "Captured Job Log:" + Environment.NewLine +
                     jobLog);
 
-                bool retryQueued = false;
-                if (!isCanceled)
+                if (executionAttempt is null && (isCanceled || !retryQueued))
                 {
-                    retryQueued = TryQueueFailedRowForAutoRetry(row);
-                    if (!retryQueued)
-                        System.Threading.Interlocked.Increment(ref _encodeFailedCount);
-                }
-
-                if (isCanceled || !retryQueued)
-                {
-                    EncodingStatisticsOutcome statisticsOutcome =
-                        finalizationFailure?.Result.FailureKind switch
-                        {
-                            EncodeFinalizationFailureKind.Validation =>
-                                EncodingStatisticsOutcome.ValidationFailed,
-                            EncodeFinalizationFailureKind.Promotion =>
-                                EncodingStatisticsOutcome.PromotionFailed,
-                            EncodeFinalizationFailureKind.FinalVerification =>
-                                EncodingStatisticsOutcome.FinalVerificationFailed,
-                            _ => isCanceled
-                                ? EncodingStatisticsOutcome.Cancelled
-                                : EncodingStatisticsOutcome.Failed
-                        };
                     RecordEncodingStatistics(
                         meta.StatisticsOperationId,
                         meta.StatisticsStartUtc,
-                        DateTime.UtcNow,
-                        statisticsOutcome,
+                        statisticsEndUtc,
+                        finalizationFailure?.Result.FailureKind switch
+                        {
+                            EncodeFinalizationFailureKind.StoragePolicyRejected => EncodingStatisticsOutcome.StoragePolicyRejected,
+                            EncodeFinalizationFailureKind.Validation => EncodingStatisticsOutcome.ValidationFailed,
+                            EncodeFinalizationFailureKind.Promotion => EncodingStatisticsOutcome.PromotionFailed,
+                            EncodeFinalizationFailureKind.FinalVerification => EncodingStatisticsOutcome.FinalVerificationFailed,
+                            _ when ex is PreparedProductionPlanValidationException => EncodingStatisticsOutcome.ValidationFailed,
+                            _ => isCanceled ? EncodingStatisticsOutcome.Cancelled : EncodingStatisticsOutcome.Failed
+                        },
                         logicalSourcePath,
                         attemptedOutputPath,
                         videoCodec,
@@ -1106,7 +1394,9 @@ namespace MediaFlux
                         mediaDurationSeconds: durationSec > 0 ? durationSec : null,
                         processingSeconds: meta.StatisticsProcessingSeconds,
                         notes: historyNotes,
-                        diagnosticSummary: diagnosticSummary);
+                        diagnosticSummary: diagnosticSummary,
+                        predictionPlan: meta.IntelligencePlan,
+                        executionOutcome: meta.IntelligenceOutcome);
                 }
 
                 Ui(() =>
@@ -1119,13 +1409,21 @@ namespace MediaFlux
                                 ? "Canceled"
                                 : retryQueued
                                     ? "Retry Queued"
+                                    : assignmentValidationFailure != null
+                                        ? "Validation Failed"
+                                    : ex is PreparedProductionPlanValidationException
+                                        ? "Plan Validation Failed"
+                                    : researchEvidenceFailed
+                                        ? "Research evidence capture failed"
                                     : finalizationFailure?.Result.FailureKind ==
                                       EncodeFinalizationFailureKind.Validation
                                         ? "Validation Failed"
-                                        : finalizationFailure != null
-                                            ? "Finalization Failed"
-                                            : "Failed",
-                            isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : "Failed",
+                                    : storagePolicyRejected
+                                        ? adaptivePolicySkipped ? "Skipped — insufficient savings at acceptable quality" : "Skipped — insufficient savings"
+                                         : finalizationFailure != null
+                                             ? "Finalization Failed"
+                                             : JobHistoryPresentation.TerminalLabel(JobStatus.Failed, terminalResult),
+                            isCanceled ? "Canceled" : retryQueued ? "Retry Queued" : storagePolicyRejected ? "Skipped" : "Failed",
                             "",
                             (isCanceled
                                 ? "Canceled by user."
@@ -1140,13 +1438,21 @@ namespace MediaFlux
                         ? $"Canceled: {displayName}"
                         : retryQueued
                             ? $"Retry queued: {displayName}. Continuing queue."
+                        : assignmentValidationFailure != null
+                            ? $"Experiment assignment validation failed — original retained: {displayName}"
+                        : ex is PreparedProductionPlanValidationException
+                            ? $"Prepared plan validation failed — original retained: {displayName}"
+                        : storagePolicyRejected
+                            ? $"Skipped — insufficient savings: {displayName}. Original retained. Continuing queue."
                         : finalizationFailure?.Result.FailureKind ==
                           EncodeFinalizationFailureKind.Validation
                             ? $"Output validation failed — original retained: {displayName}"
-                            : finalizationFailure != null
-                                ? $"Output finalization failed — original retained: {displayName}"
-                                : $"Failed: {displayName}. Continuing queue.";
-                    toolStripStatusLabel1.Text = $"Encode error logged: {centralLogPath}";
+                                     : finalizationFailure != null
+                                 ? $"Output finalization failed — original retained: {displayName}"
+                             : terminalResult == EncodingTerminalResult.SourceUnrecoverable
+                                 ? $"Failed — Source damaged: {displayName}. Continuing queue."
+                             : $"Failed: {displayName}. Continuing queue.";
+                    toolStripStatusLabel1.Text = storagePolicyRejected ? $"Storage-policy rejection logged: {centralLogPath}" : $"Encode error logged: {centralLogPath}";
                 });
                 // leave the row so user can retry
             }
@@ -1155,15 +1461,110 @@ namespace MediaFlux
                 if (diagnosticStarted && diagnosticSummary == null)
                     _encodingDiagnosticsService.Cancel(meta.StatisticsOperationId);
                 _runningEncodeJobs.TryRemove(row, out _);
+                ScheduleQueueWorkspaceRefresh();
                 UpdateTrayStatus();
-                if (ReferenceEquals(_activeJobLogSb, jobLog))
-                    _activeJobLogSb = null; // stop log capture for this job
+                if (ReferenceEquals(_activeJobLog.Value, jobLogCapture))
+                    _activeJobLog.Value = null; // stop log capture for this job
                 Ui(() =>
                 {
                     if (ReferenceEquals(_activeEncodeRow, row))
                         _activeEncodeRow = null;
                     EndEncodeMetricsForRow(row);
                 });
+            }
+        }
+
+        private void ApplyBoundedRetryProgressToRow(DataGridViewRow row, EncodingQualityResolution retryQuality)
+        {
+            if (row == null || row.DataGridView != dgvEncodeQueue)
+                return;
+
+            if (!_activeEncodeMetrics.TryGetValue(row, out EncodeMetrics? metrics))
+                metrics = new EncodeMetrics();
+            metrics.Fps = 0;
+            metrics.Speed = 0;
+            metrics.TimeStr = "--";
+            metrics.LastFrame = 0;
+            metrics.LastFrameUtc = default;
+            _ = metrics.AttemptTracker.Observe(AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber);
+            metrics.RetryStatusText = BoundedRetryProgressPresentation.RetryStatus(retryQuality);
+            _activeEncodeMetrics[row] = metrics;
+            if (TryGetRowPathAndDuration(row, out string retryPath, out _) && !string.IsNullOrWhiteSpace(retryPath))
+                _etaSpeedState.Remove(retryPath);
+            else
+                _etaSpeedState.Remove($"row-{row.Index}");
+            SetEncodeRowState(row, metrics.RetryStatusText, "0%", "--:--:--",
+                $"Attempt {AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber} of {AdaptiveStorageSavingsRetryLimits.MaximumProductionAttempts} is encoding at {BoundedRetryProgressPresentation.QualityLabel(retryQuality)}. The initial adaptive selection remains recorded separately.");
+            SetEtaCellColor(row, 0);
+            row.Cells["colProgress"].ToolTipText = "Progress restarted for the retry encode.";
+            UpdateQueueEstimatedCompletion();
+        }
+
+        private void ApplyAdaptivePlanSnapshotPresentation(
+            DataGridViewRow row,
+            RowMeta meta,
+            EncodingPlan plan)
+        {
+            meta.IntelligencePlan = plan;
+            meta.EmpiricalPreview = null;
+            meta.AdaptiveQualitySelectionPending = false;
+            meta.RecommendationPending = false;
+            meta.AdaptiveSelectionSkipped = plan.AdaptiveSelection?.Disposition == AdaptiveSelectionDisposition.Skipped;
+            if (plan.AdaptiveSelection is not null)
+            {
+                meta.SizePredictionCalibration = null;
+                string reason = plan.AdaptiveSelection.Disposition switch
+                {
+                    AdaptiveSelectionDisposition.Skipped =>
+                        "Adaptive sample selection skipped the encode; no candidate output exists for a final-output recommendation.",
+                    AdaptiveSelectionDisposition.NotSuitable =>
+                        "Adaptive sample measurements were not usable; no sampled output projection is available for a final-output recommendation.",
+                    _ =>
+                        "Adaptive sample selection completed; no full-file output has been validated, so the preferred-quality estimate is not a final-output projection."
+                };
+                ApplySmartRecommendation(row, new SmartEncodeRecommendation
+                {
+                    Kind = SmartEncodeRecommendationKind.Unavailable,
+                    Confidence = SmartEncodeConfidence.Low,
+                    PrimaryReason = reason,
+                    Reasons = [reason]
+                });
+            }
+
+            DataGridViewCell estimateCell = row.Cells["colEstimatedSize"];
+            AdaptiveQualitySelectionEvidence? selection = plan.AdaptiveSelection;
+            if (selection?.Disposition == AdaptiveSelectionDisposition.Skipped)
+            {
+                estimateCell.Value = "Skipped — insufficient savings at acceptable quality";
+                estimateCell.Tag = null;
+                estimateCell.ToolTipText = "The prepared production plan is unavailable; no output size is estimated.";
+                if (!string.IsNullOrWhiteSpace(meta.Path) && _estimatedSizeMap.Remove(meta.Path))
+                {
+                    _queueTotalsDirty = true;
+                    UpdateSizeTotals(force: true);
+                }
+                return;
+            }
+
+            double estimateMb = GetInspectorEstimatedSizeMb(row);
+            if (estimateMb <= 0 && string.Equals(
+                    Convert.ToString(estimateCell.Value),
+                    AdaptiveStorageSavingsPolicy.PendingEstimate,
+                    StringComparison.Ordinal))
+            {
+                estimateCell.Value = "Unavailable";
+                estimateCell.Tag = null;
+                estimateCell.ToolTipText = "Estimated output is not available yet.";
+            }
+
+            if (estimateMb > 0)
+            {
+                estimateCell.Value = FormatSize(estimateMb);
+                estimateCell.ToolTipText = BuildQueueEstimateTooltip(meta, meta.SrcMb, estimateMb);
+            }
+            else if (estimateMb <= 0 && string.IsNullOrWhiteSpace(Convert.ToString(estimateCell.Value)))
+            {
+                estimateCell.ToolTipText = "Estimated output is not available yet.";
             }
         }
 
@@ -1184,9 +1585,13 @@ namespace MediaFlux
 
             lock (_activeEncodeQueueLock)
             {
+                // The retry is appended as pending work, so its one logical row's
+                // QueueSequence follows that pending position for exports/restarts.
+                meta.QueueSequence = AllocateEncodeQueueSequence();
                 _activeEncodeQueue.Add(row);
             }
 
+            ScheduleQueueExecutionOrderPresentationRefresh();
             System.Threading.Interlocked.Increment(ref _encodeRetryCount);
             return true;
         }
@@ -1203,6 +1608,77 @@ namespace MediaFlux
             {
                 return null;
             }
+        }
+
+        private EncodeExecutionSnapshotSettings CaptureEncodeExecutionSnapshotSettings(
+            OutputContainerSelection runOutputContainer)
+        {
+            var fallback = new EncodeExecutionSnapshotSettings
+            {
+                OutputFolder = string.Empty,
+                CompressionProfile = string.Empty,
+                EncoderId = VideoEncoderIds.Nvenc,
+                CodecFamily = VideoCodecFamily.Hevc,
+                VideoFormatText = "H.265 / HEVC (x265)",
+                EncoderDisplayTextOverride = "GPU (NVENC)",
+                EncoderPreset = "p5",
+                NumericQualityValue = 24,
+                AutomaticQuality = false,
+                QualityTarget = QualityTarget.Balanced,
+                TenBit = false,
+                AudioChannelSelection = null,
+                LimitGpuEncodingQueueToOneJob = _config.LimitGpuEncodingQueueToOneJob,
+                IncludeConcurrentEncoderSessions = false,
+                AutoTargetSize = false,
+                TargetSizeText = string.Empty,
+                ScaleMode = EncodingService.ScaleMode.None,
+                EnableOutputSuffix = _config.EnableOutputSuffix,
+                EnableCodecSuffix = _config.EnableCodecSuffix,
+                OutputSuffix = _config.OutputSuffix,
+                Restoration = _config.VideoRestoration?.Clone() ?? new VideoRestorationSettings(),
+                StorageSavings = _config.StorageSavings?.CloneNormalized() ?? new StorageSavingsOptions(),
+                AdaptivePreAttemptResearchCapture = _config.AdaptivePreAttemptResearchCapture ?? new(),
+                ResearchRoot = AppPaths.UserDataDirectory,
+                OutputContainer = runOutputContainer,
+                CompatibilityPolicy = ContainerCompatibilityPolicy.Intelligent,
+                DeleteSourceAfterCompression = false
+            };
+
+            return UiGet(
+                () => new EncodeExecutionSnapshotSettings
+                {
+                    OutputFolder = cmbEncodeOutput.Text,
+                    CompressionProfile = comboCompressionProfile?.SelectedItem?.ToString()
+                        ?? comboCompressionProfile?.Text
+                        ?? string.Empty,
+                    EncoderId = GetSelectedEncoderId(),
+                    CodecFamily = GetSelectedVideoCodecFamily(),
+                    VideoFormatText = comboVideoFormat.Text,
+                    EncoderPreset = GetSelectedEncoderPreset(),
+                    NumericQualityValue = nudAutoQuality is null
+                        ? null
+                        : (int)nudAutoQuality.Value,
+                    AutomaticQuality = IsAutomaticQualitySelected(),
+                    QualityTarget = GetSelectedQualityTarget(),
+                    TenBit = GetTenBitRequested(),
+                    AudioChannelSelection = comboAudioChannels?.SelectedItem?.ToString(),
+                    LimitGpuEncodingQueueToOneJob = _config.LimitGpuEncodingQueueToOneJob,
+                    IncludeConcurrentEncoderSessions = true,
+                    AutoTargetSize = chkAutoTargetSize.Checked,
+                    TargetSizeText = txtTargetSize.Text,
+                    ScaleMode = GetSelectedScaleMode(),
+                    EnableOutputSuffix = _config.EnableOutputSuffix,
+                    EnableCodecSuffix = _config.EnableCodecSuffix,
+                    OutputSuffix = _config.OutputSuffix,
+                    Restoration = _config.VideoRestoration?.Clone() ?? new VideoRestorationSettings(),
+                    StorageSavings = _config.StorageSavings?.CloneNormalized() ?? new StorageSavingsOptions(),
+                    AdaptivePreAttemptResearchCapture = _config.AdaptivePreAttemptResearchCapture ?? new(),
+                    ResearchRoot = AppPaths.UserDataDirectory,
+                    OutputContainer = runOutputContainer,
+                    CompatibilityPolicy = GetContainerCompatibilityPolicy(),
+                    DeleteSourceAfterCompression = chkDeleteSource.Checked
+                },
+                fallback);
         }
 
         private async Task SendDiscordQueueCompleteNotificationAsync(DateTime queueStartedUtc)

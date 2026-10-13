@@ -74,7 +74,7 @@ public sealed class AiBackendBenchmarkService
         _log = log;
         _sampleResources = sampleResources ?? (() => { using var hardware = new HardwarePerformanceService(); return hardware.Sample(); });
         _gpuInfo = gpuInfo ?? (() => { HardwareSnapshot snapshot = HardwarePerformanceService.Capture("", "", "", ""); return (snapshot.Gpu, snapshot.GpuDriver); });
-        _history = history ?? new AiBackendBenchmarkHistoryStore(Path.Combine(AppPaths.DataDirectory, "ai-benchmark-history.json"));
+        _history = history ?? new AiBackendBenchmarkHistoryStore(AppPaths.AiBenchmarkHistoryFile);
         _database = database ?? new AiBenchmarkDatabase();
     }
 

@@ -1,0 +1,138 @@
+using System.Text.Json;
+
+namespace MediaFlux.Services;
+
+/// <summary>
+/// The single authority for MediaFlux-owned storage.  Media paths supplied by a user are
+/// deliberately not represented here.
+/// </summary>
+public sealed class MediaFluxStoragePathService
+{
+    private const string LocationFileName = "storage-location.json";
+    private readonly string _defaultRoot;
+    private readonly string _locationFile;
+    private readonly string? _processRoot;
+
+    public MediaFluxStoragePathService(string? defaultRoot = null, string? locationFile = null)
+    {
+        _defaultRoot = Normalize(defaultRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaFlux", "UserData"));
+        _locationFile = locationFile ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaFlux", LocationFileName);
+    }
+
+    private MediaFluxStoragePathService(string processRoot)
+    {
+        _defaultRoot = processRoot;
+        _processRoot = processRoot;
+        // This pointer is never read or written in process-scoped mode.
+        _locationFile = Path.Combine(processRoot, LocationFileName);
+    }
+
+    /// <summary>A prepared headless tree. No normal pointer discovery, initialization or migration.</summary>
+    internal static MediaFluxStoragePathService ForIsolatedHeadlessRoot(string root)
+    {
+        string normalized = NormalizeIsolatedRoot(root);
+        if (!Directory.Exists(normalized))
+            throw new DirectoryNotFoundException($"The isolated UserData directory must already exist: '{normalized}'. Prepare config.json and data/encode-jobs.json before invoking MediaFlux.");
+        return new MediaFluxStoragePathService(normalized);
+    }
+
+    internal static string NormalizeIsolatedRoot(string root)
+    {
+        if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root))
+            throw new ArgumentException("The isolated UserData root must be an absolute directory path.", nameof(root));
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+    }
+
+    public string DefaultRoot => _defaultRoot;
+    public string LocationFile => _locationFile;
+    internal bool IsProcessScoped => _processRoot is not null;
+    public string Root => _processRoot ?? ReadConfiguredRoot() ?? _defaultRoot;
+    public string Data => Path.Combine(Root, "data");
+    public string Temp => Path.Combine(Root, "temp");
+    public string Config => Path.Combine(Root, "config.json");
+    /// <summary>Normal backups are external siblings; an isolated process keeps any backup path within its root.</summary>
+    public string Backups => IsProcessScoped ? Path.Combine(Root, "Backups") : ResolveBackupDirectory(Root);
+    public string AiIntermediates => Path.Combine(Data, "ai-intermediates");
+    public string RestorationPreviews => Path.Combine(Data, "restoration-previews");
+    public string FramePreviews => Path.Combine(Data, "frame-previews");
+    public string DuplicatePreviews => Path.Combine(Data, "duplicate-previews");
+    public string TensorRtEngines => Path.Combine(Data, "tensorrt-engines");
+    public string AiBenchmarkReruns => Path.Combine(Data, "ai-benchmark-reruns");
+    public string Logs => Path.Combine(Data, "logs");
+
+    public void InitializeDirectories()
+    { Directory.CreateDirectory(Root); Directory.CreateDirectory(Data); Directory.CreateDirectory(Temp); }
+
+    internal static string ResolveBackupDirectory(string root)
+    {
+        string normalized = Normalize(root);
+        string? parent = Directory.GetParent(normalized)?.FullName;
+        if (string.IsNullOrWhiteSpace(parent) || Same(parent, normalized))
+            throw new InvalidOperationException("The MediaFlux user-data root must have a parent directory for external backups.");
+        return Path.Combine(parent, "Backups");
+    }
+
+    public bool TryValidateNewRoot(string candidate, out string normalized, out string error)
+    {
+        normalized = string.Empty; error = string.Empty;
+        if (string.IsNullOrWhiteSpace(candidate)) { error = "Choose a storage folder."; return false; }
+        try { normalized = Normalize(candidate); }
+        catch (Exception ex) { error = "The storage folder is invalid: " + ex.Message; return false; }
+        string source = Root;
+        if (Same(normalized, source)) { error = "That folder is already the active MediaFlux storage root."; return false; }
+        if (IsWithin(normalized, source) || IsWithin(source, normalized)) { error = "The new storage root cannot contain, or be contained by, the current root."; return false; }
+        if (File.Exists(normalized)) { error = "The destination path is an existing file, not a folder."; return false; }
+        if (Directory.Exists(normalized))
+        {
+            try
+            {
+                if ((File.GetAttributes(normalized) & FileAttributes.ReparsePoint) != 0) { error = "The destination folder cannot be a link or reparse point."; return false; }
+                if (Directory.EnumerateFileSystemEntries(normalized).Any()) { error = "The destination folder must be empty to prevent collisions."; return false; }
+            }
+            catch (Exception ex) { error = "The destination folder cannot be inspected safely: " + ex.Message; return false; }
+        }
+        try { string? parent = Path.GetDirectoryName(normalized); if (string.IsNullOrEmpty(parent)) throw new IOException("A parent folder is required."); Directory.CreateDirectory(parent); string probe = Path.Combine(parent, ".mediaflux-write-test-" + Guid.NewGuid().ToString("N")); using (File.Open(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { } File.Delete(probe); }
+        catch (Exception ex) { error = "The destination cannot be created or written: " + ex.Message; return false; }
+        return true;
+    }
+
+    public void WriteConfiguredRoot(string root)
+    {
+        if (IsProcessScoped)
+            throw new InvalidOperationException("An isolated headless invocation cannot rewrite a persistent storage pointer.");
+        string normalized = Normalize(root); Directory.CreateDirectory(Path.GetDirectoryName(_locationFile)!);
+        string temporary = _locationFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(new StorageLocation(normalized)));
+        File.Move(temporary, _locationFile, true);
+    }
+
+    private string? ReadConfiguredRoot()
+    {
+        try
+        {
+            using FileStream stream = new(_locationFile, FileMode.Open, FileAccess.Read, FileShare.Read);
+            StorageLocation? location = JsonSerializer.Deserialize<StorageLocation>(stream);
+            if (string.IsNullOrWhiteSpace(location?.Root))
+                throw new InvalidDataException("The storage-location.json pointer does not contain a storage root.");
+
+            return Normalize(location.Root);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null; // No pointer is the backward-compatible default-root state.
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            throw new InvalidDataException(
+                $"MediaFlux could not safely read its storage-location.json pointer at '{_locationFile}'. " +
+                "The configured user-data root was not replaced with the default root.",
+                ex);
+        }
+    }
+    private static string Normalize(string path) => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    internal static bool Same(string left, string right) => string.Equals(Normalize(left), Normalize(right), StringComparison.OrdinalIgnoreCase);
+    internal static bool IsWithin(string child, string parent) { string p = Normalize(parent) + Path.DirectorySeparatorChar; return Normalize(child).StartsWith(p, StringComparison.OrdinalIgnoreCase); }
+    internal static bool PathsOverlap(string left, string right) =>
+        Same(left, right) || IsWithin(left, right) || IsWithin(right, left);
+    private sealed record StorageLocation(string Root);
+}

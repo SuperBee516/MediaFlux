@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,15 +16,18 @@ namespace MediaFlux.Services
     /// Encapsulates video encoding logic via FFmpeg with GPU or CPU, optional 10-bit,
     /// deterministic stream mapping, and optional target size budgeting.
     /// </summary>
-    public class EncodingService
+    public class EncodingService : IEncodeRequestExecutor
     {
         private const int MaxCapturedFfmpegCharacters = 512 * 1024;
         private readonly string _appPath;
         private readonly string _ffmpegPath;
         private readonly string _ffprobePath;
+        private readonly FfprobeService _ffprobeService;
         private readonly Action<string> _progressCallback;
         private readonly Action<string>? _log;
         private readonly IEncodeOutputFinalizationService _finalizationService;
+        private readonly IAdaptiveVideoSampleRunner? _adaptiveSampleRunnerOverride;
+        private readonly Func<string, string, int, CancellationToken, Task<(int ExitCode, string StandardError)>>? _productionEncodeRunnerOverride;
 
 
         private readonly SynchronizationContext? _syncContext;
@@ -66,6 +70,9 @@ namespace MediaFlux.Services
             public OutputContainerSelection RequestedOutputContainer { get; }
             public OutputContainer ResolvedOutputContainer { get; }
             public string ContainerDecisionReason { get; }
+            public MediaProbeResult? FinalOutputProbe { get; }
+            public StorageSavingsContract StorageSavingsContract { get; }
+            public StorageSavingsEvaluation? StorageSavings { get; }
 
             public EncodeResult(
                 bool success,
@@ -78,7 +85,10 @@ namespace MediaFlux.Services
                 OutputContainerSelection requestedOutputContainer = OutputContainerSelection.Mp4,
                 OutputContainer resolvedOutputContainer = OutputContainer.Mp4,
                 string containerDecisionReason = "",
-                long? finalOutputLastWriteUtcTicks = null)
+                long? finalOutputLastWriteUtcTicks = null,
+                MediaProbeResult? finalOutputProbe = null,
+                StorageSavingsContract? storageSavingsContract = null,
+                StorageSavingsEvaluation? storageSavings = null)
             {
                 Success = success;
                 OutputPath = outputPath;
@@ -91,6 +101,9 @@ namespace MediaFlux.Services
                 RequestedOutputContainer = requestedOutputContainer;
                 ResolvedOutputContainer = resolvedOutputContainer;
                 ContainerDecisionReason = containerDecisionReason;
+                FinalOutputProbe = finalOutputProbe;
+                StorageSavingsContract = storageSavingsContract ?? Models.StorageSavingsContract.Disabled;
+                StorageSavings = storageSavings;
             }
         }
 
@@ -105,6 +118,12 @@ namespace MediaFlux.Services
             public double Speed { get; }
             public double BitrateKbps { get; }
             public double Percent { get; }
+            public long? EncodedFrames { get; }
+            public EncodeProgressBasis Basis { get; }
+            public long? TotalFrames { get; }
+            public bool TimestampStalled { get; }
+            public bool TimestampAvailable { get; }
+            public int Attempt { get; }
 
             public EncodeProgress(
                 TimeSpan currentTime,
@@ -112,7 +131,10 @@ namespace MediaFlux.Services
                 double fps,
                 double speed,
                 double bitrateKbps,
-                double percent)
+                double percent,
+                long? encodedFrames = null, EncodeProgressBasis basis = EncodeProgressBasis.Timestamp,
+                long? totalFrames = null, bool timestampStalled = false, bool timestampAvailable = true,
+                int attempt = 1)
             {
                 CurrentTime = currentTime;
                 TotalDuration = totalDuration;
@@ -120,6 +142,12 @@ namespace MediaFlux.Services
                 Speed = speed;
                 BitrateKbps = bitrateKbps;
                 Percent = percent;
+                EncodedFrames = encodedFrames;
+                Basis = basis;
+                TotalFrames = totalFrames;
+                TimestampStalled = timestampStalled;
+                TimestampAvailable = timestampAvailable;
+                Attempt = attempt;
             }
         }
 
@@ -140,29 +168,48 @@ namespace MediaFlux.Services
             Action<string>? logCallback,
             string? ffmpegPath = null,
             string? ffprobePath = null,
-            IEncodeOutputFinalizationService? finalizationService = null)
+            IEncodeOutputFinalizationService? finalizationService = null,
+            IAdaptiveVideoSampleRunner? adaptiveSampleRunner = null)
         {
             if (string.IsNullOrWhiteSpace(applicationDirectory))
                 throw new ArgumentException("Application directory must be provided.", nameof(applicationDirectory));
 
             _appPath = applicationDirectory;
+            _adaptiveSampleRunnerOverride = adaptiveSampleRunner;
             var tools = FfmpegToolResolver.Resolve(applicationDirectory, ffmpegPath, ffprobePath);
             _ffmpegPath = tools.FfmpegPath;
             _ffprobePath = tools.FfprobePath;
+            _ffprobeService = new FfprobeService(tools, new MediaToolProcessRunner());
             _progressCallback = progressCallback ?? (_ => { });
             _log = logCallback;
             _finalizationService = finalizationService ??
                 new EncodeOutputFinalizationService(
                     new EncodeOutputValidationService(
-                        new FfprobeService(
-                            _ffprobePath,
-                            new MediaToolProcessRunner()),
+                        _ffprobeService,
                         new FfmpegDecodeIntegritySpotCheckService(
                             _ffmpegPath),
-                        _log));
+                        _log,
+                        (path, token) => new SourceTimingAnalysisService(_ffprobePath, log: _log).AnalyzeAsync(path, token),
+                        new FfmpegFullVideoDecodeCoverageService(_ffmpegPath)));
 
             // Capture the current SynchronizationContext (WinForms UI thread) to marshal progress callbacks safely.
             _syncContext = SynchronizationContext.Current;
+        }
+
+        internal EncodingService(
+            string applicationDirectory,
+            Action<string> progressCallback,
+            Action<string>? logCallback,
+            string? ffmpegPath,
+            string? ffprobePath,
+            IEncodeOutputFinalizationService? finalizationService,
+            IAdaptiveVideoSampleRunner? adaptiveSampleRunner,
+            Func<string, string, int, CancellationToken, Task<(int ExitCode, string StandardError)>> productionEncodeRunnerOverride)
+            : this(applicationDirectory, progressCallback, logCallback, ffmpegPath, ffprobePath,
+                finalizationService, adaptiveSampleRunner)
+        {
+            _productionEncodeRunnerOverride = productionEncodeRunnerOverride ??
+                throw new ArgumentNullException(nameof(productionEncodeRunnerOverride));
         }
 
         // --------------------------------------------------------------------
@@ -281,7 +328,7 @@ namespace MediaFlux.Services
         /// Preferred encoder-neutral API. Legacy overloads remain available while
         /// existing UI and persisted settings migrate to stable encoder IDs.
         /// </summary>
-        public Task<EncodeResult> EncodeWithResultAsync(EncodingRequest request)
+        public async Task<EncodeResult> EncodeWithResultAsync(EncodingRequest request)
         {
             ArgumentNullException.ThrowIfNull(request);
             ArgumentNullException.ThrowIfNull(request.Input);
@@ -300,7 +347,16 @@ namespace MediaFlux.Services
                     request.ConcurrentEncoderSessions);
             EnsureEncoderAvailable(validated.Resolved.Selection);
 
-            return EncodeInternalAsync(
+            FfmpegNvencRuntimeCapability? capability = await FfmpegNvencRuntimeCapabilityService.Shared
+                .CheckRequestedAsync(_ffmpegPath, validated.Resolved.Selection, request.CancellationToken)
+                .ConfigureAwait(false);
+            if (capability is { IsAvailable: false })
+            {
+                FfmpegNvencRuntimeCapabilityService.LogBlocked(capability, "Encoding service");
+                throw new InvalidOperationException(FfmpegNvencRuntimeCapabilityService.BlockedMessage(capability));
+            }
+
+            return await EncodeInternalAsync(
                 request.Input,
                 request.OutputFolder,
                 request.Suffix,
@@ -330,7 +386,32 @@ namespace MediaFlux.Services
                 request.SampleStart,
                 request.SampleDuration,
                 VideoRestorationModeResolver.Resolve(request.Restoration),
-                request.AiProgressCallback);
+                request.AiProgressCallback,
+                request.SourceDecodeMode,
+                request.DisableAutomaticFfmpegRecovery,
+                request.FfmpegDiagnosticCallback,
+                request.ValidationProfile,
+                request.StructuredProgressCallback,
+                request.EncodingPlanSnapshotCallback,
+                 request.EncodingPlanDivergenceCallback,
+                 request.EncodingExecutionOutcomeCallback,
+                 request.RecoveryStatusCallback,
+                 request.QualityIntent,
+                request.QualityResolutionCallback,
+                request.FailureDiagnosticReportCallback,
+                request.SizePredictionCalibration,
+                request.PreEncodeResearchCallback,
+                request.LifecycleDiagnostics,
+                request.FaststartStartedCallback,
+                request.PreEncodeExecutionValidationCallback,
+                request.StorageSavingsContract,
+                request.AdaptiveStorageSavingsEnabled,
+                request.AdaptiveSelectionCallback,
+                request.ExperimentalPolicyCRetryEnabled,
+                request.AdaptivePreAttemptCaptureCallback,
+                request.PreparedAdaptiveProductionPlan,
+                request.StorageSavingsPolicy,
+                request.PreparedPlan).ConfigureAwait(false);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -490,7 +571,20 @@ namespace MediaFlux.Services
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
             VideoRestorationSettings? restoration = null,
-            Action<AiIntermediateProgress>? aiProgressCallback = null)
+            Action<AiIntermediateProgress>? aiProgressCallback = null,
+            FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
+            bool disableAutomaticFfmpegRecovery = false,
+            Action<string>? ffmpegDiagnosticCallback = null,
+            EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
+            Action<EncodeProgress>? structuredProgressCallback = null,
+            Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
+             Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
+             Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
+             Action<EncodingRecoveryStatusUpdate>? recoveryStatusCallback = null,
+             EncodingQualityIntent? qualityIntent = null,
+            Action<EncodingQualityResolution>? qualityResolutionCallback = null,
+            Action<string>? failureDiagnosticReportCallback = null,
+            EncodingSizePredictionCalibration? sizePredictionCalibration = null)
         {
             return EncodeInternalAsync(
                 EncodingInputSource.FromFile(input),
@@ -522,7 +616,20 @@ namespace MediaFlux.Services
                 sampleStart,
                 sampleDuration,
                 restoration,
-                aiProgressCallback);
+                aiProgressCallback,
+                sourceDecodeMode,
+                disableAutomaticFfmpegRecovery,
+                ffmpegDiagnosticCallback,
+                validationProfile,
+                structuredProgressCallback,
+                encodingPlanSnapshotCallback,
+                 encodingPlanDivergenceCallback,
+                 encodingExecutionOutcomeCallback,
+                 recoveryStatusCallback,
+                 qualityIntent,
+                qualityResolutionCallback,
+                failureDiagnosticReportCallback,
+                sizePredictionCalibration);
         }
 
         private async Task<EncodeResult> EncodeInternalAsync(
@@ -555,10 +662,54 @@ namespace MediaFlux.Services
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
             VideoRestorationSettings? restoration = null,
-            Action<AiIntermediateProgress>? aiProgressCallback = null)
+            Action<AiIntermediateProgress>? aiProgressCallback = null,
+            FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
+            bool disableAutomaticFfmpegRecovery = false,
+            Action<string>? ffmpegDiagnosticCallback = null,
+            EncodeOutputValidationProfile validationProfile = EncodeOutputValidationProfile.Production,
+            Action<EncodeProgress>? structuredProgressCallback = null,
+            Action<EncodingPlanSnapshot>? encodingPlanSnapshotCallback = null,
+             Action<EncodingPlanDivergence>? encodingPlanDivergenceCallback = null,
+             Action<EncodingExecutionOutcome>? encodingExecutionOutcomeCallback = null,
+             Action<EncodingRecoveryStatusUpdate>? recoveryStatusCallback = null,
+             EncodingQualityIntent? qualityIntent = null,
+            Action<EncodingQualityResolution>? qualityResolutionCallback = null,
+            Action<string>? failureDiagnosticReportCallback = null,
+            EncodingSizePredictionCalibration? sizePredictionCalibration = null,
+            Func<EncodingPlanSnapshot, CancellationToken, Task>? preEncodeResearchCallback = null,
+            EncodeLifecycleDiagnostics? lifecycleDiagnostics = null,
+            Action? faststartStartedCallback = null,
+            Action<EncodingPlanSnapshot>? preEncodeExecutionValidationCallback = null,
+            StorageSavingsContract? storageSavingsContract = null,
+            bool adaptiveStorageSavingsEnabled = false,
+            Action<AdaptiveQualitySelectionEvidence>? adaptiveSelectionCallback = null,
+            bool experimentalPolicyCRetryEnabled = false,
+            Func<AdaptivePreAttemptObservation, CancellationToken, Task>? adaptivePreAttemptCaptureCallback = null,
+            PreparedAdaptiveProductionPlan? preparedAdaptiveProductionPlan = null,
+            StorageSavingsOptions? storageSavingsPolicy = null,
+            EncodingPlan? preparedPlan = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
+            using var previewExclusion = await PreviewSamplingCoordinator.Shared.EnterProductionAsync(cancellationToken).ConfigureAwait(false);
             var performance = new PerformanceTimingService();
+            void ReportFinalizationStatus(string status)
+            {
+                if (status == "Verifying output") lifecycleDiagnostics?.Record(EncodeLifecycleEvent.VerificationStart);
+                else if (status == "Finalizing")
+                {
+                    lifecycleDiagnostics?.Record(EncodeLifecycleEvent.StagedVerificationEnd);
+                    lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FinalizationStart);
+                }
+                else if (status == "Verifying final output")
+                {
+                    lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FinalizationEnd);
+                    lifecycleDiagnostics?.Record(EncodeLifecycleEvent.PromotedVerificationStart);
+                }
+                finalizationStatusCallback?.Invoke(status);
+            }
+            string? sourceTimelineRepairPath = null;
+            string? sourceContainerRepairPath = null;
+            Guid recoveryOperationId = Guid.Empty;
             try
             {
             cancellationToken.ThrowIfCancellationRequested();
@@ -600,10 +751,22 @@ namespace MediaFlux.Services
                    Environment.CurrentDirectory)
                 : outputFolder;
 
-            Directory.CreateDirectory(outFolder);
+            try
+            {
+                Directory.CreateDirectory(outFolder);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                FfmpegStorageFailure storageFailure = FfmpegStorageFailureClassifier.Classify(ex, destinationOperation: true);
+                string detail = storageFailure.IsReliable
+                    ? storageFailure.Describe()
+                    : "the output staging directory could not be created";
+                throw new InvalidOperationException(
+                    $"MediaFlux cannot start the encode because {detail}: '{outFolder}'. The original source was retained.", ex);
+            }
             performance.SetHardwareSnapshot(HardwarePerformanceService.Capture(
                 inputSource.SourcePath,
-                Path.Combine(AppPaths.DataDirectory, "ai-intermediates"),
+                AppPaths.AiIntermediatesDirectory,
                 outFolder,
                 _ffmpegPath));
 
@@ -616,11 +779,9 @@ namespace MediaFlux.Services
                 ? inputSource.SourcePath
                 : inputSource.SourceFiles.FirstOrDefault() ?? inputSource.SourcePath;
             MediaProbeResult sourceProbe;
-            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.SourceAnalysis))
+            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.SourceProbe))
             {
-            sourceProbe = await new FfprobeService(
-                    _ffprobePath,
-                    new MediaToolProcessRunner())
+            sourceProbe = await _ffprobeService
                 .ProbeAsync(sourceProbePath, cancellationToken)
                 .ConfigureAwait(false);
             scope.Complete();
@@ -628,6 +789,7 @@ namespace MediaFlux.Services
             if (!sourceProbe.Success)
                 throw new InvalidOperationException(
                     $"FFprobe could not inspect the source before container selection: {sourceProbe.ErrorMessage}");
+            MediaProbeResult physicalProbe = sourceProbe;
             MediaProbeStreamInfo? sourceVideo = sourceProbe.Streams.FirstOrDefault(
                 stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
             ProgramDurationDecision programDuration = ProgramDurationResolver.Resolve(sourceProbe);
@@ -635,20 +797,365 @@ namespace MediaFlux.Services
                 ? null
                 : ProgramDurationResolver.GetReliableDuration(programDuration.PrimaryVideo);
             _log?.Invoke($"[EncodingService] Container duration={sourceProbe.DurationSeconds?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; primary video duration={primaryVideoDuration?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; authoritative duration={programDuration.DurationSeconds?.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}s; reason={programDuration.Reason}");
+            SourceTimingAnalysis? sourceTiming = null;
+            SourceTimingAnalysis? originalSourceTiming = null;
+            SourceTimelineRecoveryResult? timelineRecovery = null;
+            RationalFrameRate? preplannedTimelineReconstructionRate = null;
+            bool requireRegeneratedOutputTimeline = false;
+            if (inputSource.Kind == EncodingInputKind.File)
+            {
+                using PerformanceTimingService.PerformanceScope timingScope = performance.Measure(PerformanceTimingStage.SourceTimingAnalysis);
+                sourceTiming = await new SourceTimingAnalysisService(_ffprobePath, log: _log)
+                    .AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
+                originalSourceTiming = sourceTiming;
+                timingScope.Complete();
+                if (sourceTiming.Classification == SourceTimingClassification.IrregularUnsafe)
+                {
+                    EncodingSourceFailureClassification classification = EncodingSourceFailureClassifier.Classify(sourceTiming.Reason);
+                    if (!classification.IsRecoveryCandidate || classification.Type != EncodingSourceFailureType.TimelineCorruption)
+                        throw new InvalidOperationException("The source video has materially discontinuous or non-monotonic presentation timestamps. MediaFlux did not start an encode because it cannot prove a complete presentation timeline. The original source was retained.");
+
+                    sourceTimelineRepairPath = Path.Combine(outFolder, $".mediaflux-timeline-repair-{Guid.NewGuid():N}.mkv");
+                    _log?.Invoke($"[EncodingRecovery] Type=Timeline; Failure=SourceTimelineCorruption; InitialMode=Strict; RecoveryMode=TimestampNormalization; ProcessResult=NotStarted; MediaDisposition=NotAttempted; source={inputSource.SourcePath}; temporary={sourceTimelineRepairPath}.");
+                    timelineRecovery = await new SourceTimelineRecoveryService(_ffmpegPath, _ffprobePath, log: _log)
+                        .TryNormalizeAsync(inputSource.SourcePath, sourceTimelineRepairPath, sourceProbe, cancellationToken).ConfigureAwait(false);
+                    if (!timelineRecovery.Success)
+                    {
+                        bool aiRestorationRequested = restoration is { AiMode: not AiRestorationMode.Off };
+                        if (!sourceTiming.HasNonMonotonicTimestamps ||
+                            timelineRecovery.FailureKind != SourceTimelineRecoveryFailureKind.StreamCopyPreservedUnsafeTiming || aiRestorationRequested || sourceVideo is null)
+                            throw new InvalidOperationException($"The source video has a material timestamp defect and the bounded normalization attempt did not prove a safe timeline. {timelineRecovery.Reason} The original source was retained.");
+
+                        MediaProbeStreamInfo[] reconstructionAudio = inputSource.HasExplicitStreamSelection
+                            ? sourceProbe.Streams.Where(stream =>
+                                stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                                inputSource.AudioStreamIndexes.Contains(stream.Index)).ToArray()
+                            : mapMode == StreamMapMode.FirstAudioOnly
+                                ? sourceProbe.Streams.Where(stream => stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase)).Take(1).ToArray()
+                                : sourceProbe.Streams.Where(stream => stream.CodecType.Equals("audio", StringComparison.OrdinalIgnoreCase)).ToArray();
+                        TimelineReconstructionEligibility reconstruction = await new TimelineReconstructionEligibilityService(_ffmpegPath, _ffprobePath, log: _log)
+                            .EvaluateAsync(inputSource.SourcePath, sourceVideo, programDuration.DurationSeconds, reconstructionAudio, cancellationToken)
+                            .ConfigureAwait(false);
+                        _log?.Invoke($"[EncodingRecovery] TimelineReconstructionEligibility: source-non-monotonic-PTS=yes; stream-copy-still-non-monotonic=yes; ai-restoration=disabled; {reconstruction.DescribeEvidence()}");
+                        if (!reconstruction.IsEligible || reconstruction.FrameRate is not { } provenRate)
+                            throw new InvalidOperationException($"The source video has a material timestamp defect and stream-copy normalization preserved it. MediaFlux could not prove that deterministic decode/re-encode timestamp reconstruction is safe. {reconstruction.Reason} The original source was retained.");
+
+                        preplannedTimelineReconstructionRate = provenRate;
+                        requireRegeneratedOutputTimeline = true;
+                        _log?.Invoke($"[EncodingRecovery] Stream-copy normalization preserved unsafe timing; using the existing encode once with proven frame-index timestamp reconstruction at {provenRate.Text}. {reconstruction.DescribeEvidence()}");
+                    }
+
+                    if (timelineRecovery.Success)
+                    {
+                        inputSource = inputSource.WithInputPath(timelineRecovery.RepairedPath);
+                        physicalProbe = timelineRecovery.RepairedProbe!;
+                        sourceVideo = physicalProbe.Streams.FirstOrDefault(stream =>
+                            stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+                        sourceTiming = timelineRecovery.RepairedTiming;
+                        _log?.Invoke($"[EncodingRecovery] Type=Timeline; Failure=SourceTimelineCorruption; InitialMode=Strict; RecoveryMode=TimestampNormalization; ProcessResult=Succeeded; MediaDisposition=Salvaged; Reason={timelineRecovery.Reason}");
+                    }
+                }
+            }
+            VideoEncoderSelection legacyEncoder =
+                encoderSelection ??
+                EncoderRegistry.Default.ResolveLegacyCodec(videoCodec).Selection;
+            double? legacyTargetMb = targetMb;
+            int? legacyAudioChannels = audioChannels;
+            StreamMapMode legacyMapMode = mapMode;
+            bool legacyCopySubtitles = copySubtitles;
+            bool legacyCopyDataStreams = copyDataStreams;
+            bool legacyCopyAttachments = copyAttachments;
+            TimeSpan planKnownDuration = inputSource.KnownDurationSeconds is > 0
+                ? TimeSpan.FromSeconds(inputSource.KnownDurationSeconds.Value)
+                : programDuration.DurationSeconds is > 0
+                    ? TimeSpan.FromSeconds(programDuration.DurationSeconds.Value)
+                    : TimeSpan.Zero;
+            var planContext = new EncodingDecisionContext(
+                physicalProbe, inputSource, legacyEncoder, useGpu, targetMb, scaleMode,
+                restoration?.Clone() ?? new VideoRestorationSettings(), encoderPreset ?? "", qualityValue, tenBit, audioChannels,
+                mapMode, copySubtitles, copyDataStreams, copyAttachments, outputContainer,
+                compatibilityPolicy, planKnownDuration, validationProfile,
+                qualityIntent ?? EncodingQualityIntent.LegacyNumeric(qualityValue),
+                timelineRecovery is { Success: true }
+                    ? new EncodingSourceFailureClassification(
+                        EncodingSourceFailureType.TimelineCorruption,
+                        true,
+                        "Preflight timestamp defect was repaired and revalidated.",
+                        timelineRecovery.Reason)
+                    : null,
+                sizePredictionCalibration)
+            {
+                ConcurrentEncoderSessions = concurrentEncoderSessions,
+                StorageSavingsContract = storageSavingsContract ?? StorageSavingsContract.Disabled,
+                StorageSavingsPolicy = storageSavingsPolicy?.CloneNormalized() ?? new StorageSavingsOptions()
+            };
+            EncodingPlan shadowPlan = EncodingPlanService.Create(planContext);
+            if (preparedPlan is not null)
+            {
+                if (preparedPlan.ProductionPlan is not { } preparedIdentity ||
+                    shadowPlan.ProductionPlan is not { } resolvedIdentity ||
+                    !string.Equals(preparedIdentity.SourceIdentity, resolvedIdentity.SourceIdentity, StringComparison.Ordinal) ||
+                    !string.Equals(preparedIdentity.PlanFingerprint, resolvedIdentity.PlanFingerprint, StringComparison.Ordinal))
+                    throw new InvalidDataException(
+                        "The prepared production plan no longer matches the current source and execution inputs. Reprepare the estimate before encoding.");
+                shadowPlan = preparedPlan;
+            }
+            // Corrective timeline preparation changes production video settings.
+            // Initial adaptive samples only reproduce the ordinary strict path.
+            bool ordinaryAdaptiveInput = sourceTimelineRepairPath is null && !requireRegeneratedOutputTimeline &&
+                sourceDecodeMode == FfmpegSourceDecodeMode.Strict && sampleStart is null && sampleDuration is null;
+            AdaptiveQualitySelectionRequest? selectionRequest = null;
+            string adaptiveReason = string.Empty;
+            bool adaptiveSelectionAvailable;
+            try
+            {
+                adaptiveSelectionAvailable = AdaptiveStorageSavingsPolicy.TryCreateRequest(
+                    adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput &&
+                        qualityIntent?.Kind != EncodingQualityIntentKind.AutomaticTargetBitrate,
+                    concurrentEncoderSessions,
+                    storageSavingsContract ?? StorageSavingsContract.Disabled, planContext, shadowPlan,
+                    out selectionRequest, out adaptiveReason);
+            }
+            catch (Exception ex)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                adaptiveSelectionAvailable = false;
+                adaptiveReason = $"Adaptive selection setup failed; configured quality will be used: {ex.Message}";
+                _log?.Invoke("[AdaptiveStorageSavings] " + adaptiveReason);
+            }
+            if (adaptiveSelectionAvailable)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                callback(preparedAdaptiveProductionPlan is null ? "Preparing production plan…" : "Using prepared production plan…");
+                var selectionRunner = _adaptiveSampleRunnerOverride ?? new AdaptiveVideoSampleRunner(
+                    _ffmpegPath, _ffprobePath, _ffprobeService, (sampleRequest, candidate, segment, sampleOutput) =>
+                    {
+                        var values = EncodingPlanService.GetExecutionValues(shadowPlan);
+                        TimeSpan inputRelativeStart = GetInputRelativeSampleStart(segment, sampleRequest.SourceVideoStartOffsetSeconds);
+                        AutomaticEncodePerformanceInstrumentation.Current?.RecordAdaptiveSampleSeekMapping(
+                            sampleRequest.SourceVideoStartOffsetSeconds, inputRelativeStart);
+                        return "-hide_banner -nostats -loglevel error " + BuildFfmpegArgs(
+                            sampleRequest.Input, sampleOutput, values.Encoder.FfmpegCodec, values.UseGpu, null,
+                            scaleMode, encoderPreset, tenBit, audioChannels: null, concurrentEncoderSessions,
+                            mapMode, copySubtitles: false, copyDataStreams: false, copyAttachments: false,
+                            containerDecision: values.ContainerDecision, knownDuration: segment.Duration,
+                            qualityValue: candidate, encoderSelection: values.Encoder,
+                            sampleStart: inputRelativeStart,
+                            sampleDuration: segment.Duration,
+                            sourcePixelFormat: sampleRequest.Video.SourcePixelFormat,
+                            restoration: restoration, plannedVideoGeometry: values.Geometry, videoOnly: true);
+                    });
+                var samplingWatch = Stopwatch.StartNew();
+                AdaptiveQualitySelectionEvidence selection;
+                if (preparedAdaptiveProductionPlan is { } prepared)
+                {
+                    ValidatePreparedAdaptivePlan(shadowPlan, selectionRequest!, prepared);
+                    selection = prepared.Selection;
+                    _log?.Invoke($"[AdaptiveStorageSavings] Reusing prepared production selection; fingerprint={prepared.Identity.PlanFingerprint}; samplesExecuted={selection.SamplesExecuted}; selectedQuality={selection.SelectedQuality?.ToString() ?? "none"}.");
+                }
+                else
+                {
+                    try
+                    {
+                        selection = await new StorageSavingsSampleSelector(selectionRunner)
+                            .SelectAsync(selectionRequest!, callback, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        selection = StorageSavingsSampleSelector.PreservePreferredQuality(selectionRequest!, ex.Message);
+                        _log?.Invoke($"[AdaptiveStorageSavings] Sampling failed; configured quality will be used. {ex.Message}");
+                    }
+                }
+                if (preparedAdaptiveProductionPlan is null)
+                    selection = selection with { SamplingSeconds = samplingWatch.Elapsed.TotalSeconds };
+                cancellationToken.ThrowIfCancellationRequested();
+                _log?.Invoke($"[AdaptiveStorageSavings] samplesExecuted={selection.SamplesExecuted}; sevenFirstEarlyPositive={selection.SevenFirstEarlyPositive}; selectedQuality={selection.SelectedQuality?.ToString() ?? "none"}; disposition={selection.Disposition}.");
+                bool adaptiveSelectionSkipped = selection.Disposition == AdaptiveSelectionDisposition.Skipped;
+                bool reliableStorageObjectiveMiss = adaptiveSelectionSkipped &&
+                    StorageSavingsSampleSelector.HasReliableAllCandidateStorageRisk(selection, selectionRequest!);
+                if (adaptiveSelectionSkipped && !reliableStorageObjectiveMiss)
+                    selection = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(selection);
+                if (reliableStorageObjectiveMiss)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavings] {selection.Reason} No production encode or output promotion will run; the source will be retained.");
+                }
+                else if (adaptiveSelectionSkipped)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavings] The skip evidence was not authoritative; configured quality {selection.PreferredQuality} will be used. Actual-byte validation remains authoritative. {selection.Reason}");
+                }
+                bool adaptiveQualitySelected = selection.Disposition == AdaptiveSelectionDisposition.Selected;
+                shadowPlan = selection.Disposition == AdaptiveSelectionDisposition.NotSuitable
+                    ? EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(shadowPlan, selection)
+                    : EncodingPlanService.FreezeAdaptiveSelection(shadowPlan, selection);
+                adaptiveSelectionCallback?.Invoke(selection);
+                if (selection.Disposition == AdaptiveSelectionDisposition.Skipped)
+                {
+                    encodingPlanSnapshotCallback?.Invoke(new(shadowPlan.PlanId, shadowPlan));
+                    if (adaptivePreAttemptCaptureCallback is not null)
+                        await adaptivePreAttemptCaptureCallback(new(new(shadowPlan.PlanId, shadowPlan), selectionRequest!,
+                            restoration?.Clone() ?? new()), cancellationToken).ConfigureAwait(false);
+                    throw new AdaptiveStorageSavingsSkippedException(selection);
+                }
+                if (adaptiveQualitySelected)
+                {
+                    callback($"Encoding at {(selection.Mechanism == EncoderQualityMechanism.Cq ? "CQ" : "CRF")} {selection.SelectedQuality}");
+                    // Keep the selected-quality attempt isolated from unrelated
+                    // automatic fallbacks and Policy C. Strong source-corruption
+                    // evidence still uses its separate bounded remux/salvage path.
+                    disableAutomaticFfmpegRecovery = true;
+                }
+                else
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavings] Sampling was unsuitable; using configured quality {selection.PreferredQuality} with the existing recovery policy. {selection.Reason}");
+                }
+            }
+            else if (adaptiveStorageSavingsEnabled)
+                _log?.Invoke("[AdaptiveStorageSavings] " + adaptiveReason);
+            recoveryOperationId = shadowPlan.PlanId;
+            var planSnapshot = new EncodingPlanSnapshot(shadowPlan.PlanId, shadowPlan);
+            var preflightOutcomes = new List<EncodingPreflightOutcome>
+            {
+                new(EncodingPreflightCheckKind.SourceProbe, EncodingPreflightStatus.Passed,
+                    "FFprobe resolved container and stream metadata; full elementary-stream decode integrity was not checked."),
+                new(EncodingPreflightCheckKind.SourceTiming,
+                    inputSource.Kind == EncodingInputKind.File ? EncodingPreflightStatus.Passed : EncodingPreflightStatus.Skipped,
+                    inputSource.Kind == EncodingInputKind.File ? preplannedTimelineReconstructionRate is { } approvedRate ? $"Stream-copy normalization preserved unsafe timing; full-stream evidence approved one deterministic {approvedRate.Text} reconstruction encode with mandatory output timeline validation." : timelineRecovery is null ? "Existing source timing analysis passed." : timelineRecovery.Reason : "Not applicable to this input source.")
+            };
+            var recoveryOutcomes = new List<EncodingRecoveryOutcome>();
+            if (timelineRecovery is { Success: true })
+                recoveryOutcomes.Add(new EncodingRecoveryOutcome(
+                    EncodingRecoveryKind.TimelineNormalization,
+                    EncodingRecoveryFailureClass.SourceTimelineCorruption,
+                    EncodingRecoveryMode.Strict,
+                    EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction,
+                    1, 1, EncodingRecoveryResult.Succeeded,
+                    timelineRecovery.Reason,
+                    EncodingRecoveryProcessResult.Succeeded,
+                    EncodingRecoveryDisposition.Salvaged,
+                    programDuration.DurationSeconds,
+                    programDuration.DurationSeconds,
+                    sourceVideo?.FrameCount,
+                    sourceVideo?.FrameCount,
+                    0,
+                    0,
+                    null,
+                    timelineRecovery.Reason));
+            EncodingValidationOutcome? validationOutcome = null;
+            EncodingFinalizationOutcome? finalizationOutcome = null;
+            // Keep an immutable placeholder so recovery records created before
+            // the first finalization still have a well-defined evidence source.
+            EncodeFinalizationResult finalization = new();
+            EncodingTerminalResult terminalResult = EncodingTerminalResult.NotRun;
+            int productionEncodeCount = 0;
+            AdaptiveStorageSavingsRetryTrace? adaptiveRetryTrace = null;
+            void PublishExecutionOutcome()
+            {
+                encodingExecutionOutcomeCallback?.Invoke(new EncodingExecutionOutcome(
+                    shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(),
+                    validationOutcome, finalizationOutcome, terminalResult,
+                    terminalResult == EncodingTerminalResult.Canceled ? null : finalization.StorageSavings,
+                    productionEncodeCount)
+                { AdaptiveStorageSavingsRetry = adaptiveRetryTrace });
+            }
+            void RecordRecovery(EncodingRecoveryKind kind, EncodingRecoveryFailureClass failureClass,
+                EncodingRecoveryMode recoveryMode, int maximumAttempts, EncodingRecoveryResult result, string detail,
+                EncodingRecoveryDisposition? forcedDisposition = null)
+            {
+                EncodingPlanDivergence? divergence = EncodingPlanService.CompareRecoveryAttempt(shadowPlan, kind, failureClass);
+                if (divergence is not null)
+                {
+                    _log?.Invoke($"[EncodingPlan] Shadow divergence: {divergence}");
+                    encodingPlanDivergenceCallback?.Invoke(divergence);
+                }
+                recoveryOutcomes.Add(new EncodingRecoveryOutcome(kind, failureClass,
+                    EncodingRecoveryMode.Strict, recoveryMode, 1, maximumAttempts, result, detail,
+                    result == EncodingRecoveryResult.NotStarted
+                        ? EncodingRecoveryProcessResult.NotStarted
+                        : result == EncodingRecoveryResult.Succeeded
+                            ? EncodingRecoveryProcessResult.Succeeded
+                            : EncodingRecoveryProcessResult.Failed,
+                    forcedDisposition ?? (result == EncodingRecoveryResult.NotStarted
+                        ? EncodingRecoveryDisposition.NotAttempted
+                        : result == EncodingRecoveryResult.Failed
+                            ? EncodingRecoveryDisposition.Rejected
+                            : detail.Contains("validation=passed", StringComparison.OrdinalIgnoreCase) ||
+                              detail.Contains("recovered-validation=passed", StringComparison.OrdinalIgnoreCase) ||
+                              detail.Contains("retry-validation=passed", StringComparison.OrdinalIgnoreCase)
+                                ? EncodingRecoveryDisposition.Salvaged
+                                : EncodingRecoveryDisposition.Degraded),
+                    DiagnosticReason: detail,
+                    SourceDurationSeconds: finalization.StagedValidationResult?.FailureEvidence?.SourceDurationSeconds,
+                    ProducedDurationSeconds: finalization.StagedValidationResult?.FailureEvidence?.OutputDurationSeconds,
+                    ExpectedFrameCount: finalization.StagedValidationResult?.FailureEvidence?.ExpectedFrameCount,
+                    ProducedFrameCount: finalization.StagedValidationResult?.FailureEvidence?.ActualFrameCount,
+                    DroppedFrameOrPacketCount: finalization.StagedValidationResult?.FailureEvidence is { } deficit
+                        ? Math.Max(0, deficit.ExpectedFrameCount - deficit.ActualFrameCount)
+                        : null,
+                    DurationDeltaSeconds: finalization.StagedValidationResult?.FailureEvidence is { } durationEvidence
+                        ? Math.Abs(durationEvidence.SourceDurationSeconds - durationEvidence.OutputDurationSeconds)
+                        : null));
+                EncodingExecutionOutcome outcome = new(shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome, finalizationOutcome, terminalResult, finalization.StorageSavings, productionEncodeCount)
+                { AdaptiveStorageSavingsRetry = adaptiveRetryTrace };
+                _log?.Invoke(EncodingPlanService.DescribeRecovery(outcome));
+                encodingExecutionOutcomeCallback?.Invoke(outcome);
+            }
+            EncodingPlanService.EncodingPlanExecutionValues planExecution =
+                EncodingPlanService.GetExecutionValues(shadowPlan);
+            AutomaticTargetPlan? automaticTargetPlan = planExecution.AutomaticTargetPlan;
+            // Phase 2/3 authority boundary: downstream FFmpeg/finalization
+            // requests consume frozen plan values, never caller/UI values.
+            VideoEncoderSelection requestedEncoder = planExecution.Encoder;
+            VideoOutputGeometryPlan? plannedOutputGeometry = planExecution.Geometry;
+            videoCodec = requestedEncoder.FfmpegCodec;
+            useGpu = planExecution.UseGpu;
+            targetMb = planExecution.TargetMb;
+            qualityValue = planExecution.QualityResolution.EffectiveQuality ?? qualityValue;
+            qualityResolutionCallback?.Invoke(planExecution.QualityResolution);
+            encoderSelection = requestedEncoder;
+            audioChannels = planExecution.AudioChannels;
+            mapMode = planExecution.MapMode;
+            copySubtitles = planExecution.CopySubtitles;
+            copyDataStreams = planExecution.CopyDataStreams;
+            copyAttachments = planExecution.CopyAttachments;
+            // The legacy calculations are parity-only.  They execute after the
+            // plan is frozen and are never used for command construction.
             VideoOutputResolutionPlan? finalOutputResolution = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0
                 ? VideoRestorationPipeline.ResolveFinalOutputResolution(sourceVideo.Width.Value, sourceVideo.Height.Value, restoration, scaleMode)
                 : null;
-            VideoEncoderSelection requestedEncoder =
-                encoderSelection ??
-                EncoderRegistry.Default.ResolveLegacyCodec(videoCodec).Selection;
-            VideoOutputGeometryPlan? plannedOutputGeometry = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0 && finalOutputResolution is not null
+            VideoOutputGeometryPlan? legacyOutputGeometry = sourceVideo?.Width is > 0 && sourceVideo.Height is > 0 && finalOutputResolution is not null
                 ? VideoOutputGeometryPlanner.Resolve(
-                    sourceVideo.Width.Value,
-                    sourceVideo.Height.Value,
-                    finalOutputResolution,
-                    requestedEncoder,
-                    tenBit)
+                    sourceVideo.Width.Value, sourceVideo.Height.Value,
+                    finalOutputResolution, legacyEncoder, tenBit)
                 : null;
+            _log?.Invoke(EncodingPlanService.DescribeSummary(shadowPlan));
+            encodingPlanSnapshotCallback?.Invoke(planSnapshot);
+            preEncodeExecutionValidationCallback?.Invoke(planSnapshot);
+            if (adaptivePreAttemptCaptureCallback is not null)
+                await adaptivePreAttemptCaptureCallback(new(planSnapshot, selectionRequest,
+                    restoration?.Clone() ?? new()), cancellationToken).ConfigureAwait(false);
+            if (preEncodeResearchCallback is not null && shadowPlan.AdaptiveSelection is null)
+            {
+                try
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await preEncodeResearchCallback(planSnapshot, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    try { _log?.Invoke($"[PredictionShadow] Pre-encode capture failed; continuing encode: {ex.Message}"); }
+                    catch { /* Research diagnostics cannot become an encode dependency. */ }
+                }
+            }
+            PublishExecutionOutcome();
             if (plannedOutputGeometry is not null)
             {
                 _log?.Invoke($"[EncodingService] Output geometry plan: source={plannedOutputGeometry.SourceWidth}x{plannedOutputGeometry.SourceHeight}; requested={plannedOutputGeometry.RequestedWidth}x{plannedOutputGeometry.RequestedHeight}; planned={plannedOutputGeometry.Width}x{plannedOutputGeometry.Height}; encoder={requestedEncoder.FfmpegCodec}; pixel-format={plannedOutputGeometry.PixelFormat}; reason={plannedOutputGeometry.Reason}.");
@@ -664,12 +1171,8 @@ namespace MediaFlux.Services
                 MediaProbeStreamInfo? video = sourceVideo;
                 if (video?.FrameRate is not > 0 || video.Width is not > 0 || video.Height is not > 0)
                     throw new AiRestorationValidationException("AI restoration requires a source with a known constant frame rate and resolution.");
-                SourceTimingAnalysis timing;
-                using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.SourceAnalysis))
-                {
-                    timing = await new SourceTimingAnalysisService(_ffprobePath, log: _log).AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
-                    scope.Complete();
-                }
+                SourceTimingAnalysis timing = sourceTiming ?? await new SourceTimingAnalysisService(_ffprobePath, log: _log)
+                    .AnalyzeAsync(inputSource.SourcePath, cancellationToken).ConfigureAwait(false);
                 SourceTimingAnalysisService.EnsureCurrentCfrSupported(timing);
                 IAiRestorationBackend backend = await new AiBackendManager(AppPaths.InstallDirectory, log: _log)
                     .SelectAsync(aiSettings, video.Width.Value, video.Height.Value, cancellationToken).ConfigureAwait(false);
@@ -677,12 +1180,12 @@ namespace MediaFlux.Services
                 bool restoreOriginalAfterAi = scaleMode == ScaleMode.None && VideoRestorationPipeline.Effective(aiSettings).Resize == VideoRestorationResize.Original;
                 aiPlan = VideoRestorationPipeline.BuildPlan(aiSettings, scaleMode, restoreOriginalAfterAi ? plannedOutputGeometry?.ScaleFilter : null);
                 callback("[MediaFlux] Preparing AI restoration.");
-                var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, Path.Combine(AppPaths.DataDirectory, "ai-intermediates"), backend, log: _log, timing: performance);
+                var intermediate = new AiRestorationIntermediateVideoService(_ffmpegPath, _ffprobePath, AppPaths.AiIntermediatesDirectory, backend, log: _log, timing: performance);
                 TimeSpan aiDuration = sampleDuration ?? TimeSpan.FromSeconds(programDuration.DurationSeconds ?? 0);
                 int expectedFrames = AiRestorationIntermediateVideoService.ResolveExpectedFrameCount(
                     new AiIntermediateVideoRequest(inputSource.SourcePath, video.FrameRate.Value, TimeSpan.FromSeconds(programDuration.DurationSeconds ?? 0), aiSettings, aiPlan, sampleStart, sampleDuration, video.Width ?? 0, video.Height ?? 0, SourceFrameCount: video.FrameCount),
                     aiDuration);
-                string stagingRoot = Path.Combine(AppPaths.DataDirectory, "ai-intermediates");
+                string stagingRoot = AppPaths.AiIntermediatesDirectory;
                 AiTemporaryStorageEstimate planningEstimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, stagingRoot, AiChunkPlanner.MinimumFramesPerChunk);
                 AiChunkPlan plannedChunk = new AiChunkPlanner().Plan(new(video.Width ?? 0, video.Height ?? 0, aiSettings.AiScale, performance.DedicatedGpuVramBytes, planningEstimate, "Pending backend"));
                 AiTemporaryStorageEstimate estimate = AiProductionHardeningService.Estimate(video.Width ?? 0, video.Height ?? 0, expectedFrames, aiSettings.AiScale, stagingRoot, plannedChunk.FrameCount);
@@ -696,15 +1199,27 @@ namespace MediaFlux.Services
                 _log?.Invoke($"[EncodingService] AI intermediate ready: {aiIntermediate.Path}; {aiPlan.DescribeStages()}.");
             }
 
-            OutputContainerDecision containerDecision = OutputContainerPolicy.Decide(
+            OutputContainerDecision legacyContainerDecision = OutputContainerPolicy.Decide(
                 outputContainer,
                 sourceProbe,
                 inputSource,
-                mapMode,
-                copySubtitles,
-                copyDataStreams,
-                copyAttachments,
-                audioWillBeTranscoded: audioChannels is > 0);
+                legacyMapMode,
+                legacyCopySubtitles,
+                legacyCopyDataStreams,
+                legacyCopyAttachments,
+                audioWillBeTranscoded: legacyAudioChannels is > 0);
+            foreach (EncodingPlanDivergence divergence in EncodingPlanService.Compare(
+                         shadowPlan, legacyContainerDecision, legacyOutputGeometry, legacyEncoder,
+                         legacyTargetMb, sourceDecodeMode))
+            {
+                _log?.Invoke($"[EncodingPlan] Shadow divergence: {divergence}");
+                encodingPlanDivergenceCallback?.Invoke(divergence);
+            }
+            OutputContainerDecision containerDecision = planExecution.ContainerDecision;
+            _log?.Invoke(
+                $"[EncodingService] stage=ContainerResolution; configured={containerDecision.Requested}; " +
+                $"effective={containerDecision.Resolved}; policy={compatibilityPolicy}; " +
+                $"reason={containerDecision.Reason}");
             _log?.Invoke($"[EncodingService] {containerDecision.Reason}");
             containerDecisionCallback?.Invoke(containerDecision);
             foreach (StreamCompatibilityPlan plan in containerDecision.StreamPlans)
@@ -735,11 +1250,45 @@ namespace MediaFlux.Services
                     "continuing for legacy API compatibility.");
             }
 
+            SubtitleConversionPreflightResult subtitlePreflight;
+            _log?.Invoke($"[EncodingService] stage=Preflight; effective={containerDecision.Resolved}; validating planned subtitle operations.");
+            using (PerformanceTimingService.PerformanceScope subtitleScope = performance.Measure(PerformanceTimingStage.SubtitlePreflight))
+            {
+                subtitlePreflight = await new SubtitleConversionPreflightService(_ffmpegPath)
+                    .ValidateAsync(inputSource, containerDecision, cancellationToken).ConfigureAwait(false);
+                subtitleScope.Complete();
+            }
+            preflightOutcomes.Add(new EncodingPreflightOutcome(
+                EncodingPreflightCheckKind.SubtitleConversion,
+                subtitlePreflight.Success ? EncodingPreflightStatus.Passed : EncodingPreflightStatus.Failed,
+                subtitlePreflight.Success ? "Existing subtitle preflight passed." : subtitlePreflight.ErrorMessage));
+            PublishExecutionOutcome();
+            if (!subtitlePreflight.Success)
+            {
+                if (compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
+                {
+                    containerDecision = OutputContainerPolicy.ExcludeFailedTextSubtitle(
+                        containerDecision, subtitlePreflight.StreamIndex!.Value, subtitlePreflight.ErrorMessage);
+                    _log?.Invoke($"[EncodingService] {subtitlePreflight.ErrorMessage} Excluded only that subtitle stream under Intelligent policy. Diagnostics: {subtitlePreflight.Diagnostics}");
+                }
+                else
+                {
+                    throw new InvalidOperationException(subtitlePreflight.ErrorMessage +
+                        " MediaFlux did not start the encode because the selected subtitle cannot be preserved under the current compatibility policy. The original source was retained.");
+                }
+            }
+
+            _log?.Invoke("[EncodingService] Copied audio uses the normal encode path; no full-duration audio integrity preflight is performed.");
+
             // Keep the intended final name collision-safe, but write FFmpeg output
             // only to a hidden same-directory staging file until validation passes.
             string finalOutput = OutputPathService.GetCollisionSafePath(
                 Path.Combine(outFolder, $"{name}{actualSuffix}{containerDecision.Extension}"));
-            string output = OutputPathService.CreateEncodeStagingPath(finalOutput);
+            Guid outputStageId = Guid.NewGuid();
+            string output = OutputPathService.CreateEncodeStagingPath(finalOutput, outputStageId);
+            _log?.Invoke(
+                $"[EncodingService] stage=OutputAllocation; effective={containerDecision.Resolved}; " +
+                $"output='{finalOutput}'; staged='{output}'");
             outputPathCallback?.Invoke(finalOutput);
             stagingPathCallback?.Invoke(output);
             bool isAsfFamilyInput =
@@ -781,6 +1330,17 @@ namespace MediaFlux.Services
             bool forceMp4CompatibleAudio = (isAsfFamilyInput &&
                 string.Equals(Path.GetExtension(finalOutput), ".mp4", StringComparison.OrdinalIgnoreCase)) ||
                 containerDecision.TranscodeAudioToAac;
+            if (validationProfile == EncodeOutputValidationProfile.SampleComparison &&
+                forceMp4CompatibleAudio)
+            {
+                // The sample command intentionally uses its global AAC audio
+                // selection when any selected stream requires conversion. Keep
+                // validation aligned with that effective sample output plan;
+                // production validation continues to use the original decision.
+                containerDecision = OutputContainerPolicy.ResolveEffectiveGlobalAacAudioPlan(
+                    containerDecision,
+                    globalAacRequired: true);
+            }
             if (forceMp4CompatibleAudio)
             {
                 _log?.Invoke(isAsfFamilyInput
@@ -798,12 +1358,16 @@ namespace MediaFlux.Services
                 : GetVideoDuration(input);
             if (totalDuration <= TimeSpan.Zero)
                 _log?.Invoke("[EncodingService] Warning: could not determine duration, progress percent will be 0.");
+            long? progressTotalFrames = sampleDuration is { } benchmarkWindow && sourceVideo?.FrameRate is > 0
+                ? (long)Math.Round(benchmarkWindow.TotalSeconds * sourceVideo.FrameRate.Value)
+                : sourceVideo?.FrameCount;
 
             string sourcePixelFormat = sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals(
                 "video", StringComparison.OrdinalIgnoreCase))?.PixelFormat ?? "";
             string ffArgs;
             using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
             {
+            _log?.Invoke($"[EncodingService] stage=CommandBuild; effective={containerDecision.Resolved}; building FFmpeg command.");
             ffArgs = BuildFfmpegArgs(
                 inputSource,
                 output,
@@ -827,8 +1391,17 @@ namespace MediaFlux.Services
                 sampleStart,
                 sampleDuration,
                 sourcePixelFormat,
+                recoveryFrameRateRational: preplannedTimelineReconstructionRate?.Text,
+                timestampReconstructionFilter: preplannedTimelineReconstructionRate is { } plannedReconstructionRate
+                    ? $"setpts=N*{plannedReconstructionRate.Denominator}/{plannedReconstructionRate.Numerator}/TB"
+                    : null,
+                disableHardwareDecode: preplannedTimelineReconstructionRate is not null,
                 restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain,
-                plannedVideoGeometry: plannedOutputGeometry);
+                plannedVideoGeometry: plannedOutputGeometry,
+                automaticTargetPlan: automaticTargetPlan,
+                sourceDecodeMode: preplannedTimelineReconstructionRate is null
+                    ? sourceDecodeMode
+                    : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
             scope.Complete();
             }
 
@@ -854,19 +1427,290 @@ namespace MediaFlux.Services
                 $"[EncodingService] Video pipeline: {pipelineDiagnostic}");
 
             _log?.Invoke(
-                $"[EncodingService] Starting ffmpeg for '{inputSource.SourcePath}' " +
+                $"[EncodingService] stage=FfmpegLaunch; ffmpeg-launched=true; '{inputSource.SourcePath}' " +
                 $"using '{input}' -> staged '{output}' (final '{finalOutput}')");
             _log?.Invoke($"[EncodingService] ffmpeg arguments: {ffArgs}");
 
-            using PerformanceTimingService.PerformanceScope encodeScope = performance.Measure(PerformanceTimingStage.FinalEncode);
-            FfmpegProcessResult runResult = await RunFfmpegAsync(
-                ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+            FfmpegProcessResult runResult;
+            int ffmpegAttempt = 0;
+            var ffmpegAttempts = new List<FfmpegAttemptDiagnostic>();
+            DateTimeOffset? initialProcessStartedUtc = null;
+            DateTimeOffset? initialProcessExitedUtc = null;
+            double? initialProcessSeconds = null;
+            (string Path, long Length, long LastWriteUtcTicks)? adaptiveSourceIdentity = null;
+            void RecordProductionEncodeStarted(DateTimeOffset _) => productionEncodeCount++;
+            if (experimentalPolicyCRetryEnabled && adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput &&
+                shadowPlan.AdaptiveSelection is { Disposition: AdaptiveSelectionDisposition.Selected } &&
+                inputSource.Kind == EncodingInputKind.File)
+            {
+                try
+                {
+                    var sourceIdentityFile = new FileInfo(inputSource.SourcePath);
+                    sourceIdentityFile.Refresh();
+                    if (sourceIdentityFile.Exists)
+                        adaptiveSourceIdentity = (Path.GetFullPath(sourceIdentityFile.FullName), sourceIdentityFile.Length,
+                            sourceIdentityFile.LastWriteTimeUtc.Ticks);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavingsRetry] Source identity could not be captured; retry will abstain: {ex.Message}");
+                }
+            }
+            using (PerformanceTimingService.PerformanceScope initialEncodeScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+            {
+                Stopwatch encodeWatch = Stopwatch.StartNew();
+                runResult = await RunFfmpegAsync(
+                    ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
+                    progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification,
+                    ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback,
+                    started =>
+                    {
+                        initialProcessStartedUtc = started;
+                        RecordProductionEncodeStarted(started);
+                    },
+                    exited => initialProcessExitedUtc = exited,
+                    output).ConfigureAwait(false);
+                encodeWatch.Stop();
+                initialProcessSeconds = encodeWatch.Elapsed.TotalSeconds;
+                RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Primary encode", ffArgs, runResult);
+                initialEncodeScope.Complete();
+            }
 
             string recoveryDiagnostics = "";
+            bool sourceContainerRecoveryAttempted = false;
+            bool sourceContainerRecoveryRetryAttempted = false;
+            bool sourceUnrecoverable = false;
+            bool tolerantSalvageAttempted = false;
+            bool tolerantSalvageAudioReconstructed = false;
+            string tolerantSalvageDetail = "";
             bool cudaRecoveryAttempted = false;
             bool cudaRecoveryStarted = false;
+            bool gpuFramePipelineRecoveryAttempted = false;
+            bool gpuFramePipelineRecoveryStarted = false;
+            FfmpegSourceDecodeCorruption initialSourceCorruption =
+                FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
+            FfmpegDiagnosticSummary initialDiagnosticSummary = runResult.DiagnosticSummary;
+            bool strongInitialSourceCorruption =
+                FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+                    initialSourceCorruption, runResult.DiagnosticSummary, runResult.StandardError);
+            bool adaptiveSourceRecoveryPermitted =
+                shadowPlan.AdaptiveSelection is { Disposition: AdaptiveSelectionDisposition.Selected } && ordinaryAdaptiveInput &&
+                compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent;
+            bool disableSourceCorruptionRecovery = disableAutomaticFfmpegRecovery && !adaptiveSourceRecoveryPermitted;
+            bool sourceRecoveryEligible = FfmpegSourceDecodeCorruptionClassifier.ShouldAttemptAutomaticRecovery(
+                disableSourceCorruptionRecovery,
+                inputSource.Kind == EncodingInputKind.File,
+                cancellationToken.IsCancellationRequested,
+                strongInitialSourceCorruption);
+            string sourceRecoveryDecisionReason = disableSourceCorruptionRecovery
+                ? "automatic-recovery-disabled"
+                : inputSource.Kind != EncodingInputKind.File
+                    ? "input-is-not-a-file"
+                    : cancellationToken.IsCancellationRequested
+                        ? "cancellation-requested"
+                        : !strongInitialSourceCorruption
+                            ? "strong-source-integrity-evidence-not-established"
+                            : "eligible";
+            _log?.Invoke(
+                $"[EncodingRecovery] Operation={shadowPlan.PlanId:N}; Stage=SourceRecoveryEligibility; " +
+                $"Eligible={sourceRecoveryEligible}; Reason={sourceRecoveryDecisionReason}; " +
+                $"InitialExit={runResult.ExitCode}; SourceEvidenceReliable={initialSourceCorruption.IsReliable}; " +
+                $"StrongSourceIntegrityEvidence={strongInitialSourceCorruption}; " +
+                $"Evidence={initialSourceCorruption.DescribeEvidence()}." );
+            if (sourceRecoveryEligible)
+            {
+                recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceCorruptionDetected));
+                sourceContainerRecoveryAttempted = true;
+                sourceContainerRepairPath = Path.Combine(outFolder, $".mediaflux-source-repair-{Guid.NewGuid():N}.mkv");
+                string initialEvidence = initialSourceCorruption.MatchedEvidence.Count > 0
+                    ? initialSourceCorruption.DescribeEvidence()
+                    : string.Join(" | ", runResult.DiagnosticSummary.Classification.SupportingFamilies);
+                _log?.Invoke($"[EncodingRecovery] Operation={shadowPlan.PlanId:N}; Type=SourceContainerRemux; Failure=SourceIntegrity; InitialMode=Strict; RecoveryMode=StreamCopyRemux; Attempt=1/1; ProcessResult=NotStarted; MediaDisposition=NotAttempted; source={inputSource.SourcePath}; temporary={sourceContainerRepairPath}; evidence={initialEvidence}.");
+                recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.AttemptingSourceRecovery));
+                callback("[MediaFlux] Source corruption detected; attempting one container remux for verification.");
+                if (TryDeleteFailedStagingOutput(output))
+                {
+                    gpuFramePipelineRecoveryStarted = true;
+                    SourceContainerRecoveryResult repair = await new SourceContainerRecoveryService(
+                        _ffmpegPath, _ffprobePath, log: _log, operationId: shadowPlan.PlanId.ToString("N"))
+                        .TryRemuxAndValidateAsync(
+                            inputSource.SourcePath,
+                            sourceContainerRepairPath,
+                            sourceProbe,
+                            programDuration.DurationSeconds,
+                            cancellationToken,
+                            () => recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.ValidatingRecoveredSource))).ConfigureAwait(false);
+                    string repairDetail = $"{initialEvidence}; {repair.Reason}; recovery-validation={(repair.ValidationPassed ? "passed" : "failed")}";
+                    RecordRecovery(
+                        EncodingRecoveryKind.SourceContainerRemux,
+                        EncodingRecoveryFailureClass.SourceContainerCorruption,
+                        EncodingRecoveryMode.StreamCopyRemux,
+                        1,
+                        repair.Success ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                        repairDetail,
+                        repair.Success ? null : EncodingRecoveryDisposition.Rejected);
+                    if (repair.Success && repair.RepairedProbe is not null)
+                    {
+                        inputSource = inputSource.WithInputPath(repair.RepairedPath);
+                        input = inputSource.InputPath;
+                        sourceProbe = repair.RepairedProbe;
+                        physicalProbe = repair.RepairedProbe;
+                        sourceVideo = sourceProbe.Streams.FirstOrDefault(stream => stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
+                        programDuration = ProgramDurationResolver.Resolve(sourceProbe);
+                        recoveryDiagnostics += $"Source container remux recovery succeeded; validation passed; repaired source={repair.RepairedPath}.{Environment.NewLine}";
+                        _log?.Invoke("[EncodingRecovery] Source container remux validation passed; retrying the frozen encode plan exactly once.");
+                        recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.RetryingWithRecoveredSource));
+                        sourceContainerRecoveryRetryAttempted = true;
+                        callback("[MediaFlux] Source recovery validation passed; retrying the original encode plan once.");
+                        ffArgs = BuildFfmpegArgs(
+                            inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                            encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                            mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                            containerDecision, forceMp4CompatibleAudio, totalDuration,
+                            qualityValue, encoderSelection, sampleStart, sampleDuration,
+                            sourcePixelFormat, recoveryFrameRateRational: preplannedTimelineReconstructionRate?.Text,
+                            timestampReconstructionFilter: preplannedTimelineReconstructionRate is { } plannedRate
+                                ? $"setpts=N*{plannedRate.Denominator}/{plannedRate.Numerator}/TB" : null,
+                            disableHardwareDecode: preplannedTimelineReconstructionRate is not null,
+                            restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                            restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                            plannedVideoGeometry: plannedOutputGeometry,
+                            automaticTargetPlan: automaticTargetPlan,
+                            sourceDecodeMode: preplannedTimelineReconstructionRate is null
+                                ? sourceDecodeMode : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                        {
+                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
+                            RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Source container recovery retry", ffArgs, runResult);
+                            scope.Complete();
+                        }
+                    }
+                    else
+                    {
+                        if (repair.IndicatesMediaFailure)
+                        {
+                            bool eligibleForTolerantSalvage =
+                                inputSource.Kind == EncodingInputKind.File &&
+                                sourceVideo?.CodecName.Equals("h264", StringComparison.OrdinalIgnoreCase) == true &&
+                                !cancellationToken.IsCancellationRequested;
+                            if (!eligibleForTolerantSalvage)
+                            {
+                                sourceUnrecoverable = true;
+                                recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                                recoveryDiagnostics += $"Source container remux recovery failed; Tier 2 was not eligible; original source preserved.{Environment.NewLine}";
+                            }
+                            else if (TryDeleteFailedStagingOutput(output))
+                            {
+                                SourceAudioDecodePreflightResult audioPreflight = await new SourceAudioDecodePreflightService(_ffmpegPath)
+                                    .ValidateCopiedStreamsAsync(inputSource, containerDecision, cancellationToken).ConfigureAwait(false);
+                                if (!audioPreflight.Success && !audioPreflight.IsReliableCorruption)
+                                {
+                                    sourceUnrecoverable = true;
+                                    recoveryDiagnostics += $"Tier 2 was blocked because copied audio could not be conclusively validated: {audioPreflight.ErrorMessage} Original source preserved.{Environment.NewLine}";
+                                    recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                                }
+                                else
+                                {
+                                    if (!audioPreflight.Success && audioPreflight.StreamIndex is int corruptAudioStream)
+                                    {
+                                        containerDecision = OutputContainerPolicy.RecoverCopiedAudio(containerDecision, corruptAudioStream);
+                                        containerDecisionCallback?.Invoke(containerDecision);
+                                        tolerantSalvageAudioReconstructed = true;
+                                    }
+
+                                    tolerantSalvageAttempted = true;
+                                    recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.AttemptingDegradedSourceSalvage));
+                                    callback("[MediaFlux] Attempting degraded source salvage with tolerant software decode; damaged media may be discarded.");
+                                    tolerantSalvageDetail = $"Tier 1 rejected copied corruption; strategy=TolerantDecodeReencode; software-decode=yes; audio={(tolerantSalvageAudioReconstructed ? "reconstructed" : "validated-copy")}; damaged packets/frames may have been discarded.";
+                                    _log?.Invoke($"[EncodingRecovery] Operation={shadowPlan.PlanId:N}; Type=TolerantDecodeReencode; Failure=SourceContainerCorruption; InitialMode=Strict; RecoveryMode=TolerantDecodeReencode; Attempt=1/1; source={inputSource.SourcePath}; {tolerantSalvageDetail}");
+                                    ffArgs = BuildFfmpegArgs(
+                                        inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                        encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                        mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                        containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                        qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                        sourcePixelFormat, disableHardwareDecode: true, restoration: restoration,
+                                        splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                        restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                        plannedVideoGeometry: plannedOutputGeometry,
+                                        automaticTargetPlan: automaticTargetPlan,
+                                        sourceDecodeMode: FfmpegSourceDecodeMode.TolerantDecodeReencode);
+                                    using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
+                                    {
+                                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
+                                        RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Tolerant source salvage", ffArgs, runResult);
+                                        scope.Complete();
+                                    }
+                                    RecordRecovery(EncodingRecoveryKind.TolerantDecodeReencode,
+                                        EncodingRecoveryFailureClass.SourceContainerCorruption,
+                                        EncodingRecoveryMode.TolerantDecodeReencode, 1,
+                                        runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                                        tolerantSalvageDetail + $" process-exit={runResult.ExitCode}; validation=pending.",
+                                        EncodingRecoveryDisposition.Degraded);
+                                    if (runResult.ExitCode == 0)
+                                    {
+                                        recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.ValidatingSalvagedMedia));
+                                        callback("[MediaFlux] Validating salvaged media before finalization.");
+                                    }
+                                    else
+                                    {
+                                        sourceUnrecoverable = true;
+                                        recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                sourceUnrecoverable = true;
+                                recoveryDiagnostics += "Tier 2 was not started because the failed staged output could not be removed safely. Original source preserved." + Environment.NewLine;
+                                recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                            }
+                        }
+                        else
+                        {
+                            recoveryDiagnostics += $"Source container remux recovery infrastructure failed; source recoverability was not established; original source preserved.{Environment.NewLine}";
+                        }
+                    }
+                }
+                else
+                {
+                    sourceUnrecoverable = true;
+                    recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.SourceUnrecoverable));
+                    RecordRecovery(
+                        EncodingRecoveryKind.SourceContainerRemux,
+                        EncodingRecoveryFailureClass.SourceContainerCorruption,
+                        EncodingRecoveryMode.StreamCopyRemux,
+                        1,
+                        EncodingRecoveryResult.NotStarted,
+                        "Failed staged output could not be removed safely.",
+                        EncodingRecoveryDisposition.SourceUnrecoverable);
+                }
+                terminalResult = sourceUnrecoverable ? EncodingTerminalResult.SourceUnrecoverable : terminalResult;
+                PublishExecutionOutcome();
+            }
+            if (!sourceUnrecoverable && sourceContainerRecoveryRetryAttempted && runResult.ExitCode != 0)
+            {
+                FfmpegSourceDecodeCorruption retrySourceCorruption =
+                    FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
+                if (FfmpegSourceDecodeCorruptionClassifier.HasStrongSourceIntegrityEvidence(
+                        retrySourceCorruption, runResult.DiagnosticSummary, runResult.StandardError))
+                {
+                    sourceUnrecoverable = true;
+                    recoveryDiagnostics += "The single frozen-plan retry reproduced strong source-integrity corruption; recursive recovery was not attempted." + Environment.NewLine;
+                    terminalResult = EncodingTerminalResult.SourceUnrecoverable;
+                    PublishExecutionOutcome();
+                }
+            }
+            if (sourceUnrecoverable && runResult.ExitCode == 0)
+            {
+                // The process may have completed while emitting fatal source
+                // evidence; route the bounded recovery failure through the
+                // existing diagnostic/reporting path without validating the
+                // deleted staged output.
+                runResult = runResult with { ExitCode = 1 };
+            }
             FfmpegCudaNvdecFailure cudaFailure = FfmpegCudaNvdecFailureClassifier.Classify(runResult.StandardError);
-            if (runResult.ExitCode != 0 &&
+            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && !disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
                 FfmpegCudaNvdecFailureClassifier.ShouldRetryOnce(
                     requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
                     ffArgs.Contains("-hwaccel cuda ", StringComparison.Ordinal),
@@ -894,55 +1738,287 @@ namespace MediaFlux.Services
                             sourcePixelFormat, disableHardwareDecode: true, restoration: restoration,
                             splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                             restorationFilterOverride: aiPlan?.PostAiFilterChain,
-                            plannedVideoGeometry: plannedOutputGeometry);
+                            plannedVideoGeometry: plannedOutputGeometry,
+                            automaticTargetPlan: automaticTargetPlan);
                         scope.Complete();
                     }
                     pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
                     _log?.Invoke($"[EncodingService] Attempt 2: software decode -> NVENC; pipeline={pipelineDiagnostic}; ffmpeg arguments: {ffArgs}");
-                    runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                    using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                    {
+                        runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
+                        RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "NVDEC/CUDA software-decode retry", ffArgs, runResult);
+                        retryScope.Complete();
+                    }
                     _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery retry result: exit={runResult.ExitCode}.");
+                    RecordRecovery(EncodingRecoveryKind.HardwareDecode, EncodingRecoveryFailureClass.NvdecCudaFailure,
+                        EncodingRecoveryMode.SoftwareDecodeWithNvenc, 1,
+                        runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                        cudaFailure.DescribeEvidence());
                 }
                 else
                 {
                     recoveryDiagnostics += "Recovery retry was not started because the failed staged output could not be removed safely." + Environment.NewLine;
+                    RecordRecovery(EncodingRecoveryKind.HardwareDecode, EncodingRecoveryFailureClass.NvdecCudaFailure,
+                        EncodingRecoveryMode.SoftwareDecodeWithNvenc, 1, EncodingRecoveryResult.NotStarted,
+                        "Failed staged output could not be removed safely.");
                 }
             }
 
-            if (runResult.ExitCode != 0 &&
-                !cudaRecoveryAttempted &&
-                ShouldRetryWithSoftwareFrames(ffArgs, runResult.StandardError))
+            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && runResult.ExitCode != 0 &&
+                FfmpegCudaNvdecFailureClassifier.ShouldRetryFilterGraphOnce(
+                    requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
+                    ffArgs.Contains("-hwaccel_output_format cuda", StringComparison.Ordinal),
+                    cancellationToken.IsCancellationRequested,
+                    cudaRecoveryAttempted || gpuFramePipelineRecoveryAttempted,
+                    ffArgs,
+                    runResult.StandardError))
             {
                 string failedPipeline = pipelineDiagnostic;
+                gpuFramePipelineRecoveryAttempted = true;
+                recoveryDiagnostics += "Original CUDA filter-graph negotiation failure: scale_cuda could not negotiate with auto_scale." + Environment.NewLine;
                 _log?.Invoke(
-                    "[EncodingService] GPU-resident NVENC pipeline could not negotiate " +
-                    "CUDA frames with the selected FFmpeg build; retrying once with " +
-                    "CUDA decode and explicit software-frame conversion. Failure: " +
+                    "[EncodingService] Exact CUDA scale filter-graph negotiation failure; retrying once with " +
+                    "software decode and host-frame conversion while retaining NVENC, CQ, and preset. Failure: " +
                     SummarizeFfmpegFailure(runResult.StandardError));
-                callback("[MediaFlux] GPU frame pipeline was incompatible; retrying with software-frame conversion.");
+                callback("[MediaFlux] CUDA filter negotiation failed; retrying once with software decode and NVENC.");
 
-                using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                if (TryDeleteFailedStagingOutput(output))
                 {
-                ffArgs = BuildFfmpegArgs(
-                    inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
-                    encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
-                    mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
-                    containerDecision, forceMp4CompatibleAudio, totalDuration,
-                    qualityValue, encoderSelection, sampleStart, sampleDuration,
-                    sourcePixelFormat, preferNvencGpuResidentFrames: false, restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain,
-                    plannedVideoGeometry: plannedOutputGeometry);
-                scope.Complete();
+                    using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                    {
+                        ffArgs = BuildFfmpegArgs(
+                            inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                            encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                            mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                            containerDecision, forceMp4CompatibleAudio, totalDuration,
+                            qualityValue, encoderSelection, sampleStart, sampleDuration,
+                            sourcePixelFormat, preferNvencGpuResidentFrames: false,
+                            disableHardwareDecode: true, restoration: restoration,
+                            splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                            restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                            plannedVideoGeometry: plannedOutputGeometry,
+                            automaticTargetPlan: automaticTargetPlan);
+                        scope.Complete();
+                    }
+                    pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
+                    _log?.Invoke(
+                        $"[EncodingService] Pipeline fallback: {failedPipeline} -> " +
+                        $"{pipelineDiagnostic}. NVENC, CQ/CRF, and preset are retained; ffmpeg arguments: {ffArgs}");
+                    using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                    {
+                        runResult = await RunFfmpegAsync(
+                            ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
+                        RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "CUDA filter-graph software-decode NVENC fallback", ffArgs, runResult);
+                        retryScope.Complete();
+                    }
+                    RecordRecovery(EncodingRecoveryKind.GpuFramePipeline, EncodingRecoveryFailureClass.GpuFramePipelineFailure,
+                        EncodingRecoveryMode.SoftwareFrames, 1,
+                        runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                        "Exact scale_cuda to auto_scale negotiation failure; software decode and host frames retained NVENC and quality settings.");
                 }
-                pipelineDiagnostic = DescribeVideoPipeline(
-                    inputSource, videoCodec, useGpu, tenBit, ffArgs);
-                _log?.Invoke(
-                    $"[EncodingService] Pipeline fallback: {failedPipeline} -> " +
-                    $"{pipelineDiagnostic}. ffmpeg arguments: {ffArgs}");
-                runResult = await RunFfmpegAsync(
-                    ffArgs, callback, totalDuration, cancellationToken).ConfigureAwait(false);
+                else
+                {
+                    recoveryDiagnostics += "The CUDA filter-graph recovery was not started because the failed staged output could not be removed safely." + Environment.NewLine;
+                    RecordRecovery(EncodingRecoveryKind.GpuFramePipeline, EncodingRecoveryFailureClass.GpuFramePipelineFailure,
+                        EncodingRecoveryMode.SoftwareFrames, 1, EncodingRecoveryResult.NotStarted,
+                        "Failed staged output could not be removed safely.");
+                }
+            }
+
+            bool audioRecoveryAttempted = false;
+            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && !disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
+                compatibilityPolicy == ContainerCompatibilityPolicy.Intelligent &&
+                !cancellationToken.IsCancellationRequested)
+            {
+                int? corruptAudioStream = SourceAudioDecodePreflightService.FindCorruptAudioStreamIndex(runResult.StandardError);
+                int audioStreamIndex = corruptAudioStream ?? -1;
+                StreamCompatibilityPlan? copiedPlan = corruptAudioStream is not null
+                    ? containerDecision.StreamPlans.FirstOrDefault(plan => plan.StreamIndex == audioStreamIndex &&
+                        plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                        plan.Action == StreamCompatibilityAction.Copy)
+                    : null;
+                if (copiedPlan is not null)
+                {
+                    audioRecoveryAttempted = true;
+                    string recoveryCodec = OutputContainerPolicy.SafeAudioRecoveryCodec(containerDecision.Resolved);
+                        _log?.Invoke($"[EncodingService] Audio corruption detected: stream #{audioStreamIndex}; Copy -> Transcode; codec={recoveryCodec}.");
+                        _log?.Invoke($"[EncodingService] Audio recovery initiated for stream #{audioStreamIndex}; policy=Intelligent; attempt=1.");
+                        callback($"[MediaFlux] Recovering audio stream #{audioStreamIndex} by transcoding to {recoveryCodec}.");
+                        if (TryDeleteFailedStagingOutput(output))
+                        {
+                            containerDecision = OutputContainerPolicy.RecoverCopiedAudio(containerDecision, audioStreamIndex);
+                            containerDecisionCallback?.Invoke(containerDecision);
+                            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                            {
+                                ffArgs = BuildFfmpegArgs(
+                                    inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                    encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                    mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                    containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                    qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                    sourcePixelFormat, restoration: restoration,
+                                    splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                    restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                    plannedVideoGeometry: plannedOutputGeometry,
+                                    automaticTargetPlan: automaticTargetPlan,
+                                    sourceDecodeMode: FfmpegSourceDecodeMode.RecoverAudio);
+                                scope.Complete();
+                            }
+                            using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.AudioIntegrityRecovery))
+                            {
+                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
+                                RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Audio recovery", ffArgs, runResult);
+                                retryScope.Complete();
+                            }
+                            _log?.Invoke(runResult.ExitCode == 0
+                                ? $"[EncodingService] Audio recovery success: stream #{audioStreamIndex} transcoded to {recoveryCodec}; continuing through normal validation/finalization."
+                                : $"[EncodingService] Audio recovery failure: stream #{audioStreamIndex}; exit={runResult.ExitCode}; bounded diagnostics retained.");
+                            RecordRecovery(EncodingRecoveryKind.AudioStream, EncodingRecoveryFailureClass.SourceAudioCorruption,
+                                EncodingRecoveryMode.AudioTranscode, 1,
+                                runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                                $"Copied audio stream #{audioStreamIndex} -> {recoveryCodec}.");
+                        }
+                        else
+                        {
+                            _log?.Invoke($"[EncodingService] Audio recovery failure: stream #{audioStreamIndex}; failed staged output could not be removed safely.");
+                            RecordRecovery(EncodingRecoveryKind.AudioStream, EncodingRecoveryFailureClass.SourceAudioCorruption,
+                                EncodingRecoveryMode.AudioTranscode, 1, EncodingRecoveryResult.NotStarted,
+                                "Failed staged output could not be removed safely.");
+                        }
+                }
+            }
+
+            bool videoRecoveryAttempted = preplannedTimelineReconstructionRate is not null || tolerantSalvageAttempted;
+            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && !disableAutomaticFfmpegRecovery && runResult.ExitCode != 0)
+            {
+                FfmpegVideoDecodeRecoveryDecision recovery = FfmpegVideoDecodeRecoveryPolicy.Evaluate(
+                    runResult.StandardError,
+                    compatibilityPolicy,
+                    cancellationToken.IsCancellationRequested,
+                    videoRecoveryAttempted,
+                    requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
+                    output);
+                if (recovery.Eligible)
+                {
+                    videoRecoveryAttempted = true;
+                    _log?.Invoke($"[EncodingService] Reliable source video corruption detected on strict attempt. Evidence: {recovery.Evidence}.");
+                    _log?.Invoke("[EncodingService] Intelligent recovery: retrying once with tolerant source-video decode handling. Encoder/settings unchanged.");
+                    callback("[MediaFlux] Recovering source video decode once; encoder and settings are unchanged.");
+                    recoveryDiagnostics += $"Strict source-video corruption evidence: {recovery.Evidence}.{Environment.NewLine}";
+                    if (TryDeleteFailedStagingOutput(output))
+                    {
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                        {
+                            ffArgs = BuildFfmpegArgs(
+                                inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                sourcePixelFormat, restoration: restoration,
+                                splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                plannedVideoGeometry: plannedOutputGeometry,
+                                automaticTargetPlan: automaticTargetPlan,
+                                sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideo);
+                            scope.Complete();
+                        }
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
+                        {
+                            runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
+                            RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Video decode recovery", ffArgs, runResult);
+                            scope.Complete();
+                        }
+                        if (runResult.ExitCode == 0)
+                            _log?.Invoke("[EncodingService] Video decode recovery succeeded; validating recovered output.");
+                        else
+                            _log?.Invoke("[EncodingService] Video decode recovery failed; no further recovery attempts will be made.");
+                        RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
+                            EncodingRecoveryMode.Tolerant, 1,
+                            runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                            recovery.Evidence);
+                    }
+                    else
+                    {
+                        _log?.Invoke("[EncodingService] Video decode recovery failed; failed staged output could not be removed safely.");
+                        RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
+                            EncodingRecoveryMode.Tolerant, 1, EncodingRecoveryResult.NotStarted,
+                            "Failed staged output could not be removed safely.");
+                    }
+                }
             }
 
             if (runResult.ExitCode != 0)
             {
+                FfmpegAudioTimestampFailure? audioTimestampFailure = null;
+                FfmpegStorageFailure storageFailure =
+                    FfmpegStorageFailureClassifier.Classify(runResult.StandardError, output);
+                FailureDiagnosticReportArtifact? diagnosticArtifacts = null;
+                string diagnosticArtifactNote = "";
+                FfmpegDiagnosticSummary failureDiagnostics = SelectMostInformativeFailureDiagnostics(
+                    sourceContainerRecoveryAttempted ? initialDiagnosticSummary : runResult.DiagnosticSummary,
+                    ffmpegAttempts);
+                try
+                {
+                    terminalResult = sourceUnrecoverable
+                        ? EncodingTerminalResult.SourceUnrecoverable
+                        : recoveryOutcomes.Count > 0
+                        ? EncodingTerminalResult.RecoveryFailed
+                        : EncodingTerminalResult.EncodeFailed;
+                    // The FFmpeg process launched and terminated. Publish this
+                    // final state before report construction or exception flow
+                    // can leave the service with its earlier NotRun snapshot.
+                    PublishExecutionOutcome();
+                    if (!sourceUnrecoverable && !storageFailure.IsReliable)
+                    {
+                        audioTimestampFailure = FfmpegAudioTimestampFailureClassifier.Classify(
+                            runResult.StandardError, containerDecision.Resolved);
+                    }
+                    FfmpegAttemptDiagnostic[] reportAttempts = ffmpegAttempts
+                        .Select((attempt, index) => attempt with { IsTerminal = index == ffmpegAttempts.Count - 1 })
+                        .ToArray();
+                    string reportStandardError = BuildAttemptRawEvidence(reportAttempts);
+                    EncodingExecutionOutcome failureOutcome = new(
+                        shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(),
+                        validationOutcome, finalizationOutcome, terminalResult);
+                    string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+                        "Encode", inputSource.SourcePath, output, runResult.ExitCode,
+                        audioTimestampFailure is null
+                            ? failureDiagnostics.Classification.PrimaryCategory == FfmpegDiagnosticCategory.Unknown
+                                ? "FFmpeg process failure"
+                                : $"FFmpeg process failure — {failureDiagnostics.Classification.PrimaryCategory}"
+                            : "Audio timestamp incompatibility",
+                        failureDiagnostics, reportStandardError, shadowPlan, failureOutcome,
+                        SourceContainer: sourceProbe.FormatName,
+                        SourceSizeBytes: inputSource.Kind == EncodingInputKind.File && File.Exists(inputSource.SourcePath)
+                            ? new FileInfo(inputSource.SourcePath).Length : null,
+                        Attempts: reportAttempts,
+                        SpecificDiagnosis: audioTimestampFailure is null
+                            ? failureDiagnostics.Classification.PrimaryCategory == FfmpegDiagnosticCategory.Unknown
+                                ? null
+                                : failureDiagnostics.Classification.ProbableCause
+                            : audioTimestampFailure.DescribeDiagnosis() + " No valid final output was promoted."));
+                    diagnosticArtifacts = ErrorLogService.TryWriteFailureDiagnosticArtifacts(
+                        _appPath, report, reportStandardError);
+                    diagnosticArtifactNote = diagnosticArtifacts is null
+                        ? "Failure diagnostic artifact generation was unavailable; rolling raw error logging was preserved."
+                        : $"Failure diagnostic report: {diagnosticArtifacts.ReportPath}{Environment.NewLine}Raw captured stderr artifact: {diagnosticArtifacts.RawEvidencePath}";
+                    try
+                    {
+                        failureDiagnosticReportCallback?.Invoke(diagnosticArtifacts is null
+                            ? report
+                            : report + Environment.NewLine + Environment.NewLine + diagnosticArtifactNote);
+                    }
+                    catch
+                    {
+                        // Presentation observers must not replace the terminal encode failure.
+                    }
+                }
+                catch (Exception reportException)
+                {
+                    diagnosticArtifactNote = "Failure diagnostic report generation failed; rolling raw error logging was preserved. " + reportException.Message;
+                }
                 string logPath = ErrorLogService.Append(
                     _appPath,
                     "FFmpeg encode failed",
@@ -951,33 +2027,91 @@ namespace MediaFlux.Services
                     $"Output     : {output}{Environment.NewLine}" +
                     $"Exit Code  : {runResult.ExitCode}{Environment.NewLine}" +
                     $"Arguments  : {ffArgs}{Environment.NewLine}{Environment.NewLine}" +
+                    diagnosticArtifactNote + Environment.NewLine + Environment.NewLine +
                     recoveryDiagnostics +
-                    "FFmpeg Output:" + Environment.NewLine +
-                    runResult.StandardError);
+                    "FFmpeg Attempts:" + Environment.NewLine +
+                    BuildAttemptRawEvidence(ffmpegAttempts
+                        .Select((attempt, index) => attempt with { IsTerminal = index == ffmpegAttempts.Count - 1 })
+                        .ToArray()));
 
                 _log?.Invoke($"[EncodingService] ffmpeg exited with code {runResult.ExitCode}. See central log: {logPath}");
-                string recoverySuffix = string.IsNullOrWhiteSpace(recoveryDiagnostics)
+                if (sourceUnrecoverable)
+                {
+                    TryDeleteFailedStagingOutput(output);
+                    throw new InvalidOperationException(
+                        "Source media is damaged. MediaFlux detected extensive corruption in the source video stream. " +
+                        "The source could not be decoded reliably and automated recovery was unsuccessful. Encoding was stopped " +
+                        "to prevent creation of an incomplete or corrupted output file. The original source was preserved. " +
+                        $"See central log: {logPath}");
+                }
+                string recoverySuffix = !cudaRecoveryAttempted && !gpuFramePipelineRecoveryAttempted
                     ? ""
-                    : cudaRecoveryStarted
+                    : gpuFramePipelineRecoveryAttempted
+                        ? gpuFramePipelineRecoveryStarted
+                            ? " The one-time CUDA filter-graph fallback also failed; both attempt diagnostics were recorded."
+                            : " The one-time CUDA filter-graph fallback was not started because the failed output could not be removed safely."
+                        : cudaRecoveryStarted
                         ? " The software-decode NVENC recovery attempt also failed; both attempt diagnostics were recorded."
                         : " The NVDEC/CUDA recovery retry was not started; diagnostics were recorded.";
-                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{recoverySuffix} See central log: {logPath}");
+                if (storageFailure.IsReliable)
+                    throw new InvalidOperationException(
+                        $"FFmpeg stopped because {storageFailure.Describe()}. The partial staged output was not finalized; existing recovery policy controls its retention. The original source was retained. See central log: {logPath}");
+                if (audioTimestampFailure is not null)
+                    throw new InvalidOperationException(
+                        audioTimestampFailure.DescribeDiagnosis() +
+                        $" FFmpeg evidence: {audioTimestampFailure.MatchedEvidence}." +
+                        " No valid final output was promoted; any incomplete staged output remains subject to the existing cleanup policy. " +
+                        $"The original source was retained. See central log: {logPath}");
+                FfmpegNvencFailure nvencFailure = requestedEncoder.EncoderId.Equals(
+                    VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase)
+                    ? FfmpegNvencFailureClassifier.Classify(runResult.StandardError)
+                    : new FfmpegNvencFailure(FfmpegNvencFailureKind.None, Array.Empty<string>());
+                if (nvencFailure.IsReliable)
+                    throw new InvalidOperationException(
+                        $"FFmpeg stopped because {nvencFailure.Describe()}. MediaFlux did not retry with a different encoder because that would change the requested encoding policy. The partial staged output was not finalized; existing recovery policy controls its retention. The original source was retained. See central log: {logPath}");
+                FfmpegSourceDecodeCorruption sourceDecodeCorruption =
+                    FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
+                FfmpegSourceTruncation sourceTruncation =
+                    FfmpegSourceTruncationClassifier.Classify(runResult.StandardError);
+                if (sourceTruncation.IsReliable)
+                    throw new InvalidOperationException("FFmpeg stopped because the source media appears truncated or incomplete. The original source was retained. See central log: " + logPath);
+                if (sourceDecodeCorruption.IsReliable)
+                    throw new InvalidOperationException("FFmpeg stopped because the source video contains undecodable or corrupt H.264 data. The original source was retained. See central log: " + logPath);
+                string audioSuffix = audioRecoveryAttempted
+                    ? " The one-time Intelligent audio recovery attempt also failed; the original source was retained."
+                    : "";
+                string videoSuffix = videoRecoveryAttempted
+                    ? " The one-time Intelligent video decode recovery attempt also failed; the original source was retained."
+                    : "";
+                string diagnosisSuffix = failureDiagnostics.Classification.PrimaryCategory == FfmpegDiagnosticCategory.Unknown
+                    ? ""
+                    : $" Diagnosis: {failureDiagnostics.Classification.ProbableCause}";
+                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{diagnosisSuffix}{recoverySuffix}{audioSuffix}{videoSuffix} See central log: {logPath}");
             }
-            encodeScope.Complete();
-            encodeScope.Dispose();
-
             _log?.Invoke(
                 "[EncodingService] ffmpeg completed successfully; validating staged output.");
-            EncodeFinalizationResult finalization;
-            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.Finalization))
+            EncodeOutputValidationRequest BuildValidationRequest(
+                RecoverableSourceBaseline? recoverableBaseline = null,
+                EncodingSourceFailureClassification? sourceFailure = null)
             {
-            finalization =
-                await _finalizationService.FinalizeAsync(
-                    new EncodeOutputValidationRequest
-                    {
+                double? expectedDuration = sampleDuration?.TotalSeconds ?? programDuration.DurationSeconds;
+                EncodeOutputTemporalWindow? expectedTemporalWindow = null;
+                if (validationProfile == EncodeOutputValidationProfile.BenchmarkSample &&
+                    sampleDuration is { } benchmarkDuration && benchmarkDuration > TimeSpan.Zero)
+                {
+                    expectedTemporalWindow = EncodeOutputTemporalWindow.FromSample(
+                        sampleStart?.TotalSeconds ?? 0,
+                        benchmarkDuration.TotalSeconds,
+                        programDuration.DurationSeconds);
+                    expectedDuration = expectedTemporalWindow.DurationSeconds;
+                }
+
+                return new()
+                {
                         Input = inputSource,
                         OutputPath = output,
                         FinalOutputPath = finalOutput,
+                        StorageSavingsContract = storageSavingsContract ?? StorageSavingsContract.Disabled,
                         Encoder = requestedEncoder,
                         ScaleMode = scaleMode,
                         TenBit = tenBit,
@@ -988,30 +2122,991 @@ namespace MediaFlux.Services
                         CopyAttachments = allowAttachmentCopy,
                         ContainerDecision = containerDecision,
                         SourceProbe = sourceProbe,
-                        ExpectedDurationSeconds = sampleDuration?.TotalSeconds ?? programDuration.DurationSeconds,
+                        ExpectedDurationSeconds = expectedDuration,
+                        ExpectedTemporalWindow = expectedTemporalWindow,
                         ExpectedVideoFrameCount = sampleDuration is null ? programDuration.PrimaryVideo?.FrameCount : null,
                         ExpectedVideoFrameCountProvenance = sampleDuration is null && programDuration.PrimaryVideo?.FrameCount is > 0
                             ? FrameCountProvenance.Measured
                             : FrameCountProvenance.Unavailable,
+                        RecoverableSourceBaseline = recoverableBaseline,
+                        SourceFailureClassification = sourceFailure,
+                        // Only the original source timing can justify existing
+                        // frame-deficit exceptions; repaired timing is execution-only.
+                        SourceTiming = originalSourceTiming,
+                        RequireMonotonicOutputTimeline = requireRegeneratedOutputTimeline,
+                        RequireFullVideoDecodeCoverage = requireRegeneratedOutputTimeline || tolerantSalvageAttempted,
+                        RequireFullAudioDecodeCoverage = tolerantSalvageAttempted,
                         ExpectedVideoWidth = plannedOutputGeometry?.Width,
                         ExpectedVideoHeight = plannedOutputGeometry?.Height,
                         PerformanceTiming = performance
-                    },
-                    finalizationStatusCallback,
-                    cancellationToken).ConfigureAwait(false);
-            if (finalization.Success) scope.Complete();
+                        ,Profile = validationProfile
+                };
             }
+            bool IsAdaptiveSourceIdentityCurrent()
+            {
+                if (adaptiveSourceIdentity is not { } identity)
+                    return false;
+                try
+                {
+                    var current = new FileInfo(inputSource.SourcePath);
+                    current.Refresh();
+                    return current.Exists &&
+                        Path.GetFullPath(current.FullName).Equals(identity.Path, StringComparison.OrdinalIgnoreCase) &&
+                        current.Length == identity.Length && current.LastWriteTimeUtc.Ticks == identity.LastWriteUtcTicks;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavingsRetry] Source identity recheck failed: {ex.Message}");
+                    return false;
+                }
+            }
+            bool IsOwnedEncodeStage(string stagePath, Guid stageId)
+            {
+                try
+                {
+                    string expected = OutputPathService.CreateEncodeStagingPath(finalOutput, stageId);
+                    string fullStage = Path.GetFullPath(stagePath);
+                    string fullFinal = Path.GetFullPath(finalOutput);
+                    string? stageDirectory = Path.GetDirectoryName(fullStage);
+                    string? finalDirectory = Path.GetDirectoryName(fullFinal);
+                    return fullStage.Equals(expected, StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrWhiteSpace(stageDirectory) &&
+                        stageDirectory.Equals(finalDirectory, StringComparison.OrdinalIgnoreCase) &&
+                        OutputPathService.IsPathWithinDirectory(fullStage, finalDirectory ?? "");
+                }
+                catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+                {
+                    _log?.Invoke($"[AdaptiveStorageSavingsRetry] Staging ownership check failed: {ex.Message}");
+                    return false;
+                }
+            }
+            AdaptiveStorageSavingsEncodeAttempt CreateAdaptiveAttempt(
+                int number,
+                AdaptiveStorageSavingsAttemptKind kind,
+                AdaptiveCandidateEvidence candidate,
+                Guid? stageId,
+                string? commandHash,
+                bool processStarted,
+                int? exitCode,
+                DateTimeOffset? processStartedAt,
+                DateTimeOffset? processExitedAt,
+                double? encodeSeconds,
+                EncodingLifecycleStatus technicalStatus,
+                string? validationSummary,
+                long? actualBytes,
+                StorageSavingsEvaluation? phaseOne,
+                AdaptiveStorageSavingsStageDisposition stageDisposition,
+                AdaptiveStorageSavingsAttemptOutcome outcome,
+                bool cancellationRequested,
+                bool contributesToTerminal)
+            {
+                return AdaptiveStorageSavingsEncodeAttempt.Create(
+                    number, kind, candidate.Quality, candidate.Quality, candidate.ProjectedUpperBytes,
+                    stageId, commandHash, processStarted, exitCode, processStartedAt, processExitedAt,
+                    encodeSeconds, technicalStatus, validationSummary, actualBytes, phaseOne,
+                    stageDisposition, outcome, cancellationRequested, contributesToTerminal);
+            }
+            finalization =
+                await _finalizationService.FinalizeAsync(
+                    BuildValidationRequest(),
+                    ReportFinalizationStatus,
+                    cancellationToken).ConfigureAwait(false);
+            lifecycleDiagnostics?.Record(EncodeLifecycleEvent.VerificationEnd);
+            validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+            finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+            if (finalization.StorageSavings is { Contract.Applies: true } savingsEvidence)
+                _log?.Invoke(StorageSavingsContractService.Describe(savingsEvidence));
+            if (finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected)
+            {
+                if (experimentalPolicyCRetryEnabled)
+                    callback("[AdaptiveStorageSavingsRetry] Attempt 1 finalization completed; evaluating bounded retry.");
+                EncodeFinalizationResult initialRejection = finalization;
+                bool retryExecuted = false;
+                if (experimentalPolicyCRetryEnabled && adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput &&
+                    shadowPlan.AdaptiveSelection is { Disposition: AdaptiveSelectionDisposition.Selected } selection &&
+                    selection.SelectedQuality is int selectedQuality && selection.Candidates is not null)
+                {
+                    AdaptiveCandidateEvidence[] selectedRows = selection.Candidates
+                        .Where(candidate => candidate.Quality == selectedQuality)
+                        .ToArray();
+                    AdaptiveCandidateEvidence? initialCandidate = selectedRows.Length == 1 ? selectedRows[0] : null;
+                    bool canCaptureAttempt1 = initialCandidate is not null &&
+                        qualityValue == selectedQuality &&
+                        initialCandidate.ProjectedUpperBytes > 0 &&
+                        double.IsFinite(initialCandidate.ProjectedUpperBytes) &&
+                        initialRejection.StagedValidationResult is { Success: true, Evidence: not null } &&
+                        initialRejection.StorageSavings is { Acceptance: StorageSavingsAcceptance.Rejected };
+                    if (canCaptureAttempt1)
+                    {
+                        AdaptiveCandidateEvidence capturedInitialCandidate = initialCandidate!;
+                    bool processAndRecoveryTriggerValid = productionEncodeCount == 1 && ffmpegAttempt == 1 &&
+                        runResult.ExitCode == 0 && initialProcessStartedUtc is not null &&
+                        initialProcessExitedUtc is not null && initialProcessSeconds is not null &&
+                        disableAutomaticFfmpegRecovery && recoveryOutcomes.Count == 0;
+                    bool validatedPhaseOneRejection =
+                        initialRejection.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected &&
+                        initialRejection.StorageSavings?.Acceptance == StorageSavingsAcceptance.Rejected &&
+                        initialRejection.StagedValidationResult is { Success: true, Evidence: not null } &&
+                        qualityValue == selectedQuality && processAndRecoveryTriggerValid;
+                    bool policyGateEnabled = experimentalPolicyCRetryEnabled && adaptiveStorageSavingsEnabled &&
+                        ordinaryAdaptiveInput && disableAutomaticFfmpegRecovery && recoveryOutcomes.Count == 0;
+                    PolicyCDecision decision = AdaptiveStorageSavingsRetryPolicy.Select(new PolicyCEligibility(
+                        selection,
+                        IsValidatedPhaseOneRejection: validatedPhaseOneRejection,
+                        TechnicalValidationPassed: initialRejection.StagedValidationResult is { Success: true, Evidence: not null },
+                        ProductionEncodeCount: productionEncodeCount,
+                        RetryEnabled: policyGateEnabled,
+                        CancellationRequested: cancellationToken.IsCancellationRequested));
+                    if (decision.ShouldRetry && !IsAdaptiveSourceIdentityCurrent())
+                        decision = new(false, null, PolicyCDecisionReason.SourceIdentityChanged);
+
+                        var retryAttempts = new List<AdaptiveStorageSavingsEncodeAttempt>();
+                        StorageSavingsEvaluation firstPhaseOne = initialRejection.StorageSavings!;
+                        AdaptiveStorageSavingsEncodeAttempt firstAttempt = CreateAdaptiveAttempt(
+                            AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                            AdaptiveStorageSavingsAttemptKind.Initial,
+                            capturedInitialCandidate,
+                            outputStageId,
+                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                            processStarted: true,
+                            runResult.ExitCode,
+                            initialProcessStartedUtc,
+                            initialProcessExitedUtc,
+                            initialProcessSeconds,
+                            EncodingLifecycleStatus.Passed,
+                            initialRejection.StagedValidationResult!.Summary,
+                            firstPhaseOne.CandidateOutputBytes,
+                            firstPhaseOne,
+                            AdaptiveStorageSavingsStageDisposition.Retained,
+                            AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+                            cancellationRequested: cancellationToken.IsCancellationRequested,
+                            contributesToTerminal: !decision.ShouldRetry);
+
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            firstAttempt = firstAttempt.WithCancellationRequested(contributesToTerminalResult: true);
+                            retryAttempts.Add(firstAttempt);
+                            adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                EncodingTerminalResult.Canceled);
+                            finalization = new EncodeFinalizationResult();
+                            validationOutcome = null;
+                            finalizationOutcome = null;
+                            terminalResult = EncodingTerminalResult.Canceled;
+                            PublishExecutionOutcome();
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
+
+                        if (!decision.ShouldRetry)
+                        {
+                            retryAttempts.Add(firstAttempt);
+                            adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                EncodingTerminalResult.StoragePolicyRejected);
+                            terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                            PublishExecutionOutcome();
+                            _log?.Invoke($"[AdaptiveStorageSavingsRetry] Policy C declined attempt 2: {decision.ReasonCode}.");
+                        }
+                        else
+                        {
+                            AdaptiveCandidateEvidence retryCandidate = decision.Candidate!;
+                            if (!IsAdaptiveSourceIdentityCurrent())
+                            {
+                                decision = new(false, null, PolicyCDecisionReason.SourceIdentityChanged);
+                                firstAttempt = CreateAdaptiveAttempt(
+                                    AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                    AdaptiveStorageSavingsAttemptKind.Initial, capturedInitialCandidate, outputStageId,
+                                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))), true,
+                                    runResult.ExitCode, initialProcessStartedUtc, initialProcessExitedUtc,
+                                    initialProcessSeconds, EncodingLifecycleStatus.Passed,
+                                    initialRejection.StagedValidationResult!.Summary,
+                                    firstPhaseOne.CandidateOutputBytes, firstPhaseOne,
+                                    AdaptiveStorageSavingsStageDisposition.Retained,
+                                    AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+                                    cancellationRequested: false, contributesToTerminal: true);
+                                retryAttempts.Add(firstAttempt);
+                                adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                    selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                    AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                    EncodingTerminalResult.StoragePolicyRejected);
+                                terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                                PublishExecutionOutcome();
+                            }
+                            else
+                            {
+                                if (!IsOwnedEncodeStage(output, outputStageId) || !TryDeleteFailedStagingOutput(output))
+                                {
+                                    firstAttempt = CreateAdaptiveAttempt(
+                                        AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                        AdaptiveStorageSavingsAttemptKind.Initial, capturedInitialCandidate, outputStageId,
+                                        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))), true,
+                                        runResult.ExitCode, initialProcessStartedUtc, initialProcessExitedUtc,
+                                        initialProcessSeconds, EncodingLifecycleStatus.Passed,
+                                        initialRejection.StagedValidationResult!.Summary,
+                                        firstPhaseOne.CandidateOutputBytes, firstPhaseOne,
+                                        AdaptiveStorageSavingsStageDisposition.CleanupFailed,
+                                        AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+                                        cancellationRequested: false, contributesToTerminal: true);
+                                    retryAttempts.Add(firstAttempt);
+                                    adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                        selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                        AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                        EncodingTerminalResult.StoragePolicyRejected);
+                                    terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                                    PublishExecutionOutcome();
+                                    _log?.Invoke("[AdaptiveStorageSavingsRetry] Attempt 1 staging cleanup failed; preserving the original StoragePolicyRejected result.");
+                                }
+                                else
+                                {
+                                    firstAttempt = CreateAdaptiveAttempt(
+                                        AdaptiveStorageSavingsRetryLimits.InitialAttemptNumber,
+                                        AdaptiveStorageSavingsAttemptKind.Initial, capturedInitialCandidate, outputStageId,
+                                        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))), true,
+                                        runResult.ExitCode, initialProcessStartedUtc, initialProcessExitedUtc,
+                                        initialProcessSeconds, EncodingLifecycleStatus.Passed,
+                                        initialRejection.StagedValidationResult!.Summary,
+                                        firstPhaseOne.CandidateOutputBytes, firstPhaseOne,
+                                        AdaptiveStorageSavingsStageDisposition.Deleted,
+                                        AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected,
+                                        cancellationRequested: false, contributesToTerminal: false);
+                                    retryAttempts.Add(firstAttempt);
+
+                                    if (cancellationToken.IsCancellationRequested)
+                                    {
+                                        finalization = new EncodeFinalizationResult();
+                                        validationOutcome = null;
+                                        finalizationOutcome = null;
+                                        AdaptiveStorageSavingsEncodeAttempt canceledBeforePreparation = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, null,
+                                            null, false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun,
+                                            "Canceled after attempt-1 staging cleanup and before retry preparation.",
+                                            null, null, AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.Canceled, true, true);
+                                        retryAttempts.Add(canceledBeforePreparation);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.Canceled);
+                                        terminalResult = EncodingTerminalResult.Canceled;
+                                        PublishExecutionOutcome();
+                                        cancellationToken.ThrowIfCancellationRequested();
+                                    }
+
+                                    // From this point attempt 1 is disposed and cannot become the active result.
+                                    finalization = new EncodeFinalizationResult();
+                                    validationOutcome = null;
+                                    finalizationOutcome = null;
+                                    terminalResult = EncodingTerminalResult.NotRun;
+
+                                    EncodingPlan retryPlan;
+                                    try
+                                    {
+                                        retryPlan = EncodingPlanService.FreezeAdaptiveRetryQuality(
+                                            shadowPlan, decision, AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            productionEncodeCount);
+                                    }
+                                    catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt preparationFailure = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, null,
+                                            null, false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun, ex.Message, null, null,
+                                            AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.PreparationFailed,
+                                            false, true);
+                                        retryAttempts.Add(preparationFailure);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw new InvalidOperationException(
+                                            "Policy C attempt 2 could not be prepared from the frozen adaptive plan. The original source was retained.", ex);
+                                    }
+
+                                    Guid retryStageId = Guid.NewGuid();
+                                    string retryOutput;
+                                    try
+                                    {
+                                        retryOutput = OutputPathService.CreateEncodeStagingPath(finalOutput, retryStageId);
+                                        string fullRetryOutput = Path.GetFullPath(retryOutput);
+                                        string fullFinalOutput = Path.GetFullPath(finalOutput);
+                                        if (retryStageId == outputStageId ||
+                                            fullRetryOutput.Equals(Path.GetFullPath(output), StringComparison.OrdinalIgnoreCase) ||
+                                            File.Exists(fullRetryOutput) ||
+                                            !string.Equals(Path.GetDirectoryName(fullRetryOutput), Path.GetDirectoryName(fullFinalOutput), StringComparison.OrdinalIgnoreCase) ||
+                                            !OutputPathService.IsPathWithinDirectory(fullRetryOutput, Path.GetDirectoryName(fullFinalOutput) ?? ""))
+                                            throw new IOException("Fresh attempt-2 staging identity was not distinct, absent, and in the final output directory.");
+                                    }
+                                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt preparationFailure = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, null,
+                                            null, false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun, ex.Message, null, null,
+                                            AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.PreparationFailed,
+                                            false, true);
+                                        retryAttempts.Add(preparationFailure);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw new InvalidOperationException(
+                                            "Policy C attempt 2 could not allocate fresh staging after attempt 1 was safely removed. The original source was retained.", ex);
+                                    }
+
+                                    shadowPlan = retryPlan;
+                                    planExecution = EncodingPlanService.GetExecutionValues(retryPlan);
+                                    qualityValue = planExecution.QualityResolution.EffectiveQuality;
+                                    qualityResolutionCallback?.Invoke(planExecution.QualityResolution);
+                                    planSnapshot = new EncodingPlanSnapshot(retryPlan.PlanId, retryPlan);
+                                    encodingPlanSnapshotCallback?.Invoke(planSnapshot);
+                                    outputStageId = retryStageId;
+                                    output = retryOutput;
+                                    outputPathCallback?.Invoke(finalOutput);
+                                    stagingPathCallback?.Invoke(output);
+
+                                    ffArgs = BuildFfmpegArgs(
+                                        inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                        encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                        mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                        containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                        qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                        sourcePixelFormat,
+                                        recoveryFrameRateRational: preplannedTimelineReconstructionRate?.Text,
+                                        timestampReconstructionFilter: preplannedTimelineReconstructionRate is { } retryReconstructionRate
+                                            ? $"setpts=N*{retryReconstructionRate.Denominator}/{retryReconstructionRate.Numerator}/TB"
+                                            : null,
+                                        disableHardwareDecode: preplannedTimelineReconstructionRate is not null,
+                                        restoration: restoration,
+                                        splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                        restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                        plannedVideoGeometry: plannedOutputGeometry,
+                                        automaticTargetPlan: automaticTargetPlan,
+                                        sourceDecodeMode: preplannedTimelineReconstructionRate is null
+                                            ? sourceDecodeMode
+                                            : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
+                                    _log?.Invoke($"[AdaptiveStorageSavingsRetry] Starting Policy C attempt 2 of 2; stage-id={retryStageId:N}; quality={retryCandidate.Quality}; command-sha256={Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs)))}.");
+
+                                    if (cancellationToken.IsCancellationRequested)
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt canceledBeforeLaunch = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun, "Canceled before the attempt-2 process started.",
+                                            null, null, AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.Canceled, true, true);
+                                        retryAttempts.Add(canceledBeforeLaunch);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.Canceled);
+                                        terminalResult = EncodingTerminalResult.Canceled;
+                                        PublishExecutionOutcome();
+                                        cancellationToken.ThrowIfCancellationRequested();
+                                    }
+                                    if (!IsAdaptiveSourceIdentityCurrent())
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt staleSource = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            false, null, null, null, null,
+                                            EncodingLifecycleStatus.NotRun, "Source identity changed after attempt 1; attempt 2 was not launched.",
+                                            null, null, AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.PreparationFailed, false, true);
+                                        retryAttempts.Add(staleSource);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw new InvalidOperationException("The source changed after attempt 1; Policy C attempt 2 was not launched.");
+                                    }
+
+                                    DateTimeOffset? retryStartedUtc = null;
+                                    DateTimeOffset? retryExitedUtc = null;
+                                    double? retryEncodeSeconds = null;
+                                    bool retryProcessStarted = false;
+                                    FfmpegProcessResult retryRunResult;
+                                    Stopwatch retryEncodeWatch = Stopwatch.StartNew();
+                                    try
+                                    {
+                                        using (PerformanceTimingService.PerformanceScope retryEncodeScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                                        {
+                                            retryRunResult = await RunFfmpegAsync(
+                                                ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
+                                                progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback,
+                                                sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics,
+                                                faststartStartedCallback,
+                                                started =>
+                                                {
+                                                    retryProcessStarted = true;
+                                                    retryStartedUtc = started;
+                                                    RecordProductionEncodeStarted(started);
+                                                },
+                                                exited => retryExitedUtc = exited,
+                                                output).ConfigureAwait(false);
+                                            retryEncodeScope.Complete();
+                                        }
+                                        retryEncodeWatch.Stop();
+                                        retryEncodeSeconds = retryEncodeWatch.Elapsed.TotalSeconds;
+                                    }
+                                    catch (OperationCanceledException)
+                                    {
+                                        retryEncodeWatch.Stop();
+                                        retryEncodeSeconds = retryProcessStarted ? retryEncodeWatch.Elapsed.TotalSeconds : null;
+                                        AdaptiveStorageSavingsEncodeAttempt canceledAttempt = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            retryProcessStarted, null, retryStartedUtc, retryExitedUtc, retryEncodeSeconds,
+                                            EncodingLifecycleStatus.NotRun, "Canceled during attempt-2 FFmpeg execution.",
+                                            null, null, File.Exists(output) ? AdaptiveStorageSavingsStageDisposition.Retained : AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.Canceled, true, true);
+                                        retryAttempts.Add(canceledAttempt);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.Canceled);
+                                        finalization = new EncodeFinalizationResult();
+                                        validationOutcome = null;
+                                        finalizationOutcome = null;
+                                        terminalResult = EncodingTerminalResult.Canceled;
+                                        PublishExecutionOutcome();
+                                        throw;
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        retryEncodeWatch.Stop();
+                                        retryEncodeSeconds = retryProcessStarted ? retryEncodeWatch.Elapsed.TotalSeconds : null;
+                                        AdaptiveStorageSavingsEncodeAttempt processFailure = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            retryProcessStarted, null, retryStartedUtc, retryExitedUtc, retryEncodeSeconds,
+                                            EncodingLifecycleStatus.NotRun, ex.Message, null, null,
+                                            File.Exists(output) ? AdaptiveStorageSavingsStageDisposition.Retained : AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.EncodeFailed, false, true);
+                                        retryAttempts.Add(processFailure);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        finalization = new EncodeFinalizationResult();
+                                        validationOutcome = null;
+                                        finalizationOutcome = null;
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw;
+                                    }
+
+                                    RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Policy C bounded storage retry", ffArgs, retryRunResult);
+                                    if (retryRunResult.ExitCode != 0)
+                                    {
+                                        AdaptiveStorageSavingsEncodeAttempt processFailure = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            retryProcessStarted, retryRunResult.ExitCode, retryStartedUtc, retryExitedUtc,
+                                            retryEncodeSeconds, EncodingLifecycleStatus.NotRun,
+                                            SummarizeFfmpegFailure(retryRunResult.StandardError), null, null,
+                                            File.Exists(output) ? AdaptiveStorageSavingsStageDisposition.Retained : AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.EncodeFailed, false, true);
+                                        retryAttempts.Add(processFailure);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.EncodeFailed);
+                                        terminalResult = EncodingTerminalResult.EncodeFailed;
+                                        PublishExecutionOutcome();
+                                        throw new InvalidOperationException(
+                                            $"Policy C attempt 2 of 2 failed because FFmpeg exited with code {retryRunResult.ExitCode}. The original source was retained.");
+                                    }
+
+                                    try
+                                    {
+                                        cancellationToken.ThrowIfCancellationRequested();
+                                        finalization = await _finalizationService.FinalizeAsync(
+                                            BuildValidationRequest(), ReportFinalizationStatus, cancellationToken).ConfigureAwait(false);
+                                        lifecycleDiagnostics?.Record(EncodeLifecycleEvent.VerificationEnd);
+                                    }
+                                    catch (OperationCanceledException canceled)
+                                    {
+                                        finalization = canceled is EncodeFinalizationCanceledException finalizationCanceled
+                                            ? finalizationCanceled.Result
+                                            : new EncodeFinalizationResult();
+                                        validationOutcome = finalization.StagedValidationResult is null
+                                            ? null : EncodingPlanService.DescribeValidationOutcome(finalization);
+                                        finalizationOutcome = finalization.StagedValidationResult is null
+                                            ? null : EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                                        StorageSavingsEvaluation? canceledSavings = finalization.StorageSavings;
+                                        long? canceledBytes = canceledSavings?.CandidateOutputBytes ??
+                                            finalization.StagedValidationResult?.Evidence?.OutputSizeBytes;
+                                        AdaptiveStorageSavingsEncodeAttempt canceledAttempt = CreateAdaptiveAttempt(
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                            true, retryRunResult.ExitCode, retryStartedUtc, retryExitedUtc,
+                                            retryEncodeSeconds,
+                                            finalization.StagedValidationResult?.Success == true
+                                                ? EncodingLifecycleStatus.Passed
+                                                : finalization.StagedValidationResult is null
+                                                    ? EncodingLifecycleStatus.NotRun : EncodingLifecycleStatus.Failed,
+                                            canceled.Message, canceledBytes, canceledSavings,
+                                            File.Exists(output) || File.Exists(finalOutput)
+                                                ? AdaptiveStorageSavingsStageDisposition.Retained
+                                                : AdaptiveStorageSavingsStageDisposition.NotCreated,
+                                            AdaptiveStorageSavingsAttemptOutcome.Canceled, true, true);
+                                        retryAttempts.Add(canceledAttempt);
+                                        adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                            selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                            AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                            EncodingTerminalResult.Canceled);
+                                        terminalResult = EncodingTerminalResult.Canceled;
+                                        PublishExecutionOutcome();
+                                        throw;
+                                    }
+
+                                    validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                                    finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                                    StorageSavingsEvaluation? retrySavings = finalization.StorageSavings;
+                                    EncodeOutputValidationResult? retryValidation = finalization.StagedValidationResult;
+                                    long? retryBytes = retrySavings?.CandidateOutputBytes ?? retryValidation?.Evidence?.OutputSizeBytes;
+                                    AdaptiveStorageSavingsAttemptOutcome retryOutcome = finalization.Success
+                                        ? AdaptiveStorageSavingsAttemptOutcome.Accepted
+                                        : finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected
+                                            ? AdaptiveStorageSavingsAttemptOutcome.StoragePolicyRejected
+                                            : finalization.FailureKind == EncodeFinalizationFailureKind.Validation
+                                                ? AdaptiveStorageSavingsAttemptOutcome.ValidationFailed
+                                                : AdaptiveStorageSavingsAttemptOutcome.FinalizationFailed;
+                                    AdaptiveStorageSavingsStageDisposition retryStageDisposition = finalization.Success
+                                        ? AdaptiveStorageSavingsStageDisposition.Promoted
+                                        : File.Exists(output) || File.Exists(finalOutput)
+                                            ? AdaptiveStorageSavingsStageDisposition.Retained
+                                            : AdaptiveStorageSavingsStageDisposition.NotCreated;
+                                    terminalResult = finalization.Success
+                                        ? EncodingTerminalResult.Completed
+                                        : finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected
+                                            ? EncodingTerminalResult.StoragePolicyRejected
+                                            : finalization.FailureKind == EncodeFinalizationFailureKind.Validation
+                                                ? EncodingTerminalResult.ValidationFailed
+                                                : EncodingTerminalResult.FinalizationFailed;
+                                    AdaptiveStorageSavingsEncodeAttempt completedRetryAttempt = CreateAdaptiveAttempt(
+                                        AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber,
+                                        AdaptiveStorageSavingsAttemptKind.PolicyCRetry, retryCandidate, retryStageId,
+                                        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ffArgs))),
+                                        true, retryRunResult.ExitCode, retryStartedUtc, retryExitedUtc,
+                                        retryEncodeSeconds,
+                                        retryValidation?.Success == true
+                                            ? EncodingLifecycleStatus.Passed
+                                            : retryValidation is null
+                                                ? EncodingLifecycleStatus.NotRun : EncodingLifecycleStatus.Failed,
+                                        retryValidation?.Summary ?? finalization.ErrorMessage,
+                                        retryBytes, retrySavings, retryStageDisposition, retryOutcome,
+                                        false, true);
+                                    retryAttempts.Add(completedRetryAttempt);
+                                    adaptiveRetryTrace = AdaptiveStorageSavingsRetryTrace.Create(
+                                        selectedQuality, selection.Mechanism, retryAttempts, decision,
+                                        AdaptiveStorageSavingsRetryLimits.RetryAttemptNumber, terminalResult);
+                                    PublishExecutionOutcome();
+                                    retryExecuted = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (cancellationToken.IsCancellationRequested && !finalization.Success)
+                {
+                    // Cancellation wins over any retry-path failure that has not already promoted a final output.
+                    finalization = new EncodeFinalizationResult();
+                    validationOutcome = null;
+                    finalizationOutcome = null;
+                    terminalResult = EncodingTerminalResult.Canceled;
+                    adaptiveRetryTrace = adaptiveRetryTrace?.WithLogicalCancellation();
+                    PublishExecutionOutcome();
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                if (!retryExecuted)
+                {
+                    terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                    PublishExecutionOutcome();
+                    _log?.Invoke("[EncodingService] Storage policy rejected candidate: " + initialRejection.ErrorMessage);
+                    throw new EncodeFinalizationException(initialRejection);
+                }
+                if (finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected)
+                {
+                    terminalResult = EncodingTerminalResult.StoragePolicyRejected;
+                    PublishExecutionOutcome();
+                    _log?.Invoke("[EncodingService] Policy C attempt 2 was rejected by the unchanged storage contract: " + finalization.ErrorMessage);
+                    throw new EncodeFinalizationException(finalization);
+                }
+            }
+            if (preplannedTimelineReconstructionRate is { } reconstructionRate)
+                RecordRecovery(EncodingRecoveryKind.TimelineNormalization,
+                    EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
+                    EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction, 1,
+                    runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                    $"Stream-copy normalization preserved unsafe timing; deterministic frame-index reconstruction at {reconstructionRate.Text}; output-monotonic-validation={(finalization.Success ? "passed" : "failed")}; no retry was scheduled.");
+            PublishExecutionOutcome();
             if (!finalization.Success)
             {
+                // FFmpeg can exit successfully after a recoverable demux/container
+                // error. Validation remains authoritative, but the current
+                // attempt's diagnostics can still justify the existing one-time
+                // tolerant source-video retry.
+                FfmpegVideoDecodeRecoveryDecision truncatedOutputRecovery =
+                    FfmpegVideoDecodeRecoveryPolicy.Evaluate(
+                        runResult.StandardError,
+                        compatibilityPolicy,
+                        cancellationToken.IsCancellationRequested,
+                        videoRecoveryAttempted,
+                        requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
+                        output);
                 _log?.Invoke(
-                    $"[EncodingService] Finalization failed: {finalization.ErrorMessage}");
-                throw new EncodeFinalizationException(finalization);
+                    $"[EncodingRecovery] Validation failed after FFmpeg completion; " +
+                    $"source-corruption-evidence={(truncatedOutputRecovery.Eligible ? truncatedOutputRecovery.Evidence : "none")}; " +
+                    $"recovery-permitted={truncatedOutputRecovery.Eligible}; " +
+                    $"strict-validation={(finalization.Success ? "passed" : "failed")}." );
+                if (!disableAutomaticFfmpegRecovery &&
+                    finalization.FailureKind == EncodeFinalizationFailureKind.Validation &&
+                    runResult.ExitCode == 0 &&
+                    truncatedOutputRecovery.Eligible)
+                {
+                    videoRecoveryAttempted = true;
+                    recoveryDiagnostics +=
+                        $"Strict attempt completed with rejected staged output; recognized source corruption evidence: {truncatedOutputRecovery.Evidence}.{Environment.NewLine}";
+                    _log?.Invoke(
+                        $"[EncodingRecovery] Tolerant retry started; reason=completed-encode-validation-rejected; " +
+                        $"evidence={truncatedOutputRecovery.Evidence}; attempt=1; " +
+                        "only strict source-fatal flags will be relaxed; encoding plan is unchanged.");
+                    callback("[MediaFlux] Output was truncated after recoverable source corruption; retrying once with tolerant source decode.");
+                    if (TryDeleteFailedStagingOutput(output))
+                    {
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                        {
+                            ffArgs = BuildFfmpegArgs(
+                                inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                sourcePixelFormat, restoration: restoration,
+                                splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                plannedVideoGeometry: plannedOutputGeometry,
+                                automaticTargetPlan: automaticTargetPlan,
+                                sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideo);
+                            scope.Complete();
+                        }
+                        _log?.Invoke($"[EncodingRecovery] Tolerant retry arguments differ from strict attempt only by source decode handling; ffmpeg arguments: {ffArgs}");
+                        using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
+                        {
+                            runResult = await RunFfmpegAsync(
+                                ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback,
+                                progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback,
+                                sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
+                            RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Tolerant video decode recovery", ffArgs, runResult);
+                            scope.Complete();
+                        }
+                        if (runResult.ExitCode == 0)
+                        {
+                            finalization = await _finalizationService.FinalizeAsync(
+                                BuildValidationRequest(), ReportFinalizationStatus, cancellationToken).ConfigureAwait(false);
+                            lifecycleDiagnostics?.Record(EncodeLifecycleEvent.VerificationEnd);
+                            _log?.Invoke($"[EncodingRecovery] Tolerant retry completed; retry-validation={(finalization.Success ? "passed" : "failed")}; terminal-promotion={(finalization.Success ? "allowed" : "blocked")}");
+                        }
+                        else
+                        {
+                            _log?.Invoke($"[EncodingRecovery] Tolerant retry completed; exit={runResult.ExitCode}; retry-validation=not-reached; terminal-promotion=blocked");
+                        }
+                        RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
+                            EncodingRecoveryMode.Tolerant, 1,
+                            runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                            $"{truncatedOutputRecovery.Evidence}; strict-validation=failed; retry-exit={runResult.ExitCode}; retry-validation={(runResult.ExitCode == 0 ? (finalization.Success ? "passed" : "failed") : "not-reached")}");
+                        validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                        finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                        PublishExecutionOutcome();
+                    }
+                    else
+                    {
+                        _log?.Invoke("[EncodingRecovery] Tolerant retry was not started because the rejected staged output could not be removed safely.");
+                        RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.SourceVideoCorruption,
+                            EncodingRecoveryMode.Tolerant, 1, EncodingRecoveryResult.NotStarted,
+                            "Rejected staged output could not be removed safely.");
+                    }
+                }
+                if (!finalization.Success &&
+                    finalization.FailureKind == EncodeFinalizationFailureKind.Validation &&
+                    !requireRegeneratedOutputTimeline &&
+                    videoRecoveryAttempted && runResult.ExitCode == 0 &&
+                    IsFrameDeficitValidationFailure(finalization.ErrorMessage))
+                {
+                    EncodingSourceFailureClassification sourceFailure =
+                        EncodingSourceFailureClassifier.Classify(runResult.StandardError);
+                    if (sourceFailure is
+                        {
+                            Type: EncodingSourceFailureType.VideoBitstreamCorruption,
+                            IsRecoveryCandidate: true,
+                            Evidence.Length: > 0
+                        } && programDuration.DurationSeconds is > 0)
+                    {
+                        EncodeOutputValidationFailureEvidence? advertisedFailure =
+                            finalization.StagedValidationResult?.FailureEvidence;
+                        _log?.Invoke(
+                            $"[EncodingRecovery] Measuring recoverable source coverage after bounded tolerant decode; " +
+                            $"evidence={sourceFailure.Evidence}; advertised-frames={programDuration.PrimaryVideo?.FrameCount?.ToString() ?? "unknown"}; " +
+                            $"output-frames={advertisedFailure?.ActualFrameCount.ToString() ?? "unknown"}; " +
+                            $"advertised-duration={programDuration.DurationSeconds:0.###}s.");
+                        RecoverableSourceBaselineResult baselineResult =
+                            await new RecoverableSourceBaselineService(_ffmpegPath)
+                                .MeasureAsync(inputSource.InputPath, programDuration.DurationSeconds.Value, cancellationToken)
+                                .ConfigureAwait(false);
+                        if (baselineResult.Success && baselineResult.Baseline is { } baseline)
+                        {
+                            _log?.Invoke(
+                                $"[EncodingRecovery] Recoverable source coverage established; " +
+                                $"advertised-frames={programDuration.PrimaryVideo?.FrameCount?.ToString() ?? "unknown"}; " +
+                                $"recoverable-frames={baseline.DecodedVideoFrameCount}; " +
+                                $"recoverable-tail={baseline.TailPresentationSeconds:0.###}s; {baseline.Evidence}.");
+                            finalization = await _finalizationService.FinalizeAsync(
+                                BuildValidationRequest(baseline, sourceFailure), ReportFinalizationStatus, cancellationToken)
+                                .ConfigureAwait(false);
+                            lifecycleDiagnostics?.Record(EncodeLifecycleEvent.VerificationEnd);
+                            _log?.Invoke(
+                                $"[EncodingRecovery] Recoverable-baseline validation={(finalization.Success ? "passed" : "failed")}; " +
+                                $"terminal-promotion={(finalization.Success ? "allowed" : "blocked")}.");
+                            validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                            finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                            if (tolerantSalvageAttempted && advertisedFailure is not null)
+                            {
+                                int salvageIndex = recoveryOutcomes.FindLastIndex(item =>
+                                    item.Kind == EncodingRecoveryKind.TolerantDecodeReencode);
+                                if (salvageIndex >= 0)
+                                {
+                                    EncodingRecoveryOutcome salvage = recoveryOutcomes[salvageIndex];
+                                    long discardedFrames = Math.Max(0,
+                                        advertisedFailure.ExpectedFrameCount - baseline.DecodedVideoFrameCount);
+                                    double discardedSeconds = advertisedFailure.FrameRate > 0
+                                        ? discardedFrames / advertisedFailure.FrameRate
+                                        : 0;
+                                    string disclosure =
+                                        $" validation={(finalization.Success ? "passed" : "failed")}; " +
+                                        $"advertised-video-frames={advertisedFailure.ExpectedFrameCount}; " +
+                                        $"recoverable-video-frames={baseline.DecodedVideoFrameCount}; " +
+                                        $"disclosed-source-loss={discardedFrames} frames " +
+                                        $"({discardedSeconds:0.###}s at {advertisedFailure.FrameRate:0.######} fps); " +
+                                        "full-output-video-audio-decode=passed; localized-gap=not-measured.";
+                                    recoveryOutcomes[salvageIndex] = salvage with
+                                    {
+                                        Detail = salvage.Detail + disclosure,
+                                        DiagnosticReason = salvage.DiagnosticReason + disclosure,
+                                        SourceDurationSeconds = advertisedFailure.SourceDurationSeconds,
+                                        ProducedDurationSeconds = advertisedFailure.OutputDurationSeconds,
+                                        ExpectedFrameCount = advertisedFailure.ExpectedFrameCount,
+                                        ProducedFrameCount = baseline.DecodedVideoFrameCount,
+                                        DroppedFrameOrPacketCount = discardedFrames,
+                                        DurationDeltaSeconds = Math.Abs(
+                                            advertisedFailure.SourceDurationSeconds - advertisedFailure.OutputDurationSeconds),
+                                        // The full tolerant decode proves the amount of loss, but does
+                                        // not establish one contiguous timestamp gap. Do not invent one.
+                                        LargestTimelineGapSeconds = null
+                                    };
+                                    _log?.Invoke($"[EncodingRecovery] Tier 2 degraded-salvage disclosure:{disclosure}");
+                                }
+                            }
+                            PublishExecutionOutcome();
+                        }
+                        else
+                        {
+                            _log?.Invoke($"[EncodingRecovery] Recoverable source coverage was not proven; strict advertised-source validation remains authoritative. {baselineResult.Reason}");
+                        }
+                    }
+                }
+                FfmpegVideoDecodeRecoveryDecision frameRecovery =
+                    FfmpegVideoDecodeRecoveryPolicy.EvaluateFrameDeficit(
+                        finalization.StagedValidationResult?.FailureEvidence,
+                        compatibilityPolicy,
+                        sourceTiming,
+                        cancellationToken.IsCancellationRequested,
+                        videoRecoveryAttempted,
+                        requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase));
+                if (!disableAutomaticFfmpegRecovery &&
+                    finalization.FailureKind == EncodeFinalizationFailureKind.Validation && frameRecovery.Eligible &&
+                    sourceVideo is not null)
+                {
+                    EncodeOutputValidationFailureEvidence evidence = frameRecovery.FrameDeficit!;
+                    SourceTimelineRecoveryAnalysis localizedTimelineRecovery =
+                        await new LocalizedSourceTimelineAnalysisService(_ffprobePath, log: _log)
+                            .AnalyzeAsync(inputSource.SourcePath, sourceVideo, programDuration.DurationSeconds, cancellationToken)
+                            .ConfigureAwait(false);
+                    recoveryDiagnostics += $"Frame/cadence validation evidence: {frameRecovery.Evidence}.{Environment.NewLine}";
+                    recoveryDiagnostics += $"Deep timing diagnosis: {localizedTimelineRecovery.DescribeEvidence()}; eligible={localizedTimelineRecovery.IsEligible}; reason={localizedTimelineRecovery.Reason}.{Environment.NewLine}";
+                    if (localizedTimelineRecovery.IsEligible && localizedTimelineRecovery.NominalFrameRate is { } exactRate)
+                    {
+                        videoRecoveryAttempted = true;
+                        string timestampFilter = $"setpts=N*{exactRate.Denominator}/{exactRate.Numerator}/TB";
+                        _log?.Invoke(
+                            "[EncodingRecovery] Primary encode completed but output validation detected a material frame deficit while duration remained consistent with the authoritative source timeline. " +
+                            $"Deep timing analysis detected localized source presentation-timeline corruption; retrying once with deterministic frame-index timestamp reconstruction at {exactRate.Text} while retaining NVENC. " +
+                            $"{frameRecovery.Evidence}; diagnosis={localizedTimelineRecovery.DescribeEvidence()}; reason={EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption}; strategy=software-decode,setpts,fps-mode-passthrough.");
+                        callback("[MediaFlux] Recovering video once with deterministic timestamp reconstruction; NVENC retained.");
+                        if (TryDeleteFailedStagingOutput(output))
+                        {
+                            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                            {
+                                ffArgs = BuildFfmpegArgs(
+                                    inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                                    encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                                    mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                                    containerDecision, forceMp4CompatibleAudio, totalDuration,
+                                    qualityValue, encoderSelection, sampleStart, sampleDuration,
+                                    sourcePixelFormat, recoveryFrameRateRational: exactRate.Text,
+                                    timestampReconstructionFilter: timestampFilter,
+                                    disableHardwareDecode: true, restoration: restoration,
+                                    splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                                    restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                                    plannedVideoGeometry: plannedOutputGeometry,
+                                    automaticTargetPlan: automaticTargetPlan,
+                                    sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
+                                scope.Complete();
+                            }
+                            pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
+                            _log?.Invoke($"[EncodingRecovery] Recovery strategy: software decode -> {timestampFilter} -> NVENC with -fps_mode passthrough; ffmpeg arguments: {ffArgs}");
+                            using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
+                            {
+                                runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
+                                RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "Timestamp reconstruction recovery", ffArgs, runResult);
+                                scope.Complete();
+                            }
+                            if (runResult.ExitCode == 0)
+                            {
+                                finalization = await _finalizationService.FinalizeAsync(
+                                    BuildValidationRequest(), ReportFinalizationStatus, cancellationToken).ConfigureAwait(false);
+                                lifecycleDiagnostics?.Record(EncodeLifecycleEvent.VerificationEnd);
+                                RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
+                                    EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction, 1,
+                                    EncodingRecoveryResult.Succeeded,
+                                    localizedTimelineRecovery.DescribeEvidence() + $"; recovered-validation={(finalization.Success ? "passed" : "failed")}");
+                                validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                                finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                                PublishExecutionOutcome();
+                            }
+                            else
+                            {
+                                RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
+                                    EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction, 1,
+                                    EncodingRecoveryResult.Failed, localizedTimelineRecovery.DescribeEvidence());
+                                finalization = new EncodeFinalizationResult
+                                {
+                                    Success = false,
+                                    FailureKind = EncodeFinalizationFailureKind.Validation,
+                                    ErrorMessage = "The one-time deterministic timestamp reconstruction recovery encode failed; the recovered output was not finalized. The original source was retained.",
+                                    FinalOutputPath = finalOutput,
+                                    StagingPath = output,
+                                    RecoverableOutputPath = File.Exists(output) ? output : ""
+                                };
+                                validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                                finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                                PublishExecutionOutcome();
+                            }
+                        }
+                        else
+                        {
+                            RecordRecovery(EncodingRecoveryKind.VideoDecode, EncodingRecoveryFailureClass.LocalizedSourceTimelineCorruption,
+                                EncodingRecoveryMode.SoftwareDecodeWithNvencAndTimestampReconstruction, 1,
+                                EncodingRecoveryResult.NotStarted, "Failed staged output could not be removed safely.");
+                        }
+                    }
+                }
+                // A recovery finalization replaces the primary attempt as the
+                // authoritative result. Preserve the primary failure in recovery
+                // diagnostics, but never turn a successfully finalized recovery
+                // into a terminal failure.
+                if (!finalization.Success)
+                {
+                    terminalResult = ResolveTerminalResult(finalization, completedAfterRecovery: false);
+                    PublishExecutionOutcome();
+                    FfmpegSourceDecodeCorruption sourceDecodeCorruption =
+                        FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
+                    if (finalization.FailureKind == EncodeFinalizationFailureKind.Validation &&
+                        IsFrameDeficitValidationFailure(finalization.ErrorMessage) &&
+                        sourceDecodeCorruption.IsReliable)
+                    {
+                        _log?.Invoke($"[EncodingService] Source decode corruption was corroborated by rejected output validation: {sourceDecodeCorruption.DescribeEvidence()}.");
+                        finalization = new EncodeFinalizationResult
+                        {
+                            Success = false,
+                            FailureKind = finalization.FailureKind,
+                            ErrorMessage = "Output validation rejected substantial missing video frames. FFmpeg also reported source H.264 bitstream/decode failures, so the source video contains undecodable or corrupt data; MediaFlux did not finalize the output.",
+                            FinalOutputPath = finalization.FinalOutputPath,
+                            StagingPath = finalization.StagingPath,
+                            RecoverableOutputPath = finalization.RecoverableOutputPath,
+                            StagedValidationResult = finalization.StagedValidationResult,
+                            PromotedValidationResult = finalization.PromotedValidationResult
+                        };
+                        validationOutcome = EncodingPlanService.DescribeValidationOutcome(finalization);
+                        finalizationOutcome = EncodingPlanService.DescribeFinalizationOutcome(finalization);
+                        PublishExecutionOutcome();
+                    }
+                    _log?.Invoke(
+                        finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected
+                            ? "[EncodingService] " + StorageSavingsContractService.Describe(finalization.StorageSavings!)
+                            : $"[EncodingService] Finalization failed: {finalization.ErrorMessage}");
+                    throw new EncodeFinalizationException(finalization);
+                }
             }
 
             _log?.Invoke(
                 $"[EncodingService] Validated and finalized '{finalization.FinalOutputPath}'.");
+            // Recovery records are immutable snapshots. Reconcile process-only
+            // successes only after the authoritative finalization has accepted
+            // the staged output.
+            for (int index = 0; index < recoveryOutcomes.Count; index++)
+            {
+                EncodingRecoveryOutcome item = recoveryOutcomes[index];
+                if (item.ProcessResult == EncodingRecoveryProcessResult.Succeeded &&
+                    item.MediaDisposition == EncodingRecoveryDisposition.Degraded &&
+                    item.Kind != EncodingRecoveryKind.TolerantDecodeReencode)
+                    recoveryOutcomes[index] = item with { MediaDisposition = EncodingRecoveryDisposition.Salvaged };
+            }
+            terminalResult = tolerantSalvageAttempted
+                ? EncodingTerminalResult.CompletedAfterDegradedSalvage
+                : ResolveTerminalResult(
+                    finalization,
+                    recoveryOutcomes.Any(outcome => outcome.MediaDisposition is EncodingRecoveryDisposition.Clean or EncodingRecoveryDisposition.Salvaged));
+            PublishExecutionOutcome();
+            EncodingExecutionOutcome completedOutcome = new(
+                shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(), validationOutcome,
+                finalizationOutcome, terminalResult, finalization.StorageSavings, productionEncodeCount)
+            { AdaptiveStorageSavingsRetry = adaptiveRetryTrace };
+            foreach (EncodingPlanDivergence divergence in EncodingPlanService.CompareLifecycle(shadowPlan, completedOutcome))
+            {
+                _log?.Invoke($"[EncodingPlan] Shadow divergence: {divergence}");
+                encodingPlanDivergenceCallback?.Invoke(divergence);
+            }
+            _log?.Invoke(EncodingPlanService.DescribeLifecycle(completedOutcome));
             using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.TemporaryFileCleanup))
-            { if (aiIntermediate is not null) { aiIntermediate.Dispose(); scope.Complete(); } }
+            {
+                if (aiIntermediate is not null) aiIntermediate.Dispose();
+                DeleteTemporaryTimelineRepair(sourceTimelineRepairPath, recoveryOperationId);
+                DeleteTemporaryTimelineRepair(sourceContainerRepairPath, recoveryOperationId);
+                scope.Complete();
+            }
             performance.LogSummary(_log);
             return new EncodeResult(
                 true,
@@ -1025,13 +3120,51 @@ namespace MediaFlux.Services
                 resolvedOutputContainer: containerDecision.Resolved,
                 containerDecisionReason: containerDecision.Reason,
                     finalOutputLastWriteUtcTicks:
-                    finalization.FinalOutputLastWriteUtcTicks);
+                    finalization.FinalOutputLastWriteUtcTicks,
+                finalOutputProbe: finalization.PromotedValidationResult?.Evidence?.OutputProbe ??
+                    finalization.StagedValidationResult?.Evidence?.OutputProbe,
+                storageSavingsContract: storageSavingsContract,
+                storageSavings: finalization.StorageSavings);
             }
             catch
             {
+                DeleteTemporaryTimelineRepair(sourceTimelineRepairPath, recoveryOperationId);
+                DeleteTemporaryTimelineRepair(sourceContainerRepairPath, recoveryOperationId);
                 performance.LogSummary(_log);
                 throw;
             }
+        }
+
+        private void DeleteTemporaryTimelineRepair(string? path, Guid operationId)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            string operation = operationId == Guid.Empty ? "unavailable" : operationId.ToString("N");
+            try
+            {
+                if (File.Exists(path)) File.Delete(path);
+                _log?.Invoke($"[EncodingRecovery] Operation={operation}; Temporary recovery artifact cleanup: path={path}; removed={!File.Exists(path)}.");
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"[EncodingRecovery] Operation={operation}; Temporary recovery artifact cleanup failed: path={path}; error={ex.Message}");
+            }
+        }
+
+        internal static EncodingTerminalResult ResolveTerminalResult(
+            EncodeFinalizationResult finalization,
+            bool completedAfterRecovery)
+        {
+            ArgumentNullException.ThrowIfNull(finalization);
+            if (!finalization.Success)
+                return finalization.FailureKind == EncodeFinalizationFailureKind.StoragePolicyRejected
+                    ? EncodingTerminalResult.StoragePolicyRejected
+                    : finalization.FailureKind == EncodeFinalizationFailureKind.Validation
+                    ? EncodingTerminalResult.ValidationFailed
+                    : EncodingTerminalResult.FinalizationFailed;
+
+            return completedAfterRecovery
+                ? EncodingTerminalResult.CompletedAfterRecovery
+                : EncodingTerminalResult.Completed;
         }
 
         private static string DescribeUnsupportedDataStream(MediaProbeStreamInfo stream)
@@ -1066,9 +3199,53 @@ namespace MediaFlux.Services
             string arguments,
             Action<string> callback,
             TimeSpan totalDuration,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            Action<string>? diagnosticCallback = null,
+            long? authoritativeTotalFrames = null,
+            double? authoritativeFrameRate = null,
+            Action<EncodeProgress>? structuredProgressCallback = null,
+            SourceTimingClassification? sourceTimingClassification = null,
+            int attempt = 1,
+            EncodeLifecycleDiagnostics? lifecycleDiagnostics = null,
+            Action? faststartStartedCallback = null,
+            Action<DateTimeOffset>? processStartedCallback = null,
+            Action<DateTimeOffset>? processExitedCallback = null,
+            string? expectedStagingPath = null)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_productionEncodeRunnerOverride is not null)
+            {
+                if (string.IsNullOrWhiteSpace(expectedStagingPath))
+                    throw new InvalidOperationException("The injected production encode runner requires an explicit staging path.");
+                processStartedCallback?.Invoke(DateTimeOffset.UtcNow);
+                bool exitReported = false;
+                try
+                {
+                    (int ExitCode, string StandardError) overridden = await _productionEncodeRunnerOverride(
+                        arguments, expectedStagingPath, attempt, cancellationToken).ConfigureAwait(false);
+                    processExitedCallback?.Invoke(DateTimeOffset.UtcNow);
+                    exitReported = true;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return new FfmpegProcessResult(
+                        overridden.ExitCode,
+                        overridden.StandardError ?? "",
+                        new FfmpegDiagnosticCollector().Complete());
+                }
+                catch
+                {
+                    if (!exitReported)
+                        processExitedCallback?.Invoke(DateTimeOffset.UtcNow);
+                    throw;
+                }
+            }
             var stderrBuilder = new StringBuilder();
+            var diagnostics = new FfmpegDiagnosticCollector();
+            bool cfrFallbackEligible = sourceTimingClassification == SourceTimingClassification.Cfr &&
+                totalDuration > TimeSpan.Zero && authoritativeFrameRate is > 0;
+            var progressArbitrator = new EncodeProgressArbitrator(
+                totalDuration, authoritativeTotalFrames, authoritativeFrameRate, cfrFallbackEligible);
+            _log?.Invoke($"[Progress] timing={sourceTimingClassification?.ToString() ?? "unknown"}; duration={(totalDuration > TimeSpan.Zero ? totalDuration.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) : "unavailable")}; rate={(authoritativeFrameRate is > 0 ? authoritativeFrameRate.Value.ToString("0.###", CultureInfo.InvariantCulture) : "unavailable")}; measuredFrames={(authoritativeTotalFrames is > 0 ? authoritativeTotalFrames.Value.ToString(CultureInfo.InvariantCulture) : "unavailable")}; cfrFallbackEligible={cfrFallbackEligible}.");
+            var fallbackState = new ProgressLogState();
             var psi = new ProcessStartInfo
             {
                 FileName = _ffmpegPath,
@@ -1082,24 +3259,62 @@ namespace MediaFlux.Services
                 WindowStyle = ProcessWindowStyle.Hidden
             };
 
-            using var proc = new Process { StartInfo = psi };
+            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            int faststartReported = 0;
+            proc.Exited += (_, _) => lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FfmpegExit);
+            void ObserveLifecycle(string line)
+            {
+                if (arguments.Contains("-movflags +faststart", StringComparison.Ordinal) &&
+                    EncodeLifecycleDiagnostics.IsFaststartMarker(line) &&
+                    Interlocked.Exchange(ref faststartReported, 1) == 0)
+                {
+                    lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FaststartStart);
+                    try { faststartStartedCallback?.Invoke(); } catch { /* Display diagnostics cannot affect encoding. */ }
+                }
+                else if (line.Contains("frame=", StringComparison.Ordinal) &&
+                    TryParseProgress(line, totalDuration, authoritativeTotalFrames, authoritativeFrameRate, out _))
+                {
+                    lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FirstProgress);
+                    lifecycleDiagnostics?.Record(EncodeLifecycleEvent.LastProgress);
+                }
+            }
             proc.OutputDataReceived += (_, e) =>
             {
                 if (e.Data != null)
-                    HandleProgressLine(e.Data, callback, totalDuration);
+                {
+                    ObserveLifecycle(e.Data);
+                    HandleProgressLine(e.Data, callback, totalDuration, authoritativeTotalFrames, authoritativeFrameRate, structuredProgressCallback, progressArbitrator, fallbackState, attempt);
+                }
+                else lifecycleDiagnostics?.Record(EncodeLifecycleEvent.StdoutComplete);
             };
             proc.ErrorDataReceived += (_, e) =>
             {
                 if (e.Data == null)
+                {
+                    lifecycleDiagnostics?.Record(EncodeLifecycleEvent.StderrComplete);
                     return;
+                }
 
-                HandleProgressLine(e.Data, callback, totalDuration);
+                ObserveLifecycle(e.Data);
+                diagnostics.Observe(e.Data, FfmpegDiagnosticComponent.Ffmpeg);
+                diagnosticCallback?.Invoke(e.Data);
+                HandleProgressLine(e.Data, callback, totalDuration, authoritativeTotalFrames, authoritativeFrameRate, structuredProgressCallback, progressArbitrator, fallbackState, attempt);
                 AppendBounded(stderrBuilder, e.Data, MaxCapturedFfmpegCharacters);
             };
 
+            _log?.Invoke($"[EncodingService] Progress telemetry: FFmpeg stdout/stderr lines; structured frame/time fields enabled; authoritative frames={(authoritativeTotalFrames is > 0 ? "available" : "unavailable")}; authoritative frame rate={(authoritativeFrameRate is > 0 ? "available" : "unavailable")}.");
+
             try
             {
+                Stopwatch processStartWatch = Stopwatch.StartNew();
                 proc.Start();
+                DateTimeOffset processStartedUtc = DateTimeOffset.UtcNow;
+                processStartWatch.Stop();
+                CriticalPathTiming.WriteLine(
+                    $"[CriticalPathTiming] stage=ffmpeg-process-start utc={processStartedUtc:O} " +
+                    $"attempt={attempt} launchMs={processStartWatch.Elapsed.TotalMilliseconds:0}");
+                processStartedCallback?.Invoke(processStartedUtc);
+                lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FfmpegStart);
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();
             }
@@ -1133,11 +3348,15 @@ namespace MediaFlux.Services
                 }
 
                 await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                processExitedCallback?.Invoke(DateTimeOffset.UtcNow);
+                lifecycleDiagnostics?.Record(EncodeLifecycleEvent.FfmpegExit);
+                EncodeLifecycleDiagnostics.TryRecordProcessIo(proc, lifecycleDiagnostics);
             }
             catch (OperationCanceledException)
             {
                 _log?.Invoke("[EncodingService] Encode operation cancelled.");
                 await EnsureProcessExitedAfterCancellationAsync(proc).ConfigureAwait(false);
+                processExitedCallback?.Invoke(DateTimeOffset.UtcNow);
                 throw;
             }
             finally
@@ -1145,20 +3364,67 @@ namespace MediaFlux.Services
                 ctr.Dispose();
             }
 
-            return new FfmpegProcessResult(proc.ExitCode, stderrBuilder.ToString());
+            return new FfmpegProcessResult(proc.ExitCode, stderrBuilder.ToString(), diagnostics.Complete());
         }
 
-        private static bool ShouldRetryWithSoftwareFrames(
-            string arguments,
-            string standardError)
+        internal static FfmpegDiagnosticSummary SelectMostInformativeFailureDiagnostics(
+            FfmpegDiagnosticSummary terminal,
+            IReadOnlyList<FfmpegAttemptDiagnostic> attempts)
         {
-            if (!arguments.Contains("-hwaccel_output_format cuda ", StringComparison.Ordinal))
-                return false;
+            static int Confidence(FfmpegDiagnosticSummary summary) => summary.Classification.Confidence switch
+            {
+                FfmpegDiagnosticConfidence.High => 3,
+                FfmpegDiagnosticConfidence.Moderate => 2,
+                FfmpegDiagnosticConfidence.Low => 1,
+                _ => 0
+            };
 
-            return standardError.Contains(
-                "Impossible to convert between the formats supported by the filter",
-                StringComparison.OrdinalIgnoreCase) ||
-                standardError.Contains("Error reinitializing filters!", StringComparison.OrdinalIgnoreCase);
+            return attempts
+                .Where(attempt => attempt.Diagnostics is not null)
+                .Select(attempt => (Summary: attempt.Diagnostics!, IsTerminal: attempt.IsTerminal))
+                .Append((Summary: terminal, IsTerminal: true))
+                .OrderByDescending(candidate => Confidence(candidate.Summary))
+                .ThenByDescending(candidate => candidate.IsTerminal)
+                .ThenByDescending(candidate => candidate.Summary.Families.Count)
+                .First().Summary;
+        }
+
+        internal static void ValidatePreparedAdaptivePlan(
+            EncodingPlan currentPlan,
+            AdaptiveQualitySelectionRequest currentRequest,
+            PreparedAdaptiveProductionPlan prepared)
+        {
+            ArgumentNullException.ThrowIfNull(currentPlan);
+            ArgumentNullException.ThrowIfNull(currentRequest);
+            ArgumentNullException.ThrowIfNull(prepared);
+            if (currentPlan.ProductionPlan is not { } currentIdentity)
+                throw new InvalidDataException("The current production plan has no stable identity.");
+
+            AdaptiveQualitySelectionEvidence selection = prepared.Selection;
+            if (!selection.EncoderId.Equals(currentRequest.Envelope.Encoder.EncoderId, StringComparison.OrdinalIgnoreCase) ||
+                !selection.Codec.Equals(currentRequest.Envelope.Encoder.FfmpegCodec, StringComparison.OrdinalIgnoreCase) ||
+                selection.Target != currentRequest.Envelope.Target || selection.Mechanism != currentRequest.Envelope.Mechanism ||
+                selection.PreferredQuality != currentRequest.Envelope.PreferredQuality)
+                throw new InvalidDataException("The prepared adaptive selection no longer matches the current encoder or quality intent.");
+
+            if (selection.Candidates.SelectMany(candidate => candidate.Samples)
+                .Any(sample => sample.Purpose != VideoSamplePurpose.ProductionAcceptance))
+                throw new InvalidDataException("Preview evidence cannot be reused for production adaptive selection.");
+
+            int selectedQuality = selection.SelectedQuality ?? selection.PreferredQuality;
+            ProductionPlanIdentity expected = ProductionPlanFingerprintService.AllowsQualityRebinding(currentIdentity)
+                ? ProductionPlanFingerprintService.WithQuality(currentIdentity, selectedQuality)
+                : currentIdentity;
+            if (!string.Equals(expected.PlanFingerprint, prepared.Identity.PlanFingerprint, StringComparison.Ordinal) ||
+                !string.Equals(expected.SourceIdentity, prepared.Identity.SourceIdentity, StringComparison.Ordinal) ||
+                !string.Equals(prepared.Identity.SourceIdentity,
+                    ProductionPlanFingerprintService.CaptureSourceIdentity([currentRequest.Input.SourcePath]), StringComparison.Ordinal))
+                throw new InvalidDataException("The prepared production fingerprint no longer matches current source or settings.");
+            if (prepared.BoundEstimate is { } estimate && !estimate.Matches(prepared.Identity))
+                throw new InvalidDataException("The prepared output estimate is bound to a different production plan.");
+            if (selection.Disposition == AdaptiveSelectionDisposition.Selected &&
+                !selection.Candidates.Any(candidate => candidate.Quality == selectedQuality && candidate.Samples.Count > 0))
+                throw new InvalidDataException("The selected production quality has no reusable production-purpose samples.");
         }
 
         private static string SummarizeFfmpegFailure(string standardError)
@@ -1171,6 +3437,10 @@ namespace MediaFlux.Services
             return string.IsNullOrWhiteSpace(detail) ? "No FFmpeg diagnostic was captured." : detail.Trim();
         }
 
+        private static bool IsFrameDeficitValidationFailure(string errorMessage) =>
+            errorMessage.Contains("video frames versus", StringComparison.OrdinalIgnoreCase) &&
+            errorMessage.Contains("frame deficit", StringComparison.OrdinalIgnoreCase);
+
         private bool TryDeleteFailedStagingOutput(string stagingPath)
         {
             try
@@ -1181,19 +3451,51 @@ namespace MediaFlux.Services
             }
             catch (Exception ex)
             {
-                _log?.Invoke($"[EncodingService] NVDEC/CUDA recovery could not remove failed staging output '{stagingPath}': {ex.Message}");
+                _log?.Invoke($"[EncodingService] Could not remove failed staging output '{stagingPath}': {ex.Message}");
                 return false;
             }
         }
 
-        private sealed record FfmpegProcessResult(int ExitCode, string StandardError);
+        private static void RecordFfmpegAttempt(
+            ICollection<FfmpegAttemptDiagnostic> attempts,
+            int attempt,
+            string name,
+            string command,
+            FfmpegProcessResult result)
+        {
+            attempts.Add(new FfmpegAttemptDiagnostic(
+                attempt, name, command, result.ExitCode, result.StandardError, result.DiagnosticSummary));
+        }
+
+        private static string BuildAttemptRawEvidence(IReadOnlyList<FfmpegAttemptDiagnostic> attempts)
+        {
+            if (attempts.Count == 0)
+                return string.Empty;
+            if (attempts.Count == 1)
+                return attempts[0].StandardError;
+
+            var evidence = new StringBuilder();
+            foreach (FfmpegAttemptDiagnostic attempt in attempts.OrderBy(x => x.Attempt))
+            {
+                evidence.AppendLine($"===== FFmpeg attempt {attempt.Attempt}: {attempt.Name}; exit={attempt.ExitCode}; terminal={attempt.IsTerminal} =====");
+                evidence.Append(attempt.StandardError);
+                if (!attempt.StandardError.EndsWith(Environment.NewLine, StringComparison.Ordinal))
+                    evidence.AppendLine();
+            }
+            return evidence.ToString();
+        }
+
+        private sealed record FfmpegProcessResult(int ExitCode, string StandardError, FfmpegDiagnosticSummary DiagnosticSummary);
 
         private async Task EnsureProcessExitedAfterCancellationAsync(Process proc)
         {
             try
             {
                 if (proc.HasExited)
+                {
+                    proc.WaitForExit();
                     return;
+                }
 
                 var waitTask = proc.WaitForExitAsync();
                 var completed = await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
@@ -1207,7 +3509,8 @@ namespace MediaFlux.Services
                 {
                     _log?.Invoke("[EncodingService] FFmpeg did not exit after graceful cancel; killing launched process.");
                     proc.Kill(entireProcessTree: true);
-                    await proc.WaitForExitAsync().ConfigureAwait(false);
+                await proc.WaitForExitAsync().ConfigureAwait(false);
+                proc.WaitForExit();
                 }
             }
             catch (Exception ex)
@@ -1219,7 +3522,7 @@ namespace MediaFlux.Services
         // --------------------------------------------------------------------
         // Progress parsing + forwarding
         // --------------------------------------------------------------------
-        private void HandleProgressLine(string line, Action<string> callback, TimeSpan totalDuration)
+        private void HandleProgressLine(string line, Action<string> callback, TimeSpan totalDuration, long? authoritativeTotalFrames, double? authoritativeFrameRate, Action<EncodeProgress>? structuredProgressCallback, EncodeProgressArbitrator? progressArbitrator, ProgressLogState fallbackState, int attempt)
         {
             // NOTE: FFmpeg stdout/stderr callbacks are raised on background threads.
             // When running concurrent jobs, invoking UI-bound callbacks from those threads can
@@ -1234,13 +3537,33 @@ namespace MediaFlux.Services
                 _log?.Invoke($"[ffmpeg] {line}");
 
                 // Structured progress (optional)
-                if (StructuredProgress == null)
+                if (StructuredProgress == null && structuredProgressCallback == null)
                     return;
 
-                if (TryParseProgress(line, totalDuration, out var progress))
+                if (TryParseProgress(line, totalDuration, authoritativeTotalFrames, authoritativeFrameRate, out var progress))
                 {
-                    try { StructuredProgress?.Invoke(progress); }
-                    catch { /* don't let subscribers break encoding */ }
+                    if (progressArbitrator != null)
+                    {
+                        double? timestamp = progress.TimestampAvailable && progress.CurrentTime >= TimeSpan.Zero
+                            ? progress.CurrentTime.TotalSeconds : null;
+                        EncodeProgressArbitrationResult result = progressArbitrator.Update(
+                            timestamp, progress.EncodedFrames, progress.Fps, progress.Speed, progress.BitrateKbps, null);
+                        if (result.TimestampStalled && !fallbackState.FallbackLogged)
+                        {
+                            fallbackState.FallbackLogged = true;
+                            _log?.Invoke($"[Progress] FFmpeg timestamp stalled while frames continue advancing; switching to frame-derived progress. basis={(progressArbitrator.Basis == EncodeProgressBasis.MeasuredFrames ? "measured frames" : "CFR duration+rate")}; frame={result.EncodedFrames?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}; timestamp={result.TimestampSeconds?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"}.");
+                        }
+                        progress = new EncodeProgress(TimeSpan.FromSeconds(Math.Max(0, result.MediaSeconds)), totalDuration,
+                            result.Fps, result.Speed, result.BitrateKbps, result.Percent, result.EncodedFrames,
+                            result.Basis, result.TotalFrames, result.TimestampStalled, result.TimestampSeconds.HasValue,
+                            attempt);
+                    }
+                    structuredProgressCallback?.Invoke(progress);
+                    if (StructuredProgress != null)
+                    {
+                        try { StructuredProgress(progress); }
+                        catch { /* don't let subscribers break encoding */ }
+                    }
                 }
             }
 
@@ -1255,21 +3578,38 @@ namespace MediaFlux.Services
             }
         }
 
-        private static bool TryParseProgress(string line, TimeSpan totalDuration, out EncodeProgress progress)
+        internal static bool TryParseProgress(string line, TimeSpan totalDuration, long? authoritativeTotalFrames, double? authoritativeFrameRate, out EncodeProgress progress)
         {
             progress = null!;
 
-            if (line.IndexOf("time=", StringComparison.Ordinal) < 0)
+            if (line.IndexOf("frame=", StringComparison.Ordinal) < 0 &&
+                line.IndexOf("time=", StringComparison.Ordinal) < 0 &&
+                line.IndexOf("out_time", StringComparison.Ordinal) < 0)
                 return false;
 
             try
             {
-                string? timeStr = ExtractValue(line, "time=");
+                string? timeStr = ExtractValue(line, "time=") ?? ExtractValue(line, "out_time=");
                 if (string.IsNullOrWhiteSpace(timeStr))
+                {
+                    string? microseconds = ExtractValue(line, "out_time_us=") ?? ExtractValue(line, "out_time_ms=");
+                    if (long.TryParse(microseconds, NumberStyles.Integer, CultureInfo.InvariantCulture, out long value))
+                        timeStr = TimeSpan.FromTicks(value * (line.Contains("out_time_us=", StringComparison.Ordinal) ? 10 : 10_000)).ToString();
+                }
+                string? frameText = ExtractValue(line, "frame=");
+                long? encodedFrames = long.TryParse(frameText, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsedFrame) && parsedFrame > 0 ? parsedFrame : null;
+                if (string.IsNullOrWhiteSpace(timeStr) && encodedFrames is not > 0)
                     return false;
-
-                if (!TryParseTime(timeStr, out var currentTime))
-                    return false;
+                bool hasTimestamp = TryParseTime(timeStr ?? "", out var currentTime);
+                if (!hasTimestamp)
+                {
+                    if (encodedFrames is not > 0)
+                        return false;
+                    if (authoritativeTotalFrames is > 0 && authoritativeFrameRate is > 0)
+                        currentTime = TimeSpan.FromSeconds(encodedFrames.Value / authoritativeFrameRate.Value);
+                    else
+                        currentTime = TimeSpan.Zero;
+                }
 
                 string? fpsStr = ExtractValue(line, "fps=");
                 string? bitrateStr = ExtractValue(line, "bitrate=");
@@ -1280,7 +3620,9 @@ namespace MediaFlux.Services
                 double bitrateKbps = TryParseBitrateKbps(bitrateStr);
 
                 double percent = 0;
-                if (totalDuration > TimeSpan.Zero)
+                if (!hasTimestamp && authoritativeTotalFrames is > 0 && authoritativeFrameRate is > 0)
+                    percent = Math.Clamp(currentTime.TotalSeconds * authoritativeFrameRate!.Value / authoritativeTotalFrames.Value * 100.0, 0.0, 100.0);
+                else if (totalDuration > TimeSpan.Zero)
                 {
                     percent = Math.Clamp(
                         currentTime.TotalSeconds / totalDuration.TotalSeconds * 100.0,
@@ -1288,7 +3630,8 @@ namespace MediaFlux.Services
                         100.0);
                 }
 
-                progress = new EncodeProgress(currentTime, totalDuration, fps, speed, bitrateKbps, percent);
+                progress = new EncodeProgress(currentTime, totalDuration, fps, speed, bitrateKbps, percent, encodedFrames,
+                    timestampAvailable: hasTimestamp);
                 return true;
             }
             catch
@@ -1304,6 +3647,8 @@ namespace MediaFlux.Services
                 return null;
 
             idx += key.Length;
+            while (idx < line.Length && char.IsWhiteSpace(line[idx]))
+                idx++;
             if (idx >= line.Length)
                 return null;
 
@@ -1354,6 +3699,48 @@ namespace MediaFlux.Services
         // --------------------------------------------------------------------
         // Argument builder (GPU optimizations + mapping + target-size budgeting)
         // --------------------------------------------------------------------
+        internal IAdaptiveVideoSampleRunner CreatePreviewSampleRunner(EncodingDecisionContext context, EncodingPlan plan,
+            bool concurrentEncoderSessions) => new AdaptiveVideoSampleRunner(_ffmpegPath, _ffprobePath, _ffprobeService,
+                (request, quality, sample, output) => BuildPreviewSampleArguments(context, plan, concurrentEncoderSessions,
+                    request, quality, sample, output), purpose: VideoSamplePurpose.PreviewEstimation);
+
+        internal IAdaptiveVideoSampleRunner CreateProductionSelectionSampleRunner(EncodingDecisionContext context, EncodingPlan plan,
+            bool concurrentEncoderSessions) => new AdaptiveVideoSampleRunner(_ffmpegPath, _ffprobePath, _ffprobeService,
+                (request, quality, sample, output) => BuildPreviewSampleArguments(context, plan, concurrentEncoderSessions,
+                    request, quality, sample, output), purpose: VideoSamplePurpose.ProductionAcceptance);
+
+        internal string BuildPreviewSampleArguments(EncodingDecisionContext context, EncodingPlan plan,
+            bool concurrentEncoderSessions, AdaptiveQualitySelectionRequest request, int quality,
+            RepresentativeSample sample, string output)
+        {
+            var values = EncodingPlanService.GetExecutionValues(plan);
+            return "-hide_banner -nostats -loglevel error " + BuildFfmpegArgs(
+                request.Input, output, values.Encoder.FfmpegCodec, values.UseGpu, null,
+                context.ScaleMode, values.EncoderPreset, context.TenBit, audioChannels: null, concurrentEncoderSessions,
+                context.MapMode, copySubtitles: false, copyDataStreams: false, copyAttachments: false,
+                containerDecision: values.ContainerDecision, knownDuration: sample.Duration,
+                qualityValue: quality, encoderSelection: values.Encoder,
+                sampleStart: GetInputRelativeSampleStart(sample, request.SourceVideoStartOffsetSeconds),
+                sampleDuration: sample.Duration,
+                sourcePixelFormat: request.Video.SourcePixelFormat, restoration: context.Restoration,
+                plannedVideoGeometry: values.Geometry, videoOnly: true);
+        }
+
+        internal static TimeSpan GetInputRelativeSampleStart(RepresentativeSample sample,
+            double? sourceVideoStartOffsetSeconds)
+        {
+            if (sourceVideoStartOffsetSeconds is not double offset || !double.IsFinite(offset))
+                return sample.Start;
+
+            // Sampling regions are relative to the video presentation timeline,
+            // while FFmpeg -ss is relative to the input/container timeline.
+            double inputStartSeconds = sample.Start.TotalSeconds + offset;
+            if (!double.IsFinite(inputStartSeconds)) return sample.Start;
+            if (inputStartSeconds <= 0) return TimeSpan.Zero;
+            if (inputStartSeconds > TimeSpan.MaxValue.TotalSeconds) return sample.Start;
+            return TimeSpan.FromSeconds(inputStartSeconds);
+        }
+
         private string BuildFfmpegArgs(
             EncodingInputSource input,
             string output,
@@ -1377,12 +3764,17 @@ namespace MediaFlux.Services
             TimeSpan? sampleStart = null,
             TimeSpan? sampleDuration = null,
             string? sourcePixelFormat = null,
+            string? recoveryFrameRateRational = null,
+            string? timestampReconstructionFilter = null,
             bool preferNvencGpuResidentFrames = true,
             bool disableHardwareDecode = false,
+            FfmpegSourceDecodeMode sourceDecodeMode = FfmpegSourceDecodeMode.Strict,
             VideoRestorationSettings? restoration = null,
             SplitSourceInput? splitSource = null,
             string? restorationFilterOverride = null,
-            VideoOutputGeometryPlan? plannedVideoGeometry = null)
+            VideoOutputGeometryPlan? plannedVideoGeometry = null,
+            bool videoOnly = false,
+            AutomaticTargetPlan? automaticTargetPlan = null)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -1422,6 +3814,14 @@ namespace MediaFlux.Services
                     _ffmpegPath,
                     resolved.Selection.FfmpegCodec,
                     "highbitdepth");
+            bool supportsNvencCudaFormatConversion =
+                useGpu &&
+                isNvenc &&
+                FfmpegEncoderCapabilityService.SupportsFilter(
+                    _ffmpegPath, "scale_cuda");
+            _log?.Invoke(
+                $"[EncodingService] NVENC CUDA format conversion: " +
+                $"available={supportsNvencCudaFormatConversion}; software restoration filters remain host-side.");
             var request = new FfmpegCommandRequest
             {
                 Input = input,
@@ -1429,6 +3829,7 @@ namespace MediaFlux.Services
                 Encoder = encoderSelection ?? resolved.Selection,
                 UseGpu = useGpu,
                 TargetMb = targetMb,
+                AutomaticTargetPlan = automaticTargetPlan,
                 ScaleMode = scaleMode,
                 Restoration = restoration?.Clone() ?? new VideoRestorationSettings(),
                 EncoderPreset = encoderPreset,
@@ -1440,6 +3841,7 @@ namespace MediaFlux.Services
                 CopySubtitles = copySubtitles,
                 CopyDataStreams = copyDataStreams,
                 CopyAttachments = copyAttachments,
+                VideoOnly = videoOnly,
                 ContainerDecision = containerDecision ?? new OutputContainerDecision
                 {
                     Requested = OutputContainerSelection.Mp4,
@@ -1457,8 +3859,15 @@ namespace MediaFlux.Services
                     supportsGpuResidentHighBitDepthOutput,
                 PreferNvencGpuResidentFrames =
                     preferNvencGpuResidentFrames,
+                UseNvencHostFrames =
+                    useGpu && isNvenc && !preferNvencGpuResidentFrames,
+                NvencCudaFormatConversionSupported =
+                    supportsNvencCudaFormatConversion,
                 DisableHardwareDecode = disableHardwareDecode,
+                SourceDecodeMode = sourceDecodeMode,
                 SourcePixelFormat = sourcePixelFormat ?? ""
+                ,RecoveryFrameRateRational = recoveryFrameRateRational
+                ,TimestampReconstructionFilter = timestampReconstructionFilter
                 ,SplitSource = splitSource
                 ,RestorationFilterOverride = restorationFilterOverride
                 ,PlannedVideoGeometry = plannedVideoGeometry
@@ -1469,6 +3878,11 @@ namespace MediaFlux.Services
                 GetPrimaryAudioBitrateKbps,
                 _log);
             return builder.Build(request);
+        }
+
+        private sealed class ProgressLogState
+        {
+            public bool FallbackLogged { get; set; }
         }
 
         private static string DescribeVideoPipeline(

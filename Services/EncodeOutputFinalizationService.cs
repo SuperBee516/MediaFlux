@@ -90,22 +90,42 @@ namespace MediaFlux.Services
                     EncodeFinalizationFailureKind.Validation,
                     $"Output validation failed: {staged.ErrorMessage}",
                     request,
-                    File.Exists(request.OutputPath) ? request.OutputPath : "");
+                    File.Exists(request.OutputPath) ? request.OutputPath : "",
+                    stagedValidation: staged);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            StorageSavingsEvaluation savings = StorageSavingsContractService.Evaluate(
+                request.StorageSavingsContract, staged.Evidence.OutputSizeBytes);
+            if (savings.Acceptance == StorageSavingsAcceptance.Rejected &&
+                request.StorageSavingsContract.EnforceAcceptance)
+            {
+                return Failed(EncodeFinalizationFailureKind.StoragePolicyRejected,
+                    savings.Reason, request, request.OutputPath, stagedValidation: staged,
+                    storageSavings: savings);
+            }
             statusCallback?.Invoke("Finalizing");
             try
             {
-                _promoter.Promote(request.OutputPath, request.FinalOutputPath);
+                using (PerformanceTimingService.PerformanceScope? scope = request.PerformanceTiming?.Measure(PerformanceTimingStage.Finalization))
+                {
+                    _promoter.Promote(request.OutputPath, request.FinalOutputPath);
+                    scope?.Complete();
+                }
             }
             catch (Exception ex)
             {
+                FfmpegStorageFailure storageFailure =
+                    FfmpegStorageFailureClassifier.Classify(ex, destinationOperation: true);
+                string message = storageFailure.IsReliable
+                    ? $"Output promotion failed because {storageFailure.Describe()}: {ex.Message}"
+                    : $"Output promotion failed: {ex.Message}";
                 return Failed(
                     EncodeFinalizationFailureKind.Promotion,
-                    $"Output promotion failed: {ex.Message}",
+                    message,
                     request,
-                    File.Exists(request.OutputPath) ? request.OutputPath : "");
+                    File.Exists(request.OutputPath) ? request.OutputPath : "",
+                    stagedValidation: staged, storageSavings: savings);
             }
 
             statusCallback?.Invoke("Verifying final output");
@@ -131,7 +151,8 @@ namespace MediaFlux.Services
                         EncodeFinalizationFailureKind.FinalVerification,
                         "Final output verification was canceled.",
                         request,
-                        recoverablePath),
+                        recoverablePath,
+                        stagedValidation: staged, storageSavings: savings),
                     cancellationToken);
             }
             if (!promoted.Success || promoted.Evidence == null)
@@ -143,19 +164,27 @@ namespace MediaFlux.Services
                     EncodeFinalizationFailureKind.FinalVerification,
                     $"Final output verification failed: {promoted.ErrorMessage}",
                     request,
-                    recoverablePath);
+                    recoverablePath,
+                    stagedValidation: staged,
+                    promotedValidation: promoted, storageSavings: savings);
             }
 
             return new EncodeFinalizationResult
             {
                 Success = true,
+                StorageSavings = savings,
                 FinalOutputPath = request.FinalOutputPath,
                 StagingPath = request.OutputPath,
                 ValidationSummary =
-                    $"{staged.Summary} {promoted.Summary}".Trim(),
+                    $"{staged.Summary} {promoted.Summary}".Trim() +
+                    (savings.Acceptance == StorageSavingsAcceptance.Rejected
+                        ? $" Storage Savings is advisory for this manual job; valid output was preserved. {savings.Reason}"
+                        : string.Empty),
                 FinalOutputSizeBytes = promoted.Evidence.OutputSizeBytes,
                 FinalOutputLastWriteUtcTicks =
-                    promoted.Evidence.OutputLastWriteUtcTicks
+                    promoted.Evidence.OutputLastWriteUtcTicks,
+                StagedValidationResult = staged,
+                PromotedValidationResult = promoted
             };
         }
 
@@ -163,14 +192,20 @@ namespace MediaFlux.Services
             EncodeFinalizationFailureKind kind,
             string message,
             EncodeOutputValidationRequest request,
-            string recoverablePath) => new()
+            string recoverablePath,
+            EncodeOutputValidationResult? stagedValidation = null,
+            EncodeOutputValidationResult? promotedValidation = null,
+            StorageSavingsEvaluation? storageSavings = null) => new()
         {
             Success = false,
+            StorageSavings = storageSavings,
             FailureKind = kind,
             ErrorMessage = message,
             FinalOutputPath = request.FinalOutputPath,
             StagingPath = request.OutputPath,
-            RecoverableOutputPath = recoverablePath
+            RecoverableOutputPath = recoverablePath,
+            StagedValidationResult = stagedValidation,
+            PromotedValidationResult = promotedValidation
         };
     }
 

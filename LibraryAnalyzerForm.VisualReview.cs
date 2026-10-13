@@ -10,7 +10,7 @@ namespace MediaFlux
     {
         private void ConfigureVisualContextMenus()
         {
-            AddVisualMenuItem(_visualGroupsMenu, "Review / Compare", "Review", async () => await OpenVisualReviewAsync());
+            AddVisualMenuItem(_visualGroupsMenu, "Review & Compare…", "Review", ReviewAndCompareSelectedVisualMatchAsync);
             AddVisualMenuItem(_visualGroupsMenu, "Review cleanup plan…", "Cleanup", async () =>
             {
                 long[] groupIds = SelectedVisualGroups().Select(group => group.GroupId).ToArray();
@@ -29,7 +29,7 @@ namespace MediaFlux
             _visualGroupsMenu.Opening += VisualGroupsMenu_Opening;
             AttachVisualContextMenu(_visualGroupsGrid, _visualGroupsMenu);
 
-            AddVisualMenuItem(_visualMembersMenu, "Review / Compare", "Review", async () => await OpenVisualReviewAsync());
+            AddVisualMenuItem(_visualMembersMenu, "Review & Compare…", "Review", ReviewAndCompareSelectedVisualMatchAsync);
             AddVisualMenuItem(_visualMembersMenu, "Play / Preview", "Play", () => { PlaySelectedVisualMember(); return Task.CompletedTask; });
             AddVisualMenuItem(_visualMembersMenu, "Set as keeper", "Keeper", async () => await SetSelectedVisualKeeperAsync(advanceAfterPersistence: true));
             AddVisualMenuItem(_visualMembersMenu, "Keep this file / delete the other…", "KeepDeleteOther", async () => await KeepSelectedAndDeleteOtherAsync());
@@ -129,22 +129,59 @@ namespace MediaFlux
         {
             if (SelectedVisualGroup() is not { } group)
                 return;
+            bool ignored = !group.Ignored;
             await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, !group.Ignored, group.NotMatch)));
+                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, true, ignored,
+                    ignored ? false : group.NotMatch)));
             await RefreshVisualGroupsAsync(group.GroupId);
         }
 
         private async Task ToggleSelectedVisualNotMatchAsync()
         {
             if (SelectedVisualGroup() is not { } group) return;
+            bool notMatch = !group.NotMatch;
             await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, group.Reviewed, group.Ignored, !group.NotMatch)));
+                new VisualGroupDecision(group.GroupId, group.ManualKeeperFileId, group.Reviewed,
+                    notMatch ? false : group.Ignored, notMatch)));
             await RefreshVisualGroupsAsync();
         }
 
         private Task SaveVisualKeeperAsync(VisualSimilarityGroupRecord group, VisualSimilarityMemberRecord member) =>
             Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
                 new VisualGroupDecision(group.GroupId, member.FileId, true, group.Ignored, group.NotMatch)));
+
+        // Shared command path for the modal and deterministic UI coverage.  Keeping
+        // persistence, navigation, and the refresh together prevents tests (and other
+        // callers) from having to discover or drive the modal window itself.
+        internal async Task<VisualSimilarityGroupRecord?> CompleteVisualReviewReviewedNextAsync(
+            long groupId, long? keeperId, bool semiAutomaticApproval, bool refreshUi = true)
+        {
+            VisualSimilarityGroupRecord? group = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroup(groupId));
+            if (group == null)
+                return null;
+
+            await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
+                new VisualGroupDecision(group.GroupId, keeperId, true, group.Ignored, group.NotMatch,
+                    Source: semiAutomaticApproval ? "semi-automatic-review" : "library-analyzer")));
+            if (refreshUi)
+            {
+                await NavigateVisualSelectionAsync(1);
+                await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
+            }
+            else if (_visualTotal > 1 && _visualGroupsGrid.SelectedRows.Count > 0)
+            {
+                int target = (_visualGroupsGrid.SelectedRows[0].Index + 1) % _visualGroupsGrid.Rows.Count;
+                SelectVisualGroupRow(target);
+            }
+            else if (!refreshUi)
+            {
+                VisualSimilarityGroupRecord[] groups = await Task.Run(() =>
+                    _runtime.VisualCatalog.QueryVisualGroups(new VisualGroupQuery()).Groups.ToArray());
+                return groups.SkipWhile(candidate => candidate.GroupId != groupId).Skip(1).FirstOrDefault()
+                    ?? groups.FirstOrDefault(candidate => candidate.GroupId != groupId);
+            }
+            return SelectedVisualGroup();
+        }
 
         private Task SaveVisualProtectionAsync(VisualSimilarityMemberRecord member) =>
             Task.Run(() => _runtime.AnalysisCatalog.SetFileProtection(
@@ -209,6 +246,17 @@ namespace MediaFlux
             await OpenVisualReviewAsync();
         }
 
+        private async void ReviewAndCompareSelectedVisualMatch_Click(object? sender, EventArgs e) =>
+            await ReviewAndCompareSelectedVisualMatchAsync();
+
+        // Both visible entry points and both context menus intentionally use this
+        // one command path so review eligibility and observational behavior stay
+        // identical.
+        internal Func<Task>? VisualReviewCommandOverride { get; set; }
+
+        private Task ReviewAndCompareSelectedVisualMatchAsync() =>
+            VisualReviewCommandOverride?.Invoke() ?? OpenVisualReviewAsync();
+
         private async Task OpenVisualReviewAsync()
         {
             if (SelectedVisualGroup() == null)
@@ -216,13 +264,14 @@ namespace MediaFlux
 
             using var dialog = new MediaFluxForm
             {
-                Text = "Review Visual Match",
+                Text = "Review & Compare",
                 StartPosition = FormStartPosition.CenterParent,
                 KeyPreview = true,
                 MinimumSize = new Size(980, 650),
                 Size = new Size(1120, 780)
             };
             using var previewCancellation = new CancellationTokenSource();
+            using var cardToolTip = new ToolTip();
             var header = new Label
             {
                 Dock = DockStyle.Top,
@@ -271,11 +320,24 @@ namespace MediaFlux
 
             bool loading = false;
             bool catalogStateChanged = false;
+            bool dialogClosing = false;
             bool currentReviewEligible = false;
             VisualSimilarityGroupRecord? currentReviewGroup = null;
             long? currentSelectedKeeperFileId = null;
             long? pendingKeeperGroupId = null;
             CancellationTokenSource? groupPreviewCancellation = null;
+            void StartPreview(PictureBox picture, Label status, VisualSimilarityMemberRecord member, CancellationToken token)
+            {
+                Task preview = LoadVisualReviewThumbnailAsync(picture, status, member, token);
+                _ = preview.ContinueWith(completed =>
+                {
+                    ErrorLogService.Append(Application.StartupPath,
+                        "Library Analyzer visual preview failed",
+                        member.FullPath,
+                        completed.Exception);
+                }, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+
             async Task LoadCurrentAsync()
             {
                 if (loading || SelectedVisualGroup() is not { } selected)
@@ -284,7 +346,7 @@ namespace MediaFlux
                 try
                 {
                     VisualSimilarityGroupRecord? group = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroup(selected.GroupId));
-                    if (group == null || dialog.IsDisposed)
+                    if (group == null || dialogClosing || dialog.IsDisposed || dialog.Disposing)
                         return;
                     // Opening review is observational. Use the catalog's existing lifecycle
                     // snapshot; authoritative scans and explicit action validation own
@@ -293,7 +355,7 @@ namespace MediaFlux
                     currentReviewEligible = eligibility.IsActive;
                     currentReviewGroup = group;
                     IReadOnlyList<VisualSimilarityMemberRecord> members = await Task.Run(() => _runtime.VisualCatalog.GetVisualGroupMembers(group.GroupId));
-                    if (dialog.IsDisposed)
+                    if (dialogClosing || dialog.IsDisposed || dialog.Disposing)
                         return;
                     groupPreviewCancellation?.Cancel();
                     groupPreviewCancellation?.Dispose();
@@ -316,14 +378,24 @@ namespace MediaFlux
                     header.Height = eligibility.IsActive ? 124 : 146;
                     header.Text = BuildVisualReviewHeader(group, position, _visualTotal, keeperExplanation) +
                         (eligibility.IsActive ? "" : Environment.NewLine + "Catalog status: " + eligibility.Reason);
-                    dialog.Text = $"Review Visual Match {position:N0} of {_visualTotal:N0}";
+                    dialog.Text = $"Review & Compare {position:N0} of {_visualTotal:N0}";
                     ignore.Text = group.Ignored ? "Restore" : "Ignore";
                     notMatch.Text = group.NotMatch ? "Restore Match" : "Not a Match + Next";
                     previous.Enabled = _visualTotal > 1;
                     next.Enabled = _visualTotal > 1;
                     reviewedNext.Enabled = eligibility.IsActive && (!semiAutomaticApproval || currentSelectedKeeperFileId.HasValue);
-                    foreach (VisualSimilarityMemberRecord member in members)
+                    for (int memberIndex = 0; memberIndex < members.Count; memberIndex++)
                     {
+                        VisualSimilarityMemberRecord member = members[memberIndex];
+                        VisualSimilarityMemberRecord? moveDestination = members
+                            .FirstOrDefault(candidate => candidate.FileId != member.FileId);
+                        VisualReviewMovePresentation? movePresentation =
+                            moveDestination == null
+                                ? null
+                                : CreateVisualReviewMovePresentation(
+                                    member,
+                                    moveDestination,
+                                    sourceIsLeft: memberIndex == 0);
                         var card = CreateVisualReviewCard(
                             member,
                             eligibility.IsActive,
@@ -350,13 +422,39 @@ namespace MediaFlux
                                 catalogStateChanged = true;
                                 bool deleted = await PreviewVisualCleanupAsync(new[] { group.GroupId });
                                 if (deleted) await MoveAsync(1); else await LoadCurrentAsync();
-                            });
+                            },
+                            async () =>
+                            {
+                                if (moveDestination == null || movePresentation == null) return;
+                                LibraryFileRelocationPreview proposal;
+                                try { proposal = await Task.Run(() => _runtime.FileRelocation.Preview(member.FileId, moveDestination.FileId)); }
+                                catch (Exception ex) { MessageBox.Show(dialog, ex.Message, "Move file to target folder", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                                DialogResult confirmed = MessageBox.Show(dialog,
+                                    $"Move this file to the target folder?\r\n\r\n" +
+                                    $"Source:\r\n{proposal.SourcePath}\r\n\r\n" +
+                                    $"Destination folder:\r\n{Path.GetDirectoryName(proposal.DestinationPath)}\r\n\r\n" +
+                                    $"Destination file:\r\n{proposal.DestinationPath}",
+                                    "Move file to target folder", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                                if (confirmed != DialogResult.Yes) return;
+                                LibraryFileRelocationResult result = await Task.Run(() => _runtime.FileRelocation.Execute(proposal));
+                                if (!result.Succeeded) { MessageBox.Show(dialog, result.ErrorMessage, "Move file to target folder", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                                catalogStateChanged = true;
+                                await LoadCurrentAsync();
+                            },
+                            movePresentation,
+                            cardToolTip,
+                            group);
                         body.Controls.Add(card.Panel);
-                        _ = LoadVisualReviewThumbnailAsync(card.Picture, card.Status, member, groupPreviewCancellation.Token);
+                        // Previews are cancelable, dialog-owned best-effort work.  Do not
+                        // make completion of the modal workflow depend on an FFmpeg process
+                        // or an STA continuation that is being torn down with the dialog.
+                        StartPreview(card.Picture, card.Status, member, groupPreviewCancellation.Token);
                     }
                 }
                 catch (Exception ex)
                 {
+                    if (dialogClosing || dialog.IsDisposed || dialog.Disposing)
+                        return;
                     ErrorLogService.Append(Application.StartupPath, "Library Analyzer visual review failed", exception: ex);
                     MessageBox.Show(dialog, "The visual match could not be loaded.\r\n\r\n" + ex.Message, "Library Analyzer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
@@ -415,13 +513,10 @@ namespace MediaFlux
                 if (currentReviewGroup is not { } group)
                     return;
                 long? keeperId = semiAutomaticApproval ? currentSelectedKeeperFileId : group.ManualKeeperFileId;
-                await Task.Run(() => _runtime.VisualCatalog.SaveVisualDecision(
-                    new VisualGroupDecision(group.GroupId, keeperId, true, group.Ignored, group.NotMatch,
-                        Source: semiAutomaticApproval ? "semi-automatic-review" : "library-analyzer")));
                 catalogStateChanged = true;
                 pendingKeeperGroupId = null;
-                await MoveAsync(1);
-                await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
+                await CompleteVisualReviewReviewedNextAsync(group.GroupId, keeperId, semiAutomaticApproval);
+                await LoadCurrentAsync();
             };
             dialog.KeyDown += async (_, e) =>
             {
@@ -432,6 +527,12 @@ namespace MediaFlux
                 await MoveAsync(e.KeyCode == Keys.Left ? -1 : 1);
             };
             dialog.Shown += async (_, _) => await LoadCurrentAsync();
+            dialog.FormClosing += (_, _) =>
+            {
+                dialogClosing = true;
+                groupPreviewCancellation?.Cancel();
+                previewCancellation.Cancel();
+            };
             dialog.FormClosed += (_, _) =>
             {
                 groupPreviewCancellation?.Cancel();
@@ -442,6 +543,28 @@ namespace MediaFlux
             dialog.ShowDialog(this);
             if (catalogStateChanged)
                 await RefreshVisualGroupsAsync(SelectedVisualGroup()?.GroupId);
+        }
+
+        internal sealed record VisualReviewMovePresentation(
+            string ButtonText,
+            string ToolTipText,
+            string DestinationFolder);
+
+        internal static VisualReviewMovePresentation CreateVisualReviewMovePresentation(
+            VisualSimilarityMemberRecord source,
+            VisualSimilarityMemberRecord destination,
+            bool sourceIsLeft)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            ArgumentNullException.ThrowIfNull(destination);
+            string destinationFolder = Path.GetDirectoryName(destination.FullPath) ?? destination.LocationPath;
+            string folderDescription = string.IsNullOrWhiteSpace(destinationFolder)
+                ? Path.GetFileName(destination.FullPath)
+                : destinationFolder;
+            return new VisualReviewMovePresentation(
+                sourceIsLeft ? "Move to Right Folder →" : "← Move to Left Folder",
+                $"Move this file to the folder containing {Path.GetFileName(destination.FullPath)} ({folderDescription}).",
+                destinationFolder);
         }
 
         private static string BuildVisualReviewHeader(VisualSimilarityGroupRecord group, long position, long total, string keeperExplanation)
@@ -462,16 +585,20 @@ namespace MediaFlux
             long? suggestedKeeperFileId,
             Func<Task> keepSelected,
             Func<Task> protectSelected,
-            Func<Task> keepAndDeleteOther)
+            Func<Task> keepAndDeleteOther,
+            Func<Task>? moveToOtherFolder = null,
+            VisualReviewMovePresentation? movePresentation = null,
+            ToolTip? actionToolTip = null,
+            VisualSimilarityGroupRecord? group = null)
         {
             VisualReviewKeeperPresentation presentation = ResolveVisualReviewKeeperPresentation(
-                member, selectedKeeperFileId, suggestedKeeperFileId);
+                member, selectedKeeperFileId, suggestedKeeperFileId, group);
             bool selectedKeeper = presentation.SelectedKeeper;
             bool suggestedKeeper = presentation.SuggestedKeeper;
             var panel = new Panel
             {
                 Width = 500,
-                Height = 520,
+                Height = 560,
                 Margin = new Padding(8),
                 BackColor = SystemColors.Window,
                 BorderStyle = BorderStyle.FixedSingle
@@ -503,7 +630,7 @@ namespace MediaFlux
             var actions = new FlowLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 70,
+                Height = 100,
                 Padding = new Padding(6, 4, 6, 2),
                 WrapContents = true
             };
@@ -512,11 +639,25 @@ namespace MediaFlux
             var protect = new Button { Text = member.IsProtected ? "Unprotect" : "Protect", Width = 90 };
             var folder = new Button { Text = "Open folder", Width = 100, Enabled = Directory.Exists(Path.GetDirectoryName(member.FullPath)) };
             var deleteOther = new Button { Text = "Keep this / delete other…", Width = 180, Enabled = decisionsAllowed && CanSelectVisualKeeper(member) };
+            var move = new Button
+            {
+                Name = "VisualReviewMoveButton",
+                Text = movePresentation?.ButtonText ?? "Move to destination folder",
+                Width = 180,
+                Enabled = File.Exists(member.FullPath),
+                Visible = moveToOtherFolder != null
+            };
             play.Click += (_, _) => PlayVisualMember(member);
             keep.Click += async (_, _) => await keepSelected();
             protect.Click += async (_, _) => await protectSelected();
             folder.Click += (_, _) => OpenVisualMemberFolder(member);
             deleteOther.Click += async (_, _) => await keepAndDeleteOther();
+            if (moveToOtherFolder != null) move.Click += async (_, _) => await moveToOtherFolder();
+            if (movePresentation != null)
+            {
+                move.AccessibleDescription = movePresentation.ToolTipText;
+                actionToolTip?.SetToolTip(move, movePresentation.ToolTipText);
+            }
             if (selectedKeeper)
             {
                 keep.UseVisualStyleBackColor = false;
@@ -524,7 +665,7 @@ namespace MediaFlux
                 keep.BackColor = Color.FromArgb(46, 125, 50);
                 keep.ForeColor = Color.White;
             }
-            actions.Controls.AddRange(new Control[] { play, keep, deleteOther, protect, folder });
+            actions.Controls.AddRange(new Control[] { play, keep, deleteOther, move, protect, folder });
             var status = new Label
             {
                 Dock = DockStyle.Bottom,
@@ -556,7 +697,8 @@ namespace MediaFlux
         internal static VisualReviewKeeperPresentation ResolveVisualReviewKeeperPresentation(
             VisualSimilarityMemberRecord member,
             long? selectedKeeperFileId,
-            long? suggestedKeeperFileId)
+            long? suggestedKeeperFileId,
+            VisualSimilarityGroupRecord? group = null)
         {
             bool selectedKeeper = member.IsManualKeeper || selectedKeeperFileId == member.FileId;
             bool suggestedKeeper = !selectedKeeper && suggestedKeeperFileId == member.FileId;
@@ -564,7 +706,11 @@ namespace MediaFlux
                 ? "MANUAL KEEPER"
                 : selectedKeeper
                     ? "SELECTED KEEPER"
-                    : suggestedKeeper ? "Suggested keeper" : "Candidate";
+                    : suggestedKeeper
+                        ? "Suggested Keeper"
+                        : group == null
+                            ? "Candidate"
+                            : VisualMemberRole(group, member, selectedKeeperFileId ?? suggestedKeeperFileId);
             string action = selectedKeeper
                 ? "Keeper selected"
                 : suggestedKeeper ? "Keep (suggested)" : "Set as keeper";

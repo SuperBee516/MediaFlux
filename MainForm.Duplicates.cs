@@ -34,6 +34,8 @@ namespace MediaFlux
         private const string DuplicateFilterActionable = "Actionable only";
         private const string DuplicateFilterProtected = "Protected/reference";
         private bool _duplicateCleanupAutoDisablePending;
+        private readonly DuplicateManagerDeleteSelectionState _duplicateManagerDeleteSelections = new();
+        private Label? _duplicateManagerSummaryLabel;
 
         private void StartDuplicateScanIfEnabled()
         {
@@ -165,6 +167,7 @@ namespace MediaFlux
                 UpdateRelocatedEncodeStatus("Duplicate scan canceled.");
                 SetQueueProgress(0, 0, visible: false);
                 SetQueueWorkCancelVisible(_estimateService?.PendingEstimates > 0);
+                ClearDuplicateScanIfCurrent(token);
                 return;
             }
             catch (Exception ex)
@@ -177,11 +180,15 @@ namespace MediaFlux
                 UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
                 SetQueueProgress(0, 0, visible: false);
                 SetQueueWorkCancelVisible(_estimateService?.PendingEstimates > 0);
+                ClearDuplicateScanIfCurrent(token);
                 return;
             }
 
             if (token.IsCancellationRequested)
+            {
+                ClearDuplicateScanIfCurrent(token);
                 return;
+            }
 
             if (paths.Count < 2)
             {
@@ -189,6 +196,7 @@ namespace MediaFlux
                 ShowStatusInfo("The selected folder has fewer than two supported video files to analyze.");
                 SetQueueProgress(0, 0, visible: false);
                 SetQueueWorkCancelVisible(_estimateService?.PendingEstimates > 0);
+                ClearDuplicateScanIfCurrent(token);
                 return;
             }
 
@@ -318,6 +326,19 @@ namespace MediaFlux
                     SetQueueProgress(0, 0, visible: false);
                 });
             }
+            finally
+            {
+                ClearDuplicateScanIfCurrent(token);
+            }
+        }
+
+        private void ClearDuplicateScanIfCurrent(CancellationToken token)
+        {
+            CancellationTokenSource? source = _duplicateScanCts;
+            if (source?.Token != token)
+                return;
+            _duplicateScanCts = null;
+            source.Dispose();
         }
 
         private void ApplyDuplicateScanResult(
@@ -355,17 +376,19 @@ namespace MediaFlux
                         !IsEncodeRowCurrentlyRunning(row);
                     if (isExactCandidate && !meta.DuplicateExclusionOverridden)
                     {
-                        meta.StatusBeforeDuplicateExclusion = dgvEncodeQueue.Columns.Contains("colStatus")
+                        string statusBeforeExclusion = dgvEncodeQueue.Columns.Contains("colStatus")
                             ? row.Cells["colStatus"].Value?.ToString() ?? "Queued"
                             : "Queued";
-                        meta.ExcludedFromEncodeAsDuplicate = true;
-                        _estimatedSizeMap.Remove(item.Path);
-                        SetEncodeRowState(
-                            row,
-                            "Excluded - exact duplicate",
-                            "",
-                            "",
-                            "Exact byte-for-byte duplicate soft-excluded from encoding. The source file was not changed.");
+                        if (TrySoftExcludePendingDuplicateRow(row, meta, statusBeforeExclusion))
+                        {
+                            _estimatedSizeMap.Remove(item.Path);
+                            SetEncodeRowState(
+                                row,
+                                "Excluded - exact duplicate",
+                                "",
+                                "",
+                                "Exact byte-for-byte duplicate soft-excluded from encoding. The source file was not changed.");
+                        }
                     }
                     ApplyDuplicateCells(row, meta);
                 }
@@ -410,23 +433,10 @@ namespace MediaFlux
 
         private void ApplyDuplicateCandidateViewFilter()
         {
-            if (dgvEncodeQueue == null || _encodingActive)
+            if (dgvEncodeQueue == null)
                 return;
 
-            bool onlyDuplicates = chkOnlyDuplicateCandidates?.Checked == true && _lastDuplicateScanResult != null;
-            try
-            {
-                dgvEncodeQueue.CurrentCell = null;
-                foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
-                {
-                    if (!row.IsNewRow)
-                        row.Visible = !onlyDuplicates || (row.Tag as RowMeta)?.DuplicateGroupId != null;
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // Visibility is a convenience view. Never let it invalidate scan results.
-            }
+            ApplyEncodeQueueViewFilter();
         }
 
         private int GetDuplicateSoftExcludedCount()
@@ -447,14 +457,27 @@ namespace MediaFlux
         {
             lock (_activeEncodeQueueLock)
             {
-                _activeEncodeQueue?.RemoveAll(row =>
-                    row?.Tag is RowMeta meta && meta.ExcludedFromEncodeAsDuplicate);
+                if (_activeEncodeQueue == null)
+                    return;
+
+                // The runner's claimed prefix is immutable. Removing only pending
+                // tail entries keeps its next-dispatch index valid.
+                int pendingStart = Math.Clamp(
+                    _activeEncodeQueueDispatchedCount,
+                    0,
+                    _activeEncodeQueue.Count);
+                for (int index = _activeEncodeQueue.Count - 1; index >= pendingStart; index--)
+                {
+                    if (_activeEncodeQueue[index]?.Tag is RowMeta { ExcludedFromEncodeAsDuplicate: true })
+                        _activeEncodeQueue.RemoveAt(index);
+                }
             }
         }
 
         private void ResetDuplicateAnnotations(string status)
         {
             _lastDuplicateScanResult = null;
+            _duplicateManagerDeleteSelections.Clear();
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
             {
                 if (row.IsNewRow)
@@ -474,13 +497,17 @@ namespace MediaFlux
                 meta.DuplicateReason = "";
                 ApplyDuplicateCells(row, meta);
             }
+            ApplyEncodeQueueViewFilter();
             UpdateDuplicateSummary(null);
         }
 
         private void ClearDuplicateAnnotations(bool resetResult = true)
         {
             if (resetResult)
+            {
                 _lastDuplicateScanResult = null;
+                _duplicateManagerDeleteSelections.Clear();
+            }
 
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
             {
@@ -505,9 +532,8 @@ namespace MediaFlux
                 }
 
                 ApplyDuplicateCells(row, row.Tag as RowMeta);
-                if (!row.IsNewRow)
-                    row.Visible = true;
             }
+            ApplyEncodeQueueViewFilter();
             UpdateDuplicateSummary(resetResult ? null : _lastDuplicateScanResult);
         }
 
@@ -714,56 +740,7 @@ namespace MediaFlux
                 Size = new Size(1100, 650)
             };
 
-            var grid = new DataGridView
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = false,
-                AllowUserToAddRows = false,
-                AllowUserToDeleteRows = false,
-                AutoGenerateColumns = false,
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                MultiSelect = true,
-                RowHeadersVisible = false,
-                BackgroundColor = SystemColors.Window
-            };
-
-            grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Delete", HeaderText = "Delete?", Width = 58 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Group", HeaderText = "Group", Width = 70 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Confidence", HeaderText = "Confidence", Width = 110 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "MatchMethod", HeaderText = "Match", Width = 125 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Frames", HeaderText = "Frames", Width = 70 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "AvgDistance", HeaderText = "Avg Distance", Width = 92 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DurationDelta", HeaderText = "Delta", Width = 72 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Recommendation", HeaderText = "Recommendation", Width = 140 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "KeeperReason", HeaderText = "Keeper Reason", Width = 125 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Reference", HeaderText = "Reference", Width = 82 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "Name", Width = 220 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Size", HeaderText = "Size", Width = 90 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Codec", HeaderText = "Codec", Width = 80 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Resolution", HeaderText = "Resolution", Width = 95 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Duration", HeaderText = "Duration", Width = 90 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Bitrate", HeaderText = "Bitrate", Width = 85 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Reason", HeaderText = "Evidence", Width = 220 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Path", HeaderText = "Path", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
-            foreach (DataGridViewColumn column in grid.Columns)
-                column.ReadOnly = !string.Equals(column.Name, "Delete", StringComparison.OrdinalIgnoreCase);
-
-            grid.CurrentCellDirtyStateChanged += (_, __) =>
-            {
-                if (grid.IsCurrentCellDirty)
-                    grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
-            };
-            grid.CellValueChanged += (_, e) =>
-            {
-                if (e.RowIndex < 0 || e.ColumnIndex < 0 || grid.Columns[e.ColumnIndex].Name != "Delete")
-                    return;
-
-                var row = grid.Rows[e.RowIndex];
-                if (row.Cells["Delete"].ReadOnly)
-                    row.Cells["Delete"].Value = false;
-            };
-
-            grid.Tag = DuplicateFilterAll;
+            var grid = CreateDuplicateManagerGrid();
             RefreshDuplicateManagerGrid(grid);
             InitializeDuplicateManagerContextMenu(dialog, grid);
 
@@ -809,6 +786,78 @@ namespace MediaFlux
             dialog.ShowDialog(this);
         }
 
+        private DataGridView CreateDuplicateManagerGrid()
+        {
+            var grid = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = false,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AutoGenerateColumns = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = true,
+                RowHeadersVisible = false,
+                BackgroundColor = SystemColors.Window
+            };
+
+            grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Delete", HeaderText = "Delete?", Width = 58 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Group", HeaderText = "Group", Width = 70 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Confidence", HeaderText = "Confidence", Width = 110 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "MatchMethod", HeaderText = "Match", Width = 125 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Frames", HeaderText = "Frames", Width = 70 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "AvgDistance", HeaderText = "Avg Distance", Width = 92 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DurationDelta", HeaderText = "Delta", Width = 72 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Recommendation", HeaderText = "Recommendation", Width = 140 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "KeeperReason", HeaderText = "Keeper Reason", Width = 125 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Reference", HeaderText = "Reference", Width = 82 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "Name", Width = 220 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Size", HeaderText = "Size", Width = 90 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Codec", HeaderText = "Codec", Width = 80 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Resolution", HeaderText = "Resolution", Width = 95 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Duration", HeaderText = "Duration", Width = 90 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Bitrate", HeaderText = "Bitrate", Width = 85 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Reason", HeaderText = "Evidence", Width = 220 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Path", HeaderText = "Path", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+            foreach (DataGridViewColumn column in grid.Columns)
+                column.ReadOnly = !string.Equals(column.Name, "Delete", StringComparison.OrdinalIgnoreCase);
+
+            grid.CurrentCellDirtyStateChanged += (_, __) =>
+            {
+                if (grid.IsCurrentCellDirty)
+                    grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            };
+            grid.CellValueChanged += (_, e) =>
+            {
+                if (e.RowIndex < 0 || e.ColumnIndex < 0 || grid.Columns[e.ColumnIndex].Name != "Delete")
+                    return;
+
+                var row = grid.Rows[e.RowIndex];
+                if (row.Tag is not string path || FindDuplicateManagedFile(path) is not { } managed)
+                    return;
+
+                bool selected = row.Cells["Delete"].Value is bool value && value;
+                row.Cells["Delete"].Value = _duplicateManagerDeleteSelections.Record(
+                    managed.Group, managed.Item, selected);
+                UpdateDuplicateManagerDeleteEditability(grid, managed.Group.Id);
+            };
+
+            grid.Tag = DuplicateFilterAll;
+            return grid;
+        }
+
+        private void UpdateDuplicateManagerDeleteEditability(DataGridView grid, int groupId)
+        {
+            foreach (DataGridViewRow row in grid.Rows)
+            {
+                if (row.Tag is not string path || FindDuplicateManagedFile(path) is not { } managed || managed.Group.Id != groupId)
+                    continue;
+
+                row.Cells["Delete"].ReadOnly = !_duplicateManagerDeleteSelections.CanSelectForDeletion(
+                    managed.Group, managed.Item);
+            }
+        }
+
         private Control CreateDuplicateManagerHeaderPanel(DataGridView grid)
         {
             var panel = new TableLayoutPanel
@@ -839,6 +888,7 @@ namespace MediaFlux
                 Margin = new Padding(0, 4, 16, 4),
                 Text = BuildDuplicateManagerSummary(DuplicateFilterAll)
             };
+            _duplicateManagerSummaryLabel = summary;
             var filterLabel = new Label
             {
                 Text = "Filter:",
@@ -983,11 +1033,13 @@ namespace MediaFlux
             var recycle = new Button { Text = "Move Selected to Recycle Bin", Width = 190, Visible = _config.AllowDuplicateRecycleBin };
             var quarantine = new Button { Text = "Move Selected to Quarantine", Width = 200, Visible = _config.AllowDuplicateQuarantine };
             var deletePermanent = new Button { Text = "Delete Selected Permanently", Width = 190, Visible = _config.AllowDuplicatePermanentDelete };
+            var markAllReviewed = new Button { Text = "Mark All Reviewed", Width = 130 };
 
             preview.Click += (_, __) => PreviewDuplicateAction(grid, rule.Text, includeReviewOnly.Checked);
             recycle.Click += (_, __) => ExecuteDuplicateFileAction(dialog, grid, rule.Text, DuplicateFileAction.Recycle);
             quarantine.Click += (_, __) => ExecuteDuplicateFileAction(dialog, grid, rule.Text, DuplicateFileAction.Quarantine);
             deletePermanent.Click += (_, __) => ExecuteDuplicateFileAction(dialog, grid, rule.Text, DuplicateFileAction.DeletePermanent);
+            markAllReviewed.Click += (_, __) => MarkDuplicateManagerGroupsReviewed(grid);
             _uiToolTip.SetToolTip(preview, "Selects the files that match the current cleanup rule without moving or deleting anything.");
             _uiToolTip.SetToolTip(recycle, "Moves matching duplicate files to the Windows Recycle Bin.");
             _uiToolTip.SetToolTip(quarantine, "Moves matching duplicate files into the configured duplicate quarantine folder.");
@@ -1000,7 +1052,24 @@ namespace MediaFlux
             panel.Controls.Add(recycle, 4, 0);
             panel.Controls.Add(quarantine, 5, 0);
             panel.Controls.Add(deletePermanent, 6, 0);
+            panel.Controls.Add(markAllReviewed, 7, 0);
             return panel;
+        }
+
+        private void MarkDuplicateManagerGroupsReviewed(DataGridView grid)
+        {
+            var groups = GetDuplicateManagerGroups(GetDuplicateManagerFilter(grid)).ToList();
+            int reviewed = 0;
+            foreach (DuplicateGroup group in groups)
+            {
+                if (_duplicateManagerDeleteSelections.MarkReviewed(group))
+                    reviewed++;
+            }
+
+            RefreshDuplicateManagerGrid(grid);
+            if (_duplicateManagerSummaryLabel != null)
+                _duplicateManagerSummaryLabel.Text = BuildDuplicateManagerSummary(GetDuplicateManagerFilter(grid));
+            ShowStatusInfo($"{reviewed:N0} duplicate group(s) marked reviewed.");
         }
 
         private void PreviewDuplicateAction(DataGridView grid, string rule, bool includeReviewOnly)
@@ -1324,7 +1393,7 @@ namespace MediaFlux
 
         private string GetDuplicateActionAuditPath()
         {
-            return Path.Combine(AppPaths.DataDirectory, "logs", "duplicate-actions.csv");
+            return AppPaths.DuplicateActionsLogFile;
         }
 
         private void ViewDuplicateActionLogToolStripMenuItem_Click(object? sender, EventArgs e)
@@ -1965,6 +2034,9 @@ namespace MediaFlux
                 .ToList();
 
             _lastDuplicateScanResult = BuildDuplicateScanResult(groups);
+            DuplicateGroup? updated = groups.FirstOrDefault(group => group.Id == groupId);
+            if (updated != null)
+                _duplicateManagerDeleteSelections.MarkReviewed(updated);
             ApplyDuplicateScanResult(_lastDuplicateScanResult);
             ShowStatusInfo($"Group {groupId}: {Path.GetFileName(keeperPath)} marked to keep.");
         }
@@ -2352,18 +2424,16 @@ namespace MediaFlux
             int strongCount = groups.Count(group => string.Equals(group.ConfidenceLabel, "Strong visual match", StringComparison.OrdinalIgnoreCase));
             int reviewCount = groups.Count(group => string.Equals(group.ConfidenceLabel, "Review only", StringComparison.OrdinalIgnoreCase));
             int keeperReviewCount = groups.Count(group => group.Items.Any(item =>
-                string.Equals(item.Recommendation, "Review required", StringComparison.OrdinalIgnoreCase)));
+                string.Equals(item.Recommendation, "Review required", StringComparison.OrdinalIgnoreCase) &&
+                !_duplicateManagerDeleteSelections.IsReviewed(group)));
 
-            return $"Groups: {groups.Count:N0}   Files: {fileCount:N0}   Duplicates: {duplicateCount:N0}   Recoverable: {FormatSize(recoverableBytes)}   Exact: {exactCount:N0}   Strong: {strongCount:N0}   Match review: {reviewCount:N0}   Keeper review: {keeperReviewCount:N0}";
+            return $"Groups: {groups.Count:N0}   Files: {fileCount:N0}   Duplicates: {duplicateCount:N0}   Recoverable: {FormatSize(recoverableBytes)}   Exact: {exactCount:N0}   Strong: {strongCount:N0}   Match review: {reviewCount:N0}   Pending review: {keeperReviewCount:N0}";
         }
 
-        private static void AddDuplicateManagerGridRow(DataGridView grid, DuplicateGroup group, DuplicateItem item)
+        private void AddDuplicateManagerGridRow(DataGridView grid, DuplicateGroup group, DuplicateItem item)
         {
-            bool canSelectForCleanup = IsActionableDuplicateGroup(group) &&
-                                       !item.IsReferenceProtected &&
-                                       string.Equals(item.Recommendation, "Trash candidate", StringComparison.OrdinalIgnoreCase);
-            bool checkedForCleanup = canSelectForCleanup &&
-                                     string.Equals(item.Recommendation, "Trash candidate", StringComparison.OrdinalIgnoreCase);
+            bool canSelectForCleanup = _duplicateManagerDeleteSelections.CanSelectForDeletion(group, item);
+            bool checkedForCleanup = _duplicateManagerDeleteSelections.Resolve(group, item);
             int rowIndex = grid.Rows.Add(
                 checkedForCleanup,
                 group.Id,
@@ -2387,9 +2457,10 @@ namespace MediaFlux
             row.Tag = item.Path;
             row.Cells["Reason"].ToolTipText = group.Reason;
             row.Cells["Delete"].ReadOnly = !canSelectForCleanup;
+            row.Cells["Delete"].Value = checkedForCleanup;
             row.Cells["Delete"].ToolTipText = canSelectForCleanup
                 ? "Checked rows are used by cleanup buttons before the rule dropdown is applied."
-                : "Keepers, protected references, and review-only matches cannot be selected for cleanup.";
+                : "Explicit keepers, protected references, and ineligible matches cannot be selected for cleanup.";
             if (checkedForCleanup)
                 row.DefaultCellStyle.BackColor = Color.FromArgb(255, 248, 225);
         }
@@ -2509,7 +2580,8 @@ namespace MediaFlux
                     continue;
 
                 var selected = groupItems
-                    .Where(item => checkedPaths.Contains(item.Path) && !item.IsReferenceProtected && !item.IsSuggestedKeeper)
+                    .Where(item => checkedPaths.Contains(item.Path) &&
+                                   _duplicateManagerDeleteSelections.CanSelectForDeletion(item.Group, item.Item))
                     .ToList();
                 selected = EnsureOneFileRemainsInGroup(groupItems, selected);
                 candidates.AddRange(selected);

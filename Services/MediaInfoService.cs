@@ -60,7 +60,29 @@ namespace MediaFlux.Services
                 return cached.Info;
             }
 
-            var info = Probe(path);
+            Stopwatch probeWatch = Stopwatch.StartNew();
+            long? diagnosticProbeStartedAt = AutomaticEncodePerformanceInstrumentation.Current is null
+                ? null
+                : Stopwatch.GetTimestamp();
+            using IDisposable? diagnosticPurpose = AutomaticEncodePerformanceInstrumentation.EnterProcessPurpose(
+                AutomaticPerformanceProcessPurpose.SourceMetadata);
+            CriticalPathTiming.WriteLine(
+                $"[CriticalPathTiming] stage=ffprobe-start source={Path.GetFileName(path)} utc={DateTime.UtcNow:O}");
+            MediaInfo info;
+            try
+            {
+                info = Probe(path);
+            }
+            finally
+            {
+                probeWatch.Stop();
+                if (diagnosticProbeStartedAt is long startedAt)
+                    AutomaticEncodePerformanceInstrumentation.Current?.RecordNamedStage(
+                        "preflightSourceMetadataProbe", startedAt, probeWatch.Elapsed, completed: true);
+                CriticalPathTiming.WriteLine(
+                    $"[CriticalPathTiming] stage=ffprobe-end source={Path.GetFileName(path)} " +
+                    $"elapsedMs={probeWatch.Elapsed.TotalMilliseconds:0} utc={DateTime.UtcNow:O}");
+            }
 
             // A failed probe is often a file that another encode is still writing.
             // Never preserve that failure, and tie successful results to the exact
@@ -154,7 +176,21 @@ namespace MediaFlux.Services
             // a usable duration. A partially populated MediaInfo result may also be
             // cached, so explicitly retry the duration-only probe before reporting
             // that target-size estimation is unavailable.
-            double durationSeconds = ProbeDurationSeconds(path);
+            Stopwatch probeWatch = Stopwatch.StartNew();
+            CriticalPathTiming.WriteLine(
+                $"[CriticalPathTiming] stage=ffprobe-duration-only-start source={Path.GetFileName(path)} utc={DateTime.UtcNow:O}");
+            double durationSeconds;
+            try
+            {
+                durationSeconds = ProbeDurationSeconds(path);
+            }
+            finally
+            {
+                probeWatch.Stop();
+                CriticalPathTiming.WriteLine(
+                    $"[CriticalPathTiming] stage=ffprobe-duration-only-end source={Path.GetFileName(path)} " +
+                    $"elapsedMs={probeWatch.Elapsed.TotalMilliseconds:0} utc={DateTime.UtcNow:O}");
+            }
             if (durationSeconds <= 0)
                 return 0;
 
@@ -218,9 +254,18 @@ namespace MediaFlux.Services
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
 
+                long processStartTimestamp = AutomaticEncodePerformanceInstrumentation.Current is null
+                    ? 0
+                    : Stopwatch.GetTimestamp();
                 using var proc = Process.Start(psi);
                 if (proc == null)
                     return info;
+                if (processStartTimestamp != 0)
+                    AutomaticEncodePerformanceInstrumentation.Current?.RecordExternalProcessStart(
+                        _ffprobePath,
+                        FfmpegDiagnosticComponent.Ffprobe,
+                        Stopwatch.GetElapsedTime(processStartTimestamp),
+                        AutomaticPerformanceProcessPurpose.SourceMetadata);
 
                 string output = ReadProcessOutputWithTimeout(proc, TimeSpan.FromSeconds(30));
 
@@ -394,6 +439,69 @@ namespace MediaFlux.Services
             return info;
         }
 
+        /// <summary>
+        /// Returns metadata already present in the in-memory cache without starting
+        /// FFprobe. This is intended for UI projections that must remain observational.
+        /// </summary>
+        public bool TryGetCachedInfoSnapshot(string path, out MediaInfo info)
+        {
+            info = new MediaInfo();
+            if (string.IsNullOrWhiteSpace(path) ||
+                !_cache.TryGetValue(path, out CacheEntry? cached))
+            {
+                return false;
+            }
+
+            // Immediate UI projections cannot validate the current file signature
+            // without touching the filesystem. Background GetInfo calls retain that
+            // responsibility and refresh this best-effort cached snapshot.
+            info = CopyInfo(cached.Info);
+            return true;
+        }
+
+        /// <summary>
+        /// Returns metadata already present in the in-memory cache after validating
+        /// the cached signature against the current file.
+        /// </summary>
+        public bool TryGetCachedInfo(string path, out MediaInfo info)
+        {
+            info = new MediaInfo();
+            if (string.IsNullOrWhiteSpace(path) ||
+                !TryGetFileSignature(path, out long length, out DateTime lastWriteUtc) ||
+                !_cache.TryGetValue(path, out CacheEntry? cached) ||
+                cached.Length != length ||
+                cached.LastWriteUtc != lastWriteUtc)
+            {
+                return false;
+            }
+
+            info = CopyInfo(cached.Info);
+            return true;
+        }
+
+        private static MediaInfo CopyInfo(MediaInfo source) => new()
+        {
+            FormatName = source.FormatName,
+            VideoCodec = source.VideoCodec,
+            FieldOrder = source.FieldOrder,
+            Width = source.Width,
+            Height = source.Height,
+            Fps = source.Fps,
+            DurationSeconds = source.DurationSeconds,
+            ContainerDurationSeconds = source.ContainerDurationSeconds,
+            BitrateKbps = source.BitrateKbps,
+            TotalBitrateKbps = source.TotalBitrateKbps,
+            AudioBitrateKbps = source.AudioBitrateKbps,
+            SubtitleBitrateKbps = source.SubtitleBitrateKbps,
+            DataBitrateKbps = source.DataBitrateKbps,
+            VideoStreamCount = source.VideoStreamCount,
+            AudioStreamCount = source.AudioStreamCount,
+            SubtitleStreamCount = source.SubtitleStreamCount,
+            DataStreamCount = source.DataStreamCount,
+            AttachmentStreamCount = source.AttachmentStreamCount,
+            AttachmentSizeBytes = source.AttachmentSizeBytes
+        };
+
         private static void AddStreamBitrate(
             JsonElement stream,
             Action<int> addBitrateKbps)
@@ -432,9 +540,18 @@ namespace MediaFlux.Services
                 psi.ArgumentList.Add("default=noprint_wrappers=1:nokey=1");
                 psi.ArgumentList.Add(path);
 
+                long processStartTimestamp = AutomaticEncodePerformanceInstrumentation.Current is null
+                    ? 0
+                    : Stopwatch.GetTimestamp();
                 using var proc = Process.Start(psi);
                 if (proc == null)
                     return 0;
+                if (processStartTimestamp != 0)
+                    AutomaticEncodePerformanceInstrumentation.Current?.RecordExternalProcessStart(
+                        _ffprobePath,
+                        FfmpegDiagnosticComponent.Ffprobe,
+                        Stopwatch.GetElapsedTime(processStartTimestamp),
+                        AutomaticPerformanceProcessPurpose.SourceTiming);
 
                 string output = ReadProcessOutputWithTimeout(proc, TimeSpan.FromSeconds(30));
                 double bestDuration = 0;

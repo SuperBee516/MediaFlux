@@ -36,7 +36,7 @@ public sealed class VideoRestorationPreviewService
     private readonly Action<string>? _log;
 
     public VideoRestorationPreviewService(string applicationDirectory, string? configuredFfmpegPath = null, string? configuredFfprobePath = null, Action<string>? log = null)
-        : this(FfmpegToolResolver.Resolve(applicationDirectory, configuredFfmpegPath, configuredFfprobePath), new MediaToolProcessRunner(), null, Path.Combine(AppPaths.DataDirectory, "restoration-previews"), log) { }
+        : this(FfmpegToolResolver.Resolve(applicationDirectory, configuredFfmpegPath, configuredFfprobePath), new MediaToolProcessRunner(), null, AppPaths.RestorationPreviewsDirectory, log) { }
 
     private VideoRestorationPreviewService(FfmpegToolPaths tools, IMediaToolProcessRunner runner, FfmpegRestorationCapabilityService? capabilities, string cacheDirectory, Action<string>? log)
         : this(tools.FfmpegPath, tools.FfprobePath, runner, capabilities ?? new FfmpegRestorationCapabilityService(runner, log), cacheDirectory, log) { }
@@ -190,7 +190,7 @@ public sealed class VideoRestorationPreviewService
             {
                 await EnsureStillAsync(pre, BuildStillArguments(request.SourcePath, position, plan.PreAiFilterChain, "{output}"), token).ConfigureAwait(false);
                 IAiRestorationBackend backend = await _aiBackendManager.SelectAsync(request.Settings, token).ConfigureAwait(false);
-                AiRestorationSession session = await backend.CreateSessionAsync(request.Settings, token).ConfigureAwait(false);
+                AiRestorationSession session = await AiRestorationExecutionGuard.CreateSessionAsync(backend, request.Settings, token, _log).ConfigureAwait(false);
                 await backend.ProcessFrameAsync(session, request.Settings, pre, ai, token).ConfigureAwait(false);
                 if (string.IsNullOrWhiteSpace(plan.PostAiFilterChain)) File.Copy(ai, staging, true);
                 else await RunFfmpegAsync(BuildImageArguments(ai, plan.PostAiFilterChain, staging), "finishing AI preview frame", token).ConfigureAwait(false);

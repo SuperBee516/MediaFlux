@@ -75,6 +75,9 @@ namespace MediaFlux
                             AddToEncodeQueue: paths => _ = ImportEncodePathsAsync(
                                 paths, includeSubfolders: false, applyCodecFilters: true,
                                 replaceExisting: false, rememberRoots: false),
+                            AddToEncodeQueueAsync: paths => ImportEncodePathsAsync(
+                                paths, includeSubfolders: false, applyCodecFilters: true,
+                                replaceExisting: false, rememberRoots: false),
                             PolicyStore: policyStore,
                             PolicyCapabilities: policyCapabilities,
                             AddPolicyCandidatesToEncodeQueue: AddLibraryPolicyCandidatesToQueueAsync,
@@ -127,37 +130,34 @@ namespace MediaFlux
                 UpdateRowCustomFlag(row);
             }
             SafeRefreshEstimates();
+            ScheduleEncodingPlanRefresh();
         }
 
-        private static EncodingService.ScaleMode PolicyScaleMode(LibraryPolicyQueueItem item)
+        private OutputContainerSelection PolicyOutputContainer(
+            LibraryPolicyQueueItem? item,
+            OutputContainerSelection? ordinaryRunSelection = null)
         {
-            if (item.PreserveSourceResolution || !item.MaximumOutputHeight.HasValue) return EncodingService.ScaleMode.None;
-            return item.MaximumOutputHeight.Value switch
-            {
-                <= 720 => EncodingService.ScaleMode.To720p,
-                <= 1080 => EncodingService.ScaleMode.To1080p,
-                <= 1440 => EncodingService.ScaleMode.To1440p,
-                _ => EncodingService.ScaleMode.To4K
-            };
+            EncodingPreset? preset = item is null || string.IsNullOrWhiteSpace(item.EncodingPresetName)
+                ? null
+                : _presetService.LoadAll().FirstOrDefault(value => value.Name.Equals(item.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
+            return EncodeExecutionSnapshotBuilder.ResolveOutputContainer(
+                ordinaryRunSelection ?? _activeOutputContainer,
+                item,
+                preset);
         }
 
-        private OutputContainerSelection PolicyOutputContainer(LibraryPolicyQueueItem? item)
-        {
-            if (item == null) return _activeOutputContainer;
-            if (!string.IsNullOrWhiteSpace(item.EncodingPresetName))
-            {
-                EncodingPreset? preset = _presetService.LoadAll().FirstOrDefault(value => value.Name.Equals(item.EncodingPresetName, StringComparison.OrdinalIgnoreCase));
-                if (preset != null && Enum.TryParse(preset.OutputContainer, true, out OutputContainerSelection container)) return container;
-            }
-            return item.TargetContainer;
-        }
-
-        private bool EnsureRequestedVideoEncodersAvailable(IReadOnlyList<DataGridViewRow> rows)
+        private async Task<bool> EnsureRequestedVideoEncodersAvailable(IReadOnlyList<DataGridViewRow> rows)
         {
             if (rows.Any(row => row.Tag is not RowMeta { LibraryPolicyIntent: not null }) && !EnsureSelectedVideoEncoderAvailable())
                 return false;
             FfmpegEncoderCapabilities capabilities = GetFfmpegEncoderCapabilities();
-            if (!capabilities.InspectionSucceeded) return true;
+            var nvencSelections = new List<VideoEncoderSelection>();
+            if (rows.Any(row => row.Tag is not RowMeta { LibraryPolicyIntent: not null }))
+            {
+                ResolvedVideoEncoder selected = EncoderRegistry.Default.Resolve(GetSelectedEncoderId(), GetSelectedVideoCodecFamily());
+                if (selected.Provider.Capabilities.IsHardware && selected.Selection.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase))
+                    nvencSelections.Add(selected.Selection);
+            }
             foreach (LibraryPolicyQueueItem intent in rows.Select(row => (row.Tag as RowMeta)?.LibraryPolicyIntent).Where(value => value != null).Cast<LibraryPolicyQueueItem>())
             {
                 try
@@ -172,11 +172,27 @@ namespace MediaFlux
                     ResolvedVideoEncoder resolved = EncoderRegistry.Default.Resolve(encoderId, codec);
                     if (!capabilities.Contains(resolved.Selection.FfmpegCodec))
                         throw new InvalidOperationException($"The configured FFmpeg build does not provide '{resolved.Selection.FfmpegCodec}'.");
+                    if (resolved.Provider.Capabilities.IsHardware && resolved.Selection.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase))
+                        nvencSelections.Add(resolved.Selection);
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show(this, $"Library policy '{intent.PolicyName}' requires attention before encoding.\r\n\r\n{ex.Message}",
                         "Policy encoder unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
+                }
+            }
+
+            foreach (VideoEncoderSelection selection in nvencSelections.DistinctBy(value => value.FfmpegCodec, StringComparer.OrdinalIgnoreCase))
+            {
+                FfmpegToolPaths tools = ResolveFfmpegTools();
+                FfmpegNvencRuntimeCapability? runtime = await FfmpegNvencRuntimeCapabilityService.Shared
+                    .CheckRequestedAsync(tools.FfmpegPath, selection);
+                if (runtime is { IsAvailable: false })
+                {
+                    FfmpegNvencRuntimeCapabilityService.LogBlocked(runtime, "Queue startup");
+                    MessageBox.Show(this, FfmpegNvencRuntimeCapabilityService.BlockedMessage(runtime),
+                        "NVENC unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return false;
                 }
             }

@@ -44,6 +44,18 @@ namespace MediaFlux.Services
             _timeout = timeout ?? TimeSpan.FromSeconds(45);
         }
 
+        public FfprobeService(
+            FfmpegToolPaths tools,
+            IMediaToolProcessRunner processRunner,
+            TimeSpan? timeout = null)
+        {
+            ArgumentNullException.ThrowIfNull(tools);
+            _ffprobePath = tools.FfprobePath ?? "";
+            _processRunner = processRunner ??
+                throw new ArgumentNullException(nameof(processRunner));
+            _timeout = timeout ?? TimeSpan.FromSeconds(45);
+        }
+
         public async Task<MediaProbeResult> ProbeAsync(
             string path,
             CancellationToken cancellationToken = default)
@@ -58,10 +70,13 @@ namespace MediaFlux.Services
             MediaToolProcessResult processResult;
             try
             {
+                CriticalPathTiming.WriteLine(
+                    $"[CriticalPathTiming] stage=structured-ffprobe-start source={Path.GetFileName(path)} utc={DateTime.UtcNow:O}");
                 processResult = await _processRunner.RunAsync(
                     new MediaToolProcessRequest
                     {
                         FileName = _ffprobePath,
+                        DiagnosticComponent = FfmpegDiagnosticComponent.Ffprobe,
                         Timeout = _timeout,
                         Arguments = new[]
                         {
@@ -75,6 +90,8 @@ namespace MediaFlux.Services
                         }
                     },
                     cancellationToken).ConfigureAwait(false);
+                CriticalPathTiming.WriteLine(
+                    $"[CriticalPathTiming] stage=structured-ffprobe-end source={Path.GetFileName(path)} exit={processResult.ExitCode} utc={DateTime.UtcNow:O}");
             }
             catch (OperationCanceledException)
             {
@@ -123,6 +140,7 @@ namespace MediaFlux.Services
             var chapters = ParseChapters(root);
 
             string formatName = "";
+            double? containerStartTime = null;
             double? formatDuration = null;
             long? formatSize = null;
             long? formatBitRate = null;
@@ -131,6 +149,7 @@ namespace MediaFlux.Services
                 format.ValueKind == JsonValueKind.Object)
             {
                 formatName = GetString(format, "format_name");
+                containerStartTime = GetFiniteDouble(format, "start_time");
                 formatDuration = GetPositiveDouble(format, "duration");
                 formatSize = GetPositiveLong(format, "size");
                 formatBitRate = GetPositiveLong(format, "bit_rate");
@@ -186,6 +205,7 @@ namespace MediaFlux.Services
                     : probeError,
                 FormatName = formatName,
                 SizeBytes = size,
+                ContainerStartTimeSeconds = containerStartTime,
                 DurationSeconds = duration,
                 BitRate = formatBitRate,
                 FormatTags = formatTags,
@@ -251,8 +271,10 @@ namespace MediaFlux.Services
                     Profile = GetString(stream, "profile"),
                     Level = GetInt32(stream, "level"),
                     BitRate = GetPositiveLong(stream, "bit_rate"),
+                    ExtraDataSizeBytes = GetPositiveLong(stream, "extradata_size"),
                     TimeBase = GetString(stream, "time_base"),
                     DisplayAspectRatio = GetString(stream, "display_aspect_ratio"),
+                    SampleAspectRatio = GetString(stream, "sample_aspect_ratio"),
                     FieldOrder = GetString(stream, "field_order"),
                     PixelFormat = GetString(stream, "pix_fmt"),
                     BitsPerRawSample = GetInt32(stream, "bits_per_raw_sample"),
@@ -266,8 +288,14 @@ namespace MediaFlux.Services
                     Width = GetInt32(stream, "width"),
                     Height = GetInt32(stream, "height"),
                     Channels = GetInt32(stream, "channels"),
+                    SampleRateHz = GetInt32(stream, "sample_rate") is int sampleRate && sampleRate > 0
+                        ? sampleRate : null,
+                    StartTimeSeconds = GetFiniteDouble(stream, "start_time"),
                     DurationSeconds = GetPositiveDouble(stream, "duration"),
                     FrameCount = GetPositiveLong(stream, "nb_frames"),
+                    AverageFrameRate = ParseFrameRate(GetString(stream, "avg_frame_rate"), ""),
+                    NominalFrameRate = ParseFrameRate(GetString(stream, "r_frame_rate"), ""),
+                    NominalFrameRateRational = GetString(stream, "r_frame_rate"),
                     FrameRate = ParseFrameRate(
                         GetString(stream, "avg_frame_rate"),
                         GetString(stream, "r_frame_rate")),
@@ -382,11 +410,20 @@ namespace MediaFlux.Services
                 : null;
         }
 
+        private static double? GetFiniteDouble(JsonElement element, string name)
+        {
+            string value = GetString(element, name);
+            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double number) &&
+                   double.IsFinite(number)
+                ? number
+                : null;
+        }
+
         private static double? ParseFrameRate(string average, string nominal)
         {
-            return TryParseFraction(average, out double parsed) && parsed > 0
+            return TryParseFraction(average, out double parsed) && double.IsFinite(parsed) && parsed > 0
                 ? parsed
-                : TryParseFraction(nominal, out parsed) && parsed > 0
+                : TryParseFraction(nominal, out parsed) && double.IsFinite(parsed) && parsed > 0
                     ? parsed
                     : null;
         }

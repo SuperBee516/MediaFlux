@@ -36,11 +36,139 @@ public sealed class SmartEncodeDecisionServiceTests
     }
 
     [Fact]
+    public void LowConfidenceGenericFallbackKeepsPotentialSavingsAdvisoryWithoutReview()
+    {
+        EncodingSizePredictionCalibration calibration = GenericFallbackCalibration();
+        SmartEncodeConfidence? ceiling =
+            SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(calibration);
+        SmartEncodeRecommendation result = Evaluate(
+            DefaultSource(),
+            DefaultIntent(estimatedOutputMb: 350, estimateConfidenceCeiling: ceiling));
+
+        Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate, result.Kind);
+        Assert.Equal(SmartEncodeConfidence.Low, result.Confidence);
+        Assert.Equal(SmartEncodeConfidence.Low, result.ConfidenceCeiling);
+        Assert.Equal(65, result.EstimatedSavingsPercent);
+        Assert.Equal(650, result.EstimatedSavingsMb);
+        Assert.DoesNotContain("low-confidence", result.PrimaryReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(result.Reasons, reason =>
+            reason.Contains("low-confidence Generic BPP fallback estimate", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData("NotEligible")]
+    [InlineData("Ineligible")]
+    public void DirectEstimatorInapplicabilityDoesNotSuppressGenericFallbackRecommendation(
+        string directStatus)
+    {
+        EncodingSizePredictionCalibration calibration = GenericFallbackCalibration() with
+        {
+            EstimateStatus = $"LowConfidenceGenericFallback:{directStatus}"
+        };
+
+        SmartEncodeConfidence? ceiling =
+            SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(calibration);
+        Assert.Null(ceiling);
+
+        SmartEncodeRecommendation worthwhile = Evaluate(
+            DefaultSource(),
+            DefaultIntent(estimatedOutputMb: 550, estimateConfidenceCeiling: ceiling));
+        Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate, worthwhile.Kind);
+        Assert.Equal(45, worthwhile.EstimatedSavingsPercent);
+        Assert.Null(worthwhile.ConfidenceCeiling);
+
+        SmartEncodeRecommendation belowMinimum = Evaluate(
+            DefaultSource(),
+            DefaultIntent(estimatedOutputMb: 920, minimumSavingsPercent: 15,
+                estimateConfidenceCeiling: ceiling));
+        Assert.Equal(SmartEncodeRecommendationKind.Skip, belowMinimum.Kind);
+        Assert.Equal(8, belowMinimum.EstimatedSavingsPercent);
+    }
+
+    [Fact]
+    public void LowConfidenceCeilingSurvivesAgreeingDeepAnalysis()
+    {
+        SmartEncodeRecommendation baseline = Evaluate(
+            DefaultSource(),
+            DefaultIntent(estimatedOutputMb: 350,
+                estimateConfidenceCeiling: SmartEncodeConfidence.Low));
+
+        SmartEncodeRecommendation refined = _service.RefineWithDeepAnalysis(
+            baseline,
+            new DeepMediaAnalysisResult
+            {
+                ProjectedOutputMb = 350,
+                ProjectionConfidence = SmartEncodeConfidence.High,
+                ProjectionSampleCount = 3,
+                InterlaceStatus = SampledInterlaceStatus.Progressive
+            },
+            SmartEncodeContentHint.Auto,
+            intendedOutputMb: 350);
+
+        Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate, refined.Kind);
+        Assert.Equal(SmartEncodeConfidence.Low, refined.Confidence);
+        Assert.Equal(SmartEncodeConfidence.Low, refined.ConfidenceCeiling);
+        Assert.Contains(refined.Reasons, reason =>
+            reason.Contains("agrees with the current estimate", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(refined.Reasons, reason =>
+            reason.Contains("estimate disagreement lowers confidence", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void SupportedEstimatorProvenanceDoesNotApplyGenericFallbackCeiling()
+    {
+        EncodingSizePredictionCalibration appliedGeneric = GenericFallbackCalibration() with
+        {
+            EstimateStatus = "CalibratedGenericBpp",
+            Applied = true,
+            Confidence = EncodingPredictionConfidence.High
+        };
+        EncodingSizePredictionCalibration direct = GenericFallbackCalibration() with
+        {
+            EstimateModelId = ProductionDirectOutputResult.ModelId,
+            EstimateStatus = "InsufficientIndependentFamilies"
+        };
+        EncodingSizePredictionCalibration manual = GenericFallbackCalibration() with
+        {
+            EstimateModelId = "ManualTarget",
+            EstimateStatus = "ManualTarget"
+        };
+
+        Assert.Null(SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(appliedGeneric));
+        Assert.Null(SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(direct));
+        Assert.Null(SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(manual));
+        Assert.Null(SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(null));
+
+        SmartEncodeRecommendation supported = Evaluate(
+            DefaultSource(), DefaultIntent(estimatedOutputMb: 350));
+        Assert.Equal(SmartEncodeRecommendationKind.StrongCandidate, supported.Kind);
+        Assert.Equal(SmartEncodeConfidence.High, supported.Confidence);
+    }
+
+    [Fact]
+    public void FallbackConfidenceComesFromEstimateProvenanceNotQualityValue()
+    {
+        EncodingSizePredictionCalibration cq22 = GenericFallbackCalibration() with
+        {
+            CohortKey = "NVENC-HEVC-CQ22"
+        };
+        EncodingSizePredictionCalibration cq25 = GenericFallbackCalibration() with
+        {
+            CohortKey = "NVENC-HEVC-CQ25"
+        };
+
+        Assert.Equal(SmartEncodeConfidence.Low,
+            SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(cq22));
+        Assert.Equal(SmartEncodeConfidence.Low,
+            SmartEncodeDecisionService.ResolveEstimateConfidenceCeiling(cq25));
+    }
+
+    [Fact]
     public void MissingH264StreamBitrateStillProducesUsefulHevcCandidate()
     {
         const double durationSeconds = 3_600;
         const int totalKbps = 3_940;
-        double sourceMb = totalKbps * durationSeconds / 8192d;
+        double sourceMb = totalKbps * durationSeconds / 8388.608d;
         SizeEstimateBreakdown estimate =
             SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
                 sourceMb,
@@ -164,6 +292,17 @@ public sealed class SmartEncodeDecisionServiceTests
         Assert.Contains(
             result.Reasons,
             reason => reason.Contains("already uses", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void EquivalentHevcQualityFloorThatDoesNotSaveSpaceIsSkipped()
+    {
+        SmartEncodeRecommendation result = Evaluate(
+            DefaultSource(videoCodec: "hevc"),
+            DefaultIntent(estimatedOutputMb: 1_005, targetCodec: "hevc_nvenc"));
+
+        Assert.Equal(SmartEncodeRecommendationKind.Skip, result.Kind);
+        Assert.Contains("not expected to reduce", result.PrimaryReason);
     }
 
     [Fact]
@@ -330,14 +469,24 @@ public sealed class SmartEncodeDecisionServiceTests
         double estimatedOutputMb,
         string targetCodec = "hevc_nvenc",
         int? targetHeight = null,
-        double minimumSavingsPercent = 15)
+        double minimumSavingsPercent = 15,
+        SmartEncodeConfidence? estimateConfidenceCeiling = null)
     {
         return new SmartEncodeIntent
         {
             TargetCodec = targetCodec,
             TargetHeight = targetHeight,
             EstimatedOutputMb = estimatedOutputMb,
-            MinimumSavingsPercent = minimumSavingsPercent
+            MinimumSavingsPercent = minimumSavingsPercent,
+            EstimateConfidenceCeiling = estimateConfidenceCeiling
         };
     }
+
+    private static EncodingSizePredictionCalibration GenericFallbackCalibration() =>
+        EncodingSizePredictionCalibration.Unavailable(
+            350, "Generic fallback.", "PredictionCalibrationPolicyV1", DateTime.UnixEpoch) with
+        {
+            EstimateModelId = "GenericBppV1",
+            EstimateStatus = "LowConfidenceGenericFallback:InsufficientIndependentFamilies"
+        };
 }

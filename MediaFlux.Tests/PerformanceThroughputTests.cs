@@ -37,9 +37,9 @@ public sealed class PerformanceThroughputTests
     public void LargestTimeConsumersAreOrderedByElapsedStageTime()
     {
         var timing = new PerformanceTimingService();
-        Complete(timing, PerformanceTimingStage.SourceAnalysis, 10);
-        Complete(timing, PerformanceTimingStage.FinalEncode, 45);
-        Complete(timing, PerformanceTimingStage.OutputValidation, 25);
+        timing.RecordElapsedForTesting(PerformanceTimingStage.SourceAnalysis, TimeSpan.FromMilliseconds(10));
+        timing.RecordElapsedForTesting(PerformanceTimingStage.FinalEncode, TimeSpan.FromMilliseconds(45));
+        timing.RecordElapsedForTesting(PerformanceTimingStage.OutputValidation, TimeSpan.FromMilliseconds(25));
         string summary = timing.BuildSummary();
 
         int finalEncode = summary.IndexOf("1. Final Encode", StringComparison.Ordinal);

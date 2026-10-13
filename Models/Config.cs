@@ -16,16 +16,29 @@ namespace MediaFlux.Models
 
         // Persist column visibility
         public bool ShowSizeColumn { get; set; } = true;
+        public bool ShowEstimatedOutputColumn { get; set; }
         public bool ShowCreatedColumn { get; set; } = false;
         public bool ShowCustomColumn { get; set; } = true;
         public bool ShowRecommendationColumn { get; set; } = true;
+        public bool ShowExecutionOrderColumn { get; set; } = true;
+        public bool ShowDuplicateColumn { get; set; }
+        public bool ShowDuplicateConfidenceColumn { get; set; }
+        public bool ShowDuplicateActionColumn { get; set; }
+        public bool QueueWorkspaceLayoutInitialized { get; set; }
+        // One-time normalization for the former duplicate Estimated Output columns.
+        // Once set, later user visibility choices are preserved.
+        public int EstimatedOutputColumnLayoutVersion { get; set; }
 
         // Persist the Encode queue's last selected sort.
         public string EncodeQueueSortColumn { get; set; } = "";
         public bool EncodeQueueSortDescending { get; set; } = false;
-        public string EncodeDetailsTab { get; set; } = "Details";
+        public string QueueWorkspaceView { get; set; } = "All";
+        public string EncodeDetailsTab { get; set; } = "Summary";
         public Dictionary<string, int> EncodeGridColumnWidths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public List<string> EncodeGridColumnOrder { get; set; } = new();
+        public bool QueueColumnSizingInitialized { get; set; }
+        public bool EncodeGridColumnWidthsCustomized { get; set; }
+        public bool EncodeGridColumnWidthsLocked { get; set; }
 
         // Empty means all supported extensions are enabled (legacy/default behavior).
         public List<string> EnabledVideoExtensions { get; set; } = new();
@@ -68,9 +81,12 @@ namespace MediaFlux.Models
         public int LargeQueueThreshold { get; set; } = 300;
         public bool AutoAnalyzeLargeQueues { get; set; } = false;
         public bool SmartRecommendationsEnabled { get; set; } = true;
+        public bool UseHistoricalSizePredictionCalibration { get; set; } = true;
         public double MinimumExpectedSavingsPercent { get; set; } = 15;
         public bool WarnBeforeEncodingSkippedOrReviewItems { get; set; } = true;
         public StorageSavingsOptions StorageSavings { get; set; } = new();
+        // Research-only; no Settings UI or automatic activation from the retry gate.
+        public AdaptivePreAttemptResearchCaptureOptions AdaptivePreAttemptResearchCapture { get; set; } = new();
         public bool FindDuplicatesOnImport { get; set; } = false;
         public bool OnlyQueueDuplicateCandidates { get; set; } = false;
         public string DuplicateScanMode { get; set; } = "Strict visual duplicates";
@@ -119,24 +135,28 @@ namespace MediaFlux.Models
         public bool HideWatchFolderStatusText { get; set; } = false;
 
         // Per-checkbox “last used” values:
-        public bool LastChkAutoTargetSize { get; set; } = false;
+        public bool LastChkAutoTargetSize { get; set; } = true;
         public bool LastChkDeleteSource { get; set; } = true;
         public bool LastChkFilterX264 { get; set; } = true;
-        public bool LastChkFilterX265 { get; set; } = true;
-        public bool LastChkFilterAv1 { get; set; } = true;
+        public bool LastChkFilterX265 { get; set; } = false;
+        public bool LastChkFilterAv1 { get; set; } = false;
         public bool LastChkDownloadPlaylist { get; set; } = false;
-        public bool LastChkProcessAll { get; set; } = true;
+        public bool LastChkProcessAll { get; set; } = false;
 
         // Per-dropdown "last used" values.
         public string LastCompressionProfile { get; set; } = "Medium Quality (Default)";
         // Legacy JSON field retained to migrate NVENC-only configuration files.
-        public string LastEncodingSpeedPreset { get; set; } = "Balanced (Recommended)";
+        public string LastEncodingSpeedPreset { get; set; } = "Slow (p5)";
         public string LastEncoderId { get; set; } = VideoEncoderIds.Nvenc;
         public string LastVideoCodec { get; set; } = nameof(VideoCodecFamily.Hevc);
         public string LastEncoderPreset { get; set; } = "p5";
-        public string LastOutputContainer { get; set; } = nameof(OutputContainerSelection.Mp4);
+        public string LastOutputContainer { get; set; } = nameof(OutputContainerSelection.Auto);
         public string ContainerCompatibilityPolicy { get; set; } = nameof(Models.ContainerCompatibilityPolicy.Intelligent);
         public int LastQualityValue { get; set; } = 22;
+        // A brand-new installation starts in Automatic mode. Config.Load keeps
+        // existing files that predate this field on the legacy Manual behavior.
+        public string LastQualityMode { get; set; } = "Automatic";
+        public string LastQualityTarget { get; set; } = nameof(QualityTarget.Balanced);
         public VideoRestorationSettings VideoRestoration { get; set; } = new();
 
         // Persist the main window's last usable size and position.
@@ -144,6 +164,27 @@ namespace MediaFlux.Models
         public int MainWindowY { get; set; } = 0;
         public int MainWindowWidth { get; set; } = 0;
         public int MainWindowHeight { get; set; } = 0;
+
+        // AI Benchmark Manager's last usable normal-window size.
+        public int AiBenchmarkManagerWindowWidth { get; set; } = 0;
+        public int AiBenchmarkManagerWindowHeight { get; set; } = 0;
+
+        // AI Runtime Dashboard's last usable normal-window size.
+        public int AiRuntimeDashboardWindowWidth { get; set; } = 0;
+        public int AiRuntimeDashboardWindowHeight { get; set; } = 0;
+
+        // Job History window presentation state. These values are UI-only; the
+        // history record schema and retention behavior remain unchanged.
+        public int JobHistoryWindowWidth { get; set; } = 0;
+        public int JobHistoryWindowHeight { get; set; } = 0;
+        public int JobHistoryWindowX { get; set; } = int.MinValue;
+        public int JobHistoryWindowY { get; set; } = int.MinValue;
+        public int JobHistoryDetailsSplitterDistance { get; set; } = 0;
+        public Dictionary<string, int> JobHistoryGridColumnWidths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<string> JobHistoryGridColumnOrder { get; set; } = new();
+        public string JobHistorySortColumn { get; set; } = "";
+        public bool JobHistorySortDescending { get; set; } = false;
+        public int JobHistoryDetailsTab { get; set; } = 0;
 
         // Video Splitter / Trimmer window placement. The actual trim selection is
         // deliberately session-only until Phase 2 introduces saved projects.
@@ -170,7 +211,7 @@ namespace MediaFlux.Models
         public CommercialDetectorPreferences CommercialDetectorPreferences { get; set; } = new();
         public bool MainWindowMaximized { get; set; } = false;
         public bool EncodeInfoHeaderCollapsed { get; set; } = false;
-        // Zero preserves the application's default Summary / Preview height.
+        // Zero uses the default lower queue-inspector height.
         public int EncodeInfoHeight { get; set; } = 0;
         // Legacy compatibility only; runtime layout no longer uses this value.
         public double EncodeInfoExpandedRatio { get; set; } = 0;
@@ -184,20 +225,49 @@ namespace MediaFlux.Models
 
         // Persist which codecs to show
         public bool ShowX264Files { get; set; } = true;
-        public bool ShowX265Files { get; set; } = true;
-        public bool ShowAv1Files { get; set; } = true;
+        public bool ShowX265Files { get; set; } = false;
+        public bool ShowAv1Files { get; set; } = false;
         public bool ShowOtherCodecFiles { get; set; } = true;
 
         // Persist arbitrary main-form checkbox states keyed by a stable control path.
         public Dictionary<string, bool> CheckboxStates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
         public static Config Load(string path)
+            => LoadCore(path, required: false);
+
+        /// <summary>Uses the normal config defaults/normalization, but rejects missing or null state.</summary>
+        internal static Config LoadRequired(string path)
+            => LoadCore(path, required: true);
+
+        private static Config LoadCore(string path, bool required)
         {
-            if (!File.Exists(path))
+            if (!required && !File.Exists(path))
                 return new Config();
 
             var json = File.ReadAllText(path);
-            var config = JsonSerializer.Deserialize<Config>(json) ?? new Config();
+            var config = JsonSerializer.Deserialize<Config>(json);
+            if (required && config is null)
+                throw new InvalidDataException("The isolated config.json must contain a configuration object.");
+            config ??= new Config();
+
+            // Keep settings that were absent from an existing config at their
+            // historical values; the new values above apply only to fresh installs.
+            if (!json.Contains("\"LastChkAutoTargetSize\"", StringComparison.OrdinalIgnoreCase))
+                config.LastChkAutoTargetSize = false;
+            if (!json.Contains("\"LastChkFilterX265\"", StringComparison.OrdinalIgnoreCase))
+                config.LastChkFilterX265 = true;
+            if (!json.Contains("\"LastChkFilterAv1\"", StringComparison.OrdinalIgnoreCase))
+                config.LastChkFilterAv1 = true;
+            if (!json.Contains("\"LastChkProcessAll\"", StringComparison.OrdinalIgnoreCase))
+                config.LastChkProcessAll = true;
+            if (!json.Contains("\"LastOutputContainer\"", StringComparison.OrdinalIgnoreCase))
+                config.LastOutputContainer = nameof(OutputContainerSelection.Mp4);
+            if (!json.Contains("\"LastQualityMode\"", StringComparison.OrdinalIgnoreCase))
+                config.LastQualityMode = "Manual";
+            if (!json.Contains("\"ShowX265Files\"", StringComparison.OrdinalIgnoreCase))
+                config.ShowX265Files = true;
+            if (!json.Contains("\"ShowAv1Files\"", StringComparison.OrdinalIgnoreCase))
+                config.ShowAv1Files = true;
 
             config.CheckboxStates ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
             config.CommercialDetectorPreferences ??= new CommercialDetectorPreferences();
@@ -207,6 +277,7 @@ namespace MediaFlux.Models
             config.MinimumExpectedSavingsPercent =
                 Math.Clamp(config.MinimumExpectedSavingsPercent, 0, 90);
             config.StorageSavings ??= new StorageSavingsOptions();
+            config.AdaptivePreAttemptResearchCapture ??= new AdaptivePreAttemptResearchCaptureOptions();
             config.StorageSavings.Normalize();
             config.LibraryAnalyzerUiState ??= new LibraryAnalyzerUiState();
             config.LibraryAnalyzerUiState.Normalize();
@@ -287,6 +358,11 @@ namespace MediaFlux.Models
             }
 
             config.LastQualityValue = Math.Clamp(config.LastQualityValue, 12, 35);
+            if (!string.Equals(config.LastQualityMode, "Automatic", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(config.LastQualityMode, "Manual", StringComparison.OrdinalIgnoreCase))
+                config.LastQualityMode = "Manual";
+            if (!Enum.TryParse<QualityTarget>(config.LastQualityTarget, true, out _))
+                config.LastQualityTarget = nameof(QualityTarget.Balanced);
             config.VideoRestoration ??= new VideoRestorationSettings();
             if (!json.Contains("\"Mode\"", StringComparison.OrdinalIgnoreCase) &&
                 config.VideoRestoration.Preset != VideoRestorationPreset.Off)

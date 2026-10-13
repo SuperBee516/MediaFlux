@@ -5,8 +5,8 @@ MediaFlux helps you inspect a media library, choose safe duplicate cleanup actio
 ## Getting Started
 
 1. Choose an input folder or add individual files to the Encode Queue.
-2. Review the source, estimated output size, and selected encoder settings.
-3. Start the full queue or selected files when you are ready.
+2. Use queue summaries, search, and operational views to find work; review each job in the Queue Inspector.
+3. Set priority if needed, then use **Start Queue** or **Start Selected** when you are ready.
 
 Use **Tools > Library Analyzer** when you want to catalog folders, inspect duplicates, health, storage opportunities, or scheduled maintenance. The Analyzer keeps catalog evidence separate from file actions.
 
@@ -14,11 +14,15 @@ See also: [Encode Queue / Encoding](#encode-queue-encoding) · [Library Analyzer
 
 ## Encode Queue / Encoding
 
-The Encode Queue is the normal place to add files and control processing. You can start the full queue or only the selected rows; those commands use their stated scope even if a saved queue preference differs.
+The Encode Queue is the normal place to add files and control processing. Its Total, Ready, Running, and Attention summaries provide a queue-wide status view. Search finds filenames and paths; the operational View filters to All, Ready, Running, Attention, Encode, Skip, or Review and shows `Showing X of Y`. Filtering is for presentation and does not change execution eligibility or order.
+
+The **Queue Inspector** keeps selected-job details in one place across **Summary**, **Plan & Analysis**, **Media**, and **Diagnostics & Logs**. Customize columns by changing visibility, widths, and order; those choices persist. The **Order** column shows logical execution position, not the row's current visual position.
+
+Grid sorting and filtering do not alter execution order. **Start Queue** and **Start Selected** follow the logical order. To change it, use the **Queue Priority** submenu: **Encode Next**, **Move to Top**, **Move Up**, **Move Down**, or **Move to Bottom**. Ctrl/Shift multi-selection moves selected pending jobs as a block while preserving their relative order. During an active run, running and dispatched jobs cannot be moved; pending, undispatched jobs can be reprioritized safely. Active queue rows are also protected from accidental removal.
 
 Use the row context menu for file-specific actions, custom encode settings, content hints, copy paths, and queue operations. Output is validated before MediaFlux treats an encode as successful. A cancelled or failed encode does not replace the source.
 
-Example: add a folder, select several rows that need a different quality setting, apply the custom setting, then use **Start Selected Files**.
+Example: add a folder, select several rows that need a different quality setting, apply the custom setting, then use **Start Selected**.
 
 See also: [Presets and Encoder Settings](#presets-and-encoder-settings) · [Statistics](#statistics)
 
@@ -27,6 +31,16 @@ See also: [Presets and Encoder Settings](#presets-and-encoder-settings) · [Stat
 Save an Encode Preset when you want to reuse a combination of codec, encoder, quality, audio, container, and related settings. Apply presets from **Tools**; they do not modify the media files until you start an encode.
 
 Choose an encoder that is available on this computer. Hardware encoders can be fast; software encoders can provide other quality or compression tradeoffs. Keep HDR, bit depth, subtitles, attachments, and output-container compatibility in mind when changing settings.
+
+### Quality modes
+
+**Automatic** is the default quality mode. Automatic and **Manual** are the only quality modes selectable in the interface. Manual exposes the encoder's explicit CQ or CRF quality control. Legacy Numeric is retained only for compatibility with older saved settings and is no longer a GUI selection.
+
+Automatic offers five quality profiles. **Smaller** prioritizes a smaller output, and **Efficient** also favors compression with a lighter tradeoff. **Balanced** provides a middle ground. **High** shifts toward quality and a larger output, while **Maximum** most strongly favors quality and typically produces the largest output. The result depends on the source and encoder; these profiles do not promise a particular compression percentage.
+
+### Estimated Output
+
+The Encode Queue estimates output size from probed media metadata and the current encoding plan. The queue presents projected savings as a percentage and uses a colored bar to indicate the estimated savings range; the color and bar are visual summaries of the projection. Changing quality mode or profile can change the plan and its estimate. Estimates are projections, not guaranteed final file sizes; actual output depends on the media and the encode.
 
 ## Encoder Benchmark and Diagnostics
 
@@ -41,6 +55,14 @@ Example: benchmark the current preset and two alternatives at the same concurren
 Open **Tools > Library Analyzer** to add library locations and scan them into the catalog. The catalog supports paging, filtering, re-analysis, file actions, duplicate evidence, integrity checks, policies, and maintenance. Scanning and analysis run in the background.
 
 Use the Files tab to find cataloged media and the row context menu to play a file, show it in Explorer, view media information, copy paths, protect it, queue it for encoding, or request targeted re-analysis. File actions always use current file availability.
+
+### Advanced Media Search
+
+Expand **Advanced Search** in the Files view to combine Quick Filters with detailed conditions for codec, resolution, effective frame rate, video bitrate, bit depth, scan type, dynamic range, audio and subtitle properties, and file or location facts. Conditions combine to narrow the current Files results. Searches run asynchronously and can be canceled; use Saved Searches to restore a definition later.
+
+The **Video bitrate** property is the positive bitrate FFprobe reports for the selected video stream. It is separate from **Total bitrate**, which describes the container or format. If FFprobe does not report a positive selected-stream bitrate, Video bitrate is Unknown. Select rows on the current Files page and choose **Add Selected to Encode Queue** to hand those available files to the normal queue workflow; this does not start encoding.
+
+After upgrading an existing catalog, MediaFlux can enrich newer technical metadata in the background. More technical matches may appear as enrichment completes, and a full library rebuild is not required just to use Advanced Search.
 
 ## Statistics
 
@@ -117,3 +139,7 @@ Use **File > View Error Log** for application errors and **File > View Duplicate
 If a catalog location is unavailable, its existing catalog data is preserved and maintenance records the condition. If a duplicate or cleanup candidate is missing, changed, protected, or stale, refresh or re-analyze it; MediaFlux will exclude it rather than guessing.
 
 For unexpected encode results, review Encoder Diagnostics, the output validation details, the FFmpeg log, source characteristics, and the selected preset before retrying.
+
+## UserData storage lifecycle
+
+MediaFlux preserves configuration, queue, profiles, catalog, history, and user assets; it does not automatically delete them. Generated previews expire after 30 days and temporary staging after 7 days. Failed AI working directories are retained for up to 7 days, the three newest failures, and a combined 20 GB maximum, preserving useful forensic evidence without permitting unlimited frame-artifact growth. Catalog migration and recovery safety artifacts are retained for 30 days, with the 10 newest kept. Regenerable benchmark reruns, TensorRT engines, tuning data, and old benchmark records are bounded separately from user state. Storage reporting and cleanup run off the UI thread and expose only regenerable categories for future Settings integration. Updater backups exclude generated runtime artifacts without deleting them from a live installation.

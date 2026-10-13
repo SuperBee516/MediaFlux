@@ -58,4 +58,50 @@ public sealed class MediaToolProcessRunnerTests
             try { Directory.Delete(root, true); } catch { }
         }
     }
+
+    [Fact]
+    public async Task ProcessRunnerObservesStderrWithoutChangingRawCapture()
+    {
+        string shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+        MediaToolProcessResult result = await new MediaToolProcessRunner().RunAsync(new MediaToolProcessRequest
+        {
+            FileName = shell,
+            Arguments = new[] { "-NoProfile", "-NonInteractive", "-Command", "[Console]::Error.WriteLine('[h264 @ 000001d6df9649c0] Invalid NAL unit size (0 > 26098).')" }
+        });
+
+        Assert.Contains("Invalid NAL unit size (0 > 26098).", result.StandardError);
+        FfmpegDiagnosticFamilySummary family = Assert.Single(result.DiagnosticSummary!.Families);
+        Assert.Equal("Invalid NAL unit size", family.Family);
+    }
+
+    [Fact]
+    public async Task CapturedFailureCanFlowIntoBoundedReportAndPairedArtifacts()
+    {
+        string shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+        MediaToolProcessResult result = await new MediaToolProcessRunner().RunAsync(new MediaToolProcessRequest
+        {
+            FileName = shell,
+            Arguments = new[] { "-NoProfile", "-NonInteractive", "-Command", "1..120 | % { [Console]::Error.WriteLine(\"[h264 @ 000001d6df9649c0] Invalid NAL unit size (0 > $($_ + 26000)).\") }; exit 17" }
+        });
+
+        Assert.Equal(17, result.ExitCode);
+        Assert.NotNull(result.DiagnosticSummary);
+        Assert.Equal(120, result.DiagnosticSummary!.TotalEvents);
+        string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
+            "Encode", "source.mkv", "output.mkv", result.ExitCode, "FFmpeg process failure",
+            result.DiagnosticSummary, result.StandardError));
+        string directory = Path.Combine(Path.GetTempPath(), "MediaFlux-E2EReportTests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            FailureDiagnosticReportArtifact artifacts = Assert.IsType<FailureDiagnosticReportArtifact>(
+                ErrorLogService.TryWriteFailureDiagnosticArtifacts("unused", report, result.StandardError, directory));
+            Assert.Contains("120 occurrence(s)", report);
+            Assert.True(report.Length < 20_000);
+            Assert.Equal(result.StandardError, File.ReadAllText(artifacts.RawEvidencePath));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
 }

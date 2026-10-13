@@ -61,23 +61,30 @@ namespace MediaFlux.Services
                 _ => string.Empty
             };
             bool sourceIsTenBit = IsTenBitPixelFormat(request.SourcePixelFormat);
+            bool useHardwareDecode = validated.UseGpu &&
+                !request.DisableHardwareDecode &&
+                !isAsfFamilyInput;
             VideoRestorationSettings effectiveRestoration = VideoRestorationModeResolver.Resolve(request.Restoration);
             string restorationFilterChain = request.RestorationFilterOverride ?? VideoRestorationPipeline.BuildFilterChain(effectiveRestoration, request.ScaleMode);
             bool requiresVideoFilter =
                 !string.IsNullOrEmpty(scaleExpression) ||
                 string.IsNullOrWhiteSpace(request.SourcePixelFormat) ||
-                sourceIsTenBit != wantsTenBit || !string.IsNullOrEmpty(restorationFilterChain);
+                sourceIsTenBit != wantsTenBit || !string.IsNullOrEmpty(restorationFilterChain) ||
+                !string.IsNullOrEmpty(request.TimestampReconstructionFilter);
 
             var context = new EncoderArgumentContext
             {
                 Selection = selection,
                 UseGpu = validated.UseGpu,
-                UseHardwareDecode = validated.UseGpu && !request.DisableHardwareDecode,
+                // ASF/WMV compatibility deliberately selects host-frame software
+                // decode. Keep that residency decision authoritative downstream.
+                UseHardwareDecode = useHardwareDecode,
                 WantsTenBit = wantsTenBit,
                 TenBitPixelFormat = wantsTenBit ? outputPixelFormat : null,
                 OutputPixelFormat = outputPixelFormat,
                 ScaleExpression = scaleExpression,
                 RestorationFilterChain = restorationFilterChain,
+                TimestampReconstructionFilter = request.TimestampReconstructionFilter ?? "",
                 Preset = validated.Preset,
                 QualityValue = validated.QualityValue,
                 ConcurrentEncoderSessions =
@@ -96,16 +103,28 @@ namespace MediaFlux.Services
                         VideoEncoderIds.Nvenc,
                         StringComparison.OrdinalIgnoreCase) &&
                     request.PreferNvencGpuResidentFrames &&
-                    !request.DisableHardwareDecode &&
-                    // A software format/scale filter must receive software
-                    // frames.  Do not make FFmpeg insert an implicit bridge
-                    // between CUDA and system-memory filter domains.
-                    !requiresVideoFilter,
+                    // Residency must follow the same authoritative decode
+                    // decision used by input acceleration, including ASF/WMV.
+                    useHardwareDecode &&
+                    (request.NvencCudaFormatConversionSupported || !requiresVideoFilter) &&
+                    // Restoration filters remain on the explicit software path.
+                    string.IsNullOrEmpty(restorationFilterChain),
+                UseNvencHostFrames = request.UseNvencHostFrames,
                 RequiresVideoFilter = requiresVideoFilter
             };
 
             var builder = new StringBuilder();
-            builder.Append("-y ");
+            // Decode errors must fail the encode rather than allowing FFmpeg to
+            // conceal damaged source packets behind a successful exit code.
+            builder.Append(request.SourceDecodeMode switch
+            {
+                FfmpegSourceDecodeMode.RecoverAudio => "-y -err_detect ignore_err ",
+                FfmpegSourceDecodeMode.TolerantDecodeReencode => "-y -err_detect ignore_err -fflags +discardcorrupt ",
+                // FFmpeg's ordinary decoder behavior permits localized packet
+                // concealment without globally selecting ignore_err.
+                FfmpegSourceDecodeMode.RecoverVideo => "-y ",
+                _ => "-y -xerror -err_detect explode "
+            });
 
             provider.AppendInputAcceleration(builder, context);
             if (validated.UseGpu && isAsfFamilyInput)
@@ -126,20 +145,28 @@ namespace MediaFlux.Services
             bool copyDataStreams = request.CopyDataStreams &&
                 OutputContainerPolicy.SupportsGenericDataStreams(
                     request.ContainerDecision.Resolved);
-            bool usePlannedMp4Subtitles = request.ContainerDecision.Resolved == OutputContainer.Mp4 && request.ContainerDecision.StreamPlans.Count > 0;
-            if (request.SplitSource is { } splitMapping)
+            bool copySubtitles = request.CopySubtitles;
+            bool copyAttachments = request.CopyAttachments && request.ContainerDecision.CopyAttachments;
+            bool usePlannedSubtitles = request.ContainerDecision.StreamPlans.Any(plan =>
+                plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
+                plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode);
+            if (request.VideoOnly)
+            {
+                builder.Append("-map 0:v:0 -an -sn -dn -map_metadata -1 -map_chapters -1 ");
+            }
+            else if (request.SplitSource is { } splitMapping)
             {
                 builder.Append("-map 0:v:0 ");
-                AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, request.CopySubtitles && !usePlannedMp4Subtitles, copyDataStreams, request.CopyAttachments, 1, includeVideo: false);
-                if (usePlannedMp4Subtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 1);
+                AppendStreamMapping(builder, splitMapping.AncillarySource, request.MapMode, copySubtitles && !usePlannedSubtitles, copyDataStreams, copyAttachments, 1, includeVideo: false);
+                if (usePlannedSubtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 1);
                 builder.Append("-map_metadata 1 -map_chapters 1 ");
             }
-            else { AppendStreamMapping(builder, request.Input, request.MapMode, request.CopySubtitles && !usePlannedMp4Subtitles, copyDataStreams, request.CopyAttachments); if (usePlannedMp4Subtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 0); builder.Append("-map_metadata 0 -map_chapters 0 "); }
+            else { AppendStreamMapping(builder, request.Input, request.MapMode, copySubtitles && !usePlannedSubtitles, copyDataStreams, copyAttachments); if (usePlannedSubtitles) AppendPlannedSubtitleMappings(builder, request.ContainerDecision, 0); builder.Append("-map_metadata 0 -map_chapters 0 "); }
             AppendObsoleteVideoStatisticsCleanup(builder);
             if (request.SampleDuration is { } sampleDuration && sampleDuration > TimeSpan.Zero)
                 builder.Append($"-t {Seconds(sampleDuration.TotalSeconds)} ");
 
-            if (request.CopySubtitles)
+            if (copySubtitles && !request.VideoOnly)
             {
                 builder.Append("-c:s copy ");
                 int subtitleOutputIndex = 0;
@@ -152,12 +179,42 @@ namespace MediaFlux.Services
             }
             else
                 builder.Append("-sn ");
-            if (request.CopyAttachments)
+            if (copyAttachments && !request.VideoOnly)
                 builder.Append("-c:t copy ");
 
             provider.AppendVideoFilters(builder, context);
 
-            if (request.TargetMb is > 0)
+            if (request.SourceDecodeMode == FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction)
+            {
+                if (!request.DisableHardwareDecode)
+                    throw new InvalidOperationException("Timestamp reconstruction requires software video decode.");
+                if (!RationalFrameRate.TryParse(request.RecoveryFrameRateRational, out RationalFrameRate rate))
+                    throw new InvalidOperationException("Timestamp reconstruction requires an exact rational source frame rate.");
+                if (string.IsNullOrWhiteSpace(request.TimestampReconstructionFilter))
+                    throw new InvalidOperationException("Timestamp reconstruction requires a frame-index timestamp filter.");
+
+                // The filter supplies one timestamp per decoded frame. Passthrough
+                // prevents FFmpeg's output synchronizer from manufacturing or
+                // dropping frames after the timeline has been reconstructed.
+                builder.Append("-fps_mode passthrough ");
+            }
+
+            if (request.AutomaticTargetPlan is { } automaticTarget)
+            {
+                if (!automaticTarget.IsAvailable)
+                    throw new InvalidOperationException("The Automatic target-bitrate plan is incomplete; refusing to fall back to constant-quality encoding.");
+                provider.AppendTargetSizeArguments(
+                    builder,
+                    context,
+                    automaticTarget.TargetVideoBitrateKbps!.Value,
+                    automaticTarget.MaximumVideoBitrateKbps!.Value,
+                    automaticTarget.VideoBufferSizeKbps!.Value);
+                _log?.Invoke(
+                    $"[EncodingService] Automatic target-bitrate plan: mode=VBR; target={automaticTarget.TargetVideoBitrateKbps:0} kbps; " +
+                    $"maxrate={automaticTarget.MaximumVideoBitrateKbps:0} kbps; bufsize={automaticTarget.VideoBufferSizeKbps:0} kbps; " +
+                    $"projected={automaticTarget.ProjectedOutputBytes:N0} bytes.");
+            }
+            else if (request.TargetMb is > 0)
             {
                 AppendTargetSizeArguments(
                     builder,
@@ -171,8 +228,13 @@ namespace MediaFlux.Services
             }
             EncoderProviderUtilities.AppendOutputFormatFlags(builder, context);
 
-            AppendAudioArguments(builder, request);
-            AppendPlannedAudioMetadataAndDispositions(builder, request.ContainerDecision);
+            if (!request.VideoOnly)
+            {
+                AppendAudioArguments(builder, request);
+                AppendPlannedAudioCodecs(builder, request.ContainerDecision, request.AudioChannels);
+                AppendPlannedAudioMetadataAndDispositions(builder, request.ContainerDecision);
+                AppendPlannedSubtitleMetadataAndDispositions(builder, request.ContainerDecision);
+            }
             if (request.ContainerDecision.Resolved == OutputContainer.Mp4)
                 builder.Append("-movflags +faststart ");
             builder.Append($"-f {request.ContainerDecision.MuxerName} ");
@@ -207,12 +269,9 @@ namespace MediaFlux.Services
         {
             if (request.KnownDuration <= TimeSpan.Zero)
             {
-                _log?.Invoke(
-                    "[EncodingService] Target-size bitrate budgeting skipped " +
-                    "because input duration could not be determined; using " +
-                    "quality-based encoding instead.");
-                provider.AppendQualityArguments(builder, context);
-                return;
+                throw new InvalidOperationException(
+                    "MediaFlux cannot honor a target-size encode because the " +
+                    "source duration could not be determined.");
             }
 
             double seconds = request.KnownDuration.TotalSeconds;
@@ -275,10 +334,14 @@ namespace MediaFlux.Services
         {
             if (request.AudioChannels is > 0)
             {
-                builder.Append("-c:a aac -b:a 192k ");
+                int bitrateKbps = request.AutomaticTargetPlan is not null && request.AudioChannels.Value >= 6
+                    ? 384
+                    : 192;
+                builder.Append($"-c:a aac -b:a {bitrateKbps}k ");
                 builder.Append($"-ac {request.AudioChannels.Value} ");
             }
-            else if (request.ForceMp4CompatibleAudio || request.ContainerDecision.TranscodeAudioToAac)
+            else if (request.ForceMp4CompatibleAudio ||
+                     (request.ContainerDecision.TranscodeAudioToAac && !request.ContainerDecision.HasMixedAudioActions))
             {
                 builder.Append("-c:a aac -b:a 192k ");
             }
@@ -288,6 +351,21 @@ namespace MediaFlux.Services
             }
         }
 
+        private static void AppendPlannedAudioCodecs(
+            StringBuilder builder, OutputContainerDecision decision, int? audioChannels)
+        {
+            if (audioChannels is > 0 || !decision.HasMixedAudioActions)
+                return;
+            int outputIndex = 0;
+            foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(plan =>
+                         plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
+                         plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
+            {
+                if (plan.Action == StreamCompatibilityAction.Transcode)
+                    builder.Append($"-c:a:{outputIndex} {plan.TargetCodec ?? OutputContainerPolicy.SafeAudioRecoveryCodec(decision.Resolved)} ");
+                outputIndex++;
+            }
+        }
         private static void AppendPlannedAudioMetadataAndDispositions(
             StringBuilder builder,
             OutputContainerDecision decision)
@@ -297,18 +375,40 @@ namespace MediaFlux.Services
                          plan.StreamType.Equals("audio", StringComparison.OrdinalIgnoreCase) &&
                          plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
             {
-                if (!string.IsNullOrWhiteSpace(plan.Language))
-                    builder.Append($"-metadata:s:a:{outputIndex} language={QuoteMetadata(plan.Language)} ");
+                int metadataIndex = plan.OutputTypeOrdinal ?? outputIndex;
+                if (!string.IsNullOrWhiteSpace(plan.Language) &&
+                    LanguageMetadataNormalizer.Normalize(plan.Language).Length > 0)
+                    builder.Append($"-metadata:s:a:{metadataIndex} language={QuoteMetadata(LanguageMetadataNormalizer.Normalize(plan.Language))} ");
                 if (!string.IsNullOrWhiteSpace(plan.Title))
-                    builder.Append($"-metadata:s:a:{outputIndex} title={QuoteMetadata(plan.Title)} ");
+                    builder.Append($"-metadata:s:a:{metadataIndex} title={QuoteMetadata(plan.Title)} ");
 
-                // Explicitly reset then restore the supported dispositions so
-                // transcoding does not let FFmpeg synthesize a different default.
-                builder.Append($"-disposition:a:{outputIndex} 0 ");
-                if (plan.IsDispositionSet("default"))
-                    builder.Append($"-disposition:a:{outputIndex} +default ");
-                if (plan.IsDispositionSet("forced"))
-                    builder.Append($"-disposition:a:{outputIndex} +forced ");
+                // A single disposition option replaces the output stream's set.
+                // Repeating -disposition for one stream makes FFmpeg warn and is
+                // unnecessary; the explicit list preserves the supported flags.
+                string dispositions = string.Join('+', new[] { "default", "forced" }
+                    .Where(plan.IsDispositionSet));
+                builder.Append($"-disposition:a:{metadataIndex} {(
+                    string.IsNullOrEmpty(dispositions) ? "0" : dispositions)} ");
+                outputIndex++;
+            }
+        }
+
+        private static void AppendPlannedSubtitleMetadataAndDispositions(
+            StringBuilder builder,
+            OutputContainerDecision decision)
+        {
+            int outputIndex = 0;
+            foreach (StreamCompatibilityPlan plan in decision.StreamPlans.Where(plan =>
+                         plan.StreamType.Equals("subtitle", StringComparison.OrdinalIgnoreCase) &&
+                         plan.Action is StreamCompatibilityAction.Copy or StreamCompatibilityAction.Transcode))
+            {
+                int metadataIndex = plan.OutputTypeOrdinal ?? outputIndex;
+                if (LanguageMetadataNormalizer.Normalize(plan.Language).Length > 0)
+                    builder.Append($"-metadata:s:s:{metadataIndex} language={QuoteMetadata(LanguageMetadataNormalizer.Normalize(plan.Language))} ");
+                if (!string.IsNullOrWhiteSpace(plan.Title))
+                    builder.Append($"-metadata:s:s:{metadataIndex} title={QuoteMetadata(plan.Title)} ");
+                string dispositions = string.Join('+', new[] { "default", "forced" }.Where(plan.IsDispositionSet));
+                builder.Append($"-disposition:s:{metadataIndex} {(string.IsNullOrEmpty(dispositions) ? "0" : dispositions)} ");
                 outputIndex++;
             }
         }

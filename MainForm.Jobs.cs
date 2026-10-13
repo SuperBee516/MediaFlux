@@ -8,6 +8,7 @@ public partial class MainForm
 {
     private EncodeJobService _encodeJobService = null!;
     private List<EncodeJob> _encodeJobs = new();
+    private Guid? _runningSavedJobId;
     private System.Windows.Forms.Timer? _jobSchedulerTimer;
 
     private void InitializeJobManager()
@@ -39,7 +40,7 @@ public partial class MainForm
         form.ShowDialog(this);
     }
 
-    private async void HandleJobManagerAction(Guid jobId, string action)
+    private async Task HandleJobManagerAction(Guid jobId, string action)
     {
         EncodeJob? job = EncodeJobService.FindById(_encodeJobs, jobId);
         if (job == null)
@@ -76,7 +77,7 @@ public partial class MainForm
 
     private void SaveJobFromQueue(bool selectedOnly)
     {
-        var rows = (selectedOnly ? dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>() : GetEncodeRowsInVisualOrder())
+        var rows = (selectedOnly ? GetSelectedEncodeRowsInExecutionOrder() : GetEncodeRowsInExecutionOrder())
             .Where(row => !row.IsNewRow && row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true }).ToArray();
         if (rows.Length == 0) { ShowStatusInfo(selectedOnly ? "Select eligible files to save as a job." : "The queue has no eligible files to save."); return; }
         UpdateSizeTotals(force: true);
@@ -84,7 +85,17 @@ public partial class MainForm
         foreach (var row in rows)
         {
             var meta = EnsureRowMeta(row);
-            if (!string.IsNullOrWhiteSpace(meta.Path)) job.Files.Add(new EncodeJobFile { SourcePath = meta.Path, CustomCompressionProfile = meta.CustomCompressionProfile, CustomTargetMb = meta.CustomTargetMb });
+            if (!string.IsNullOrWhiteSpace(meta.Path)) job.Files.Add(new EncodeJobFile
+            {
+                SourcePath = meta.Path,
+                CustomCompressionProfile = meta.CustomCompressionProfile,
+                CustomTargetMb = meta.CustomTargetMb,
+                PredictionShadowExperimentAssignment =
+                    meta.PredictionShadowExperimentAssignment is { } assignment &&
+                    PredictionShadowExperimentAssignmentPersistence.MatchesSource(assignment, meta.Path)
+                        ? assignment
+                        : null
+            });
         }
         using var editor = new JobEditorForm(job);
         if (editor.ShowDialog(this) != DialogResult.OK) return;
@@ -96,6 +107,9 @@ public partial class MainForm
         OutputFolder = cmbEncodeOutput.Text, CompressionProfile = comboCompressionProfile.Text,
         EncoderId = _config.LastEncoderId, VideoCodec = _config.LastVideoCodec, EncoderPreset = _config.LastEncoderPreset,
         OutputContainer = _config.LastOutputContainer, QualityValue = _config.LastQualityValue,
+        QualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual",
+        QualityTarget = GetSelectedQualityTarget().ToString(),
+        AutomaticRateControlMode = IsAutomaticQualitySelected() ? "target-bitrate" : null,
         TenBit = chkTenBit?.Checked == true, AudioChannels = comboAudioChannels?.Text ?? "", VideoFormat = comboVideoFormat.Text,
         AutoTargetSize = chkAutoTargetSize.Checked, TargetSize = txtTargetSize.Text, Resolution = comboResolution?.Text ?? "",
         DeleteSourceAfterCompression = chkDeleteSource.Checked, EnableOutputSuffix = _config.EnableOutputSuffix,
@@ -142,12 +156,21 @@ public partial class MainForm
         var existing = job.Files.Where(file => File.Exists(file.SourcePath)).ToArray();
         if (existing.Length != job.Files.Count) ShowStatusInfo($"{job.Files.Count - existing.Length} saved source file(s) are unavailable and were not loaded.");
         if (existing.Length == 0) return;
-        await ImportEncodePathsAsync(existing.Select(file => file.SourcePath), false, false, replaceExisting: true, rememberRoots: false);
-        foreach (DataGridViewRow row in GetEncodeRowsInVisualOrder())
+        await ImportEncodePathsAsync(existing.Select(file => file.SourcePath), false, false,
+            replaceExisting: true, rememberRoots: false, preserveResearchAssignmentBySource: false);
+        foreach (DataGridViewRow row in GetEncodeRowsInExecutionOrder())
         {
             var file = existing.FirstOrDefault(item => string.Equals(item.SourcePath, GetPathFromRow(row), StringComparison.OrdinalIgnoreCase));
             if (file == null) continue;
-            var meta = EnsureRowMeta(row); meta.CustomCompressionProfile = file.CustomCompressionProfile; meta.CustomTargetMb = file.CustomTargetMb; UpdateRowCustomFlag(row);
+            var meta = EnsureRowMeta(row);
+            meta.CustomCompressionProfile = file.CustomCompressionProfile;
+            meta.CustomTargetMb = file.CustomTargetMb;
+            // Preserve persisted assignment state verbatim. The execution snapshot
+            // builder carries even stale bindings so the orchestrator can reject
+            // them fail-closed instead of degrading this item into an ordinary job.
+            meta.PredictionShadowExperimentAssignment = file.PredictionShadowExperimentAssignment;
+            UpdateResearchExperimentAssignmentPresentation(row);
+            UpdateRowCustomFlag(row);
         }
         ShowStatusInfo($"Loaded '{job.Name}' into the main queue. Saved job unchanged.");
     }
@@ -173,12 +196,16 @@ public partial class MainForm
             RefreshVideoFormatItems(VideoEncoderCompatibility.ParseCodecFamily(settings.VideoCodec));
             RefreshEncoderPresetItems(settings.EncoderPreset);
             if (nudAutoQuality != null) nudAutoQuality.Value = Math.Clamp(settings.QualityValue, (int)nudAutoQuality.Minimum, (int)nudAutoQuality.Maximum);
+            if (comboQualityMode != null)
+                SelectQualityMode(comboQualityMode, settings.QualityMode);
+            qualityTargetSelector?.SetSelectedTarget(ParseQualityTarget(settings.QualityTarget));
         }
         finally { _applyingEncodeDropdownSettings = false; }
         _config.EnableOutputSuffix = settings.EnableOutputSuffix;
         _config.EnableCodecSuffix = settings.EnableCodecSuffix;
         _config.OutputSuffix = settings.OutputSuffix;
         _config.VideoRestoration = settings.Restoration?.Clone() ?? new VideoRestorationSettings();
+        UpdateQualityIntentUi();
         if (_restorationPreset != null)
             _restorationPreset.SelectedIndex = (int)_config.VideoRestoration.Mode;
         UpdateRestorationControlState();
@@ -205,13 +232,35 @@ public partial class MainForm
         ApplyJobSettings(job.Settings);
         await LoadJobIntoMainQueueAsync(job);
         if (dgvEncodeQueue.Rows.Count == 0) { UpdateJobResult(jobId, EncodeJobStatus.Failed, "Could not load any valid source files into the encode queue."); return; }
-        await StartEncodeAsync(processAllOverride: true);
-        EncodeJobStatus outcome = _cancelEncode ? EncodeJobStatus.Failed : _encodeFailedCount > 0 ? EncodeJobStatus.CompletedWithErrors : EncodeJobStatus.Completed;
-        string result = outcome == EncodeJobStatus.Completed ? "Completed." : outcome == EncodeJobStatus.CompletedWithErrors ? $"Completed with {_encodeFailedCount} failed file(s)." : "Stopped or failed.";
+        _runningSavedJobId = job.Id;
+        EncodeQueueStartOutcome startOutcome;
+        try { startOutcome = await StartEncodeAsync(processAllOverride: true); }
+        finally { _runningSavedJobId = null; }
+        (EncodeJobStatus outcome, string result) = ResolveSavedJobRunResult(
+            startOutcome,
+            _encodeFailedCount,
+            _encodeStorageRejectedCount);
         UpdateJobResult(jobId, outcome, result);
         ErrorLogService.Append(AppPaths.UserDataDirectory, "Completed saved job", details: $"Id={job.Id}; Name={job.Name}; Status={outcome}; Result={result}");
         if (scheduled) ShowStatusInfo($"Scheduled job '{job.Name}' {result}");
     }
+
+    internal static (EncodeJobStatus Status, string Result) ResolveSavedJobRunResult(
+        EncodeQueueStartOutcome startOutcome,
+        int failedCount,
+        int skippedCount) => startOutcome switch
+        {
+            EncodeQueueStartOutcome.NotStarted =>
+                (EncodeJobStatus.Ready, "Encoding did not start."),
+            EncodeQueueStartOutcome.Canceled =>
+                (EncodeJobStatus.Failed, "Stopped or failed."),
+            _ when failedCount > 0 =>
+                (EncodeJobStatus.CompletedWithErrors, $"Completed with {failedCount} failed file(s)."),
+            _ =>
+                (EncodeJobStatus.Completed, skippedCount > 0
+                    ? $"Completed with {skippedCount} file(s) skipped — insufficient savings."
+                    : "Completed.")
+        };
 
     private void UpdateJobResult(Guid jobId, EncodeJobStatus status, string result)
     {

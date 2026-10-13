@@ -16,6 +16,9 @@ public readonly record struct HardwareUsageSample(
 /// <summary>Best-effort Windows hardware discovery and low-frequency process correlation.</summary>
 public sealed class HardwarePerformanceService : IDisposable
 {
+    private static readonly Lazy<string> CachedGpuIdentity = new(
+        () => DiscoverNvidiaGpu().Name,
+        LazyThreadSafetyMode.ExecutionAndPublication);
     private readonly WindowsEncodingSystemTelemetryProvider _telemetry = new();
     private readonly Process _process = Process.GetCurrentProcess();
     private long _previousRead, _previousWrite, _previousTimestamp;
@@ -30,7 +33,7 @@ public sealed class HardwarePerformanceService : IDisposable
     }
 
     public static long? DetectDedicatedGpuVramBytes() => DiscoverNvidiaGpu().Vram;
-    public static string DetectGpuIdentity() => DiscoverNvidiaGpu().Name;
+    public static string DetectGpuIdentity() => CachedGpuIdentity.Value;
 
     public HardwareUsageSample Sample()
     {

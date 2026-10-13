@@ -12,16 +12,30 @@ namespace MediaFlux.Services
         public string OutputFolder { get; init; } = "";
         public string Suffix { get; init; } = "";
         public required VideoEncoderSelection Encoder { get; init; }
+        public ProductionPlanIdentity? ProductionPlan { get; init; }
+        public PreparedAdaptiveProductionPlan? PreparedAdaptiveProductionPlan { get; init; }
+        public EncodingPlan? PreparedPlan { get; init; }
         public bool UseGpu { get; init; }
         public double? TargetMb { get; init; }
+        public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
+        public StorageSavingsOptions StorageSavingsPolicy { get; init; } = new();
+        public bool AdaptiveStorageSavingsEnabled { get; init; }
+        internal bool ExperimentalPolicyCRetryEnabled { get; init; }
+        public Action<AdaptiveQualitySelectionEvidence>? AdaptiveSelectionCallback { get; init; }
+        public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
         public EncodingService.ScaleMode ScaleMode { get; init; } =
             EncodingService.ScaleMode.None;
         public VideoRestorationSettings Restoration { get; init; } = new();
         public string? EncoderPreset { get; init; }
         public int? QualityValue { get; init; }
+        /// <summary>Optional source-adaptive intent. Omitted requests retain legacy numeric behavior.</summary>
+        public EncodingQualityIntent? QualityIntent { get; init; }
+        /// <summary>Publishes the immutable effective-quality result used by this encode.</summary>
+        public Action<EncodingQualityResolution>? QualityResolutionCallback { get; init; }
         public bool TenBit { get; init; }
         public int? AudioChannels { get; init; }
         public Action<string>? ProgressCallback { get; init; }
+        public Action<EncodingService.EncodeProgress>? StructuredProgressCallback { get; init; }
         /// <summary>Structured progress while a frame-based AI intermediate is being prepared.</summary>
         public Action<AiIntermediateProgress>? AiProgressCallback { get; init; }
         public bool ConcurrentEncoderSessions { get; init; }
@@ -36,11 +50,35 @@ namespace MediaFlux.Services
         public bool ContainerCompatibilityConfirmed { get; init; }
         public ContainerCompatibilityPolicy CompatibilityPolicy { get; init; } = ContainerCompatibilityPolicy.Intelligent;
         public Action<OutputContainerDecision>? ContainerDecisionCallback { get; init; }
+        /// <summary>Shadow-only diagnostic hooks; they never influence execution.</summary>
+        public Action<EncodingPlanSnapshot>? EncodingPlanSnapshotCallback { get; init; }
+        /// <summary>Optional pre-encode research capture; failures are isolated from encoding.</summary>
+        public Func<EncodingPlanSnapshot, CancellationToken, Task>? PreEncodeResearchCallback { get; init; }
+        /// <summary>Explicit research durability gate. Awaited before production; failures abort.</summary>
+        public Func<AdaptivePreAttemptObservation, CancellationToken, Task>? AdaptivePreAttemptCaptureCallback { get; init; }
+        /// <summary>Required execution-policy gate; failures abort before the first FFmpeg invocation.</summary>
+        public Action<EncodingPlanSnapshot>? PreEncodeExecutionValidationCallback { get; init; }
+        public Action<EncodingPlanDivergence>? EncodingPlanDivergenceCallback { get; init; }
+        /// <summary>Observational execution facts; this never changes recovery behavior.</summary>
+        public Action<EncodingExecutionOutcome>? EncodingExecutionOutcomeCallback { get; init; }
+        /// <summary>Publishes concise transient source-recovery states for active-job presentation.</summary>
+        public Action<EncodingRecoveryStatusUpdate>? RecoveryStatusCallback { get; init; }
         public CancellationToken CancellationToken { get; init; }
         public Action<string>? OutputPathCallback { get; init; }
         public Action<string>? StagingPathCallback { get; init; }
         public Action<string>? FinalizationStatusCallback { get; init; }
+        /// <summary>Optional observational lifecycle capture for queue diagnostics.</summary>
+        public EncodeLifecycleDiagnostics? LifecycleDiagnostics { get; init; }
+        public Action? FaststartStartedCallback { get; init; }
         public TimeSpan? SampleStart { get; init; }
         public TimeSpan? SampleDuration { get; init; }
+        // Benchmark orchestration owns its deliberately bounded decode retries.
+        // This remains internal so production callers retain their existing policy.
+        internal FfmpegSourceDecodeMode SourceDecodeMode { get; init; } = FfmpegSourceDecodeMode.Strict;
+        internal bool DisableAutomaticFfmpegRecovery { get; init; }
+        internal Action<string>? FfmpegDiagnosticCallback { get; init; }
+        /// <summary>Failure-report presentation hook; observational and invoked only after terminal FFmpeg failure reporting.</summary>
+        internal Action<string>? FailureDiagnosticReportCallback { get; init; }
+        internal EncodeOutputValidationProfile ValidationProfile { get; init; } = EncodeOutputValidationProfile.Production;
     }
 }

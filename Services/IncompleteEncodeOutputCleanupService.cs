@@ -6,7 +6,8 @@ namespace MediaFlux.Services
             string sourcePath,
             string outputPath,
             bool cleanupEnabled,
-            string outcome)
+            string outcome,
+            string? protectedPromotedOutputPath = null)
         {
             if (!cleanupEnabled)
                 return "disabled in Settings.";
@@ -16,10 +17,13 @@ namespace MediaFlux.Services
 
             string fullSourcePath;
             string fullOutputPath;
+            string fullProtectedPromotedOutputPath = string.Empty;
             try
             {
                 fullSourcePath = Path.GetFullPath(sourcePath);
                 fullOutputPath = Path.GetFullPath(outputPath);
+                if (!string.IsNullOrWhiteSpace(protectedPromotedOutputPath))
+                    fullProtectedPromotedOutputPath = Path.GetFullPath(protectedPromotedOutputPath);
             }
             catch (Exception ex)
             {
@@ -33,6 +37,15 @@ namespace MediaFlux.Services
                     StringComparison.OrdinalIgnoreCase))
             {
                 return "not deleted because the output path matched the source path.";
+            }
+
+            if (!string.IsNullOrWhiteSpace(fullProtectedPromotedOutputPath) &&
+                string.Equals(
+                    fullProtectedPromotedOutputPath,
+                    fullOutputPath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return "not deleted because the output path is the validated promoted output.";
             }
 
             const int attempts = 3;

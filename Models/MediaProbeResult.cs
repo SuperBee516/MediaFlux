@@ -1,6 +1,6 @@
 namespace MediaFlux.Models
 {
-    public enum FrameCountProvenance { Unavailable, InferredFromDurationAndRate, Measured }
+    public enum FrameCountProvenance { Unavailable, InferredFromDurationAndRate, Measured, RecoverableDecoded }
 
     public sealed class MediaProbeResult
     {
@@ -8,6 +8,8 @@ namespace MediaFlux.Models
         public string ErrorMessage { get; init; } = "";
         public string FormatName { get; init; } = "";
         public long? SizeBytes { get; init; }
+        /// <summary>Start of the container timeline reported by FFprobe, when available.</summary>
+        public double? ContainerStartTimeSeconds { get; init; }
         public double? DurationSeconds { get; init; }
         public long? BitRate { get; init; }
         public IReadOnlyDictionary<string, string> FormatTags { get; init; } =
@@ -35,7 +37,9 @@ namespace MediaFlux.Models
         public int? Level { get; init; }
         public long? BitRate { get; init; }
         public string TimeBase { get; init; } = "";
+        public long? ExtraDataSizeBytes { get; init; }
         public string DisplayAspectRatio { get; init; } = "";
+        public string SampleAspectRatio { get; init; } = "";
         public string FieldOrder { get; init; } = "";
         public string PixelFormat { get; init; } = "";
         public int? BitsPerRawSample { get; init; }
@@ -50,7 +54,16 @@ namespace MediaFlux.Models
         public int? Width { get; init; }
         public int? Height { get; init; }
         public int? Channels { get; init; }
+        public int? SampleRateHz { get; init; }
+        /// <summary>Presentation timestamp of the first stream packet, when FFprobe reports one.</summary>
+        public double? StartTimeSeconds { get; init; }
         public double? DurationSeconds { get; init; }
+        /// <summary>Average presentation frame rate reported by FFprobe.</summary>
+        public double? AverageFrameRate { get; init; }
+        /// <summary>Nominal packet/frame rate reported by FFprobe (r_frame_rate).</summary>
+        public double? NominalFrameRate { get; init; }
+        /// <summary>Exact nominal packet/frame rate reported by FFprobe (r_frame_rate).</summary>
+        public string NominalFrameRateRational { get; init; } = "";
         public double? FrameRate { get; init; }
         /// <summary>Container-declared frame count when available; null means the container does not provide one.</summary>
         public long? FrameCount { get; init; }

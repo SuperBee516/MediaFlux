@@ -54,7 +54,6 @@ namespace MediaFlux
         private Label lblInputFolder;
         private ComboBox cmbInputFolder;
         private Button btnBrowseInput;
-        private Button btnClearInput;
         private Label lblEncoderMode;
         private ComboBox comboEncoderMode;
         private Label lblTargetSize;
@@ -62,9 +61,9 @@ namespace MediaFlux
         private Label lblEncodeOutput;
         private ComboBox cmbEncodeOutput;
         private Button btnBrowseOutputEncode;
-        private Button btnClearOutputEncode;
         private Button btnStartEncode;
         private Button btnSampleComparison;
+        private Button btnCqSampleComparison;
         private Label lblEncodeStatus;
         private CheckBox chkDeleteSource;
         private CheckBox chkIncludeSubfolders;
@@ -94,6 +93,8 @@ namespace MediaFlux
         private TableLayoutPanel pnlQueueControlsCard;
         private FlowLayoutPanel pnlQueueBehavior;
         private FlowLayoutPanel pnlQueueActionButtons;
+        private FlowLayoutPanel pnlQueueSecondaryActions;
+        private FlowLayoutPanel pnlQueueComparisonActions;
         private TableLayoutPanel grpOptions;
         private TableLayoutPanel tlEncodingOptions;
         private TableLayoutPanel pnlEncodingBehaviorCard;
@@ -148,17 +149,6 @@ namespace MediaFlux
         private TextBox txtHistoryLog;
         private Button btnHistoryRefresh, btnHistoryRequeue, btnHistoryOpenSrc, btnHistoryOpenOut, btnHistoryDelete, btnHistoryClearAll;
 
-        // Metrics/progress panel fields
-        private Panel progressPanel;
-        private Label lblJob1, lblJob2;
-        private Label lblSpeed, lblSpeedValue, lblSpeedValue2;
-        private Label lblSize, lblSizeValue, lblSizeValue2;
-        private Label lblFPS, lblFPSValue, lblFPSValue2;
-        private Label lblBitrate, lblBitrateValue, lblBitrateValue2;
-        private Label lblTime, lblTimeValue, lblTimeValue2;
-        private Label lblJobTimer2;
-        private Label lblJobTimerDesc, lblJobTimer;
-        private ProgressBar progressBarEncode;
         private Button btnStopEncode;
         private CheckBox chkAutoTargetSize;
 
@@ -213,7 +203,6 @@ namespace MediaFlux
             lblInputFolder = new Label();
             cmbInputFolder = new ComboBox();
             btnBrowseInput = new Button();
-            btnClearInput = new Button();
             lblEncoderMode = new Label();
             comboEncoderMode = new ComboBox();
             lblTargetSize = new Label();
@@ -221,9 +210,9 @@ namespace MediaFlux
             lblEncodeOutput = new Label();
             cmbEncodeOutput = new ComboBox();
             btnBrowseOutputEncode = new Button();
-            btnClearOutputEncode = new Button();
             btnStartEncode = new Button();
             btnSampleComparison = new Button();
+            btnCqSampleComparison = new Button();
             lblEncodeStatus = new Label();
             chkDeleteSource = new CheckBox();
             dgvEncodeQueue = new DataGridView();
@@ -279,30 +268,6 @@ namespace MediaFlux
             lblAudioStatus = new Label();
             dgvAudioQueue = new DataGridView();
 
-            // Metrics/progress panel fields
-            progressPanel = new Panel();
-            lblJob1 = new Label();
-            lblJob2 = new Label();
-            lblSpeed = new Label();
-            lblSpeedValue = new Label();
-            lblSpeedValue2 = new Label();
-            lblSize = new Label();
-            lblSizeValue = new Label();
-            lblSizeValue2 = new Label();
-            lblFPS = new Label();
-            lblFPSValue = new Label();
-            lblFPSValue2 = new Label();
-            lblBitrate = new Label();
-            lblBitrateValue = new Label();
-            lblBitrateValue2 = new Label();
-            lblTime = new Label();
-            lblTimeValue = new Label();
-            lblTimeValue2 = new Label();
-            lblJobTimerDesc = new Label();
-            lblJobTimer = new Label();
-            lblJobTimer2 = new Label();
-            progressBarEncode = new ProgressBar();
-
             // MenuStrip
             menuStrip1.Items.AddRange(new ToolStripItem[] {
                 fileToolStripMenuItem,
@@ -356,144 +321,11 @@ namespace MediaFlux
             statusStrip1.Items.Add(toolStripStatusLabel1);
             toolStripStatusLabel1.Text = "Ready";
 
-            // progressPanel setup
-            progressPanel.Dock = DockStyle.Top;
-            progressPanel.Height = 80;
-            progressPanel.Padding = new Padding(10, 5, 10, 5);
-            progressPanel.BackColor = Color.FromArgb(245, 245, 245);
-
-            Font metricFont = new Font("Segoe UI", 9F, FontStyle.Bold);
-            Font valueFont = new Font("Segoe UI", 10F, FontStyle.Regular);
-
-            lblJob1.Text = "";
-            lblJob1.Font = metricFont;
-            lblJob1.Location = new Point(10, 8);
-            lblJob1.AutoSize = true;
-
-            lblJob2.Text = "Job 2:";
-            lblJob2.Font = metricFont;
-            lblJob2.Location = new Point(10, 26);
-            lblJob2.AutoSize = true;
-            lblJob2.Visible = false;
-
-            lblSpeed.Text = "Speed:";
-            lblSpeed.Font = metricFont;
-            lblSpeed.Location = new Point(60, 8);
-            lblSpeed.AutoSize = true;
-            lblSpeedValue.Text = "--";
-            lblSpeedValue.Font = valueFont;
-            lblSpeedValue.Location = new Point(110, 8);
-            lblSpeedValue.AutoSize = true;
-            lblSpeedValue2.Text = "--";
-            lblSpeedValue2.Font = valueFont;
-            lblSpeedValue2.Location = new Point(110, 26);
-            lblSpeedValue2.AutoSize = true;
-            lblSpeedValue2.Visible = false;
-
-            lblSize.Text = "Size:";
-            lblSize.Font = metricFont;
-            lblSize.Location = new Point(170, 8);
-            lblSize.AutoSize = true;
-            lblSizeValue.Text = "--";
-            lblSizeValue.Font = valueFont;
-            lblSizeValue.Location = new Point(210, 8);
-            lblSizeValue.AutoSize = true;
-            lblSizeValue2.Text = "--";
-            lblSizeValue2.Font = valueFont;
-            lblSizeValue2.Location = new Point(210, 26);
-            lblSizeValue2.AutoSize = true;
-            lblSizeValue2.Visible = false;
-
-            lblFPS.Text = "FPS:";
-            lblFPS.Font = metricFont;
-            lblFPS.Location = new Point(300, 8);
-            lblFPS.AutoSize = true;
-            lblFPSValue.Text = "--";
-            lblFPSValue.Font = valueFont;
-            lblFPSValue.Location = new Point(330, 8);
-            lblFPSValue.AutoSize = true;
-            lblFPSValue2.Text = "--";
-            lblFPSValue2.Font = valueFont;
-            lblFPSValue2.Location = new Point(330, 26);
-            lblFPSValue2.AutoSize = true;
-            lblFPSValue2.Visible = false;
-
-            lblBitrate.Text = "Bitrate:";
-            lblBitrate.Font = metricFont;
-            lblBitrate.Location = new Point(380, 8);
-            lblBitrate.AutoSize = true;
-            lblBitrateValue.Text = "--";
-            lblBitrateValue.Font = valueFont;
-            lblBitrateValue.Location = new Point(430, 8);
-            lblBitrateValue.AutoSize = true;
-            lblBitrateValue2.Text = "--";
-            lblBitrateValue2.Font = valueFont;
-            lblBitrateValue2.Location = new Point(430, 26);
-            lblBitrateValue2.AutoSize = true;
-            lblBitrateValue2.Visible = false;
-
-            lblTime.Text = "Time:";
-            lblTime.Font = metricFont;
-            lblTime.Location = new Point(520, 8);
-            lblTime.AutoSize = true;
-            lblTimeValue.Text = "--";
-            lblTimeValue.Font = valueFont;
-            lblTimeValue.Location = new Point(560, 8);
-            lblTimeValue.AutoSize = true;
-            lblTimeValue2.Text = "--";
-            lblTimeValue2.Font = valueFont;
-            lblTimeValue2.Location = new Point(560, 26);
-            lblTimeValue2.AutoSize = true;
-            lblTimeValue2.Visible = false;
-
-            lblJobTimerDesc.Text = "Elapsed:";
-            lblJobTimerDesc.Font = metricFont;
-            lblJobTimerDesc.Location = new Point(640, 8);
-            lblJobTimerDesc.AutoSize = true;
-            lblJobTimer.Text = "--:--:--";
-            lblJobTimer.Font = valueFont;
-            lblJobTimer.Location = new Point(700, 8);
-            lblJobTimer.AutoSize = true;
-            lblJobTimer2.Text = "--";
-            lblJobTimer2.Font = valueFont;
-            lblJobTimer2.Location = new Point(700, 26);
-            lblJobTimer2.AutoSize = true;
-            lblJobTimer2.Visible = false;
-
-            progressBarEncode.Location = new Point(10, 52);
-            progressBarEncode.Width = 770;
-            progressBarEncode.Height = 16;
-            progressBarEncode.Minimum = 0;
-            progressBarEncode.Maximum = 100;
-            progressBarEncode.Value = 0;
-
-            progressPanel.Controls.Add(lblJob1);
-            progressPanel.Controls.Add(lblJob2);
-            progressPanel.Controls.Add(lblSpeed);
-            progressPanel.Controls.Add(lblSpeedValue);
-            progressPanel.Controls.Add(lblSpeedValue2);
-            progressPanel.Controls.Add(lblSize);
-            progressPanel.Controls.Add(lblSizeValue);
-            progressPanel.Controls.Add(lblSizeValue2);
-            progressPanel.Controls.Add(lblFPS);
-            progressPanel.Controls.Add(lblFPSValue);
-            progressPanel.Controls.Add(lblFPSValue2);
-            progressPanel.Controls.Add(lblBitrate);
-            progressPanel.Controls.Add(lblBitrateValue);
-            progressPanel.Controls.Add(lblBitrateValue2);
-            progressPanel.Controls.Add(lblTime);
-            progressPanel.Controls.Add(lblTimeValue);
-            progressPanel.Controls.Add(lblTimeValue2);
-            progressPanel.Controls.Add(lblJobTimerDesc);
-            progressPanel.Controls.Add(lblJobTimer);
-            progressPanel.Controls.Add(lblJobTimer2);
-            progressPanel.Controls.Add(progressBarEncode);
-
             // panelEncode setup
             panelEncode.Dock = DockStyle.Fill;
             tlEncode.Dock = DockStyle.Fill;
             tlEncode.ColumnCount = 4;
-            tlEncode.RowCount = 14;
+            tlEncode.RowCount = 13;
             tlEncode.Padding = new Padding(10, 30, 10, 10);
 
             // UPDATED column layout: label | main input | secondary label | secondary input
@@ -504,7 +336,7 @@ namespace MediaFlux
             tlEncode.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));   // secondary inputs
 
             tlEncode.RowStyles.Clear();
-            for (int i = 0; i < 13; i++)
+            for (int i = 0; i < 12; i++)
                 tlEncode.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             tlEncode.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
@@ -574,12 +406,7 @@ namespace MediaFlux
             btnBrowseInput.AutoSize = true;
             btnBrowseInput.Margin = new Padding(0, 0, 6, 0);
             btnBrowseInput.Click += btnBrowseInput_Click;
-            btnClearInput.Text = "Clear";
-            btnClearInput.AutoSize = true;
-            btnClearInput.Margin = Padding.Empty;
-            btnClearInput.Click += btnClearInput_Click;
             pnlInputFolderButtons.Controls.Add(btnBrowseInput);
-            pnlInputFolderButtons.Controls.Add(btnClearInput);
             pnlFolderSetupCard.Controls.Add(pnlInputFolderButtons, 2, 1);
 
             lblEncodeOutput.Text = "Output folder";
@@ -607,12 +434,7 @@ namespace MediaFlux
             btnBrowseOutputEncode.AutoSize = true;
             btnBrowseOutputEncode.Margin = new Padding(0, 0, 6, 0);
             btnBrowseOutputEncode.Click += btnBrowseOutputEncode_Click;
-            btnClearOutputEncode.Text = "Clear";
-            btnClearOutputEncode.AutoSize = true;
-            btnClearOutputEncode.Margin = Padding.Empty;
-            btnClearOutputEncode.Click += btnClearOutputEncode_Click;
             pnlOutputFolderButtons.Controls.Add(btnBrowseOutputEncode);
-            pnlOutputFolderButtons.Controls.Add(btnClearOutputEncode);
             pnlFolderSetupCard.Controls.Add(pnlOutputFolderButtons, 2, 2);
 
             tlEncode.Controls.Add(pnlFolderSetupCard, 0, 0);
@@ -620,7 +442,7 @@ namespace MediaFlux
 
             this.pnlEncodingProfileCard = new TableLayoutPanel
             {
-                Name = "pnlEncodingProfileCard",
+                Name = "pnlEncodingControlsCard",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 BackColor = Color.FromArgb(248, 249, 251),
@@ -630,7 +452,7 @@ namespace MediaFlux
                 Dock = DockStyle.Fill,
                 GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
                 Margin = new Padding(0, 0, 0, 6),
-                Padding = new Padding(12, 10, 12, 10)
+                Padding = new Padding(8, 5, 8, 5)
             };
             pnlEncodingProfileCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             pnlEncodingProfileCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -638,7 +460,7 @@ namespace MediaFlux
 
             var lblEncodingProfileHeader = new Label
             {
-                Text = "Encoding Profile",
+                Text = "Encoding Controls",
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(45, 62, 80),
@@ -704,7 +526,7 @@ namespace MediaFlux
 
             chkAutoTargetSize.Text = "Auto-determine best target size";
             chkAutoTargetSize.AutoSize = true;
-            chkAutoTargetSize.Checked = false;
+            chkAutoTargetSize.Checked = true;
             chkAutoTargetSize.Anchor = AnchorStyles.Left;
             chkAutoTargetSize.Margin = new Padding(0, 2, 0, 4);
             chkAutoTargetSize.CheckedChanged += (s, e) => {
@@ -748,14 +570,14 @@ namespace MediaFlux
                 BackColor = Color.FromArgb(248, 249, 251),
                 BorderStyle = BorderStyle.FixedSingle,
                 ColumnCount = 1,
-                RowCount = 4,
+                RowCount = 5,
                 Dock = DockStyle.Top,
                 GrowStyle = TableLayoutPanelGrowStyle.FixedSize,
                 Margin = new Padding(0, 0, 0, 6),
-                Padding = new Padding(12, 10, 12, 10)
+                Padding = new Padding(8, 4, 8, 4)
             };
             pnlQueueControlsCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            for (int row = 0; row < 4; row++)
+            for (int row = 0; row < 5; row++)
                 pnlQueueControlsCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             var lblQueueControlsHeader = new Label
@@ -764,7 +586,7 @@ namespace MediaFlux
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(45, 62, 80),
-                Margin = new Padding(0, 0, 0, 6)
+                Margin = new Padding(0, 0, 0, 3)
             };
             pnlQueueControlsCard.Controls.Add(lblQueueControlsHeader, 0, 0);
 
@@ -773,16 +595,16 @@ namespace MediaFlux
                 Name = "pnlQueueBehavior",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Margin = new Padding(0, 0, 0, 6)
+                Margin = new Padding(0, 0, 0, 4)
             };
 
             chkDeleteSource.Text = "Delete source file after compression";
             chkDeleteSource.AutoSize = true;
             chkDeleteSource.Checked = true;
-            chkDeleteSource.Margin = new Padding(0, 2, 28, 2);
+            chkDeleteSource.Margin = new Padding(0, 2, 12, 2);
             pnlQueueBehavior.Controls.Add(chkDeleteSource);
 
             chkIncludeSubfolders = new CheckBox();
@@ -808,6 +630,10 @@ namespace MediaFlux
             btnSampleComparison.AutoSize = true;
             btnSampleComparison.Click += btnSampleComparison_Click;
 
+            btnCqSampleComparison.Text = "Compare CQ 22–25";
+            btnCqSampleComparison.AutoSize = true;
+            btnCqSampleComparison.Click += btnCqSampleComparison_Click;
+
             btnStopEncode.Text = "Stop Encoding";
             btnStopEncode.AutoSize = true;
             btnStopEncode.Enabled = false;
@@ -822,29 +648,52 @@ namespace MediaFlux
                 Name = "pnlQueueActionButtons",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 Margin = Padding.Empty
             };
+            this.pnlQueueSecondaryActions = new FlowLayoutPanel
+            {
+                Name = "pnlQueueSecondaryActions",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0, 1, 0, 0)
+            };
+            this.pnlQueueComparisonActions = new FlowLayoutPanel
+            {
+                Name = "pnlQueueComparisonActions",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0, 1, 0, 0)
+            };
             btnStartEncode.Margin = new Padding(0, 0, 8, 0);
-            btnSampleComparison.Margin = new Padding(0, 0, 8, 0);
             btnPauseQueue.Margin = new Padding(0, 0, 8, 0);
             btnStopEncode.Margin = new Padding(0, 0, 8, 0);
-            btnRefreshEncode.Margin = Padding.Empty;
+            btnRefreshEncode.Margin = new Padding(0, 0, 8, 0);
+            btnSampleComparison.Margin = new Padding(0, 0, 8, 0);
+            btnCqSampleComparison.Margin = Padding.Empty;
             pnlQueueActionButtons.Controls.Add(btnStartEncode);
-            pnlQueueActionButtons.Controls.Add(btnSampleComparison);
             pnlQueueActionButtons.Controls.Add(btnPauseQueue);
             pnlQueueActionButtons.Controls.Add(btnStopEncode);
-            pnlQueueActionButtons.Controls.Add(btnRefreshEncode);
+            pnlQueueSecondaryActions.Controls.Add(btnRefreshEncode);
+            pnlQueueComparisonActions.Controls.Add(btnSampleComparison);
+            pnlQueueComparisonActions.Controls.Add(btnCqSampleComparison);
             pnlQueueControlsCard.Controls.Add(pnlQueueActionButtons, 0, 2);
+            pnlQueueControlsCard.Controls.Add(pnlQueueSecondaryActions, 0, 3);
+            pnlQueueControlsCard.Controls.Add(pnlQueueComparisonActions, 0, 4);
 
             lblEncodeStatus.Text = "";
             lblEncodeStatus.AutoSize = true;
             lblEncodeStatus.Anchor = AnchorStyles.Left;
             lblEncodeStatus.ForeColor = SystemColors.GrayText;
             lblEncodeStatus.Margin = new Padding(0, 5, 0, 0);
-            pnlQueueControlsCard.Controls.Add(lblEncodeStatus, 0, 3);
             pnlQueueControlsCard.SizeChanged += (_, __) => UpdateQueueControlsResponsiveLayout();
 
             tlEncode.Controls.Add(pnlQueueControlsCard, 0, 2);
@@ -998,18 +847,22 @@ namespace MediaFlux
 
             chkFilterX264.Text = "H.264 / x264";
             chkFilterX264.AutoSize = true;
+            chkFilterX264.Checked = true;
             chkFilterX264.Margin = new Padding(0, 3, 8, 3);
 
             chkFilterX265.Text = "H.265 / x265";
             chkFilterX265.AutoSize = true;
+            chkFilterX265.Checked = false;
             chkFilterX265.Margin = new Padding(0, 3, 8, 3);
 
             chkFilterAv1.Text = "AV1";
             chkFilterAv1.AutoSize = true;
+            chkFilterAv1.Checked = false;
             chkFilterAv1.Margin = new Padding(0, 3, 8, 3);
 
             chkFilterOtherCodecs.Text = "Other codecs";
             chkFilterOtherCodecs.AutoSize = true;
+            chkFilterOtherCodecs.Checked = true;
             chkFilterOtherCodecs.Margin = new Padding(0, 3, 8, 3);
 
             chkRetryFailedJobs.Text = "Retry failed jobs at end";
@@ -1117,10 +970,6 @@ namespace MediaFlux
 
             grpOptions.Controls.Add(encodingOptionsHeader, 0, 0);
             grpOptions.Controls.Add(tlEncodingOptions, 0, 1);
-
-            // place the group across all 4 columns on row 10
-            tlEncode.Controls.Add(grpOptions, 0, 10);
-            tlEncode.SetColumnSpan(grpOptions, 4);
 
             // Row 11: Duplicate Finder panel
             this.grpDuplicateFinder = new TableLayoutPanel
@@ -1260,11 +1109,7 @@ namespace MediaFlux
             tlEncode.Controls.Add(grpDuplicateFinder, 0, 11);
             tlEncode.SetColumnSpan(grpDuplicateFinder, 4);
 
-            // Row 12: Progress Panel
-            tlEncode.SetColumnSpan(progressPanel, 4);
-            tlEncode.Controls.Add(progressPanel, 0, 12);
-
-            // Row 13: Encode Queue Grid
+            // Row 12: Encode Queue Grid
             dgvEncodeQueue = new DataGridView();
             dgvEncodeQueue.Dock = DockStyle.Fill;
             dgvEncodeQueue.Margin = new Padding(0);
@@ -1294,7 +1139,7 @@ namespace MediaFlux
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "colName",
-                HeaderText = "Name",
+                HeaderText = "File",
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
                 MinimumWidth = 120,
                 Resizable = DataGridViewTriState.True
@@ -1304,6 +1149,7 @@ namespace MediaFlux
                 Name = "colSize",
                 HeaderText = "Size",
                 Width = 100,
+                SortMode = DataGridViewColumnSortMode.Automatic,
                 Resizable = DataGridViewTriState.True
             });
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
@@ -1311,6 +1157,7 @@ namespace MediaFlux
                 Name = "colEstimatedSize",
                 HeaderText = "Estimated Output",
                 Width = 150,
+                SortMode = DataGridViewColumnSortMode.Automatic,
                 Resizable = DataGridViewTriState.True
             });
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn
@@ -1479,7 +1326,7 @@ namespace MediaFlux
                 tabs.TabPages.Add(tabHistory);            
 
             tlEncode.SetColumnSpan(dgvEncodeQueue, 4);
-            tlEncode.Controls.Add(dgvEncodeQueue, 0, 13);
+            tlEncode.Controls.Add(dgvEncodeQueue, 0, 12);
 
             panelEncode.Controls.Add(tlEncode);
 

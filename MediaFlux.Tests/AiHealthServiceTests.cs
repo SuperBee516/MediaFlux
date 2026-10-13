@@ -11,6 +11,17 @@ public sealed class AiHealthServiceTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 
     [Fact]
+    public void IdleRuntimeDoesNotWarnBecauseValidationIsNotAnActiveSessionConcern()
+    {
+        var telemetry = new AiRuntimeTelemetryService(new AiBenchmarkDatabase(Path.Combine(_root, "idle.db")));
+        AiHealthEvaluation health = new AiHealthService(telemetry, () => null, () => null, () => true).Evaluate();
+
+        Assert.Equal(AiHealthStatus.Healthy, health.Overall);
+        Assert.Equal("Disabled", health.ValidationStatus);
+        Assert.Equal(new[] { "No action needed." }, health.Recommendations);
+    }
+
+    [Fact]
     public void HealthyRuntimeReportsNoActionNeeded()
     {
         AiRuntimeTelemetryService telemetry = CreateTelemetry(withBenchmark: true);

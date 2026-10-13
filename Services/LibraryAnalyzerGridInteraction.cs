@@ -48,6 +48,54 @@ public sealed record LibraryFileQueueResult(
 
 public static class LibraryFileQueueSelection
 {
+    public static LibraryFileQueueResult PreparePresentCatalogSelection(
+        IEnumerable<LibraryFileViewRecord> files)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+
+        LibraryFileViewRecord[] selected = files.ToArray();
+        var seenIds = new HashSet<long>();
+        var unique = new List<LibraryFileViewRecord>(selected.Length);
+        int unavailable = 0;
+        foreach (LibraryFileViewRecord file in selected)
+        {
+            if (file.FileId <= 0)
+            {
+                unavailable++;
+                continue;
+            }
+            if (seenIds.Add(file.FileId))
+                unique.Add(file);
+        }
+
+        var paths = new List<string>(unique.Count);
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (LibraryFileViewRecord file in unique.OrderBy(file => file.FileId))
+        {
+            if (file.Availability != IndexedFileAvailability.Present || !IsUsableCatalogPath(file.FullPath))
+            {
+                unavailable++;
+                continue;
+            }
+            if (seenPaths.Add(file.FullPath))
+                paths.Add(file.FullPath);
+        }
+
+        return new LibraryFileQueueResult(paths, unavailable, Dispatched: false);
+    }
+
+    public static async Task<LibraryFileQueueResult> DispatchPresentCatalogSelectionAsync(
+        IEnumerable<LibraryFileViewRecord> files,
+        Func<IReadOnlyList<string>, Task>? addToEncodeQueue)
+    {
+        LibraryFileQueueResult prepared = PreparePresentCatalogSelection(files);
+        if (prepared.AvailablePaths.Count == 0 || addToEncodeQueue == null)
+            return prepared;
+
+        await addToEncodeQueue(prepared.AvailablePaths);
+        return prepared with { Dispatched = true };
+    }
+
     public static LibraryFileQueueResult Dispatch(
         IEnumerable<string> paths,
         Action<IReadOnlyList<string>>? addToEncodeQueue,
@@ -63,6 +111,17 @@ public static class LibraryFileQueueSelection
         bool dispatched = available.Length > 0 && addToEncodeQueue != null;
         if (dispatched) addToEncodeQueue!(available);
         return new LibraryFileQueueResult(available, selected.Length - available.Length, dispatched);
+    }
+
+    private static bool IsUsableCatalogPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+        try { return Path.IsPathFullyQualified(path); }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
     }
 }
 

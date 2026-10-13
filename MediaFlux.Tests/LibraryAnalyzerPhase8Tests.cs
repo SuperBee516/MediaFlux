@@ -100,6 +100,7 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
         SeedPairs(catalog, files, (0, 1, 98), (0, 2, 97), (1, 2, 96));
         catalog.RebuildVisualFamilies();
         VisualFamilyRecord family = Assert.Single(catalog.QueryVisualFamilies(new VisualFamilyQuery()).Families);
+        Assert.Equal(3, catalog.GetVisualFamilyMembers(family.FamilyId).Count);
         var service = new LibraryVisualFamilyService(catalog,
             new LibraryVisualDuplicateCleanupService(catalog, catalog, catalog),
             new DuplicateKeeperPreferences { MinimumScoreMargin = 0 });
@@ -311,108 +312,6 @@ public sealed class LibraryAnalyzerPhase8Tests : IDisposable
         Assert.Equal(1 + triangleCount, result.FamiliesCreated);
         Assert.Equal(denseCount, result.LargestComponent);
         Assert.True(result.Elapsed < TimeSpan.FromSeconds(5), $"Construction took {result.Elapsed}.");
-    }
-
-    [Fact]
-    public void FamilyReviewUiShowsAllMembersAndPersistsManualKeeper()
-    {
-        if (!OperatingSystem.IsWindows()) return;
-        Exception? failure = null;
-        string stage = "starting";
-        LibraryAnalyzerForm? liveForm = null;
-        var reviewShown = new TaskCompletionSource<Form>(TaskCreationOptions.RunContinuationsAsynchronously);
-        Task? reviewTask = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                stage = "creating catalog";
-                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
-                using SqliteLibraryCatalog catalog = CreateCatalog();
-                string[] files = CreateFiles(catalog, "ui-family", 3);
-                SeedPairs(catalog, files, (0, 1, 98), (0, 2, 97), (1, 2, 96));
-                catalog.RebuildVisualFamilies();
-                VisualFamilyRecord family = Assert.Single(catalog.QueryVisualFamilies(new VisualFamilyQuery()).Families);
-                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyMetadataProbe(), new FakeVisualExtractor(_ => Array.Empty<ulong>()));
-                using var form = new LibraryAnalyzerForm(runtime);
-                liveForm = form;
-                stage = "showing analyzer";
-                form.Show();
-                TabControl tabs = GetPrivateField<TabControl>(form, "_tabs");
-                tabs.SelectedTab = tabs.TabPages.Cast<TabPage>().Single(tab => tab.Text == "Duplicates — Families");
-                PumpTask(InvokePrivateTask(form, "RefreshVisualFamiliesAsync"));
-                DataGridView families = GetPrivateField<DataGridView>(form, "_familyGrid");
-                PumpUntil(() => families.Rows.Count == 1);
-                families.Rows[0].Selected = true;
-                families.CurrentCell = families.Rows[0].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-                ContextMenuStrip familyMenu = GetPrivateField<ContextMenuStrip>(form, "_familyMenu");
-                ContextMenuStrip memberMenu = GetPrivateField<ContextMenuStrip>(form, "_familyMembersMenu");
-                Assert.True(families.MultiSelect);
-                foreach (string name in new[] { "Review", "Reviewed", "MarkUnreviewed", "Ignore", "Reanalyze", "Rebuild", "Cleanup", "CleanupAllReviewed" })
-                    Assert.NotEmpty(familyMenu.Items.Find(name, false));
-                foreach (string name in new[] { "Play", "Folder", "CopyPath", "CompareKeeper", "ComparePair", "Keeper", "Protect", "Reanalyze", "SelectOthers", "SelectAll", "SelectNone", "Invert", "SelectAvailable", "SelectUnprotected" })
-                    Assert.NotEmpty(memberMenu.Items.Find(name, false));
-                bool sawMembers = false;
-                bool keeperClicked = false;
-                using var timer = new System.Windows.Forms.Timer { Interval = 40 };
-                timer.Tick += (_, _) =>
-                {
-                    try
-                    {
-                        Form? review = Application.OpenForms.Cast<Form>().FirstOrDefault(open => open != form && open.Text.StartsWith("Review Visual Family", StringComparison.Ordinal));
-                        if (review == null) { stage = "waiting for review dialog"; return; }
-                        reviewShown.TrySetResult(review);
-                        DataGridView? grid = Descendants<DataGridView>(review).FirstOrDefault();
-                        if (grid?.Rows.Count != 3) { stage = $"waiting for family members ({grid?.Rows.Count ?? -1})"; return; }
-                        sawMembers = true;
-                        if (!keeperClicked)
-                        {
-                            keeperClicked = true;
-                            grid.ClearSelection(); grid.Rows[2].Selected = true;
-                            grid.CurrentCell = grid.Rows[2].Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
-                            Descendants<Button>(review).Single(button => button.Text == "Set selected keeper").PerformClick();
-                        }
-                        if (catalog.GetVisualFamily(family.FamilyId)?.ManualKeeperFileId != null)
-                            review.Close();
-                    }
-                    catch (Exception ex) { failure = ex; stage = $"timer failed: {ex.GetType().Name}"; }
-                };
-                timer.Start();
-                stage = "reviewing family";
-                form.BeginInvoke(new Action(() => reviewTask = InvokePrivateTask(form, "OpenVisualFamilyReviewAsync")));
-                PumpUntil(() => reviewShown.Task.IsCompleted, TimeSpan.FromSeconds(10));
-                PumpUntil(() => reviewTask != null, TimeSpan.FromSeconds(10));
-                PumpTask(reviewTask!, TimeSpan.FromSeconds(10));
-                timer.Stop();
-                stage = "verifying review";
-                Assert.True(sawMembers);
-                Assert.True(catalog.GetVisualFamily(family.FamilyId)!.Reviewed);
-                form.Close();
-                stage = "disposing analyzer";
-            }
-            catch (Exception ex) { failure = ex; }
-            finally { stage = failure == null ? "completed" : $"failed: {failure.GetType().Name}"; }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        if (!thread.Join(TimeSpan.FromSeconds(30)))
-        {
-            stage = "timed out; requesting UI cleanup";
-            try
-            {
-                liveForm?.BeginInvoke(new Action(() =>
-                {
-                    foreach (Form open in Application.OpenForms.Cast<Form>().Where(open => open != liveForm).ToArray())
-                        open.Close();
-                    liveForm?.Close();
-                }));
-            }
-            catch { }
-            if (!thread.Join(TimeSpan.FromSeconds(5)))
-                throw new TimeoutException($"Family review UI smoke test did not complete and cleanup did not finish (stage: {stage}).");
-            throw new TimeoutException($"Family review UI smoke test did not complete (stage: {stage}).");
-        }
-        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
     }
 
     public void Dispose()

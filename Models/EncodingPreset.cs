@@ -18,6 +18,8 @@ namespace MediaFlux.Models
         public string? NvencPreset { get; set; }
         public string EncoderPreset { get; set; } = "";
         public int? QualityValue { get; set; }
+        public string QualityMode { get; set; } = "Manual";
+        public string QualityTarget { get; set; } = nameof(MediaFlux.Models.QualityTarget.Balanced);
         public bool TenBit { get; set; }
         public string AudioChannels { get; set; } = "";
         public bool? LimitGpuEncodingQueueToOneJob { get; set; }

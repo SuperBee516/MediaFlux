@@ -249,6 +249,50 @@ public sealed class LiveEncoderWorkflowTests
     }
 
     [Fact]
+    public async Task NvencPreflightAllowsRealEncodeWhenEnabled()
+    {
+        ToolPaths? tools = GetLiveToolPaths();
+        if (tools == null || Environment.GetEnvironmentVariable(NvencEnvironmentVariable) != "1")
+            return;
+
+        string root = CreateWorkingFolder();
+        try
+        {
+            string source = await CreateTenBitHevcSourceAsync(tools, root);
+            var log = new List<string>();
+            var service = new EncodingService(
+                Path.GetDirectoryName(tools.FfmpegPath)!, _ => { }, log.Add,
+                tools.FfmpegPath, tools.FfprobePath);
+            VideoEncoderSelection encoder = EncoderRegistry.Default.Resolve(
+                VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc).Selection;
+
+            EncodingService.EncodeResult result = await service.EncodeWithResultAsync(
+                new EncodingRequest
+                {
+                    Input = EncodingInputSource.FromFile(source),
+                    OutputFolder = root,
+                    Suffix = "_nvenc_preflight",
+                    Encoder = encoder,
+                    UseGpu = true,
+                    EncoderPreset = "p1",
+                    QualityValue = 30,
+                    CopySubtitles = false,
+                    OutputContainer = OutputContainerSelection.Matroska
+                });
+
+            Assert.True(result.Success, BuildFailureMessage(result, log));
+            Assert.True(File.Exists(result.OutputPath));
+            Assert.Contains("-c:v hevc_nvenc ", result.DiagnosticArguments);
+            using JsonDocument output = await ProbeAsync(tools, result.OutputPath);
+            AssertVideoStream(output, "hevc", "yuv420p", 320, 180);
+        }
+        finally
+        {
+            DeleteWorkingFolder(root);
+        }
+    }
+
+    [Fact]
     public async Task NvencHevcRunsThroughSharedWorkflowWhenEnabled()
     {
         ToolPaths? tools = GetLiveToolPaths();

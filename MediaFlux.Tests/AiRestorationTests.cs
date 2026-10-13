@@ -229,15 +229,55 @@ public sealed class AiRestorationTests : IDisposable
     }
 
     [Fact]
-    public async Task FrameSetAuditDetectsFilesStillChangingDuringFilesystemWait()
+    public void FrameSetAuditDetectsFilesStillChangingDuringFilesystemWait()
     {
         string output = Path.Combine(_root, "race-output"); Directory.CreateDirectory(output);
         string[] expected = AiRestorationIntermediateVideoService.ExpectedFrames(output, 1);
         WritePng(expected[0], 4, 4);
-        Task writer = Task.Run(async () => { await Task.Delay(10); File.WriteAllBytes(expected[0], new byte[96]); });
+        using var allowWriterToStart = new ManualResetEventSlim();
+        using var writerStarted = new ManualResetEventSlim();
+        using var allowWriterToFinish = new ManualResetEventSlim();
+        Exception? writerFailure = null;
+        var writer = new Thread(() =>
+        {
+            try
+            {
+                if (!allowWriterToStart.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("The audit did not reach its filesystem stability wait.");
+                using var stream = new FileStream(expected[0], FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+                stream.SetLength(0);
+                stream.WriteByte(0x89);
+                stream.Flush();
+                writerStarted.Set();
+                if (!allowWriterToFinish.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("The test did not release the open frame writer.");
+            }
+            catch (Exception exception)
+            {
+                writerFailure = exception;
+                writerStarted.Set();
+            }
+        }) { IsBackground = true };
+        writer.Start();
 
-        AiRestorationIntermediateVideoService.AiFrameSetValidationReport report = AiRestorationIntermediateVideoService.AuditFrameSet(output, expected, null, 0, 0);
-        await writer;
+        AiRestorationIntermediateVideoService.AiFrameSetValidationReport report;
+        try
+        {
+            report = AiRestorationIntermediateVideoService.AuditFrameSet(
+                output, expected, null, 0, 0,
+                beforeFilesystemStabilityWait: () =>
+                {
+                    allowWriterToStart.Set();
+                    Assert.True(writerStarted.Wait(TimeSpan.FromSeconds(10)), "The frame writer did not start after the audit snapshot.");
+                });
+        }
+        finally
+        {
+            allowWriterToStart.Set();
+            allowWriterToFinish.Set();
+            Assert.True(writer.Join(TimeSpan.FromSeconds(10)), "The frame writer did not stop.");
+        }
+        if (writerFailure != null) throw new Xunit.Sdk.XunitException(writerFailure.ToString());
 
         Assert.Contains("frame-00000000.png", report.FilesStillChanging);
         Assert.True(report.FilesystemWaitElapsed >= TimeSpan.FromMilliseconds(50));
