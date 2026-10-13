@@ -71,19 +71,28 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
         string stage = "create catalog";
         var thread = new Thread(() =>
         {
+            SqliteLibraryCatalog? catalog = null;
+            LibraryAnalyzerRuntime? runtime = null;
             LibraryAnalyzerForm? form = null;
+            TrackingWindowsFormsSynchronizationContext? trackingContext = null;
             try
             {
-                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
-                using var catalog = new SqliteLibraryCatalog(Path.Combine(_root, "navigation.db"), Path.Combine(_root, "navigation-backups"), Path.Combine(_root, "navigation-recovery"));
+                trackingContext = new TrackingWindowsFormsSynchronizationContext();
+                SynchronizationContext.SetSynchronizationContext(trackingContext);
+                catalog = new SqliteLibraryCatalog(Path.Combine(_root, "navigation.db"), Path.Combine(_root, "navigation-backups"), Path.Combine(_root, "navigation-recovery"));
                 catalog.Initialize();
                 stage = "create runtime and form";
-                using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
+                runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 form = new LibraryAnalyzerForm(runtime);
                 stage = "show form and await initial analyzer refresh";
                 form.Show();
                 form.Size = new Size(1100, 700);
                 Pump(InvokeTask(form, "RefreshAllAsync"));
+
+                Field<System.Windows.Forms.Timer>(form, "_refreshTimer").Stop();
+                Field<System.Windows.Forms.Timer>(form, "_activityTimer").Stop();
+                stage = "complete pending initial analyzer refreshes";
+                PumpAsyncVoidOperations(trackingContext);
 
                 stage = "inspect navigation layout";
                 AnalyzerNavigationRail rail = Field<AnalyzerNavigationRail>(form, "_navigationRail");
@@ -119,8 +128,11 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
                 Assert.Equal(5, rail.SelectedIndex);
                 Assert.True(visual.Selected);
 
+                stage = "await Health tab refresh";
+                int asyncOperationsStarted = trackingContext.AsyncOperationsStarted;
                 tabs.SelectedIndex = 7;
                 Application.DoEvents();
+                PumpAsyncVoidOperations(trackingContext, asyncOperationsStarted + 1);
                 Assert.Equal(7, rail.SelectedIndex);
                 Assert.True(AllControls(rail).OfType<AnalyzerNavigationItem>().Single(item => item.Text == "Health").Selected);
                 Assert.Equal(AccessibleRole.PageTab, visual.AccessibleRole);
@@ -129,8 +141,37 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
             catch (Exception ex) { failure = ex; }
             finally
             {
-                stage = "dispose form and runtime";
-                WinFormsTestLifecycle.CloseAndDispose(form);
+                try
+                {
+                    if (trackingContext != null)
+                    {
+                        stage = "finish pending analyzer UI operations";
+                        PumpAsyncVoidOperations(trackingContext);
+                        SynchronizationContext.SetSynchronizationContext(trackingContext.Dispatcher);
+                    }
+                }
+                catch (Exception ex) { failure ??= ex; }
+
+                try
+                {
+                    stage = "close and dispose analyzer form before runtime";
+                    WinFormsTestLifecycle.CloseAndDispose(form);
+                }
+                catch (Exception ex) { failure ??= ex; }
+
+                try
+                {
+                    stage = "dispose analyzer runtime";
+                    runtime?.Dispose();
+                }
+                catch (Exception ex) { failure ??= ex; }
+
+                try
+                {
+                    stage = "dispose analyzer catalog";
+                    catalog?.Dispose();
+                }
+                catch (Exception ex) { failure ??= ex; }
             }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -192,6 +233,39 @@ public sealed class LibraryAnalyzerModernizationUiTests : IDisposable
             Thread.Yield();
         }
         task.GetAwaiter().GetResult();
+    }
+
+    private static void PumpAsyncVoidOperations(TrackingWindowsFormsSynchronizationContext context, int minimumStartedOperations = 0)
+    {
+        DateTime end = DateTime.UtcNow.AddSeconds(20);
+        while (context.PendingAsyncOperations != 0 || context.AsyncOperationsStarted < minimumStartedOperations)
+        {
+            if (DateTime.UtcNow >= end)
+                throw new TimeoutException(
+                    $"Timed out waiting for analyzer async UI operations to finish; pending={context.PendingAsyncOperations}, started={context.AsyncOperationsStarted}, required={minimumStartedOperations}.");
+            Application.DoEvents();
+            Thread.Yield();
+        }
+        Application.DoEvents();
+    }
+
+    private sealed class TrackingWindowsFormsSynchronizationContext : SynchronizationContext
+    {
+        private int _pendingAsyncOperations;
+        private int _asyncOperationsStarted;
+
+        public WindowsFormsSynchronizationContext Dispatcher { get; } = new();
+        public int PendingAsyncOperations => Volatile.Read(ref _pendingAsyncOperations);
+        public int AsyncOperationsStarted => Volatile.Read(ref _asyncOperationsStarted);
+
+        public override void Post(SendOrPostCallback callback, object? state) => Dispatcher.Post(callback, state);
+        public override void Send(SendOrPostCallback callback, object? state) => Dispatcher.Send(callback, state);
+        public override void OperationStarted()
+        {
+            Interlocked.Increment(ref _asyncOperationsStarted);
+            Interlocked.Increment(ref _pendingAsyncOperations);
+        }
+        public override void OperationCompleted() => Interlocked.Decrement(ref _pendingAsyncOperations);
     }
 
     private sealed class EmptyProbe : ILibraryMetadataProbe

@@ -36,7 +36,17 @@ public sealed class QueueWorkspaceUiTests
 
         string configPath = Path.Combine(Path.GetTempPath(), $"MediaFlux.QueueLayout.{Guid.NewGuid():N}.json");
         Rectangle workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
-        var savedBounds = new Rectangle(workingArea.Left + 20, workingArea.Top + 20, 1100, 760);
+        Assert.True(workingArea.Width >= 900 && workingArea.Height >= 650,
+            $"The hosted display must fit the queue window minimum size; working area={workingArea}.");
+        int savedX = workingArea.Left + Math.Min(20, workingArea.Width - 900);
+        int savedY = workingArea.Top + Math.Min(20, workingArea.Height - 650);
+        var savedBounds = new Rectangle(
+            savedX,
+            savedY,
+            Math.Min(1100, workingArea.Right - savedX),
+            Math.Min(760, workingArea.Bottom - savedY));
+        Assert.True(workingArea.Contains(savedBounds),
+            $"The restored queue window request must fit the hosted working area; bounds={savedBounds}, working area={workingArea}.");
         new Config
         {
             MainWindowX = savedBounds.X,
@@ -57,10 +67,16 @@ public sealed class QueueWorkspaceUiTests
                 Application.DoEvents();
 
                 Assert.Equal(savedBounds.Size, main.Bounds.Size);
+                Assert.Equal(savedBounds.Location, main.Location);
+                Assert.True(workingArea.Contains(main.Bounds),
+                    $"The restored queue window must remain inside the hosted working area; bounds={main.Bounds}, working area={workingArea}.");
                 AssertCompactWorkspaceLayout(main);
 
                 main.WindowState = FormWindowState.Maximized;
                 Application.DoEvents();
+                Rectangle maximizedClientArea = main.RectangleToScreen(main.ClientRectangle);
+                Assert.True(workingArea.Contains(maximizedClientArea),
+                    $"The maximized queue client area must remain inside the hosted working area; client={maximizedClientArea}, working area={workingArea}.");
                 AssertCompactWorkspaceLayout(main);
 
                 main.WindowState = FormWindowState.Normal;

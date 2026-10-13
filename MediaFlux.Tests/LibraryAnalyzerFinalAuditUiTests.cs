@@ -29,9 +29,13 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                 catalog.Initialize();
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 using var form = new LibraryAnalyzerForm(runtime);
+                Assert.Equal(new Size(1100, 700), form.MinimumSize);
                 form.ClientSize = new Size(1800, 1100);
                 form.Show();
                 Application.DoEvents();
+                Size effectiveHostedClientSize = form.ClientSize;
+                Assert.True(effectiveHostedClientSize.Width > 0 && effectiveHostedClientSize.Height > 0,
+                    $"The hosted display must provide a usable analyzer client area; actual={effectiveHostedClientSize}.");
                 var tabs = AllControls(form).OfType<TabControl>().Single(tab => tab.Name == "LibraryAnalyzerTabs");
                 string[] expected =
                 {
@@ -45,11 +49,15 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
 
                 foreach (Size size in new[] { new Size(1100, 700), new Size(1360, 840), new Size(1800, 1100) })
                 {
-                    form.ClientSize = size;
+                    Size effectiveRequestSize = new(
+                        Math.Min(size.Width, effectiveHostedClientSize.Width),
+                        Math.Min(size.Height, effectiveHostedClientSize.Height));
+                    form.ClientSize = effectiveRequestSize;
                     Application.DoEvents();
                     form.PerformLayout();
                     Size actualSize = form.ClientSize;
                     Assert.True(actualSize.Width > 0 && actualSize.Height > 0, $"The displayed analyzer client area must remain usable for requested size {size}; actual={actualSize}.");
+                    Assert.Equal(effectiveRequestSize, actualSize);
                     Assert.True(actualSize.Width <= size.Width && actualSize.Height <= size.Height,
                         $"The hosted display must not enlarge the requested analyzer client area: requested={size}, actual={actualSize}.");
                     Assert.All(tabs.TabPages.Cast<TabPage>(), page =>
@@ -58,7 +66,6 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                     AssertDuplicateFilterLayout(tabs, "Duplicates — Visual", actualSize);
                 }
 
-                Assert.Equal(new Size(1100, 700), form.MinimumSize);
                 Assert.Contains(tabs.TabPages.Cast<TabPage>(),
                     page => page.Controls.OfType<AnalyzerSectionPanel>().Any());
                 Assert.Contains(tabs.TabPages.Cast<TabPage>(),
