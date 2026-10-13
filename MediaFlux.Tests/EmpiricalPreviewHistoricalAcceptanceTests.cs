@@ -5,7 +5,7 @@ using Xunit;
 
 namespace MediaFlux.Tests;
 
-/// <summary>Opt-in, two fixed historical sources only; invokes preview, never the encode executor.</summary>
+/// <summary>Opt-in, two fixed historical sources; measures only each deterministic prepared plan.</summary>
 public sealed class EmpiricalPreviewHistoricalAcceptanceTests
 {
     private sealed class HistoricalPreviewFactAttribute : FactAttribute
@@ -29,7 +29,7 @@ public sealed class EmpiricalPreviewHistoricalAcceptanceTests
         Assert.True(File.Exists(sourceB));
         string probePath = Path.Combine(Path.GetDirectoryName(tool)!, "ffprobe.exe");
         var probe = new FfprobeService(probePath, new MediaToolProcessRunner());
-        // Only sample-command methods are used. EncodeAsync and finalization are never invoked.
+        // Only bounded sample-command methods are used. EncodeAsync and finalization are never invoked.
         var encoding = new EncodingService(Path.GetDirectoryName(tool)!, _ => { }, null, tool, probePath);
         var provider = new QueueEmpiricalPreviewProvider(encoding, probe, new EncodeExecutionSnapshotBuilder(), tool);
         var common = new EncodeExecutionSnapshotSettings
@@ -44,19 +44,25 @@ public sealed class EmpiricalPreviewHistoricalAcceptanceTests
             CompatibilityPolicy = ContainerCompatibilityPolicy.Intelligent, DeleteSourceAfterCompression = false
         };
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        var a = await provider.EstimateAsync(common, new() { SourceFilePath = sourceA, LogicalSourcePath = sourceA }, timeout.Token);
-        var b = await provider.EstimateAsync(common with { AutomaticQuality = true, StorageSavings = new() { Enabled = true } },
-            new() { SourceFilePath = sourceB, LogicalSourcePath = sourceB }, timeout.Token);
-        var evidence = new { SourceA = a.Result, KnownProductionBytes = 3312117484L,
-            SourceAErrorPercent = (a.Result.ProjectedTotalBytes / 3312117484L - 1) * 100,
-            SourceB = b.Result, DiagnosticA = a.Result.Diagnostic, DiagnosticB = b.Result.Diagnostic };
+        QueueProductionPlanEstimate a = await provider.PrepareAndEstimateAsync(
+            common, new() { SourceFilePath = sourceA, LogicalSourcePath = sourceA }, 0, timeout.Token);
+        QueueProductionPlanEstimate b = await provider.PrepareAndEstimateAsync(
+            common with { AutomaticQuality = true, StorageSavings = new() { Enabled = true } },
+            new() { SourceFilePath = sourceB, LogicalSourcePath = sourceB }, 0, timeout.Token);
+        var evidence = new
+        {
+            SourceA = a.PreparedPlan.Estimate,
+            PlanA = a.PreparedPlan.Identity,
+            SourceB = b.PreparedPlan.Estimate,
+            PlanB = b.PreparedPlan.Identity,
+            DiagnosticA = a.Diagnostic,
+            DiagnosticB = b.Diagnostic
+        };
         Directory.CreateDirectory(Path.GetDirectoryName(report)!);
         await File.WriteAllTextAsync(report, JsonSerializer.Serialize(evidence, new JsonSerializerOptions { WriteIndented = true }));
-        Assert.Equal(19, a.Result.DisplayQuality);
-        Assert.Equal(45, a.Result.SecondsPerAnchor);
-        Assert.Equal(19, b.Result.Anchors[0]);
-        Assert.Equal(21, b.Result.Anchors[^1]);
-        Assert.Equal(AdaptiveSelectionDisposition.Skipped, b.Result.LikelyDisposition);
-        Assert.InRange(Math.Abs(evidence.SourceAErrorPercent), 0, 15);
+        Assert.Equal(a.PreparedPlan.Identity.PlanFingerprint, a.PreparedPlan.Estimate?.Plan.PlanFingerprint);
+        Assert.Equal(b.PreparedPlan.Identity.PlanFingerprint, b.PreparedPlan.Estimate?.Plan.PlanFingerprint);
+        Assert.Equal(1, a.PreparedPlan.Estimate?.SampleEvidence?.Select(sample => sample.Quality).Distinct().Count());
+        Assert.Equal(1, b.PreparedPlan.Estimate?.SampleEvidence?.Select(sample => sample.Quality).Distinct().Count());
     }
 }

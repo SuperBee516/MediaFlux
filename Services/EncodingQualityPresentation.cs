@@ -35,7 +35,7 @@ public static class EncodingQualityPresentation
         var items = new List<EncodingPlanItem>
         {
             new("Quality preference", target),
-            new("Mode", automatic ? "Automatic / Source Adaptive" : "Manual / Legacy Numeric"),
+            new("Mode", automatic ? "Automatic" : "Manual / Legacy Numeric"),
             new("Effective quality", effective),
             new("Mechanism", mechanism)
         };

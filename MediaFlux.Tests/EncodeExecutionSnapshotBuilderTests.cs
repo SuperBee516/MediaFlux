@@ -9,7 +9,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
     private static readonly DateTime StartedUtc = new(2026, 9, 30, 12, 0, 0, DateTimeKind.Utc);
 
     [Fact]
-    public void OrdinaryAutomaticBalancedBuildsSourceAdaptiveIntentWithoutTargetSize()
+    public void OrdinaryAutomaticBalancedBuildsOneDeterministicPlanWithoutTargetSize()
     {
         EncodeExecutionSnapshot snapshot = Build(
             Settings() with
@@ -21,14 +21,17 @@ public sealed class EncodeExecutionSnapshotBuilderTests
             });
 
         Assert.Null(snapshot.PredictionShadowExperimentAssignment);
-        Assert.Equal(EncodingQualityIntent.Automatic(QualityTarget.Balanced), snapshot.QualityIntent);
+        Assert.Equal(EncodingQualityIntent.AutomaticTarget(QualityTarget.Balanced), snapshot.QualityIntent);
         Assert.Null(snapshot.TargetMb);
         Assert.Equal(VideoEncoderIds.Nvenc, snapshot.Encoder.EncoderId);
         Assert.Equal(VideoCodecFamily.Hevc, snapshot.Encoder.CodecFamily);
+        Assert.Equal(EncodingQualityPolicyService.ResolveAutomaticQuality(
+            snapshot.Encoder, QualityTarget.Balanced), snapshot.QualityValue);
+        Assert.False(snapshot.AdaptiveStorageSavingsEnabled);
     }
 
     [Fact]
-    public void ProvisionalQueuedEstimateDoesNotBecomeTargetForAutomaticAdaptiveSelection()
+    public void ProvisionalQueuedEstimateCannotChangePlanOrBecomeProductionCalibration()
     {
         EncodingSizePredictionCalibration calibration = EncodingSizePredictionCalibration.Unavailable(
             6, "Provisional queue estimate.");
@@ -46,9 +49,9 @@ public sealed class EncodeExecutionSnapshotBuilderTests
             });
 
         Assert.Null(snapshot.TargetMb);
-        Assert.Equal(EncodingQualityIntent.Automatic(QualityTarget.Balanced), snapshot.QualityIntent);
-        Assert.True(snapshot.AdaptiveStorageSavingsEnabled);
-        Assert.Same(calibration, snapshot.SizePredictionCalibration);
+        Assert.Equal(EncodingQualityIntent.AutomaticTarget(QualityTarget.Balanced), snapshot.QualityIntent);
+        Assert.False(snapshot.AdaptiveStorageSavingsEnabled);
+        Assert.Null(snapshot.SizePredictionCalibration);
     }
 
     [Fact]
@@ -305,7 +308,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
     }
 
     [Fact]
-    public void StorageSavingsQualityTargetKeepsQualityEncodingInsteadOfFixedSize()
+    public void ManualNumericQualityTakesPriorityOverStorageSavingsQualityTarget()
     {
         var savings = new StorageSavingsOptions
         {
@@ -318,9 +321,139 @@ public sealed class EncodeExecutionSnapshotBuilderTests
             Item() with { EstimatedTargetMb = null });
 
         Assert.True(result.StorageSavingsApplies);
-        Assert.True(result.UsesStorageQualityTarget);
-        Assert.Equal(17, result.Snapshot.QualityValue);
+        Assert.False(result.UsesStorageQualityTarget);
+        Assert.Equal(22, result.Snapshot.QualityValue);
         Assert.Null(result.Snapshot.TargetMb);
+        Assert.False(result.Snapshot.StorageSavingsContract.EnforceAcceptance);
+    }
+
+    [Fact]
+    public void ManualStorageSavingsCanBeMadeStrictOnlyByExplicitSetting()
+    {
+        EncodeExecutionSnapshot snapshot = Build(Settings() with
+        {
+            AutomaticQuality = false,
+            StorageSavings = new StorageSavingsOptions { Enabled = true, StrictEnforcementForManual = true }
+        });
+
+        Assert.Equal(22, snapshot.QualityValue);
+        Assert.True(snapshot.StorageSavingsContract.EnforceAcceptance);
+    }
+
+    [Fact]
+    public void ManualQualityChangeDropsAnEstimateBoundToThePreviousQuality()
+    {
+        EncodeExecutionSnapshot previous = Build(Settings() with { NumericQualityValue = 22 });
+        ProductionPlanIdentity previousPlan = Assert.IsType<ProductionPlanIdentity>(previous.ProductionPlan);
+        var estimate = new PlanBoundEstimate(previousPlan, 3, "EmpiricalPreview", 500_000,
+            EstimateAuthorityLevel.Measured, SampleCount: 3);
+
+        EncodeExecutionSnapshot changed = Build(
+            Settings() with { NumericQualityValue = 25 },
+            Item() with { BoundEstimate = estimate });
+
+        Assert.Equal(25, changed.QualityValue);
+        Assert.Null(changed.BoundEstimate);
+        Assert.NotEqual(previousPlan.PlanFingerprint, changed.ProductionPlan!.PlanFingerprint);
+        Assert.Equal(25, changed.ProductionPlan.Inputs.QualityValue);
+    }
+
+    [Fact]
+    public void AutomaticEstimateCannotRebindProductionQuality()
+    {
+        EncodeExecutionSnapshotSettings settings = Settings() with
+        {
+            AutomaticQuality = true,
+            QualityTarget = QualityTarget.Balanced
+        };
+        EncodeExecutionSnapshot initial = Build(settings);
+        ProductionPlanIdentity basePlan = Assert.IsType<ProductionPlanIdentity>(initial.ProductionPlan);
+        ProductionPlanIdentity selectedPlan = ProductionPlanFingerprintService.WithQuality(
+            basePlan, initial.QualityValue - 2);
+        var estimate = new PlanBoundEstimate(selectedPlan, 4, "EmpiricalPreview", 500_000,
+            EstimateAuthorityLevel.Measured, SampleCount: 3);
+
+        EncodeExecutionSnapshot rebound = Build(settings, Item() with { BoundEstimate = estimate });
+
+        Assert.Null(rebound.BoundEstimate);
+        Assert.Equal(basePlan.PlanFingerprint, rebound.ProductionPlan!.PlanFingerprint);
+        Assert.Equal(initial.QualityValue, rebound.QualityValue);
+    }
+
+    [Fact]
+    public void LegacyAdaptivePlanCannotOverrideTheDeterministicSnapshot()
+    {
+        EncodeExecutionSnapshotSettings settings = Settings() with
+        {
+            AutomaticQuality = true,
+            QualityTarget = QualityTarget.Balanced,
+            StorageSavings = new StorageSavingsOptions { Enabled = true, SourceVideoBitratePercent = 50 }
+        };
+        EncodeExecutionSnapshot initial = Build(settings);
+        ProductionPlanIdentity baseIdentity = Assert.IsType<ProductionPlanIdentity>(initial.ProductionPlan);
+        int preferred = Assert.IsType<int>(initial.QualityValue);
+        int selected = preferred - 1;
+        ProductionPlanIdentity selectedIdentity = ProductionPlanFingerprintService.WithQuality(baseIdentity, selected);
+        var sample = new RepresentativeSampleEvidence(
+            new RepresentativeSample("Beginning", TimeSpan.Zero, TimeSpan.FromSeconds(25)), 5_000_000, 25)
+        { Purpose = VideoSamplePurpose.ProductionAcceptance };
+        var candidate = new AdaptiveCandidateEvidence(
+            selected, [sample], 400_000_000, 600_000_000, 20_000_000, AdaptiveSampleClassification.ClearlyMeets)
+        { ProjectedTypicalBytes = 500_000_000 };
+        var selection = new AdaptiveQualitySelectionEvidence(
+            AdaptiveSelectionDisposition.Selected,
+            initial.Encoder.EncoderId,
+            initial.Encoder.FfmpegCodec,
+            QualityTarget.Balanced,
+            EncoderQualityMechanism.Cq,
+            preferred,
+            selected,
+            selected,
+            1,
+            null,
+            false,
+            null,
+            [candidate],
+            "prepared test selection")
+        { SamplesExecuted = 1 };
+        var estimate = new PlanBoundEstimate(
+            selectedIdentity, 8, "ProductionAcceptanceSamples", 500_000_000,
+            EstimateAuthorityLevel.Measured, SampleCount: 1, LowerBytes: 400_000_000,
+            UpperBytes: 600_000_000, Confidence: "Low");
+        var prepared = new PreparedAdaptiveProductionPlan(selectedIdentity, selection, estimate);
+
+        EncodeExecutionSnapshot rebound = Build(settings, Item() with
+        {
+            PreparedAdaptiveProductionPlan = prepared,
+            BoundEstimate = estimate
+        });
+
+        Assert.Null(rebound.PreparedAdaptiveProductionPlan);
+        Assert.Null(rebound.BoundEstimate);
+        Assert.NotEqual(selectedIdentity.PlanFingerprint, rebound.ProductionPlan!.PlanFingerprint);
+        Assert.NotEqual(selected, rebound.ProductionPlan.Inputs.QualityValue);
+        Assert.Equal("nvenc", rebound.ProductionPlan.Inputs.EncoderId);
+        Assert.Equal("p5", rebound.ProductionPlan.Inputs.Preset);
+        Assert.Equal(8, rebound.ProductionPlan.Inputs.BitDepth);
+        Assert.Equal("auto", rebound.ProductionPlan.Inputs.Container);
+        Assert.Equal("copy-compatible", rebound.ProductionPlan.Inputs.AudioMode);
+        Assert.Equal(selectedIdentity.SourceIdentity, rebound.ProductionPlan.SourceIdentity);
+        EncodeExecutionSnapshot executionCopy = rebound.CopyForExecution();
+        Assert.NotSame(rebound.StorageSavingsPolicy, executionCopy.StorageSavingsPolicy);
+        Assert.Equal(rebound.StorageSavingsPolicy.SourceVideoBitratePercent,
+            executionCopy.StorageSavingsPolicy.SourceVideoBitratePercent);
+
+        StorageSavingsOptions changedPolicy = settings.StorageSavings.CloneNormalized();
+        changedPolicy.SourceVideoBitratePercent = 60;
+        EncodeExecutionSnapshot changed = Build(settings with { StorageSavings = changedPolicy }, Item() with
+        {
+            PreparedAdaptiveProductionPlan = prepared,
+            BoundEstimate = estimate
+        });
+
+        Assert.Null(changed.PreparedAdaptiveProductionPlan);
+        Assert.Null(changed.BoundEstimate);
+        Assert.NotEqual(selectedIdentity.PlanFingerprint, changed.ProductionPlan!.PlanFingerprint);
     }
 
     [Fact]
@@ -337,6 +470,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
             QualityValue = 22,
             QualityMode = "Automatic",
             QualityTarget = nameof(QualityTarget.Balanced),
+            AutomaticRateControlMode = "target-bitrate",
             TenBit = true,
             AudioChannels = "Stereo (2.0)",
             VideoFormat = "H.265 / HEVC (x265)",
@@ -397,6 +531,33 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         Assert.Throws<InvalidDataException>(() => EncodeExecutionSnapshotSettings.FromSavedJob(
             new EncodeJobSettings(),
             new Config()));
+    }
+
+    [Fact]
+    public void LegacyAutomaticSavedJobWithoutRateControlMarkerKeepsQualityTargetIntent()
+    {
+        var job = new EncodeJobSettings
+        {
+            OutputFolder = "C:\\Out",
+            CompressionProfile = "Medium Quality (Default)",
+            EncoderId = VideoEncoderIds.Nvenc,
+            VideoCodec = nameof(VideoCodecFamily.Hevc),
+            EncoderPreset = "p5",
+            OutputContainer = nameof(OutputContainerSelection.Matroska),
+            QualityValue = 22,
+            QualityMode = "Automatic",
+            QualityTarget = nameof(QualityTarget.Balanced),
+            AudioChannels = "Keep source layout",
+            VideoFormat = "H.265 / HEVC (x265)",
+            Resolution = "Original"
+        };
+
+        EncodeExecutionSnapshotSettings settings = EncodeExecutionSnapshotSettings.FromSavedJob(job, new Config());
+        EncodeExecutionSnapshot snapshot = Build(settings);
+
+        Assert.Null(job.AutomaticRateControlMode);
+        Assert.False(settings.UseAutomaticTargetBitrate);
+        Assert.Equal(EncodingQualityIntent.Automatic(QualityTarget.Balanced), snapshot.QualityIntent);
     }
 
     [Fact]
@@ -485,7 +646,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         (builder ?? new EncodeExecutionSnapshotBuilder()).Build(Identity(), settings ?? Settings(), item ?? Item());
 
     [Theory]
-    [InlineData("automatic", true)]
+    [InlineData("automatic", false)]
     [InlineData("off", false)]
     [InlineData("manual", false)]
     [InlineData("target", false)]
@@ -493,7 +654,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
     [InlineData("no-compression", false)]
     [InlineData("restoration", false)]
     [InlineData("qsv", false)]
-    public void Phase2SnapshotEligibilityIsAdditionalToUnchangedPhase1Applicability(string scenario, bool expected)
+    public void ProductionSnapshotNeverEnablesStorageSavingsQualitySearch(string scenario, bool expected)
     {
         var settings = Settings() with { AutomaticQuality = true, StorageSavings = new() { Enabled = true } };
         var item = Item();
@@ -510,7 +671,7 @@ public sealed class EncodeExecutionSnapshotBuilderTests
     }
 
     [Fact]
-    public void PolicyCRetryGateDefaultsOffAndFreezesOnlyForAnEligibleAdaptiveJob()
+    public void PolicyCRetryAndAdaptiveSearchStayDisabledInPreparedProductionSnapshots()
     {
         Assert.False(new StorageSavingsOptions().ExperimentalPolicyCRetryEnabled);
         var optedIn = new StorageSavingsOptions
@@ -528,8 +689,8 @@ public sealed class EncodeExecutionSnapshotBuilderTests
         });
         EncodeExecutionSnapshot manual = Build(Settings() with { StorageSavings = optedIn });
 
-        Assert.True(eligible.AdaptiveStorageSavingsEnabled);
-        Assert.True(eligible.ExperimentalPolicyCRetryEnabled);
+        Assert.False(eligible.AdaptiveStorageSavingsEnabled);
+        Assert.False(eligible.ExperimentalPolicyCRetryEnabled);
         Assert.False(manual.ExperimentalPolicyCRetryEnabled);
         Assert.False(Build(Settings() with
         {

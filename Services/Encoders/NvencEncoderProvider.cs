@@ -122,9 +122,6 @@ namespace MediaFlux.Services.Encoders
                 $"-rc vbr " +
                 $"-preset {context.Preset} ");
 
-            if (context.Selection.CodecFamily == VideoCodecFamily.Av1)
-                builder.Append($"-cq {context.QualityValue} ");
-
             AppendTuningOptions(builder, context);
         }
 

@@ -133,18 +133,25 @@ public sealed class StorageSavingsSampleSelector
         cancellationToken.ThrowIfCancellationRequested();
         // Uncertain evidence may justify one guarded attempt when its typical
         // projection meets. The easiest scene alone is insufficient evidence.
-        AdaptiveCandidateEvidence? borderline = evidence.FirstOrDefault(e =>
-            IsEligibleBorderline(e, request.Contract.MaximumAcceptedOutputBytes.Value));
+        AdaptiveCandidateEvidence? borderline = request.Contract.AllowRiskyBorderlineProduction
+            ? evidence.FirstOrDefault(e => IsEligibleBorderlineByTypical(e, request.Contract.MaximumAcceptedOutputBytes.Value))
+            : evidence.FirstOrDefault(e => IsEligibleBorderline(e, request.Contract.MaximumAcceptedOutputBytes.Value));
         if (borderline is not null)
             return Result(request, AdaptiveSelectionDisposition.Selected, borderline.Quality, evidence,
-                "Sample evidence is borderline and its typical temporal projection meets the objective; attempt one full encode at the highest-quality eligible candidate, protected by actual-byte validation.", samplesExecuted);
+                request.Contract.AllowRiskyBorderlineProduction && IsRiskyBorderline(borderline, request.Contract.MaximumAcceptedOutputBytes.Value)
+                    ? "Explicit policy allows one full encode for a borderline candidate whose upper projection exceeds the safe range; actual-byte validation remains authoritative."
+                    : "Sample evidence is borderline but within the safe upper-projection range; attempt one full encode at the highest-quality eligible candidate, protected by actual-byte validation.", samplesExecuted);
 
+        bool allCandidatesRejected = evidence.All(e => IsReliablyRejectedCandidate(e,
+            request.Contract.MaximumAcceptedOutputBytes.Value, request.Contract.AllowRiskyBorderlineProduction));
         string reason = evidence.All(e => e.Classification == AdaptiveSampleClassification.ClearlyMisses)
             ? "Every tested acceptable candidate clearly misses the projected storage objective."
-            : "No tested acceptable candidate has a typical temporal projection meeting the storage objective; an optimistic minimum scene rate does not justify a full encode.";
+            : allCandidatesRejected
+                ? "Every tested acceptable candidate is materially risky or projects above the storage objective."
+                : "No tested acceptable candidate has a typical temporal projection meeting the storage objective; an optimistic minimum scene rate does not justify a full encode.";
         AdaptiveQualitySelectionEvidence allMiss = Result(request, AdaptiveSelectionDisposition.Skipped, null, evidence,
-            reason + " Reject before production encoding only when the complete production-sample envelope confirms every candidate clearly misses.", samplesExecuted);
-        if (HasReliableAllCandidateStorageMiss(allMiss, request))
+            reason + " Reject before production encoding only when complete production samples confirm every candidate is inadmissible.", samplesExecuted);
+        if (HasReliableAllCandidateStorageRisk(allMiss, request))
             return allMiss;
 
         return Result(request, AdaptiveSelectionDisposition.NotSuitable, request.Envelope.PreferredQuality, evidence,
@@ -154,6 +161,17 @@ public sealed class StorageSavingsSampleSelector
     internal static bool HasReliableAllCandidateStorageMiss(
         AdaptiveQualitySelectionEvidence selection,
         AdaptiveQualitySelectionRequest request)
+        => HasReliableAllCandidateStorageRisk(selection, request, requireClearMiss: true);
+
+    internal static bool HasReliableAllCandidateStorageRisk(
+        AdaptiveQualitySelectionEvidence selection,
+        AdaptiveQualitySelectionRequest request) =>
+        HasReliableAllCandidateStorageRisk(selection, request, requireClearMiss: false);
+
+    private static bool HasReliableAllCandidateStorageRisk(
+        AdaptiveQualitySelectionEvidence selection,
+        AdaptiveQualitySelectionRequest request,
+        bool requireClearMiss)
     {
         ArgumentNullException.ThrowIfNull(selection);
         ArgumentNullException.ThrowIfNull(request);
@@ -179,8 +197,9 @@ public sealed class StorageSavingsSampleSelector
         {
             AdaptiveCandidateEvidence candidate = selection.Candidates[candidateIndex];
             if (candidate is null || candidate.Quality != acceptableQualities[candidateIndex] ||
-                candidate.Classification != AdaptiveSampleClassification.ClearlyMisses ||
-                !double.IsFinite(candidate.ProjectedLowerBytes) || candidate.ProjectedLowerBytes <= maximumBytes ||
+                !IsReliablyRejectedCandidate(candidate, maximumBytes, request.Contract.AllowRiskyBorderlineProduction) ||
+                requireClearMiss && (candidate.Classification != AdaptiveSampleClassification.ClearlyMisses ||
+                    !double.IsFinite(candidate.ProjectedLowerBytes) || candidate.ProjectedLowerBytes <= maximumBytes) ||
                 candidate.Samples is null || candidate.Samples.Count != positions.Count)
                 return false;
 
@@ -198,7 +217,22 @@ public sealed class StorageSavingsSampleSelector
     }
 
     internal static bool IsEligibleBorderline(AdaptiveCandidateEvidence candidate, long maximumBytes) =>
+        IsEligibleBorderlineByTypical(candidate, maximumBytes) && !IsRiskyBorderline(candidate, maximumBytes);
+
+    internal static bool IsEligibleBorderlineByTypical(AdaptiveCandidateEvidence candidate, long maximumBytes) =>
         IsEligibleBorderline(candidate.Classification, candidate.ProjectedTypicalBytes, maximumBytes);
+
+    internal static bool IsRiskyBorderline(AdaptiveCandidateEvidence candidate, long maximumBytes) =>
+        candidate.Classification == AdaptiveSampleClassification.Borderline &&
+        double.IsFinite(candidate.ProjectedUpperBytes) &&
+        candidate.ProjectedUpperBytes > maximumBytes * 1.10d;
+
+    private static bool IsReliablyRejectedCandidate(AdaptiveCandidateEvidence candidate, long maximumBytes, bool allowRiskyBorderline) =>
+        (candidate.Classification == AdaptiveSampleClassification.ClearlyMisses &&
+         double.IsFinite(candidate.ProjectedLowerBytes) && candidate.ProjectedLowerBytes > maximumBytes) ||
+        (!allowRiskyBorderline && candidate.Classification == AdaptiveSampleClassification.Borderline &&
+         (IsRiskyBorderline(candidate, maximumBytes) ||
+          candidate.ProjectedTypicalBytes is { } typical && double.IsFinite(typical) && typical > maximumBytes));
 
     internal static bool IsEligibleBorderline(AdaptiveSampleClassification classification, double? typical, long maximumBytes) =>
         classification == AdaptiveSampleClassification.Borderline &&

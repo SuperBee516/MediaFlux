@@ -183,14 +183,14 @@ public sealed class AdaptiveStorageSavingsTests
     }
 
     [Fact]
-    public async Task SevenFirstMissSuggestionStillCompletesFullNineBeforeAbstaining()
+    public async Task SevenFirstMissSuggestionCompletesFullNineBeforeSkippingRiskyCandidates()
     {
         AdaptiveQualitySelectionRequest request = Request();
         var runner = new FakeSamples((_, position) => position is 3 or 5 ? 1_000 : 10_000);
         AdaptiveQualitySelectionEvidence result = await Select(runner, request);
 
-        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
-        Assert.Equal(request.Envelope.PreferredQuality, result.SelectedQuality);
+        Assert.Equal(AdaptiveSelectionDisposition.Skipped, result.Disposition);
+        Assert.Null(result.SelectedQuality);
         Assert.Equal(36, runner.Calls.Count);
         Assert.Equal(36, result.SamplesExecuted);
         Assert.False(result.SevenFirstEarlyPositive);
@@ -199,13 +199,14 @@ public sealed class AdaptiveStorageSavingsTests
             Assert.Equal(9, candidate.Samples.Count);
             Assert.Equal(AdaptiveSampleClassification.Borderline, candidate.Classification);
         });
+        Assert.True(StorageSavingsSampleSelector.HasReliableAllCandidateStorageRisk(result, request));
     }
 
     [Fact]
-    public async Task SevenFirstAmbiguousProjectionRunsFullNineAndPreservesLegacyBorderlineSelection()
+    public async Task SevenFirstBorderlineWithinTenPercentRunsFullNineAndCanProceed()
     {
         AdaptiveQualitySelectionRequest request = Request();
-        var runner = new FakeSamples((_, position) => position is 3 or 5 ? 1_000 : 8_000);
+        var runner = new FakeSamples((_, position) => position is 3 or 5 ? 1_000 : 7_500);
         AdaptiveQualitySelectionEvidence result = await Select(runner, request);
 
         Assert.Equal(AdaptiveSelectionDisposition.Selected, result.Disposition);
@@ -233,12 +234,13 @@ public sealed class AdaptiveStorageSavingsTests
                     .OrderBy(measurement => measurement.Position).Select(measurement => measurement.Evidence).ToArray()))
             .ToArray();
 
-        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
-        Assert.Equal(request.Envelope.PreferredQuality, result.SelectedQuality);
+        Assert.Equal(AdaptiveSelectionDisposition.Skipped, result.Disposition);
+        Assert.Null(result.SelectedQuality);
         Assert.Equal(36, result.SamplesExecuted);
         Assert.False(result.SevenFirstEarlyPositive);
         Assert.Equal(new[] { 24, 25, 26, 27 }, result.Candidates.Select(candidate => candidate.Quality));
         Assert.All(result.Candidates, candidate => Assert.Equal(9, candidate.Samples.Count));
+        Assert.True(StorageSavingsSampleSelector.HasReliableAllCandidateStorageRisk(result, request));
         Assert.Equal(legacyFullNineCandidates.Select(candidate => candidate.Quality), result.Candidates.Select(candidate => candidate.Quality));
         Assert.Equal(legacyFullNineCandidates.Select(candidate => candidate.Classification), result.Candidates.Select(candidate => candidate.Classification));
         Assert.Equal(legacyFullNineCandidates.Select(candidate => candidate.ProjectedLowerBytes), result.Candidates.Select(candidate => candidate.ProjectedLowerBytes));
@@ -275,6 +277,54 @@ public sealed class AdaptiveStorageSavingsTests
         Assert.Equal(AdaptiveSelectionDisposition.Selected, result.Disposition);
         Assert.Equal(25, result.SelectedQuality);
         Assert.Contains("borderline", result.Reason);
+    }
+
+    [Fact]
+    public async Task RiskyBorderlineCandidatesAreSkippedBeforeProductionUnlessExplicitlyAllowed()
+    {
+        AdaptiveQualitySelectionRequest request = Request();
+        var runner = new FakeSamples((_, position) => position == 8 ? 12_000 : 6_000);
+
+        AdaptiveQualitySelectionEvidence skipped = await Select(runner, request);
+
+        Assert.Equal(AdaptiveSelectionDisposition.Skipped, skipped.Disposition);
+        Assert.Null(skipped.SelectedQuality);
+        Assert.Equal(36, skipped.SamplesExecuted);
+        Assert.True(StorageSavingsSampleSelector.HasReliableAllCandidateStorageRisk(skipped, request));
+        Assert.All(skipped.Candidates, candidate =>
+        {
+            Assert.Equal(AdaptiveSampleClassification.Borderline, candidate.Classification);
+            Assert.True(StorageSavingsSampleSelector.IsRiskyBorderline(candidate,
+                request.Contract.MaximumAcceptedOutputBytes!.Value));
+        });
+
+        var allowedRunner = new FakeSamples((_, position) => position == 8 ? 12_000 : 6_000);
+        AdaptiveQualitySelectionRequest allowedRequest = request with
+        {
+            Contract = request.Contract with { AllowRiskyBorderlineProduction = true }
+        };
+        AdaptiveQualitySelectionEvidence allowed = await Select(allowedRunner, allowedRequest);
+
+        Assert.Equal(AdaptiveSelectionDisposition.Selected, allowed.Disposition);
+        Assert.Equal(24, allowed.SelectedQuality);
+        Assert.Equal(36, allowed.SamplesExecuted);
+        Assert.Contains("Explicit policy allows", allowed.Reason);
+    }
+
+    [Fact]
+    public async Task SafeMeasuredCandidateWinsOverRiskyBorderlineCandidate()
+    {
+        AdaptiveQualitySelectionRequest request = Request();
+        var runner = new FakeSamples((quality, position) => quality == 24
+            ? position == 8 ? 12_000 : 6_000
+            : 5_000);
+
+        AdaptiveQualitySelectionEvidence result = await Select(runner, request);
+
+        Assert.Equal(AdaptiveSelectionDisposition.Selected, result.Disposition);
+        Assert.Equal(25, result.SelectedQuality);
+        Assert.Equal(16, result.SamplesExecuted);
+        Assert.True(result.SevenFirstEarlyPositive);
     }
 
     [Fact]
@@ -324,8 +374,8 @@ public sealed class AdaptiveStorageSavingsTests
     {
         AdaptiveQualitySelectionRequest request = Request() with { Ancillary = new(500_000, 0, 0, 0) };
         var result = await Select(new FakeSamples((_, _) => 5_000), request);
-        Assert.Equal(AdaptiveSelectionDisposition.NotSuitable, result.Disposition);
-        Assert.Equal(result.PreferredQuality, result.SelectedQuality);
+        Assert.Equal(AdaptiveSelectionDisposition.Skipped, result.Disposition);
+        Assert.Null(result.SelectedQuality);
         Assert.All(result.Candidates, c => Assert.Equal(AdaptiveSampleClassification.Borderline, c.Classification));
         Assert.Equal(StorageSavingsAcceptance.Rejected, StorageSavingsContractService.Evaluate(Contract, 900_001).Acceptance);
         Assert.Equal(StorageSavingsAcceptance.Accepted, StorageSavingsContractService.Evaluate(Contract, 900_000).Acceptance);

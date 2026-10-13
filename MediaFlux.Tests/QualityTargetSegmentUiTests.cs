@@ -50,6 +50,8 @@ public sealed class QualityTargetSegmentUiTests
 
                 QualityTargetSegmentSelector selector = GetSelector(form);
                 ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
+                Assert.Equal(new[] { "Automatic", "Manual" }, mode.Items.Cast<string>().ToArray());
+                Assert.Equal("Automatic", mode.SelectedItem);
                 Assert.Equal(target, selector.SelectedTarget);
                 Assert.True(selector.GetSegment(target).Checked);
                 Assert.Equal(1, LogicalHandlerCount(selector));
@@ -70,12 +72,12 @@ public sealed class QualityTargetSegmentUiTests
 
                 for (int iteration = 0; iteration < 3; iteration++)
                 {
-                    mode.SelectedItem = "Manual • Legacy Numeric";
+                    mode.SelectedItem = "Manual";
                     Application.DoEvents();
                     Assert.False(selector.Visible);
                     Assert.Equal(target, selector.SelectedTarget);
 
-                    mode.SelectedItem = "Automatic • Source Adaptive";
+                    mode.SelectedItem = "Automatic";
                     Application.DoEvents();
                     Assert.True(selector.Visible);
                     Assert.True(selector.GetSegment(target).Checked);

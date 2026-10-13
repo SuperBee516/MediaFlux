@@ -253,7 +253,7 @@ public sealed class V2EncodePlanner
         return new FrozenEncodePlan(
             jobId, sourcePath, outputPath, stagingPath, fullFfmpeg, encoder, codec, container,
             qualityMode, request.QualityValue, preset, pixelFormat, audioMode, audioBitrate,
-            subtitleMode, width, height, request.DeleteSourceOnSuccess,
+            subtitleMode, NormalizeChoice(request.GeometryMode, "geometryMode"), width, height, request.DeleteSourceOnSuccess,
             source.SourceLength, source.SourceLastWriteUtcTicks, source.Probe.DurationSeconds,
             source.Probe.FormatName, source.AudioCodecs.ToArray(), source.SubtitleCodecs.ToArray(),
             arguments, DateTime.UtcNow);

@@ -9,8 +9,12 @@ public sealed record StorageSavingsContract(
     long? MaximumAcceptedOutputBytes,
     string Reason)
 {
+    public bool EnforceAcceptance { get; init; } = true;
+    public bool AllowRiskyBorderlineProduction { get; init; }
+
     public static StorageSavingsContract Disabled { get; } =
-        new(false, null, null, null, null, "Storage Savings Mode does not apply to this job.");
+        new(false, null, null, null, null, "Storage Savings Mode does not apply to this job.")
+        { EnforceAcceptance = false };
 }
 
 public enum StorageSavingsAcceptance { NotApplicable, Accepted, Rejected }

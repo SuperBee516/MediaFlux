@@ -24,7 +24,7 @@ public sealed class EncodingQualityPolicyServiceTests
     }
 
     [Fact]
-    public void ResolutionIsDeterministicAndUsesMeasuredSourceCharacteristics()
+    public void ResolutionIsDeterministicAndIndependentOfSourceCharacteristics()
     {
         VideoEncoderSelection encoder = new(VideoEncoderIds.Libx265,
             VideoCodecFamily.Hevc, "libx265");
@@ -38,13 +38,12 @@ public sealed class EncodingQualityPolicyServiceTests
         Assert.Equal(first.EffectiveQuality, again.EffectiveQuality);
         Assert.Equal(first.Assessment, again.Assessment);
         Assert.Equal(first.Reasons, again.Reasons);
-        Assert.Equal(EncodingQualityAssessment.HighQualitySource, first.Assessment);
-        Assert.Equal(EncodingQualityAssessment.CompressedSource, compressed.Assessment);
-        Assert.True(first.EffectiveQuality < compressed.EffectiveQuality);
+        Assert.Equal(EncodingQualityAssessment.Unknown, first.Assessment);
+        Assert.Equal(first.EffectiveQuality, compressed.EffectiveQuality);
     }
 
     [Fact]
-    public void DownscaleAdjustsQualityAndTargetSizeSupersedesIt()
+    public void GeometryDoesNotChangeAutomaticQualityAndTargetSizeSupersedesIt()
     {
         VideoEncoderSelection encoder = new(VideoEncoderIds.Nvenc,
             VideoCodecFamily.Hevc, "hevc_nvenc");
@@ -59,7 +58,7 @@ public sealed class EncodingQualityPolicyServiceTests
             EncodingQualityIntent.Automatic(QualityTarget.Balanced), source, encoder,
             null, EncodingService.ScaleMode.None, 500));
 
-        Assert.True(downscaled.EffectiveQuality > original.EffectiveQuality);
+        Assert.Equal(original.EffectiveQuality, downscaled.EffectiveQuality);
         Assert.True(targetSize.IsSupersededByTargetSize);
         Assert.Null(targetSize.EffectiveQuality);
         Assert.Contains(targetSize.Reasons, reason =>
@@ -99,7 +98,7 @@ public sealed class EncodingQualityPolicyServiceTests
     [InlineData(7_700_000)]
     [InlineData(8_250_000)]
     [InlineData(11_000_000)]
-    public void BalancedNvencHevcHighQualitySourcesResolveToCq25(long sourceBitrate)
+    public void BalancedNvencHevcUsesOneFixedProviderDefaultQuality(long sourceBitrate)
     {
         VideoEncoderSelection encoder = new(VideoEncoderIds.Nvenc,
             VideoCodecFamily.Hevc, "hevc_nvenc");
@@ -107,24 +106,23 @@ public sealed class EncodingQualityPolicyServiceTests
         EncodingQualityResolution resolution = Resolve(QualityTarget.Balanced,
             Source(1920, 1080, 30, sourceBitrate), encoder);
 
-        Assert.Equal(EncodingQualityAssessment.HighQualitySource, resolution.Assessment);
-        Assert.Equal(25, resolution.EffectiveQuality);
-        Assert.Contains(resolution.Reasons, reason =>
-            reason.Code == EncodingQualityReasonCode.HighQualitySource &&
-            reason.Description.Contains("uses CQ25", StringComparison.Ordinal));
+        Assert.Equal(EncodingQualityAssessment.Unknown, resolution.Assessment);
+        Assert.Equal(EncodingQualityPolicyService.ResolveAutomaticQuality(encoder, QualityTarget.Balanced),
+            resolution.EffectiveQuality);
     }
 
     [Theory]
-    [InlineData(QualityTarget.HighQuality, 19)]
-    [InlineData(QualityTarget.MaximumQuality, 17)]
-    public void HighAndMaximumQualityNvencHevcPoliciesRemainUnchanged(
-        QualityTarget target, int expectedQuality)
+    [InlineData(QualityTarget.HighQuality)]
+    [InlineData(QualityTarget.MaximumQuality)]
+    public void HighAndMaximumQualityNvencHevcUseTheExistingTargetOffsets(QualityTarget target)
     {
         EncodingQualityResolution resolution = Resolve(target,
             Source(1920, 1080, 30, 8_250_000),
             new(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"));
 
-        Assert.Equal(expectedQuality, resolution.EffectiveQuality);
+        Assert.Equal(EncodingQualityPolicyService.ResolveAutomaticQuality(
+            new(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"), target),
+            resolution.EffectiveQuality);
     }
 
     [Fact]
@@ -134,14 +132,16 @@ public sealed class EncodingQualityPolicyServiceTests
             Source(1920, 1080, 30, 8_250_000),
             new(VideoEncoderIds.Nvenc, VideoCodecFamily.H264, "h264_nvenc"));
 
-        Assert.Equal(20, resolution.EffectiveQuality);
+        Assert.Equal(EncodingQualityPolicyService.ResolveAutomaticQuality(
+            new(VideoEncoderIds.Nvenc, VideoCodecFamily.H264, "h264_nvenc"), QualityTarget.Balanced),
+            resolution.EffectiveQuality);
     }
 
     [Theory]
     [InlineData(VideoEncoderIds.Libx265, "libx265", 24)]
     [InlineData(VideoEncoderIds.Nvenc, "hevc_nvenc", 24)]
     [InlineData(VideoEncoderIds.Qsv, "hevc_qsv", 19)]
-    public void BalancedCalibrationMatrixDifferentiatesRepresentativeSources(
+    public void BalancedMappingDoesNotVaryAcrossRepresentativeSources(
         string encoderId, string ffmpegCodec, int expectedTypicalBaseline)
     {
         VideoEncoderSelection encoder = new(encoderId, VideoCodecFamily.Hevc, ffmpegCodec);
@@ -163,18 +163,10 @@ public sealed class EncodingQualityPolicyServiceTests
         Assert.All(results, result =>
         {
             Assert.InRange(result.EffectiveQuality!.Value, 0, 51);
-            Assert.NotEqual(EncodingQualityAssessment.Unknown, result.Assessment);
+            Assert.Equal(EncodingQualityAssessment.Unknown, result.Assessment);
         });
-        Assert.Equal(expectedTypicalBaseline + 1, results[0].EffectiveQuality);
-        int expectedHighQuality = encoderId == VideoEncoderIds.Nvenc
-            ? expectedTypicalBaseline + 1
-            : expectedTypicalBaseline - 2;
-        Assert.Equal(expectedHighQuality, results[1].EffectiveQuality);
-        Assert.Equal(expectedTypicalBaseline + 1, results[2].EffectiveQuality);
-        Assert.Equal(expectedTypicalBaseline, results[3].EffectiveQuality);
-        Assert.Equal(expectedTypicalBaseline - 1, results[4].EffectiveQuality);
-        Assert.Equal(expectedHighQuality, results[5].EffectiveQuality);
-        Assert.Equal(expectedTypicalBaseline + 1, results[6].EffectiveQuality);
+        Assert.All(results, result => Assert.Equal(results[0].EffectiveQuality, result.EffectiveQuality));
+        Assert.Equal(expectedTypicalBaseline, results[0].EffectiveQuality);
     }
 
     [Fact]

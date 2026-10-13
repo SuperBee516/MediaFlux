@@ -54,6 +54,7 @@ public sealed record EncodeExecutionSnapshot
     public required bool UseGpu { get; init; }
     public double? TargetMb { get; init; }
     public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
+    public StorageSavingsOptions StorageSavingsPolicy { get; init; } = new();
     public bool AdaptiveStorageSavingsEnabled { get; init; }
     internal bool ExperimentalPolicyCRetryEnabled { get; init; }
     public AdaptivePreAttemptResearchCaptureOptions AdaptivePreAttemptResearchCapture { get; init; } = new();
@@ -79,18 +80,25 @@ public sealed record EncodeExecutionSnapshot
     public PredictionShadowExperimentAssignmentBinding? PredictionShadowExperimentAssignment { get; init; }
     public long? SourceSizeBytes { get; init; }
     public double? MediaDurationSeconds { get; init; }
+    public int? SourceWidth { get; init; }
     public int? SourceHeight { get; init; }
+    public int? OutputWidth { get; init; }
     public int? OutputHeight { get; init; }
     public required string EncoderText { get; init; }
     public required string Codec { get; init; }
     public required string MediaFluxVersion { get; init; }
     public required string StatisticsPath { get; init; }
     public bool DeleteSourceAfterCompression { get; init; }
+    public ProductionPlanIdentity? ProductionPlan { get; init; }
+    public PlanBoundEstimate? BoundEstimate { get; init; }
+    public PreparedAdaptiveProductionPlan? PreparedAdaptiveProductionPlan { get; init; }
+    public EncodingPlan? PreparedPlan { get; init; }
 
     internal EncodeExecutionSnapshot CopyForExecution() => this with
     {
         Input = CopyInput(Input),
         Restoration = Restoration.Clone(),
+        StorageSavingsPolicy = StorageSavingsPolicy.CloneNormalized(),
         PredictionShadowExperimentAssignment = PredictionShadowExperimentAssignment is { } binding
             ? binding with
             {
@@ -283,6 +291,7 @@ public sealed class EncodeExecutionOrchestrator
         {
             Input = snapshot.Input,
             StorageSavingsContract = snapshot.StorageSavingsContract,
+            StorageSavingsPolicy = snapshot.StorageSavingsPolicy.CloneNormalized(),
             AdaptiveStorageSavingsEnabled = snapshot.AdaptiveStorageSavingsEnabled && snapshot.PredictionShadowExperimentAssignment is null,
             ExperimentalPolicyCRetryEnabled = snapshot.ExperimentalPolicyCRetryEnabled &&
                 snapshot.AdaptiveStorageSavingsEnabled && snapshot.PredictionShadowExperimentAssignment is null,
@@ -298,6 +307,9 @@ public sealed class EncodeExecutionOrchestrator
             OutputFolder = snapshot.OutputFolder,
             Suffix = snapshot.Suffix,
             Encoder = snapshot.Encoder,
+            ProductionPlan = snapshot.ProductionPlan,
+            PreparedAdaptiveProductionPlan = snapshot.PreparedAdaptiveProductionPlan,
+            PreparedPlan = snapshot.PreparedPlan,
             UseGpu = snapshot.UseGpu,
             TargetMb = snapshot.TargetMb,
             SizePredictionCalibration = snapshot.SizePredictionCalibration,
@@ -391,9 +403,9 @@ public sealed class EncodeExecutionOrchestrator
         attempt.EncodeResult = encoded;
         if (!encoded.Success || !encoded.FinalizationSucceeded)
             throw new InvalidOperationException("Encoding did not complete validated output finalization.");
-        if (!StorageSavingsContractService.HasAcceptedEvidence(
+        if (!StorageSavingsContractService.HasValidCompletionEvidence(
             snapshot.StorageSavingsContract, encoded.StorageSavings, encoded.FinalOutputSizeBytes))
-            throw new InvalidOperationException("Encoding did not establish required storage-policy acceptance.");
+            throw new InvalidOperationException("Encoding did not establish valid output finalization evidence.");
 
         SourceDeletionResult deletion = SourceDeletionService.DeleteAfterFinalization(
             snapshot.SourceFilePath,
@@ -479,9 +491,9 @@ public sealed class EncodeExecutionOrchestrator
             throw new InvalidOperationException("A completed encode result is required before statistics can be finalized.");
         if (!output.Success || !output.FinalizationSucceeded)
             throw new InvalidOperationException("Only validated and finalized output can be recorded as a successful encode.");
-        if (!StorageSavingsContractService.HasAcceptedEvidence(
+        if (!StorageSavingsContractService.HasValidCompletionEvidence(
             attempt.Snapshot.StorageSavingsContract, output.StorageSavings, output.FinalOutputSizeBytes))
-            throw new InvalidOperationException("Storage-policy acceptance is required before recording successful statistics.");
+            throw new InvalidOperationException("Validated output evidence is required before recording successful statistics.");
 
         EncodeExecutionSnapshot snapshot = attempt.Snapshot;
         return RecordStatistics(

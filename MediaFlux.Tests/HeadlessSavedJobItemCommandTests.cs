@@ -146,6 +146,56 @@ public sealed class HeadlessSavedJobItemCommandTests
     }
 
     [Fact]
+    public async Task SavedJobRunnerPrintsStructuredPlanAndProductionDiagnostics()
+    {
+        var diagnostics = new HeadlessProductionDiagnostics(
+            SourceIdentity: "source-id",
+            PlanFingerprint: "plan-fingerprint",
+            EstimatePlanFingerprint: "plan-fingerprint",
+            EstimatedOutputBytes: 800,
+            EstimateMethod: "bounded-samples",
+            EstimateAuthority: "Measured",
+            EstimateSampleCount: 3,
+            EstimateConfidence: "Medium",
+            EstimatedLowerBytes: 700,
+            EstimatedUpperBytes: 900,
+            ActualOutputBytes: 850,
+            SelectedMode: "Manual",
+            SelectedQuality: 24,
+            StorageSavingsClassification: "Accepted",
+            Error: null,
+            FinalizationReason: "Validated output was promoted.",
+            ProductionAttemptCount: 1,
+            EstimateSampleEvidence: [new(24, "Middle", 45, 5, 5, 25000, 5000)],
+            EstimateRangeMethod: "middle 3 of 5 sample rates, expanded to include the five-sample mean");
+        var pipeline = new FakePipeline
+        {
+            StructuredResultToPublish = new HeadlessEncodeJobResult(
+                1, "operation", "C:\\media\\clip.mp4", HeadlessEncodeJobStatus.Success,
+                DateTime.UtcNow, DateTime.UtcNow, ProductionDiagnostics: diagnostics)
+        };
+        var output = new List<string>();
+
+        HeadlessSavedJobReport report = await HeadlessSavedJobItemRunner.RunAsync(
+            Command("path=C:\\media\\clip.mp4"), [Job()], pipeline, output.Add, CancellationToken.None);
+
+        Assert.Equal(HeadlessSavedJobExitCode.Success, report.ExitCode);
+        string diagnosticLine = Assert.Single(output, line => line.StartsWith("PRODUCTION_DIAGNOSTICS_JSON:", StringComparison.Ordinal));
+        using JsonDocument json = JsonDocument.Parse(diagnosticLine["PRODUCTION_DIAGNOSTICS_JSON:".Length..]);
+        Assert.Equal("plan-fingerprint", json.RootElement.GetProperty("planFingerprint").GetString());
+        Assert.True(json.RootElement.GetProperty("planFingerprintsIdentical").GetBoolean());
+        Assert.Equal(850, json.RootElement.GetProperty("actualOutputBytes").GetInt64());
+        Assert.Equal(6.25, json.RootElement.GetProperty("predictionErrorPercent").GetDouble());
+        JsonElement samples = json.RootElement.GetProperty("estimateSampleEvidence");
+        Assert.Equal(1, samples.GetArrayLength());
+        Assert.Equal("Middle", samples[0].GetProperty("label").GetString());
+        Assert.Equal(5000, samples[0].GetProperty("videoBytesPerSecond").GetDouble());
+        Assert.Equal("middle 3 of 5 sample rates, expanded to include the five-sample mean",
+            json.RootElement.GetProperty("estimateRangeMethod").GetString());
+        Assert.False(json.RootElement.TryGetProperty("adaptiveSelection", out _));
+    }
+
+    [Fact]
     public async Task MissingOrAmbiguousItemsNeverReachThePipeline()
     {
         EncodeJob job = Job();
@@ -175,6 +225,101 @@ public sealed class HeadlessSavedJobItemCommandTests
         Assert.Equal(0, pipeline.ExecuteCount);
         Assert.Equal(0, pipeline.OutcomeCount);
         Assert.Equal(0, pipeline.StatisticsCount);
+    }
+
+    [Fact]
+    public void AutomaticPreflightDiagnosticsDescribeTheTargetBitratePreparedPlan()
+    {
+        EncodeJob job = Job();
+        job.Settings.QualityMode = "Automatic";
+        string source = job.Files[0].SourcePath;
+        EncodeExecutionSnapshotSettings settings = HeadlessSavedJobItemPipeline.ResolveSettingsForItem(
+            job.Settings, new Config(), source);
+        var builder = new EncodeExecutionSnapshotBuilder();
+        EncodeExecutionSnapshot snapshot = builder.Build(TestIdentity(), settings, TestItem(source));
+        var target = new AutomaticTargetPlan
+        {
+            Disposition = AutomaticTargetDisposition.Ready,
+            QualityTarget = QualityTarget.Balanced,
+            TargetVideoBitrateKbps = 2_500,
+            MaximumVideoBitrateKbps = 2_700,
+            VideoBufferSizeKbps = 3_500,
+            ProjectedOutputBytes = 42_000_000
+        };
+        var preparedPlan = new EncodingPlan
+        {
+            IsAvailable = true,
+            AutomaticTarget = target
+        };
+        snapshot = snapshot with { PreparedPlan = preparedPlan };
+        ProductionPlanIdentity identity = ProductionPlanFingerprintService.Create(snapshot);
+        preparedPlan = new EncodingPlan
+        {
+            IsAvailable = true,
+            AutomaticTarget = target,
+            ProductionPlan = identity
+        };
+        snapshot = snapshot with
+        {
+            PreparedPlan = preparedPlan,
+            ProductionPlan = identity,
+            BoundEstimate = new PlanBoundEstimate(
+                identity, 0, "AutomaticTargetProjection", target.ProjectedOutputBytes!.Value,
+                EstimateAuthorityLevel.Preliminary)
+        };
+
+        var lines = new List<string>();
+        HeadlessSavedJobItemRunner.WriteSnapshot(lines.Add, job, job.Files[0], snapshot);
+        string output = string.Join(Environment.NewLine, lines);
+
+        Assert.Contains("Automatic / Balanced (target-bitrate VBR)", output);
+        Assert.Contains("RateControl=target-bitrate VBR", output);
+        Assert.Contains("target=2500 kbps; maxrate=2700 kbps; bufsize=3500 kbps", output);
+        Assert.Contains("selected-profile=Balanced", output);
+        Assert.Contains("PreparedPlanId=", output);
+        Assert.Contains($"PreparedPlanFingerprint={identity.PlanFingerprint}", output);
+        Assert.Contains("projected-output=42,000,000 bytes", output);
+        Assert.DoesNotContain("CQ resolved by EncodingService", output);
+        Assert.DoesNotContain("automatic best target size", output);
+
+        string jsonLine = Assert.Single(lines, line => line.StartsWith("PRODUCTION_PLAN_DIAGNOSTICS_JSON:", StringComparison.Ordinal));
+        using JsonDocument diagnostic = JsonDocument.Parse(jsonLine["PRODUCTION_PLAN_DIAGNOSTICS_JSON:".Length..]);
+        Assert.Equal("Automatic Balanced", diagnostic.RootElement.GetProperty("selectedProfile").GetString());
+        Assert.Equal(preparedPlan.PlanId.ToString("N"), diagnostic.RootElement.GetProperty("preparedPlanId").GetString());
+        Assert.Equal("V1", diagnostic.RootElement.GetProperty("estimatePlanEngine").GetString());
+        Assert.Equal("V1", diagnostic.RootElement.GetProperty("executionPlanEngine").GetString());
+        Assert.Equal(2_500, diagnostic.RootElement.GetProperty("planInputs").GetProperty("targetVideoBitrateKbps").GetDouble());
+    }
+
+    [Fact]
+    public void FingerprintDiagnosticsLabelIntentionalV1EstimateAndV2ExecutionDifference()
+    {
+        var diagnostics = new HeadlessProductionDiagnostics(
+            SourceIdentity: "source",
+            PlanFingerprint: "v2-execution",
+            EstimatePlanFingerprint: "v1-estimate",
+            EstimatedOutputBytes: null,
+            EstimateMethod: null,
+            EstimateAuthority: null,
+            EstimateSampleCount: null,
+            EstimateConfidence: null,
+            EstimatedLowerBytes: null,
+            EstimatedUpperBytes: null,
+            ActualOutputBytes: null,
+            SelectedMode: "Manual",
+            SelectedQuality: 24,
+            StorageSavingsClassification: null,
+            Error: null,
+            FinalizationReason: null,
+            ProductionAttemptCount: 1)
+        {
+            EstimatePlanEngine = "V1",
+            ExecutionPlanEngine = "V2"
+        };
+
+        Assert.False(diagnostics.PlanFingerprintsIdentical);
+        Assert.Contains("V1 estimate vs V2 execution", diagnostics.PlanFingerprintComparison);
+        Assert.Contains("not required across engines", diagnostics.PlanFingerprintComparison);
     }
 
     [Fact]
@@ -427,8 +572,8 @@ public sealed class HeadlessSavedJobItemCommandTests
             var builder = new EncodeExecutionSnapshotBuilder();
             var scheduled = builder.Build(TestIdentity(), fromSaved, TestItem(source));
             var headless = builder.Build(TestIdentity(), fromHeadless, TestItem(source));
-            Assert.True(scheduled.AdaptiveStorageSavingsEnabled);
-            Assert.True(headless.AdaptiveStorageSavingsEnabled);
+            Assert.False(scheduled.AdaptiveStorageSavingsEnabled);
+            Assert.False(headless.AdaptiveStorageSavingsEnabled);
             Assert.Equal(scheduled.QualityIntent, headless.QualityIntent);
             Assert.Equal(scheduled.StorageSavingsContract, headless.StorageSavingsContract);
         }
@@ -504,6 +649,8 @@ public sealed class HeadlessSavedJobItemCommandTests
         public Exception? BuildException { get; init; }
         public Exception? ExecuteException { get; init; }
         public EncodeExecutionSnapshot? LastSnapshot { get; private set; }
+        public HeadlessEncodeJobResult? LastStructuredResult { get; private set; }
+        public HeadlessEncodeJobResult? StructuredResultToPublish { get; init; }
 
         public Task<EncodeExecutionSnapshot> BuildSnapshotAsync(EncodeJob job, EncodeJobFile item, CancellationToken cancellationToken)
         {
@@ -551,6 +698,7 @@ public sealed class HeadlessSavedJobItemCommandTests
             EncodeExecutorCount++;
             StatisticsCount++;
             OutcomeCount++;
+            LastStructuredResult = StructuredResultToPublish;
             return Task.FromResult("success");
         }
     }

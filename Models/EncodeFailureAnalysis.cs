@@ -9,7 +9,8 @@ public enum EncodeFailureCategory
     Subtitle,
     Output,
     Restoration,
-    Unknown
+    Unknown,
+    ApplicationLifecycle
 }
 
 public enum EncodeFailureConfidence
@@ -47,6 +48,7 @@ public sealed record EncodeFailureAnalysis(
         EncodeFailureCategory.Subtitle => "Subtitle",
         EncodeFailureCategory.Output => "Output / muxing",
         EncodeFailureCategory.Restoration => "Restoration / preprocessing",
+        EncodeFailureCategory.ApplicationLifecycle => "Application lifecycle",
         _ => "Unknown"
     };
 }

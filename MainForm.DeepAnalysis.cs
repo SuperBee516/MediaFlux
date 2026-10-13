@@ -120,20 +120,7 @@ namespace MediaFlux
                             _estimatedSizeMap.TryGetValue(meta.Path, out double currentEstimate)
                                 ? currentEstimate
                                 : 0;
-                        bool appliedCalibratedEstimate =
-                            chkAutoTargetSize.Checked &&
-                            meta.CustomTargetMb is not > 0 &&
-                            !_config.StorageSavings.Enabled &&
-                            CanApplyLegacyDeepProjection(meta.SizePredictionCalibration) &&
-                            result.ProjectedOutputMb is > 0;
-                        if (appliedCalibratedEstimate)
-                        {
-                            ApplyCalibratedEstimate(
-                                row,
-                                meta,
-                                result,
-                                metadataEstimateMb);
-                        }
+                        bool appliedCalibratedEstimate = false;
 
                         SmartEncodeRecommendation? baseline =
                             appliedCalibratedEstimate
@@ -292,38 +279,7 @@ namespace MediaFlux
         }
 
         internal static bool CanApplyLegacyDeepProjection(EncodingSizePredictionCalibration? estimate) =>
-            estimate?.EstimateModelId is not (EmpiricalPreviewResult.ModelId or "GenericBppV1");
-
-        private void ApplyCalibratedEstimate(
-            DataGridViewRow row,
-            RowMeta meta,
-            DeepMediaAnalysisResult result,
-            double metadataEstimateMb)
-        {
-            double calibratedMb = result.ProjectedOutputMb!.Value;
-            if (_estimatedSizeMap.TryGetValue(meta.Path, out double previousEstimate))
-                _queueTotalEstimatedMb += calibratedMb - previousEstimate;
-            else
-                _queueTotalEstimatedMb += calibratedMb;
-
-            _estimatedSizeMap[meta.Path] = calibratedMb;
-            MarkQueueTotalsDirty();
-            double sourceMb = meta.SrcMb > 0
-                ? meta.SrcMb
-                : new FileInfo(meta.Path).Length / (1024d * 1024d);
-            row.Cells["colEstimatedSize"].Value = FormatSize(calibratedMb);
-            row.Cells["colEstimatedSize"].Tag =
-                new Tuple<double, double>(sourceMb, calibratedMb);
-
-            row.Cells["colEstimatedSize"].ToolTipText =
-                BuildQueueEstimateTooltip(meta, sourceMb, calibratedMb);
-            meta.EstimateDiagnostic =
-                $"Calibrated sample estimate: output={calibratedMb:0.##} MB, " +
-                $"range={result.ProjectedOutputLowerMb:0.##}–{result.ProjectedOutputUpperMb:0.##} MB, " +
-                $"confidence={result.ProjectionConfidence}, samples={result.ProjectionSampleCount}, " +
-                $"sampled={result.SampledMediaSeconds:0.##} sec, metadata={metadataEstimateMb:0.##} MB.";
-            UpdateSizeTotals();
-        }
+            false;
 
         private void ApplyContentHintToSelectedRows(SmartEncodeContentHint hint)
         {

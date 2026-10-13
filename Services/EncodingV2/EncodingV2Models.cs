@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
 using System.Text;
+using MediaFlux.Services;
 
 namespace MediaFlux.Services.EncodingV2;
 
@@ -69,6 +70,7 @@ public sealed class FrozenEncodePlan
         string audioMode,
         int? audioBitrateKbps,
         string subtitleMode,
+        string geometryMode,
         int width,
         int height,
         bool deleteSourceOnSuccess,
@@ -96,6 +98,7 @@ public sealed class FrozenEncodePlan
         AudioMode = audioMode;
         AudioBitrateKbps = audioBitrateKbps;
         SubtitleMode = subtitleMode;
+        GeometryMode = geometryMode;
         Width = width;
         Height = height;
         DeleteSourceOnSuccess = deleteSourceOnSuccess;
@@ -108,6 +111,9 @@ public sealed class FrozenEncodePlan
         _arguments = Array.AsReadOnly(arguments.ToArray());
         PlanFrozenUtc = planFrozenUtc;
         _invocationFingerprint = ComputeFingerprint();
+        ProductionPlan = ProductionPlanFingerprintService.CreateV2(
+            sourcePath, encoder, codec, qualityMode, qualityValue, preset, pixelFormat,
+            geometryMode, height, audioMode, audioBitrateKbps, subtitleMode, container, outputWidth: width);
     }
 
     public string JobId { get; }
@@ -125,6 +131,7 @@ public sealed class FrozenEncodePlan
     public string AudioMode { get; }
     public int? AudioBitrateKbps { get; }
     public string SubtitleMode { get; }
+    public string GeometryMode { get; }
     public int Width { get; }
     public int Height { get; }
     public bool DeleteSourceOnSuccess { get; }
@@ -136,6 +143,7 @@ public sealed class FrozenEncodePlan
     public IReadOnlyList<string> SourceSubtitleCodecs => _sourceSubtitleCodecs;
     public IReadOnlyList<string> Arguments => _arguments;
     public DateTime PlanFrozenUtc { get; }
+    public ProductionPlanIdentity ProductionPlan { get; }
 
     public void EnsureExecutable()
     {

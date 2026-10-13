@@ -79,10 +79,8 @@ public static class V2QueueEstimateRequestMapper
         if (container.Length == 0)
             return Reject("The selected output container is unsupported.", out reason);
 
-        // Preserve the legacy File-size estimate choices as estimate-only offsets.
-        // The existing profile multiplier expresses a relative bitrate scale against
-        // Medium; V2's CQ/CRF model changes bitrate by 2x for every 6 quality steps.
-        // This value is used only by the fast estimate request, never the encode plan.
+        // File-size profiles remain estimate-only adjustments. The bound production
+        // identity retains the user's actual numeric quality value.
         double profileScale = SizeEstimateService.GetCompressionMultiplier(compressionProfile);
         double defaultProfileScale = SizeEstimateService.GetCompressionMultiplier("Medium Quality (Default)");
         double estimateQualityValue = Math.Clamp(
@@ -98,6 +96,7 @@ public static class V2QueueEstimateRequestMapper
             Container = container,
             QualityMode = nvenc ? "cq" : "crf",
             QualityValue = estimateQualityValue,
+            ProductionPlanQualityValue = qualityValue,
             Preset = preset ?? "",
             GeometryMode = targetHeight.HasValue ? "fitBox" : "source",
             MaxWidth = targetHeight.HasValue ? 8192 : null,
@@ -105,7 +104,8 @@ public static class V2QueueEstimateRequestMapper
             AudioMode = audioChannels.HasValue ? "aac" : "copy",
             AudioBitrateKbps = audioChannels.HasValue
                 ? audioChannels.Value >= 6 ? 384 : 192
-                : null
+                : null,
+            SubtitleMode = "auto"
         };
         return true;
     }

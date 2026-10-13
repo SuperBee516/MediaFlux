@@ -14,14 +14,6 @@ namespace MediaFlux
     public partial class MainForm : MediaFluxForm
     {
         private DateTime? _qualityChangeEstimateRefreshUtc;
-        private const string ProvisionalAdaptiveEstimateTooltip =
-            "Provisional output-size estimate with low confidence before sampling. Estimated savings are advisory; Source Adaptive may revise the effective quality after representative sampling.";
-
-        private static string WithProvisionalAdaptiveEstimateDiagnostic(string diagnostic) =>
-            string.IsNullOrWhiteSpace(diagnostic)
-                ? ProvisionalAdaptiveEstimateTooltip
-                : ProvisionalAdaptiveEstimateTooltip + Environment.NewLine + diagnostic;
-
         private string BuildQueueEstimateTooltip(
             RowMeta? meta,
             double sourceMb,
@@ -29,6 +21,24 @@ namespace MediaFlux
             EncodingQualityResolution? quality = null)
         {
             quality ??= meta?.IntelligencePlan?.Quality ?? meta?.QualityPreview;
+            if (meta?.IntelligencePlan?.AutomaticTarget is { } targetPlan && targetPlan.IsAvailable)
+            {
+                string projected = estimatedOutputMb is > 0 ? FormatSize(estimatedOutputMb.Value) : "unavailable";
+                string savings = sourceMb > 0 && estimatedOutputMb is > 0
+                    ? (sourceMb - estimatedOutputMb.Value) / sourceMb * 100d >= 0
+                        ? $"Approximate savings: {(sourceMb - estimatedOutputMb.Value) / sourceMb * 100d:0.#}%"
+                        : $"Approximate increase: {Math.Abs((sourceMb - estimatedOutputMb.Value) / sourceMb * 100d):0.#}%"
+                    : "Savings: unavailable";
+                string identity = meta.IntelligencePlan.ProductionPlan?.PlanFingerprint ?? "unavailable";
+                return string.Join(Environment.NewLine,
+                    $"Compression Target: {targetPlan.TargetVideoBitrateKbps:0} kbps VBR · max {targetPlan.MaximumVideoBitrateKbps:0} kbps · buffer {targetPlan.VideoBufferSizeKbps:0} kbps",
+                    $"Projected Output: {projected} (target-based projection; includes planned audio, mapped streams, and container overhead; actual size may vary)",
+                    "Actual Output: measured after encoding and finalization.",
+                    savings,
+                    $"Quality segment: {EncodingQualityPresentation.QualityTargetDisplayName(targetPlan.QualityTarget)}",
+                    $"Plan: {identity[..Math.Min(12, identity.Length)]}",
+                    targetPlan.Reason);
+            }
             string? qualitySummary = null;
             if (meta?.IntelligencePlan?.AdaptiveSelection is { Disposition: AdaptiveSelectionDisposition.Selected } adaptiveSelection)
             {
@@ -83,11 +93,36 @@ namespace MediaFlux
                 // Tooltip details are optional and must not affect estimation.
             }
 
-            return QueueAnalysisPresentation.BuildEstimatedOutputTooltip(
+            string tooltip = QueueAnalysisPresentation.BuildEstimatedOutputTooltip(
                 sourceMb > 0 ? sourceMb : null,
                 estimatedOutputMb,
                 qualitySummary,
                 encoderSummary);
+            if (meta?.BoundEstimate is { } bound)
+            {
+                string authority = bound.Authority == EstimateAuthorityLevel.Measured
+                    ? $"Measured from {bound.SampleCount?.ToString() ?? "bounded"} samples"
+                    : "Preliminary metadata estimate";
+                tooltip += Environment.NewLine + authority + $" · {bound.Method} · plan {bound.Plan.PlanFingerprint[..Math.Min(12, bound.Plan.PlanFingerprint.Length)]}";
+            }
+            if (meta?.PreparedAdaptiveProductionPlan is { BoundEstimate: { } productionEstimate } prepared &&
+                productionEstimate.Matches(prepared.Identity))
+            {
+                string range = productionEstimate.LowerBytes is long lower && productionEstimate.UpperBytes is long upper
+                    ? $"{FormatSize(lower / (1024d * 1024d))}–{FormatSize(upper / (1024d * 1024d))}"
+                    : "range unavailable";
+                string confidence = string.IsNullOrWhiteSpace(productionEstimate.Confidence)
+                    ? "unspecified confidence"
+                    : $"{productionEstimate.Confidence} confidence";
+                int selectedQuality = prepared.Selection.SelectedQuality ?? prepared.Selection.PreferredQuality;
+                tooltip += Environment.NewLine +
+                    $"Production-ready estimate · CQ/CRF {selectedQuality} · range {range} · {confidence} · fingerprint {prepared.Identity.PlanFingerprint[..Math.Min(12, prepared.Identity.PlanFingerprint.Length)]}.";
+            }
+            if (meta?.EstimateState == QueueEstimateState.Measuring)
+                tooltip += Environment.NewLine + "A bounded measured refinement is running in the background.";
+            else if (meta?.EstimateState == QueueEstimateState.Preliminary)
+                tooltip += Environment.NewLine + "Preliminary estimate · advisory; actual validated output controls acceptance.";
+            return tooltip;
         }
 
         private (int w, int h) ProbeResolutionPixels(string file)
@@ -184,6 +219,9 @@ namespace MediaFlux
                 {
                     System.Diagnostics.Debug.WriteLine(
                         $"Dequeued {item.Path}: srcMb={item.SourceMb}, estMb={item.EstimatedMb}, dur={item.DurationSec}, res={item.Resolution}");
+                    PreparedProductionPlan? preparedForRow = item.PreparedProductionPlan is { } queuedPlan
+                        ? queuedPlan with { QueueItemId = item.QueueItemId, QueueGeneration = item.Generation }
+                        : null;
 
                     if (_rowsByPath.TryGetValue(item.Path, out var row) &&
                         row?.Cells != null &&
@@ -197,6 +235,14 @@ namespace MediaFlux
                         {
                             if (item.RecommendationOnly)
                             {
+                                if (!TryBindEstimateResult(resultMeta, item))
+                                {
+                                    applied++;
+                                    continue;
+                                }
+                                resultMeta.CurrentEstimatePlanIdentity = item.PlanIdentity;
+                                resultMeta.BoundEstimate = item.BoundEstimate;
+                                resultMeta.PreparedAdaptiveProductionPlan = item.PreparedAdaptiveProductionPlan ?? resultMeta.PreparedAdaptiveProductionPlan;
                                 if (resultMeta.AdaptiveQualitySelectionPending &&
                                     item.Recommendation is { Kind: not SmartEncodeRecommendationKind.Unavailable })
                                     SetSmartRecommendationPending(row);
@@ -205,32 +251,60 @@ namespace MediaFlux
                                 applied++;
                                 continue;
                             }
-                            if (item.EmpiricalPreview is { SourceWriteUtcTicks: > 0 } binding)
-                            {
-                                var source = new FileInfo(item.Path);
-                                if (!source.Exists || source.Length != binding.SourceBytes || source.LastWriteTimeUtc.Ticks != binding.SourceWriteUtcTicks)
-                                    continue;
-                            }
                             double srcMb = item.SourceMb;
-                            bool adaptivePending = !item.IsCustom && resultMeta.PredictionShadowExperimentAssignment is null &&
-                                (item.VideoCodec?.Equals("h264", StringComparison.OrdinalIgnoreCase) == true ||
-                                 item.VideoCodec?.Equals("avc", StringComparison.OrdinalIgnoreCase) == true) &&
-                                _config.StorageSavings.Enabled &&
-                                !string.Equals(comboCompressionProfile.SelectedItem?.ToString(), "No Compression", StringComparison.OrdinalIgnoreCase) &&
-                                AdaptiveStorageSavingsPolicy.IsPotentiallyApplicable(true, EncodingInputSource.FromFile(item.Path),
-                                    GetSelectedVideoEncoderSelection(), item.QualityResolution?.Intent,
-                                    EncodingTargetSizeResolver.ResolveConfiguredManualTargetMb(chkAutoTargetSize.Checked, txtTargetSize.Text),
-                                    _config.VideoRestoration);
-                            double estMb = item.EstimatedMb;
+                            if (preparedForRow is { } preparedPlan &&
+                                string.Equals(preparedPlan.Identity.SourceIdentity,
+                                    ProductionPlanFingerprintService.CaptureSourceIdentity([item.Path]), StringComparison.Ordinal))
+                            {
+                                resultMeta.CurrentEstimatePlanIdentity = preparedPlan.Identity;
+                                resultMeta.PlanBindingRequired = true;
+                            }
+                            bool metadataOnlyProgress = (item.EstimateState is QueueEstimateState.Pending or QueueEstimateState.Measuring) &&
+                                item.PlanIdentity is null && item.BoundEstimate is null &&
+                                preparedForRow is null && item.EstimatedMb <= 0;
+                            bool planBound = metadataOnlyProgress || TryBindEstimateResult(resultMeta, item);
+                            bool resultMatchesPreparedPlan = planBound && item.PlanIdentity is not null;
+                            if (planBound && item.PlanIdentity is not null)
+                            {
+                                resultMeta.CurrentEstimatePlanIdentity = item.PlanIdentity;
+                                resultMeta.BoundEstimate = item.BoundEstimate;
+                                resultMeta.PreparedAdaptiveProductionPlan = item.PreparedAdaptiveProductionPlan ?? resultMeta.PreparedAdaptiveProductionPlan;
+                                if (preparedForRow is { } prepared)
+                                {
+                                    resultMeta.PreparedProductionPlan = prepared;
+                                    resultMeta.IntelligencePlan = prepared.Plan;
+                                    resultMeta.PreparedAdaptiveProductionPlan = null;
+                                }
+                            }
+                            else if (resultMeta.PlanBindingRequired)
+                            {
+                                ClearBoundQueueEstimate(row, resultMeta, "Unavailable", "The estimate could not be bound to the current production plan and source.");
+                            }
+                            resultMeta.EstimateState = planBound
+                                ? item.EstimateState
+                                : resultMeta.PlanBindingRequired
+                                    ? QueueEstimateState.Unavailable
+                                    : item.PlanIdentity is null
+                                        ? item.EstimatedMb > 0
+                                            ? QueueEstimateState.Pending
+                                            : item.EstimateState
+                                        : QueueEstimateState.Unavailable;
+                            double estMb = planBound ? item.EstimatedMb : 0;
                             bool hasEstimate = srcMb > 0 && estMb > 0;
-                            bool empirical = item.EmpiricalPreview is not null;
-                            bool fallback = item.SizeCalibration?.EstimateModelId == "GenericBppV1";
-
                             row.Cells["colEstimatedSize"].Value = hasEstimate
                                 ? FormatSize(estMb)
-                                : adaptivePending && string.IsNullOrWhiteSpace(item.UnavailableReason)
-                                    ? "Estimating…"
-                                    : "Unavailable";
+                                : resultMeta.EstimateState switch
+                                {
+                                    QueueEstimateState.Pending => "Pending…",
+                                    QueueEstimateState.Inspecting => "Inspecting…",
+                                    QueueEstimateState.Measuring => "Measuring…",
+                                    QueueEstimateState.Preliminary => "Pending…",
+                                    QueueEstimateState.Ready => "Ready",
+                                    QueueEstimateState.Review => "Review",
+                                    QueueEstimateState.Skip => "Skip",
+                                    QueueEstimateState.Failed => "Error",
+                                    _ => "Unavailable"
+                                };
                             if (srcMb > 0)
                                 row.Cells["colSize"].Value = FormatSize(srcMb);
                             row.Cells["colEstimatedSize"].Tag = hasEstimate
@@ -287,18 +361,28 @@ namespace MediaFlux
                                 if (item.Fps > 0)
                                     rm.Fps = (int)Math.Round(item.Fps);
 
-                                rm.EmpiricalPreview = item.EmpiricalPreview;
-                                rm.EstimateDiagnostic = adaptivePending && hasEstimate && !empirical
-                                    ? WithProvisionalAdaptiveEstimateDiagnostic(item.EstimateDiagnostic)
-                                    : item.EstimateDiagnostic;
-                                rm.SizePredictionCalibration = adaptivePending && !empirical && !fallback ? null : item.SizeCalibration;
-                                rm.AdaptiveQualitySelectionPending = adaptivePending;
+                                rm.EmpiricalPreview = resultMatchesPreparedPlan ? item.EmpiricalPreview : null;
+                                if (item.PreparedAdaptiveProductionPlan is not null)
+                                    rm.PreparedAdaptiveProductionPlan = item.PreparedAdaptiveProductionPlan;
+                                if (preparedForRow is { } prepared)
+                                {
+                                    rm.PreparedProductionPlan = prepared;
+                                    rm.IntelligencePlan = prepared.Plan;
+                                    rm.PreparedAdaptiveProductionPlan = null;
+                                }
+                                rm.EstimateState = resultMeta.EstimateState;
+                                rm.EstimateDiagnostic = item.EstimateDiagnostic;
+                                rm.SizePredictionCalibration = resultMatchesPreparedPlan ? item.SizeCalibration : null;
+                                rm.AdaptiveQualitySelectionPending = false;
                                 rm.AdaptiveSelectionSkipped = false;
                                 rm.EstimatedPlannedAudioBitrateKbps =
                                     item.PlannedAudioBitrateKbps;
                                 rm.EstimatedPlannedMappedAncillaryBitrateKbps =
                                     item.PlannedMappedAncillaryBitrateKbps;
-                                rm.QualityPreview = item.QualityResolution;
+                                rm.QualityPreview = resultMatchesPreparedPlan &&
+                                    item.QualityResolution is { EffectiveQuality: not null, IsSupersededByTargetSize: false }
+                                        ? item.QualityResolution
+                                        : null;
                             }
                             else
                             {
@@ -308,27 +392,33 @@ namespace MediaFlux
                                 estimateMeta.SrcMb = srcMb;
                                 estimateMeta.VideoCodec = codec;
                                 estimateMeta.Fps = item.Fps > 0 ? (int)Math.Round(item.Fps) : 0;
-                                estimateMeta.EmpiricalPreview = item.EmpiricalPreview;
-                                estimateMeta.EstimateDiagnostic = adaptivePending && hasEstimate && !empirical
-                                    ? WithProvisionalAdaptiveEstimateDiagnostic(item.EstimateDiagnostic)
-                                    : item.EstimateDiagnostic;
-                                estimateMeta.SizePredictionCalibration = adaptivePending && !empirical && !fallback ? null : item.SizeCalibration;
-                                estimateMeta.AdaptiveQualitySelectionPending = adaptivePending;
+                                estimateMeta.EmpiricalPreview = resultMatchesPreparedPlan ? item.EmpiricalPreview : null;
+                                if (item.PreparedAdaptiveProductionPlan is not null)
+                                    estimateMeta.PreparedAdaptiveProductionPlan = item.PreparedAdaptiveProductionPlan;
+                                if (preparedForRow is { } prepared)
+                                {
+                                    estimateMeta.PreparedProductionPlan = prepared;
+                                    estimateMeta.IntelligencePlan = prepared.Plan;
+                                    estimateMeta.PreparedAdaptiveProductionPlan = null;
+                                }
+                                estimateMeta.EstimateState = resultMeta.EstimateState;
+                                estimateMeta.EstimateDiagnostic = item.EstimateDiagnostic;
+                                estimateMeta.SizePredictionCalibration = resultMatchesPreparedPlan ? item.SizeCalibration : null;
+                                estimateMeta.AdaptiveQualitySelectionPending = false;
                                 estimateMeta.AdaptiveSelectionSkipped = false;
                                 estimateMeta.EstimatedPlannedAudioBitrateKbps =
                                     item.PlannedAudioBitrateKbps;
                                 estimateMeta.EstimatedPlannedMappedAncillaryBitrateKbps =
                                     item.PlannedMappedAncillaryBitrateKbps;
-                                estimateMeta.QualityPreview = item.QualityResolution;
+                                estimateMeta.QualityPreview = resultMatchesPreparedPlan &&
+                                    item.QualityResolution is { EffectiveQuality: not null, IsSupersededByTargetSize: false }
+                                        ? item.QualityResolution
+                                        : null;
                             }
 
                             TrackCodecFilterCount(path, codec);
 
-                            bool recommendationPending = adaptivePending &&
-                                item.Recommendation is { Kind: not SmartEncodeRecommendationKind.Unavailable };
-                            if (recommendationPending)
-                                SetSmartRecommendationPending(row);
-                            else if (item.Recommendation is not null)
+                            if (planBound && item.Recommendation is not null)
                                 ApplySmartRecommendation(row, item.Recommendation);
                             UpdateRowCustomFlag(row);
                             RestoreQueuedStateAfterEstimate(row);
@@ -376,15 +466,17 @@ namespace MediaFlux
             }
             else if (_lastEstimateQueuedCount > 0 && pending <= 0)
             {
-                string text = _estimatesDeferredForLargeQueue
+                string text = _estimateService.PendingRefinements > 0
+                    ? $"Preliminary estimates ready for {_lastEstimateQueuedCount:N0} file(s); measured refinements continue in the background."
+                    : _estimatesDeferredForLargeQueue
                     ? $"Large queue mode: {dgvEncodeQueue.Rows.Count:N0} files loaded. Use Analyze Queue to estimate sizes."
                     : $"Queue analysis complete for {_lastEstimateQueuedCount:N0} file(s).";
                 toolStripStatusLabel1.Text = text;
                 UpdateRelocatedEncodeStatus(text);
                 _lastEstimateQueuedCount = 0;
                 SetQueueProgress(0, 0, visible: false);
-                SetQueueWorkCancelVisible(false);
             }
+            SetQueueWorkCancelVisible(pending > 0 || _estimateService.PendingRefinements > 0);
         }
 
         private void SafeRefreshEstimates()
@@ -419,6 +511,41 @@ namespace MediaFlux
         {
             _estimateRefreshTimer?.Stop();
             SafeRefreshEstimates();
+        }
+
+        private Dictionary<Guid, QueueEstimateRefinementPriority> GetQueueRefinementPriorities()
+        {
+            DataGridViewRow[] queuedRows = dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
+                .Where(row => !row.IsNewRow && row.Tag is RowMeta meta &&
+                    !meta.ExcludedFromEncodeAsDuplicate && !IsQueueRowActivelyEncoding(row))
+                .OrderBy(row => ((RowMeta)row.Tag!).QueueSequence)
+                .ToArray();
+            HashSet<Guid> nearTerm = queuedRows.Take(3)
+                .Select(row => ((RowMeta)row.Tag!).QueueItemId)
+                .ToHashSet();
+            var priorities = new Dictionary<Guid, QueueEstimateRefinementPriority>(queuedRows.Length);
+            foreach (DataGridViewRow row in queuedRows)
+            {
+                RowMeta meta = (RowMeta)row.Tag!;
+                bool selected = row.Selected || dgvEncodeQueue.CurrentRow == row;
+                bool visible = false;
+                try { visible = row.Displayed; }
+                catch (InvalidOperationException) { }
+                priorities[meta.QueueItemId] = selected
+                    ? QueueEstimateRefinementPriority.Selected
+                    : visible ? QueueEstimateRefinementPriority.Visible
+                    : nearTerm.Contains(meta.QueueItemId) ? QueueEstimateRefinementPriority.NearTerm
+                    : QueueEstimateRefinementPriority.Background;
+            }
+            return priorities;
+        }
+
+        private void UpdateEstimateRefinementPriorities()
+        {
+            if (IsDisposed || dgvEncodeQueue is null || _estimateService is null)
+                return;
+            foreach ((Guid itemId, QueueEstimateRefinementPriority priority) in GetQueueRefinementPriorities())
+                _estimateService.SetRefinementPriority(itemId, priority);
         }
 
         private bool TryQueueV2Estimate(
@@ -471,6 +598,11 @@ namespace MediaFlux
                 bool cachedFacts = coordinator.TryGetCachedSourceFacts(identity, out _);
                 meta.V2SourceIdentity = identity;
                 meta.V2EstimateResult = null;
+                meta.CurrentEstimatePlanIdentity = null;
+                meta.BoundEstimate = null;
+                meta.PreparedAdaptiveProductionPlan = null;
+                meta.EstimateState = QueueEstimateState.Pending;
+                meta.PlanBindingRequired = true;
                 meta.V2QualityChangeStartedUtc = qualityChangeStartedUtc;
                 V2EstimateRefreshTicket ticket = coordinator.Request(
                     meta.QueueItemId, identity, request!);
@@ -487,9 +619,6 @@ namespace MediaFlux
                 row.Cells["colEstimatedSize"].ToolTipText = cachedFacts
                     ? "V2 fast estimate is recalculating from cached source facts. The result is advisory."
                     : "V2 fast estimate is reading source facts once. The result is advisory.";
-                if (!meta.QueueAdmissionPending &&
-                    row.Cells["colStatus"].Value?.ToString() is not "Encoding" and not "Done" and not "Failed" and not "Canceled" and not "Retry Queued")
-                    SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
                 StartV2EstimateUiPump();
                 return true;
             }
@@ -526,6 +655,7 @@ namespace MediaFlux
                     if (result.Estimate is not { } estimate || result.SourceFacts is not { } facts)
                     {
                         meta.V2EstimateResult = null;
+                        meta.EstimateState = QueueEstimateState.Unavailable;
                         row.Cells["colEstimatedSize"].Value = "Unavailable";
                         row.Cells["colEstimatedSize"].Tag = null;
                         row.Cells["colEstimatedSize"].ToolTipText =
@@ -536,9 +666,32 @@ namespace MediaFlux
                         continue;
                     }
 
+                    ProductionPlanIdentity? planIdentity = estimate.ProductionPlan;
+                    bool planBound = planIdentity is not null &&
+                        string.Equals(planIdentity.SourceIdentity,
+                            ProductionPlanFingerprintService.CaptureSourceIdentity([meta.Path]), StringComparison.Ordinal);
+                    if (!planBound)
+                    {
+                        meta.CurrentEstimatePlanIdentity = null;
+                        meta.BoundEstimate = null;
+                        meta.EstimateState = QueueEstimateState.Unavailable;
+                        row.Cells["colEstimatedSize"].Value = "Unavailable";
+                        row.Cells["colEstimatedSize"].Tag = null;
+                        row.Cells["colEstimatedSize"].ToolTipText = "The V2 estimate could not be bound to the current production plan and source.";
+                        _estimatedSizeMap.Remove(meta.Path);
+                        MarkQueueTotalsDirty();
+                        applied++;
+                        continue;
+                    }
+
                     long uiApplyStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                     double sourceMb = facts.SourceSizeBytes / (1024d * 1024d);
                     double estimateMb = estimate.EstimatedTotalBytes / (1024d * 1024d);
+                    meta.CurrentEstimatePlanIdentity = planIdentity;
+                    meta.EstimateState = QueueEstimateState.Preliminary;
+                    meta.BoundEstimate = new PlanBoundEstimate(planIdentity!, result.Generation,
+                        "V2FastEstimate", estimate.EstimatedTotalBytes, EstimateAuthorityLevel.Preliminary,
+                        Confidence: estimate.Confidence.ToString());
                     meta.V2SourceIdentity = result.SourceIdentity;
                     meta.V2SourceFacts = facts;
                     meta.V2EstimateResult = estimate;
@@ -548,6 +701,8 @@ namespace MediaFlux
                     meta.VideoCodec = facts.VideoCodec;
                     meta.Resolution = $"{facts.Width}x{facts.Height}";
                     meta.Fps = facts.FrameRate is > 0 ? (int)Math.Round(facts.FrameRate.Value) : 0;
+
+                    QueueV2MeasuredRefinement(meta, estimate, facts);
 
                     row.Cells["colSize"].Value = FormatSize(sourceMb);
                     row.Cells["colEstimatedSize"].Value = FormatSize(estimateMb);
@@ -588,6 +743,62 @@ namespace MediaFlux
             }
         }
 
+        private void QueueV2MeasuredRefinement(
+            RowMeta meta,
+            V2FastEstimateResult estimate,
+            V2FastEstimateSourceFacts facts)
+        {
+            if (meta.BoundEstimate is not { Authority: EstimateAuthorityLevel.Preliminary } preliminary ||
+                meta.CurrentEstimatePlanIdentity is not { } identity)
+                return;
+
+            try
+            {
+                string profile = !string.IsNullOrWhiteSpace(meta.CustomCompressionProfile)
+                    ? meta.CustomCompressionProfile!
+                    : IsAutomaticQualitySelected()
+                        ? "Medium Quality (Default)"
+                        : comboCompressionProfile.SelectedItem?.ToString() ?? "Medium";
+                ProductionPlanIdentity? rebuilt = CreateQueueEstimatePlanIdentity(
+                    meta, meta.Path, profile, out EncodeExecutionSnapshotSettings? previewSettings,
+                    out EncodeExecutionSnapshotItem? previewItem);
+                if (rebuilt is null || previewSettings is null || previewItem is null ||
+                    !string.Equals(rebuilt.PlanFingerprint, identity.PlanFingerprint, StringComparison.Ordinal) ||
+                    (!previewSettings.AutomaticQuality && !previewSettings.NumericQualityValue.HasValue) ||
+                    profile.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                VideoRestorationPipelinePlan restoration = VideoRestorationPipeline.BuildPlan(
+                    _config.VideoRestoration, GetSelectedScaleMode());
+                bool decisionRelevant = previewSettings.AutomaticQuality && _config.StorageSavings.Enabled &&
+                    !restoration.UsesAi && string.IsNullOrWhiteSpace(restoration.ConventionalFilterChain) &&
+                    string.IsNullOrWhiteSpace(restoration.PreAiFilterChain) &&
+                    string.IsNullOrWhiteSpace(restoration.PostAiFilterChain);
+                _estimateService.QueueEmpiricalRefinement(
+                    meta.Path,
+                    meta.QueueItemId,
+                    meta.EstimateAuthorityRevision,
+                    meta.QueueAcceptedUtc,
+                    facts.SourceSizeBytes / (1024d * 1024d),
+                    estimate.EstimatedTotalBytes / (1024d * 1024d),
+                    facts.DurationSeconds,
+                    $"{facts.Width}x{facts.Height}",
+                    facts.VideoCodec,
+                    facts.FrameRate ?? 0,
+                    previewSettings,
+                    previewItem with { SourceSizeBytes = facts.SourceSizeBytes, MediaDurationSeconds = facts.DurationSeconds },
+                    rebuilt,
+                    preliminary,
+                    meta.EstimateRefinementPriority,
+                    decisionRelevant);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"V2 estimate refinement was not scheduled for {Path.GetFileName(meta.Path)}: {ex.Message}");
+            }
+        }
+
         private static string BuildV2EstimateTooltip(
             V2FastEstimateResult estimate,
             V2FastEstimateSourceFacts facts,
@@ -595,12 +806,49 @@ namespace MediaFlux
             double probeMilliseconds)
         {
             string saved = FormatSize(estimate.EstimatedSavingsBytes);
-            return $"V2 fast estimate · advisory" + Environment.NewLine +
+            string fingerprint = estimate.ProductionPlan?.PlanFingerprint ?? "unbound";
+            return $"Preliminary V2 fast estimate · advisory · plan {fingerprint[..Math.Min(12, fingerprint.Length)]}" + Environment.NewLine +
                    $"Estimated savings: {saved} ({estimate.EstimatedSavingsPercent:0.0}%)" + Environment.NewLine +
                    $"Savings class: {estimate.SavingsClassification.Kind} (advisory)" + Environment.NewLine +
                    $"Confidence: {estimate.Confidence}; {estimate.EstimateBasis}" + Environment.NewLine +
                    $"Source facts: {(sourceFactsReused ? "reused" : "probed")}; probe {probeMilliseconds:0.##} ms" + Environment.NewLine +
                    $"Calculation: {estimate.CalculationMilliseconds:0.###} ms; {facts.Width}x{facts.Height}";
+        }
+
+        private bool TryBindEstimateResult(RowMeta meta, EstimateBackgroundService.SmartEstimateResult result)
+        {
+            if (result.PlanIdentity is not { } identity || meta.CurrentEstimatePlanIdentity is not { } expected ||
+                !string.Equals(expected.SourceIdentity, identity.SourceIdentity, StringComparison.Ordinal))
+                return false;
+            bool estimateMatches = result.BoundEstimate is { } estimate && estimate.Matches(identity);
+            bool preparedPlanMatches = result.PreparedProductionPlan is { } prepared &&
+                string.Equals(prepared.Identity.PlanFingerprint, identity.PlanFingerprint, StringComparison.Ordinal) &&
+                (prepared.Estimate is null || prepared.Estimate.Matches(identity));
+            return (estimateMatches || preparedPlanMatches) &&
+                string.Equals(expected.PlanFingerprint, identity.PlanFingerprint, StringComparison.Ordinal) &&
+                string.Equals(identity.SourceIdentity,
+                    ProductionPlanFingerprintService.CaptureSourceIdentity([result.Path]), StringComparison.Ordinal);
+        }
+
+        private void ClearBoundQueueEstimate(DataGridViewRow row, RowMeta meta, string display, string tooltip)
+        {
+            meta.BoundEstimate = null;
+            _estimatedSizeMap.Remove(meta.Path);
+            row.Cells["colEstimatedSize"].Value = display;
+            row.Cells["colEstimatedSize"].Tag = null;
+            row.Cells["colEstimatedSize"].ToolTipText = tooltip;
+            MarkQueueTotalsDirty();
+        }
+
+        private void ApplyProductionPlanBoundEstimate(
+            DataGridViewRow row,
+            RowMeta meta,
+            EncodingPlan plan)
+        {
+            ProductionPlanIdentity? identity = plan.ProductionPlan;
+            if (meta.BoundEstimate?.Matches(identity) == true)
+                return;
+            ClearBoundQueueEstimate(row, meta, "Unavailable", "The estimate no longer matches the frozen production plan.");
         }
 
         private void RunEstimatePass()
@@ -618,19 +866,13 @@ namespace MediaFlux
                 return;
 
             _largeQueueModeActive = dgvEncodeQueue.Rows.Count >= GetLargeQueueThreshold();
-            bool deferLegacyForLargeQueue = _largeQueueModeActive && !_config.AutoAnalyzeLargeQueues && !force;
-            if (deferLegacyForLargeQueue)
-            {
-                _estimatesDeferredForLargeQueue = true;
-                UpdateAnalyzeQueueButtonState();
-                toolStripStatusLabel1.Text = $"Large queue mode: {dgvEncodeQueue.Rows.Count:N0} files loaded. Use Analyze Queue to estimate sizes.";
-                UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);
-            }
+            bool deferLegacyForLargeQueue = false;
+            _estimatesDeferredForLargeQueue = false;
 
             bool autoRequested = chkAutoTargetSize.Checked;
             EncodingQualityIntent? automaticQualityIntent =
                 IsAutomaticQualitySelected()
-                    ? EncodingQualityIntent.Automatic(GetSelectedQualityTarget())
+                    ? EncodingQualityIntent.AutomaticTarget(GetSelectedQualityTarget())
                     : null;
             // The old profile remains meaningful for Manual mode and explicit
             // per-row overrides. Automatic estimation must use the same resolved
@@ -664,6 +906,7 @@ namespace MediaFlux
                 autoRequested,
                 manualTargetMb);
 
+            Dictionary<Guid, QueueEstimateRefinementPriority> refinementPriorities = GetQueueRefinementPriorities();
             int queued = 0;
             foreach (DataGridViewRow row in dgvEncodeQueue.Rows)
             {
@@ -706,32 +949,16 @@ namespace MediaFlux
 
                 if (meta?.IsDvdEncode == true)
                 {
-                    double sourceMb = meta.SrcMb;
-                    double estimateMb = !rowAuto && rowManualTargetMb > 0
-                        ? rowManualTargetMb
-                        : EstimateDvdEncodeTargetMb(
-                            meta,
-                            rowProfile,
-                            targetEncoder,
-                            quality,
-                            targetHeight);
-                    if (estimateMb > 0)
-                    {
-                        _estimatedSizeMap[path!] = estimateMb;
-                        row.Cells["colEstimatedSize"].Value = FormatSize(estimateMb);
-                        row.Cells["colEstimatedSize"].Tag =
-                            new Tuple<double, double>(sourceMb, estimateMb);
-                    }
-                    else
-                    {
-                        _estimatedSizeMap.Remove(path!);
-                        row.Cells["colEstimatedSize"].Value = "Unavailable";
-                        row.Cells["colEstimatedSize"].Tag = null;
-                    }
-
-                    row.Cells["colEstimatedSize"].ToolTipText = estimateMb > 0
-                        ? BuildQueueEstimateTooltip(meta, sourceMb, estimateMb)
-                        : "Estimated output is not available yet.";
+                    meta.EstimateState = QueueEstimateState.Pending;
+                    meta.BoundEstimate = null;
+                    meta.PreparedProductionPlan = null;
+                    meta.IntelligencePlan = null;
+                    _estimatedSizeMap.Remove(path!);
+                    row.Cells["colSize"].Value = meta.SrcMb > 0 ? FormatSize(meta.SrcMb) : "—";
+                    row.Cells["colEstimatedSize"].Value = "Pending…";
+                    row.Cells["colEstimatedSize"].Tag = null;
+                    row.Cells["colEstimatedSize"].ToolTipText =
+                        "The exact DVD title plan is prepared before encoding. No arithmetic output-size estimate is shown.";
                     SetRecommendationUnavailable(
                         row,
                         "DVD title recommendations remain in the DVD import workflow.");
@@ -755,14 +982,25 @@ namespace MediaFlux
                 RowMeta estimateMeta = meta ?? EnsureRowMeta(row);
                 if (string.IsNullOrWhiteSpace(estimateMeta.Path))
                     estimateMeta.Path = path;
+                estimateMeta.EstimateAuthorityRevision = checked(estimateMeta.EstimateAuthorityRevision + 1);
+                estimateMeta.EstimateRefinementPriority = refinementPriorities.GetValueOrDefault(
+                    estimateMeta.QueueItemId, QueueEstimateRefinementPriority.Background);
 
-                if (TryQueueV2Estimate(row, estimateMeta, path, qualityChangeStartedUtc, rowProfile))
-                    continue;
+                estimateMeta.BoundEstimate = null;
+                estimateMeta.CurrentEstimatePlanIdentity = null;
+                estimateMeta.PreparedAdaptiveProductionPlan = null;
+                estimateMeta.PreparedProductionPlan = null;
+                estimateMeta.IntelligencePlan = null;
+                estimateMeta.PlanBindingRequired = false;
+                estimateMeta.EstimateState = QueueEstimateState.Pending;
+                estimateMeta.EstimateRefinementPriority = refinementPriorities.GetValueOrDefault(
+                    estimateMeta.QueueItemId, QueueEstimateRefinementPriority.Background);
+                _estimatedSizeMap.Remove(path);
+                row.Cells["colEstimatedSize"].Value = "Pending…";
+                row.Cells["colEstimatedSize"].Tag = null;
+                row.Cells["colEstimatedSize"].ToolTipText = "The exact production plan is being prepared for measured estimation.";
 
                 if (estimateMeta.QueueAdmissionPending)
-                    continue;
-
-                if (deferLegacyForLargeQueue)
                     continue;
 
                 // Keep the path → row map in sync for the UI pump
@@ -770,14 +1008,10 @@ namespace MediaFlux
                 _estimatedSizeMap.Remove(path);
                 estimateMeta.EmpiricalPreview = null;
                 estimateMeta.SizePredictionCalibration = null;
-                row.Cells["colEstimatedSize"].Value = "Estimating…";
+                row.Cells["colEstimatedSize"].Value = "Pending…";
                 row.Cells["colEstimatedSize"].Tag = null;
-                row.Cells["colEstimatedSize"].ToolTipText = "Reading this file's metadata and recalculating with the current encoding settings.";
+                row.Cells["colEstimatedSize"].ToolTipText = "The exact production plan will be measured when this row is selected or is near-term.";
                 SetRecommendationAnalyzing(row);
-                if (!IsQueueRowActivelyEncoding(row) &&
-                    row.Cells["colStatus"].Value?.ToString() is not "Encoding" and not "Done" and not "Failed" and not "Canceled" and not "Retry Queued")
-                    SetEncodeRowState(row, "Estimating", row.Cells["colProgress"].Value?.ToString(), row.Cells["colETA"].Value?.ToString(), "Estimating output size.");
-
                 // Queue estimate work; UI pump will apply results
                 StorageSavingsOptions rowStorageSavings =
                     _config.StorageSavings.CloneNormalized();
@@ -795,6 +1029,10 @@ namespace MediaFlux
                 {
                     rowStorageSavings.Enabled = false;
                 }
+                _ = CreateQueueEstimatePlanIdentity(
+                    estimateMeta, path, rowProfile,
+                    out EncodeExecutionSnapshotSettings? previewSettings,
+                    out EncodeExecutionSnapshotItem? previewItem);
                 QueueEstimate(
                     path,
                     rowAuto,
@@ -813,9 +1051,11 @@ namespace MediaFlux
                     encoderSettings.Preset,
                     encoderSettings.TenBit ? 10 : 8,
                     encoderSettings.ConcurrentEncoderSessions,
-                    null, null,
+                    previewSettings, previewItem,
                     estimateMeta.EstimateAuthorityRevision,
-                    qualityChangeStartedUtc);
+                    qualityChangeStartedUtc,
+                    null,
+                    estimateMeta.EstimateRefinementPriority);
                 queued++;
             }
 
@@ -834,32 +1074,6 @@ namespace MediaFlux
 
             // Make sure timers are alive (constructor already calls this, but this is cheap)
             StartEstimateUiPump();
-        }
-
-        private static double EstimateDvdEncodeTargetMb(
-            RowMeta meta,
-            string compressionProfile,
-            VideoEncoderSelection targetEncoder,
-            int quality,
-            int? targetHeight)
-        {
-            DvdTitleCandidate? candidate = meta.DvdEncodeOptions?.Candidate;
-            if (candidate == null)
-                return 0;
-
-            double sourceMb = candidate.CombinedSizeBytes / (1024d * 1024d);
-            return SizeEstimateService.EstimateAutoTargetMbSmart(
-                sourceMb,
-                candidate.CombinedDurationSeconds,
-                candidate.VideoWidth ?? 0,
-                candidate.VideoHeight ?? 0,
-                candidate.FrameRate ?? 0,
-                sourceVideoBitrateKbps: 0,
-                candidate.VideoCodec,
-                compressionProfile,
-                targetEncoder,
-                quality,
-                targetHeight);
         }
 
         private void RestoreQueuedStateAfterEstimate(DataGridViewRow row)
@@ -901,7 +1115,9 @@ namespace MediaFlux
             EncodeExecutionSnapshotSettings? previewSettings = null,
             EncodeExecutionSnapshotItem? previewItem = null,
             long estimateAuthorityRevision = 0,
-            DateTime? qualityChangeStartedUtc = null)
+            DateTime? qualityChangeStartedUtc = null,
+            ProductionPlanIdentity? planIdentity = null,
+            QueueEstimateRefinementPriority refinementPriority = QueueEstimateRefinementPriority.Background)
         {
             _estimateService.QueueSmartEstimate(
                 path,
@@ -927,7 +1143,76 @@ namespace MediaFlux
                 previewItem,
                 estimateAuthorityRevision,
                 queueAcceptedUtc: queueAcceptedUtc,
-                qualityChangeStartedUtc: qualityChangeStartedUtc);
+                qualityChangeStartedUtc: qualityChangeStartedUtc,
+                planIdentity: planIdentity,
+                refinementPriority: refinementPriority,
+                empiricalPreviewEnabled: previewSettings is not null && previewItem is not null &&
+                    !profile.Equals("No Compression", StringComparison.OrdinalIgnoreCase) &&
+                    previewItem.CustomTargetMb is null &&
+                    previewItem.LibraryPolicyIntent?.ProjectedOutputBytes is null &&
+                    (qualityIntent is not null || previewSettings.AutomaticQuality ||
+                     previewSettings.NumericQualityValue.HasValue));
+        }
+
+        private ProductionPlanIdentity? CreateQueueEstimatePlanIdentity(
+            RowMeta meta,
+            string path,
+            string profile,
+            out EncodeExecutionSnapshotSettings? previewSettings,
+            out EncodeExecutionSnapshotItem? previewItem)
+        {
+            previewSettings = null;
+            previewItem = null;
+            try
+            {
+                EncodeExecutionSnapshotSettings settings = CaptureEncodeExecutionSnapshotSettings(
+                    GetSelectedOutputContainer()) with { CompressionProfile = profile };
+                int? sourceWidth = null;
+                int? sourceHeight = null;
+                string[] resolution = (meta.Resolution ?? string.Empty).Split('x', 'X');
+                if (resolution.Length == 2 && int.TryParse(resolution[0], out int parsedWidth) && parsedWidth > 0 &&
+                    int.TryParse(resolution[1], out int parsedHeight) && parsedHeight > 0)
+                {
+                    sourceWidth = parsedWidth;
+                    sourceHeight = parsedHeight;
+                }
+                var item = new EncodeExecutionSnapshotItem
+                {
+                    SourceFilePath = path,
+                    LogicalSourcePath = path,
+                    SourceMeasurements = sourceHeight is int height && sourceWidth is int width
+                        ? new EncodeExecutionSourceMeasurements { Width = width, Height = height }
+                        : null,
+                    CustomCompressionProfile = meta.CustomCompressionProfile,
+                    CustomTargetMb = meta.CustomTargetMb,
+                    PredictionShadowExperimentAssignment = meta.PredictionShadowExperimentAssignment,
+                    SourceSizeBytes = meta.SourceSizeBytes,
+                    MediaDurationSeconds = meta.DurationSec > 0 ? meta.DurationSec : null,
+                    LibraryPolicyIntent = meta.LibraryPolicyIntent
+                };
+                EncodeExecutionSnapshot snapshot = _encodeExecutionSnapshotBuilder.Build(
+                    new EncodeExecutionSnapshotIdentity
+                    {
+                        OperationId = string.IsNullOrWhiteSpace(meta.StatisticsOperationId)
+                            ? meta.QueueItemId.ToString("N")
+                            : meta.StatisticsOperationId,
+                        StatisticsStartUtc = meta.StatisticsStartUtc,
+                        MediaFluxVersion = Application.ProductVersion,
+                        StatisticsPath = AppPaths.EncodingStatisticsFile,
+                        ContainerCompatibilityConfirmed = false
+                    },
+                    settings,
+                    item);
+                previewSettings = settings;
+                previewItem = item;
+                return snapshot.ProductionPlan;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"Could not bind queue estimate to a production plan for {Path.GetFileName(path)}: {ex.Message}");
+                return null;
+            }
         }
 
         private bool IsEstimateSourceOwnedByActiveEncode(string path)

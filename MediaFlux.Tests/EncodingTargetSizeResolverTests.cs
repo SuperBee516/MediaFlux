@@ -79,8 +79,7 @@ public sealed class EncodingTargetSizeResolverTests
         Assert.Equal(750, execution.TargetMb);
         Assert.True(execution.QualityResolution.IsSupersededByTargetSize);
         Assert.Null(execution.QualityResolution.EffectiveQuality);
-        Assert.Equal(SourceAdaptiveShadowStatus.ExplicitUserPolicy,
-            plan.SourceAdaptiveShadow!.Status);
+        Assert.Null(plan.SourceAdaptiveShadow);
 
         EncodingDecisionContext automaticQualityContext = context with { TargetMb = null };
         EncodingPlan automaticQualityPlan = EncodingPlanService.Create(automaticQualityContext);
@@ -90,7 +89,6 @@ public sealed class EncodingTargetSizeResolverTests
         Assert.Null(automaticQualityExecution.TargetMb);
         Assert.False(automaticQualityExecution.QualityResolution.IsSupersededByTargetSize);
         Assert.NotNull(automaticQualityExecution.QualityResolution.EffectiveQuality);
-        Assert.Equal(SourceAdaptiveShadowStatus.CalibrationCandidate,
-            automaticQualityPlan.SourceAdaptiveShadow!.Status);
+        Assert.Null(automaticQualityPlan.SourceAdaptiveShadow);
     }
 }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using MediaFlux.Models;
 
 namespace MediaFlux.Services;
 
@@ -158,6 +159,53 @@ public enum HeadlessEncodeJobStatus
     NotStarted
 }
 
+public sealed record HeadlessProductionDiagnostics(
+    string? SourceIdentity,
+    string? PlanFingerprint,
+    string? EstimatePlanFingerprint,
+    long? EstimatedOutputBytes,
+    string? EstimateMethod,
+    string? EstimateAuthority,
+    int? EstimateSampleCount,
+    string? EstimateConfidence,
+    long? EstimatedLowerBytes,
+    long? EstimatedUpperBytes,
+    long? ActualOutputBytes,
+    string? SelectedMode,
+    double? SelectedQuality,
+    string? StorageSavingsClassification,
+    string? Error,
+    string? FinalizationReason,
+    int ProductionAttemptCount,
+    ProductionPlanFingerprintInput? PlanInputs = null,
+    string? ExecutionArguments = null,
+    IReadOnlyList<EmpiricalPreviewSampleEvidence>? EstimateSampleEvidence = null,
+    string? EstimateRangeMethod = null)
+{
+    public bool? PlanFingerprintsIdentical => EstimatePlanFingerprint is null
+        ? null
+        : string.Equals(PlanFingerprint, EstimatePlanFingerprint, StringComparison.Ordinal);
+
+    public string? EstimatePlanEngine { get; init; }
+    public string? ExecutionPlanEngine { get; init; }
+    public string? SelectedProfile { get; init; }
+    public string? PreparedPlanId { get; init; }
+
+    public string? PlanFingerprintComparison => EstimatePlanFingerprint is null
+        ? null
+        : PlanFingerprintsIdentical == true
+            ? $"Fingerprint values are identical (estimate engine={EstimatePlanEngine ?? "unknown"}, execution engine={ExecutionPlanEngine ?? "unknown"})."
+            : !string.IsNullOrWhiteSpace(EstimatePlanEngine) &&
+              !string.IsNullOrWhiteSpace(ExecutionPlanEngine) &&
+              !string.Equals(EstimatePlanEngine, ExecutionPlanEngine, StringComparison.Ordinal)
+                ? $"Different engine-specific representations ({EstimatePlanEngine} estimate vs {ExecutionPlanEngine} execution); fingerprint equality is not required across engines."
+                : "Different fingerprints with no confirmed engine distinction; investigate the handoff.";
+
+    public double? PredictionErrorPercent => EstimatedOutputBytes is > 0 && ActualOutputBytes is > 0
+        ? (ActualOutputBytes.Value - EstimatedOutputBytes.Value) / (double)EstimatedOutputBytes.Value * 100d
+        : null;
+}
+
 /// <summary>Versioned machine-readable terminal evidence for one transient source.</summary>
 public sealed record HeadlessEncodeJobResult(
     int Index,
@@ -193,7 +241,8 @@ public sealed record HeadlessEncodeJobResult(
     double? SourceFrameRate = null,
     bool FatalBatchFailure = false,
     AutomaticEncodePerformanceDiagnostics? Performance = null,
-    string? PerformanceSummary = null);
+    string? PerformanceSummary = null,
+    HeadlessProductionDiagnostics? ProductionDiagnostics = null);
 
 public sealed record HeadlessEncodeBatchResult(
     int SchemaVersion,

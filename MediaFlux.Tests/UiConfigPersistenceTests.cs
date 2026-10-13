@@ -129,7 +129,7 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 Assert.Equal("Automatic", Field<Config>(form, "_config").LastQualityMode);
                 ComboBox mode = Field<ComboBox>(form, "comboQualityMode");
 
-                Assert.Equal("Automatic • Source Adaptive", mode.Text);
+                Assert.Equal("Automatic", mode.Text);
             }
             catch (Exception ex) { failure = ex; }
             finally { WinFormsTestLifecycle.CloseAndDispose(form); }
@@ -159,7 +159,7 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 form.Show();
                 Application.DoEvents();
 
-                Assert.Equal("Automatic • Source Adaptive", Field<ComboBox>(form, "comboQualityMode").Text);
+                Assert.Equal("Automatic", Field<ComboBox>(form, "comboQualityMode").Text);
                 Assert.Equal(QualityTarget.Balanced,
                     Field<QualityTargetSegmentSelector>(form, "qualityTargetSelector").SelectedTarget);
                 Assert.True(Field<CheckBox>(form, "chkAutoTargetSize").Checked);
@@ -256,7 +256,7 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 form.Show();
                 Application.DoEvents();
                 mode = Field<ComboBox>(form, "comboQualityMode");
-                Assert.Equal("Manual • Legacy Numeric", mode.Text);
+                Assert.Equal("Manual", mode.Text);
 
                 mode.SelectedIndex = 0;
                 Application.DoEvents();

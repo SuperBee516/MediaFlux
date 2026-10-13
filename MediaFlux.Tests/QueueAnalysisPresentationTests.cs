@@ -7,14 +7,14 @@ namespace MediaFlux.Tests;
 public sealed class QueueAnalysisPresentationTests
 {
     [Theory]
-    [InlineData("EmpiricalPreview", false)]
-    [InlineData("GenericBppV1", false)]
-    [InlineData("ManualTarget", true)]
-    [InlineData("", true)]
-    public void LegacyDeepProjectionCannotReplaceCurrentConstantQualityAuthority(string model, bool allowed)
+    [InlineData("EmpiricalPreview")]
+    [InlineData("GenericBppV1")]
+    [InlineData("ManualTarget")]
+    [InlineData("")]
+    public void DeepAnalysisNeverReplacesThePreparedPlanEstimate(string model)
     {
         var estimate = EncodingSizePredictionCalibration.Unavailable(1, "estimate") with { EstimateModelId = model };
-        Assert.Equal(allowed, MainForm.CanApplyLegacyDeepProjection(estimate));
+        Assert.False(MainForm.CanApplyLegacyDeepProjection(estimate));
     }
     [Theory]
     [InlineData(SmartEncodeRecommendationKind.StrongCandidate, "Strong candidate")]
@@ -194,7 +194,7 @@ public sealed class QueueAnalysisPresentationTests
         Assert.True(presentation.IsAvailable);
         Assert.Equal("Adaptive pending", presentation.Recommendation);
         Assert.Equal("1000 MB → 550 MB", presentation.EstimatedResult);
-        Assert.Contains("final Source Adaptive quality decision", presentation.BuildTooltip());
+        Assert.Contains("deterministic production plan", presentation.BuildTooltip());
     }
 
     [Fact]
@@ -218,7 +218,7 @@ public sealed class QueueAnalysisPresentationTests
 
         Assert.True(presentation.IsAvailable);
         Assert.Contains("Quality preference: Balanced", presentation.BuildTooltip());
-        Assert.Contains("Mode: Automatic / Source Adaptive", presentation.BuildTooltip());
+        Assert.Contains("Mode: Automatic", presentation.BuildTooltip());
         Assert.Contains("Effective quality: CQ 19", presentation.BuildTooltip());
     }
 

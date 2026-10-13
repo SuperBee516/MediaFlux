@@ -12,9 +12,13 @@ namespace MediaFlux.Services
         public string OutputFolder { get; init; } = "";
         public string Suffix { get; init; } = "";
         public required VideoEncoderSelection Encoder { get; init; }
+        public ProductionPlanIdentity? ProductionPlan { get; init; }
+        public PreparedAdaptiveProductionPlan? PreparedAdaptiveProductionPlan { get; init; }
+        public EncodingPlan? PreparedPlan { get; init; }
         public bool UseGpu { get; init; }
         public double? TargetMb { get; init; }
         public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
+        public StorageSavingsOptions StorageSavingsPolicy { get; init; } = new();
         public bool AdaptiveStorageSavingsEnabled { get; init; }
         internal bool ExperimentalPolicyCRetryEnabled { get; init; }
         public Action<AdaptiveQualitySelectionEvidence>? AdaptiveSelectionCallback { get; init; }

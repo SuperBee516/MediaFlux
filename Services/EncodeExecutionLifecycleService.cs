@@ -106,12 +106,21 @@ public sealed class EncodeExecutionLifecycleService
         string cleanupResult;
         try
         {
-            cleanupResult = await IncompleteEncodeOutputCleanupService.CleanupAsync(
-                sourcePath,
-                incompletePath,
-                isCanceled || cleanupEnabled,
-                isCanceled ? "canceled" : "failed",
-                protectedPromotedPath).ConfigureAwait(false);
+            if (isStoragePolicyRejected && !isCanceled)
+            {
+                cleanupResult = !string.IsNullOrWhiteSpace(incompletePath) && File.Exists(incompletePath)
+                    ? "preserved the validated storage-policy-rejected output for an explicit keep/discard decision."
+                    : "no recoverable storage-policy-rejected output was present to preserve.";
+            }
+            else
+            {
+                cleanupResult = await IncompleteEncodeOutputCleanupService.CleanupAsync(
+                    sourcePath,
+                    incompletePath,
+                    isCanceled || cleanupEnabled,
+                    isCanceled ? "canceled" : "failed",
+                    protectedPromotedPath).ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {

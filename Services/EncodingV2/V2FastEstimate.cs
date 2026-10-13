@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using MediaFlux.Models;
+using MediaFlux.Services;
 
 namespace MediaFlux.Services.EncodingV2;
 
@@ -16,6 +17,7 @@ public sealed record V2FastEstimateSourceFacts
     public double? FrameRate { get; init; }
     public double? VideoBitrateKbps { get; init; }
     public IReadOnlyList<V2FastEstimateAudioStreamFacts> AudioStreams { get; init; } = Array.Empty<V2FastEstimateAudioStreamFacts>();
+    public IReadOnlyList<string> SubtitleCodecs { get; init; } = Array.Empty<string>();
 
     public static V2FastEstimateSourceFacts FromMediaFacts(V2MediaFacts source)
     {
@@ -43,7 +45,11 @@ public sealed record V2FastEstimateSourceFacts
                     Codec = stream.CodecName,
                     BitrateKbps = Positive(stream.BitRate) / 1000d,
                     DurationSeconds = Positive(stream.DurationSeconds) ?? source.Probe.DurationSeconds
-                }).ToArray())
+                }).ToArray()),
+            SubtitleCodecs = Array.AsReadOnly(source.Probe.Streams
+                .Where(stream => stream.CodecType.Equals("subtitle", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(stream => stream.Index)
+                .Select(stream => stream.CodecName).ToArray())
         };
     }
 
@@ -70,12 +76,14 @@ public sealed record V2FastEstimateCommandRequest
     public string Container { get; init; } = "mp4";
     public string QualityMode { get; init; } = "crf";
     public double QualityValue { get; init; } = 28;
+    public double? ProductionPlanQualityValue { get; init; }
     public string Preset { get; init; } = "";
     public string GeometryMode { get; init; } = "source";
     public int? MaxWidth { get; init; }
     public int? MaxHeight { get; init; }
     public string AudioMode { get; init; } = "copy";
     public int? AudioBitrateKbps { get; init; }
+    public string SubtitleMode { get; init; } = "none";
     public double LittleSavingsThresholdPercent { get; init; } = V2SavingsClassificationPolicy.ProvisionalDefaultThresholdPercent;
     public bool ProcessAll { get; init; }
     public string? FfprobePath { get; init; }
@@ -95,12 +103,14 @@ public sealed record V2FastEstimateRequest
     public string Container { get; init; } = "mp4";
     public string QualityMode { get; init; } = "crf";
     public double QualityValue { get; init; } = 28;
+    public double? ProductionPlanQualityValue { get; init; }
     public string Preset { get; init; } = "";
     public string GeometryMode { get; init; } = "source";
     public int? MaxWidth { get; init; }
     public int? MaxHeight { get; init; }
     public string AudioMode { get; init; } = "copy";
     public int? AudioBitrateKbps { get; init; }
+    public string SubtitleMode { get; init; } = "none";
     public double LittleSavingsThresholdPercent { get; init; } = V2SavingsClassificationPolicy.ProvisionalDefaultThresholdPercent;
     public bool ProcessAll { get; init; }
 }
@@ -144,7 +154,10 @@ public sealed record V2FastEstimateResult(
     V2SavingsClassification SavingsClassification,
     V2EstimateConfidence Confidence,
     string EstimateBasis,
-    double CalculationMilliseconds);
+    double CalculationMilliseconds)
+{
+    public ProductionPlanIdentity? ProductionPlan { get; init; }
+}
 
 public sealed record V2FastEstimateResolvedSource(
     V2FastEstimateSourceFacts Facts,
@@ -196,6 +209,11 @@ public static class V2FastEstimateService
         string audioMode = Normalize(request.AudioMode, "audioMode");
         if (audioMode is not ("copy" or "aac" or "none"))
             throw new V2PlanningException("InvalidAudioMode", "audioMode must be copy, aac, or none.");
+        string subtitleMode = Normalize(request.SubtitleMode, "subtitleMode");
+        if (subtitleMode == "auto")
+            subtitleMode = facts.SubtitleCodecs.Count == 0 ? "none" : "copy";
+        if (subtitleMode is not ("copy" or "none"))
+            throw new V2PlanningException("InvalidSubtitleMode", "subtitleMode must be copy or none.");
         if (audioMode == "aac" && request.AudioBitrateKbps is not (>= 32 and <= 512))
             throw new V2PlanningException("InvalidAudioBitrate", "AAC audio bitrate must be between 32 and 512 kbps.");
         if (audioMode != "aac" && request.AudioBitrateKbps.HasValue)
@@ -260,7 +278,13 @@ public static class V2FastEstimateService
             audioMode, request.AudioBitrateKbps, videoBytes, audioBytes, containerBytes, estimatedTotal,
             savingsBytes, savingsPercent,
             new V2SavingsClassification(classification, threshold, request.ProcessAll, recommendedSkip),
-            confidence, basis, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            confidence, basis, Stopwatch.GetElapsedTime(started).TotalMilliseconds)
+        {
+            ProductionPlan = ProductionPlanFingerprintService.CreateV2(
+                facts.SourcePath, encoder, codec, qualityMode, request.ProductionPlanQualityValue ?? request.QualityValue, preset,
+                "yuv420p", Normalize(request.GeometryMode, "geometryMode"), height,
+                audioMode, request.AudioBitrateKbps, subtitleMode, container, outputWidth: width)
+        };
     }
 
     public static async Task<V2FastEstimateResolvedSource> ResolveSourceFactsAsync(
@@ -317,12 +341,14 @@ public static class V2FastEstimateService
         Container = command.Container,
         QualityMode = command.QualityMode,
         QualityValue = qualityValue ?? command.QualityValue,
+        ProductionPlanQualityValue = command.ProductionPlanQualityValue,
         Preset = command.Preset,
         GeometryMode = command.GeometryMode,
         MaxWidth = command.MaxWidth,
         MaxHeight = command.MaxHeight,
         AudioMode = command.AudioMode,
         AudioBitrateKbps = command.AudioBitrateKbps,
+        SubtitleMode = command.SubtitleMode,
         LittleSavingsThresholdPercent = command.LittleSavingsThresholdPercent,
         ProcessAll = command.ProcessAll
     };
@@ -339,8 +365,8 @@ public static class V2FastEstimateService
 
     private static void ValidateFacts(V2FastEstimateSourceFacts facts)
     {
-        if (facts.AudioStreams is null)
-            throw new V2PlanningException("InvalidSourceFacts", "sourceFacts.audioStreams must be an array when supplied.");
+        if (facts.AudioStreams is null || facts.SubtitleCodecs is null)
+            throw new V2PlanningException("InvalidSourceFacts", "sourceFacts audio and subtitle streams must be arrays when supplied.");
         if (string.IsNullOrWhiteSpace(facts.SourcePath))
             throw new V2PlanningException("InvalidSourceFacts", "sourceFacts.sourcePath is required.");
         if (!Path.IsPathFullyQualified(facts.SourcePath))

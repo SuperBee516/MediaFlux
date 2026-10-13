@@ -53,7 +53,7 @@ public static class V2GuiRequestMapper
         if (intent.IsLibraryPolicyItem) return "Library policy jobs remain on V1.";
         if (intent.HasCustomSettings) return "Per-row custom settings remain on V1.";
         if (intent.HasPredictionShadowAssignment) return "Prediction-shadow assigned jobs remain on V1.";
-        if (settings.AutomaticQuality) return "Source Adaptive quality remains on V1.";
+        if (settings.AutomaticQuality) return "Automatic target-bitrate plans remain on the V1 prepared-plan production path.";
         if (settings.AutoTargetSize) return "Target-size jobs remain on V1.";
         if (string.Equals(settings.CompressionProfile, "No Compression", StringComparison.OrdinalIgnoreCase))
             return "The No Compression profile uses V1 target-size behavior.";

@@ -32,6 +32,16 @@ Save an Encode Preset when you want to reuse a combination of codec, encoder, qu
 
 Choose an encoder that is available on this computer. Hardware encoders can be fast; software encoders can provide other quality or compression tradeoffs. Keep HDR, bit depth, subtitles, attachments, and output-container compatibility in mind when changing settings.
 
+### Quality modes
+
+**Automatic** is the default quality mode. Automatic and **Manual** are the only quality modes selectable in the interface. Manual exposes the encoder's explicit CQ or CRF quality control. Legacy Numeric is retained only for compatibility with older saved settings and is no longer a GUI selection.
+
+Automatic offers five quality profiles. **Smaller** prioritizes a smaller output, and **Efficient** also favors compression with a lighter tradeoff. **Balanced** provides a middle ground. **High** shifts toward quality and a larger output, while **Maximum** most strongly favors quality and typically produces the largest output. The result depends on the source and encoder; these profiles do not promise a particular compression percentage.
+
+### Estimated Output
+
+The Encode Queue estimates output size from probed media metadata and the current encoding plan. The queue presents projected savings as a percentage and uses a colored bar to indicate the estimated savings range; the color and bar are visual summaries of the projection. Changing quality mode or profile can change the plan and its estimate. Estimates are projections, not guaranteed final file sizes; actual output depends on the media and the encode.
+
 ## Encoder Benchmark and Diagnostics
 
 Open **Tools > Encoder Benchmark** to compare the current encoder configuration and selected presets using one representative source window. The benchmark creates temporary output, validates it, records metrics, and cleans up its temporary files. It will not run while production encoding is active.

@@ -22,7 +22,8 @@ public static class EncodingPlanService
         EncodingService.StreamMapMode MapMode,
         bool CopySubtitles,
         bool CopyDataStreams,
-        bool CopyAttachments);
+        bool CopyAttachments,
+        AutomaticTargetPlan? AutomaticTargetPlan);
 
     /// <summary>
     /// Creates a domain plan by composing the same container and geometry policy
@@ -53,6 +54,21 @@ public static class EncodingPlanService
             context.ContainerConfigured, context.Source, context.Input, context.MapMode,
             context.CopySubtitles, context.CopyDataStreams, context.CopyAttachments,
             audioWillBeTranscoded: context.AudioChannels is > 0);
+        AutomaticTargetPlan? automaticTarget = null;
+        if (context.TargetMb is not > 0 &&
+            context.QualityIntent is { Kind: EncodingQualityIntentKind.AutomaticTargetBitrate, Target: { } target })
+        {
+            automaticTarget = AutomaticTargetPlanner.Create(
+                context.Source, context.Input, context.Encoder, geometry,
+                context.KnownDuration, target, context.AudioChannels, container);
+            if (!automaticTarget.IsAvailable)
+                return new EncodingPlan
+                {
+                    IsAvailable = false,
+                    UnavailableReason = automaticTarget.Reason,
+                    AutomaticTarget = automaticTarget
+                };
+        }
         bool strictRejected = container.Resolved == OutputContainer.Mp4 &&
             context.CompatibilityPolicy == ContainerCompatibilityPolicy.Strict &&
             !OutputContainerPolicy.CanProceedAutomatically(container, context.CompatibilityPolicy);
@@ -69,6 +85,9 @@ public static class EncodingPlanService
             reasons.Add(new(EncodingDecisionReasonCode.HardwareEncoderSelected, "The validated request selected hardware encoding."));
         if (context.TargetMb is > 0)
             reasons.Add(new(EncodingDecisionReasonCode.TargetSizeBudget, "A target-size budget is configured."));
+        if (automaticTarget is not null)
+            reasons.Add(new(EncodingDecisionReasonCode.TargetBitrateBudget,
+                $"Automatic uses {automaticTarget.TargetVideoBitrateKbps:0} kbps VBR ({automaticTarget.QualityTarget}); projected total is approximately {automaticTarget.ProjectedOutputBytes:N0} bytes. {automaticTarget.Reason}"));
         if (context.CompatibilityPolicy == ContainerCompatibilityPolicy.Intelligent)
             reasons.Add(new(EncodingDecisionReasonCode.IntelligentRecoveryAvailable, "One tolerant source-video decode retry is permitted only after corroborated failure evidence."));
         if (strictRejected)
@@ -133,15 +152,20 @@ public static class EncodingPlanService
             new EncodingQualityPolicyRequest(
                 qualityIntent, context.Source, context.Encoder, geometry,
                 context.ScaleMode, context.TargetMb));
-        SourceAdaptiveShadowCalibration sourceAdaptiveShadow =
-            new SourceAdaptiveShadowCalibrationService().CreateSafely(context, quality, geometry);
 
-        double? targetKbps = context.TargetMb is > 0 && context.KnownDuration > TimeSpan.Zero
-            ? context.TargetMb.Value * 8192d / context.KnownDuration.TotalSeconds : null;
+        double? targetKbps = automaticTarget?.TargetTotalBitrateKbps ??
+            (context.TargetMb is > 0 && context.KnownDuration > TimeSpan.Zero
+                ? context.TargetMb.Value * 8192d / context.KnownDuration.TotalSeconds : null);
         double? sourceBytes = context.Input.Kind == EncodingInputKind.File && File.Exists(context.Input.SourcePath)
             ? new FileInfo(context.Input.SourcePath).Length : null;
-        double? ratio = sourceBytes is > 0 && context.TargetMb is > 0
-            ? context.TargetMb.Value * 1024d * 1024d / sourceBytes.Value : null;
+        double? automaticEstimateMb = automaticTarget?.ProjectedOutputBytes is long projectedBytes && projectedBytes > 0
+            ? projectedBytes / (1024d * 1024d)
+            : null;
+        double? ratio = automaticTarget?.ProjectedOutputBytes is long automaticBytes && automaticBytes > 0 && sourceBytes is > 0
+            ? automaticBytes / sourceBytes.Value
+            : sourceBytes is > 0 && context.TargetMb is > 0
+                ? context.TargetMb.Value * 1024d * 1024d / sourceBytes.Value
+                : null;
         // Historical forecasts are observational. Loading the statistics journal
         // cannot supply execution quality or become a prerequisite for Start.
         var source = new EncodingPlanSource(sourceVideo?.CodecName ?? "unknown", sourceVideo?.Width, sourceVideo?.Height, sourceVideo?.FrameRate, context.KnownDuration > TimeSpan.Zero ? context.KnownDuration.TotalSeconds : null)
@@ -149,6 +173,10 @@ public static class EncodingPlanService
             SizeBytes = context.Source.SizeBytes,
             BitrateKbps = sourceVideo?.BitRate is > 0 ? sourceVideo.BitRate.Value / 1000d : context.Source.BitRate is > 0 ? context.Source.BitRate.Value / 1000d : null
         };
+        var executionValues = new EncodingPlanExecutionValues(
+            container, geometry, context.Encoder, context.EncoderPreset, context.UseGpu, context.TargetMb, quality,
+            context.AudioChannels, context.MapMode, container.CopySubtitles,
+            container.CopyDataStreams, container.CopyAttachments, automaticTarget);
         EncodingPlan plan = new EncodingPlan
         {
             IsAvailable = true,
@@ -173,16 +201,19 @@ public static class EncodingPlanService
             FinalizationIntent = new EncodingFinalizationIntent(true, true, true, true, "Collision-safe, no-overwrite promotion"),
             Validation = new EncodingPlanValidation(context.ValidationProfile.ToString(), true, context.ValidationProfile == EncodeOutputValidationProfile.SampleComparison),
             Quality = quality,
-            SourceAdaptiveShadow = sourceAdaptiveShadow,
-            Estimates = new EncodingPlanEstimates(targetKbps, context.TargetMb, ratio,
-                null, context.SizePredictionCalibration?.CalibratedPredictionMb),
+            AutomaticTarget = automaticTarget,
+            SourceAdaptiveShadow = null,
+            Estimates = new EncodingPlanEstimates(targetKbps,
+                automaticEstimateMb ?? context.TargetMb, ratio,
+                null, context.SizePredictionCalibration?.CalibratedPredictionMb)
+            {
+                TargetVideoBitrateKbps = automaticTarget?.TargetVideoBitrateKbps
+            },
             SizePredictionCalibration = context.SizePredictionCalibration,
             Risks = risks,
             DecisionReasons = reasons,
-            ExecutionValues = new EncodingPlanExecutionValues(
-                container, geometry, context.Encoder, context.EncoderPreset, context.UseGpu, context.TargetMb, quality,
-                context.AudioChannels, context.MapMode, container.CopySubtitles,
-                container.CopyDataStreams, container.CopyAttachments)
+            ExecutionValues = executionValues,
+            ProductionPlan = ProductionPlanFingerprintService.Create(context, executionValues)
         };
         try
         {
@@ -242,7 +273,11 @@ public static class EncodingPlanService
             Risks = plan.Risks,
             DecisionReasons = plan.DecisionReasons,
             Sections = plan.Sections,
-            ExecutionValues = execution with { QualityResolution = quality }
+            ExecutionValues = execution with { QualityResolution = quality },
+            ProductionPlan = plan.ProductionPlan is null
+                ? null
+                : ProductionPlanFingerprintService.WithQuality(
+                    plan.ProductionPlan, quality.EffectiveQuality)
         };
     }
 
@@ -294,7 +329,8 @@ public static class EncodingPlanService
             Risks = plan.Risks,
             DecisionReasons = plan.DecisionReasons,
             Sections = plan.Sections,
-            ExecutionValues = execution
+            ExecutionValues = execution,
+            ProductionPlan = plan.ProductionPlan
         };
     }
 
@@ -379,7 +415,11 @@ public static class EncodingPlanService
             Risks = Array.AsReadOnly(plan.Risks.Where(risk => risk.Code != "conditional-video-recovery").ToArray()),
             DecisionReasons = Array.AsReadOnly(plan.DecisionReasons.Where(reason => reason.Code != EncodingDecisionReasonCode.IntelligentRecoveryAvailable).ToArray()),
             Sections = plan.Sections,
-            ExecutionValues = execution with { QualityResolution = quality }
+            ExecutionValues = execution with { QualityResolution = quality },
+            ProductionPlan = plan.ProductionPlan is null
+                ? null
+                : ProductionPlanFingerprintService.WithQuality(
+                    plan.ProductionPlan, quality.EffectiveQuality)
         };
     }
 
@@ -528,6 +568,11 @@ public static class EncodingPlanService
         string source = plan.Source is { } s ? $"{s.Codec} {s.Width}x{s.Height}" : "unknown";
         string video = plan.Video is { } v ? $"{v.Action}/{v.Codec}" : "unknown";
         string container = plan.Container is { } c ? $"{c.Configured}->{c.Effective}" : "unknown";
+        string rateControl = plan.AutomaticTarget is { IsAvailable: true } target
+            ? $"RateControl=target-bitrate VBR; target={target.TargetVideoBitrateKbps:0} kbps; maxrate={target.MaximumVideoBitrateKbps:0} kbps; bufsize={target.VideoBufferSizeKbps:0} kbps; projection={target.ProjectedOutputBytes:N0} bytes ({target.Disposition})"
+            : plan.Quality is { } quality && quality.EffectiveQuality is { } value
+                ? $"RateControl={quality.Mechanism} {value}"
+                : "RateControl=unavailable";
         EncodingRecoveryCapability? videoRecovery = plan.RecoveryCapabilities?.Items
             .FirstOrDefault(item => item.Kind == EncodingRecoveryKind.VideoDecode);
         EncodingRecoveryCapability? audioRecovery = plan.RecoveryCapabilities?.Items
@@ -545,7 +590,7 @@ public static class EncodingPlanService
             $"video-ratio={shadow.PredictedVideoRatio?.ToString("0.##") ?? "unknown"}x; " +
             $"total-bytes={shadow.PredictedTotalOutputBytes?.ToString() ?? "unknown"}; " +
             $"reason={shadow.EligibilityReason}; execution-adjustment=none (shadow mode).";
-        return $"[EncodingPlan] PlanId={plan.PlanId}; Source={source}; Video={video}; Container={container}; {recommendation}; " +
+        return $"[EncodingPlan] PlanId={plan.PlanId}; Source={source}; Video={video}; Container={container}; {rateControl}; {recommendation}; " +
             $"Recovery={plan.Recovery?.InitialDecodeMode}; VideoRecoveryPermitted={videoRecovery?.Permitted}; " +
             $"AudioRecoveryPermitted={audioRecovery?.Permitted}; Risks={plan.Risks.Count} informational.{shadowSummary}";
     }

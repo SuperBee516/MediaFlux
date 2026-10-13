@@ -25,6 +25,12 @@ namespace MediaFlux
                 return EncodingV2HeadlessCommand.Run(args);
             }
 
+            if (QueueEstimateBenchmarkCommand.IsRequested(args))
+            {
+                HeadlessConsole.AttachToParent();
+                return QueueEstimateBenchmarkCommand.Run(args);
+            }
+
             if (HeadlessEncodeBatchCommand.IsRequested(args))
             {
                 HeadlessConsole.AttachToParent();

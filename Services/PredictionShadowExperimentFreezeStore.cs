@@ -86,6 +86,12 @@ public sealed class PredictionShadowExperimentFreezeStore
             {
                 return IdenticalOrConflict(Load(snapshot.ExperimentId) ?? throw new IOException("Freeze disappeared during publication."), bytes);
             }
+            catch (UnauthorizedAccessException) when (File.Exists(destination))
+            {
+                // Windows/SMB can report an existing non-overwritable destination as
+                // access denied instead of an IOException during concurrent publication.
+                return IdenticalOrConflict(Load(snapshot.ExperimentId) ?? throw new IOException("Freeze disappeared during publication."), bytes);
+            }
             return Load(snapshot.ExperimentId) ?? throw new IOException("Published freeze could not be loaded.");
         }
         finally

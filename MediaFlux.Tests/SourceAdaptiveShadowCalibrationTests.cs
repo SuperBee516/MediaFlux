@@ -26,7 +26,8 @@ public sealed class SourceAdaptiveShadowCalibrationTests
 
         EncodingPlan frozenPlan = EncodingPlanService.Create(context);
         EncodingPlanService.EncodingPlanExecutionValues execution = EncodingPlanService.GetExecutionValues(frozenPlan);
-        Assert.Equal(execution.QualityResolution.EffectiveQuality, frozenPlan.SourceAdaptiveShadow!.FinalExecutionCq);
+        Assert.Null(frozenPlan.SourceAdaptiveShadow);
+        Assert.Equal(quality.EffectiveQuality, execution.QualityResolution.EffectiveQuality);
     }
 
     [Theory]

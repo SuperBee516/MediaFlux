@@ -372,7 +372,9 @@ namespace MediaFlux
                 UpdateQueueSelectionPreview();
                 UpdateContextualDetails();
                 UpdateQueueWorkspaceActionState();
+                UpdateEstimateRefinementPriorities();
             };
+            dgvEncodeQueue.Scroll += (_, __) => UpdateEstimateRefinementPriorities();
 
             chkAutoTargetSize.CheckedChanged += (_, __) => ScheduleEstimateRefresh();
             comboCompressionProfile.SelectedIndexChanged += (_, __) => ScheduleEstimateRefresh(qualityChanged: true);
@@ -2718,6 +2720,13 @@ namespace MediaFlux
             public SmartEncodeRecommendation? BaselineEncodeRecommendation = null;
             public bool RecommendationPending;
             public string EstimateDiagnostic = "";
+            public ProductionPlanIdentity? CurrentEstimatePlanIdentity;
+            public PlanBoundEstimate? BoundEstimate;
+            public PreparedAdaptiveProductionPlan? PreparedAdaptiveProductionPlan;
+            public PreparedProductionPlan? PreparedProductionPlan;
+            public QueueEstimateState EstimateState = QueueEstimateState.Pending;
+            public QueueEstimateRefinementPriority EstimateRefinementPriority = QueueEstimateRefinementPriority.Background;
+            public bool PlanBindingRequired;
             public bool AdaptiveQualitySelectionPending;
             public EmpiricalPreviewResult? EmpiricalPreview;
             public bool AdaptiveSelectionSkipped;
@@ -2851,51 +2860,17 @@ namespace MediaFlux
             if (string.IsNullOrWhiteSpace(path))
                 return;
 
-            if (meta.LibraryPolicyIntent?.ProjectedOutputBytes is > 0)
-            {
-                double projectedMb = meta.LibraryPolicyIntent.ProjectedOutputBytes.Value / (1024d * 1024d);
-                _estimatedSizeMap[path] = projectedMb;
-                row.Cells["colEstimatedSize"].Value = FormatSize(projectedMb);
-            }
-            else if (meta.CustomTargetMb.HasValue && meta.CustomTargetMb.Value > 0)
-            {
-                double customMb = meta.CustomTargetMb.Value;
-                _estimatedSizeMap[path] = customMb;
-                row.Cells["colEstimatedSize"].Value = FormatSize(customMb);
-            }
-            else if (!string.IsNullOrWhiteSpace(meta.CustomCompressionProfile))
-            {
-                ValidatedEncoderSettings encoderSettings =
-                    GetValidatedEncoderSettingsFromUi(
-                        includeConcurrentSessions: false);
-                VideoEncoderSelection targetEncoder =
-                    encoderSettings.Resolved.Selection;
-                double estMb = meta.IsDvdEncode
-                    ? EstimateDvdEncodeTargetMb(
-                        meta,
-                        meta.CustomCompressionProfile,
-                        targetEncoder,
-                        encoderSettings.QualityValue,
-                        GetEstimateTargetHeight())
-                    : _sizeEstimateService.EstimateAutoTargetMbSmart(
-                        path,
-                        meta.CustomCompressionProfile,
-                        targetEncoder,
-                        encoderSettings.QualityValue,
-                        GetEstimateTargetHeight());
-                if (estMb > 0)
-                {
-                    _estimatedSizeMap[path] = estMb;
-                    row.Cells["colEstimatedSize"].Value = FormatSize(estMb);
-                }
-                else
-                {
-                    _estimatedSizeMap.Remove(path);
-                    row.Cells["colEstimatedSize"].Value = "Unavailable";
-                    row.Cells["colEstimatedSize"].ToolTipText =
-                        "Estimated output is not available yet.";
-                }
-            }
+            _estimatedSizeMap.Remove(path);
+            meta.EstimateState = QueueEstimateState.Pending;
+            meta.BoundEstimate = null;
+            meta.CurrentEstimatePlanIdentity = null;
+            meta.PreparedAdaptiveProductionPlan = null;
+            meta.PreparedProductionPlan = null;
+            meta.IntelligencePlan = null;
+            row.Cells["colEstimatedSize"].Value = "Pending…";
+            row.Cells["colEstimatedSize"].Tag = null;
+            row.Cells["colEstimatedSize"].ToolTipText =
+                "The exact configured production plan will be prepared before a measured output estimate is shown.";
 
             UpdateRowCustomFlag(row);
         }
@@ -3242,8 +3217,8 @@ namespace MediaFlux
             };
             comboQualityMode.Items.AddRange(new object[]
             {
-                "Automatic • Source Adaptive",
-                "Manual • Legacy Numeric"
+                "Automatic",
+                "Manual"
             });
             // Fresh installs use Automatic; saved configuration is applied later.
             comboQualityMode.SelectedIndex = 0;
@@ -4103,7 +4078,7 @@ namespace MediaFlux
                 lblManualQuality.Visible = !automatic;
             // The legacy compression profile projects a fixed output size. It is
             // not an automatic quality intent, so do not show it beside the
-            // canonical Source Adaptive preference.
+            // canonical Automatic preference.
             lblCompressionProfile.Visible = !automatic;
             comboCompressionProfile.Visible = !automatic;
             if (!automatic)
@@ -4118,7 +4093,7 @@ namespace MediaFlux
         }
 
         private EncodingQualityIntent? GetQualityIntentFromUi() =>
-            IsAutomaticQualitySelected() ? EncodingQualityIntent.Automatic(GetSelectedQualityTarget()) : null;
+            IsAutomaticQualitySelected() ? EncodingQualityIntent.AutomaticTarget(GetSelectedQualityTarget()) : null;
 
         private int GetDefaultQualityForSelection()
         {
@@ -4684,71 +4659,224 @@ namespace MediaFlux
             e.PaintBackground(e.ClipBounds, true);
 
             DataGridViewCell cell = grid.Rows[e.RowIndex].Cells[e.ColumnIndex];
-            Tuple<double, double>? tag = cell.Tag as Tuple<double, double>;
-            string valueText = Convert.ToString(cell.Value) ?? string.Empty;
-            double parsedOutputMb = ParseSizeToMb(valueText);
-            double estimatedOutputMb = parsedOutputMb > 0 ? tag?.Item2 is > 0 ? tag.Item2 : parsedOutputMb : 0;
-            double sourceMb = tag?.Item1 is > 0
-                ? tag.Item1
-                : ParseSizeToMb(Convert.ToString(grid.Rows[e.RowIndex].Cells["colSize"].Value));
+            (double sourceMb, double estimatedOutputMb) = ResolveQueueEstimateCellValues(
+                cell.Tag,
+                Convert.ToString(grid.Rows[e.RowIndex].Cells["colSize"].Value),
+                Convert.ToString(cell.Value));
+            bool isActualOutput = string.Equals(
+                cell.ToolTipText,
+                "Actual validated final output size.",
+                StringComparison.Ordinal);
+            QueueEstimateState? estimateState = isActualOutput
+                ? QueueEstimateState.Measured
+                : grid.Rows[e.RowIndex].Tag is RowMeta rowMeta
+                    ? rowMeta.EstimateState
+                    : null;
             QueueEstimateCellPresentation presentation = FormatQueueEstimateCellPresentation(
                 sourceMb,
                 estimatedOutputMb,
                 e.FormattedValue?.ToString(),
-                cell.ToolTipText);
+                cell.ToolTipText,
+                estimateState);
             if (!string.Equals(cell.ToolTipText, presentation.ToolTipText, StringComparison.Ordinal))
                 cell.ToolTipText = presentation.ToolTipText;
 
-            bool drawBar = presentation.HasNumericOutput && sourceMb > 0;
-            Rectangle textBounds = e.CellBounds;
+            bool drawBar = presentation.HasSavingsPercentage;
             int horizontalPadding = Math.Max(1, ScaleUi(6));
+            int barFillWidth = 0;
+            Rectangle barBounds = Rectangle.Empty;
+            bool selected = (e.State & DataGridViewElementStates.Selected) != 0;
+            Color selectionBackColor = e.CellStyle?.SelectionBackColor ?? Color.Empty;
+            if (selectionBackColor.IsEmpty)
+                selectionBackColor = SystemColors.Highlight;
+            Color cellBackColor = e.CellStyle?.BackColor ?? Color.Empty;
+            if (cellBackColor.IsEmpty)
+                cellBackColor = grid.DefaultCellStyle.BackColor;
+            if (cellBackColor.IsEmpty)
+                cellBackColor = SystemColors.Window;
+            Color unfilledBackground = drawBar
+                ? selected
+                    ? selectionBackColor
+                    : SystemColors.ControlLight
+                : selected
+                ? selectionBackColor
+                : cellBackColor;
             if (drawBar)
             {
-                int padding = Math.Max(1, ScaleUi(4));
-                Rectangle barBounds = Rectangle.FromLTRB(
-                    e.CellBounds.Left + padding,
-                    e.CellBounds.Top + padding,
-                    Math.Max(e.CellBounds.Left + padding, e.CellBounds.Right - padding),
-                    Math.Max(e.CellBounds.Top + padding, e.CellBounds.Bottom - padding));
-                if (barBounds.Width > 0 && barBounds.Height > 0)
-                {
-                    using var background = new SolidBrush(SystemColors.ControlLight);
-                    e.Graphics!.FillRectangle(background, barBounds);
-                    int fillWidth = (int)Math.Round(barBounds.Width * presentation.SavingsFraction);
-                    if (fillWidth > 0)
-                    {
-                        using var fill = new SolidBrush(Color.Orange);
-                        e.Graphics.FillRectangle(fill, new Rectangle(barBounds.Left, barBounds.Top, fillWidth, barBounds.Height));
-                    }
-                    using var border = new Pen(SystemColors.ControlDark);
-                    e.Graphics.DrawRectangle(border, barBounds.Left, barBounds.Top, barBounds.Width - 1, barBounds.Height - 1);
-                }
+                int barPadding = Math.Max(1, ScaleUi(4));
+                int barVerticalPadding = Math.Max(1, ScaleUi(3));
+                barBounds = Rectangle.FromLTRB(
+                    e.CellBounds.Left + barPadding,
+                    e.CellBounds.Top + barVerticalPadding,
+                    Math.Max(e.CellBounds.Left + barPadding, e.CellBounds.Right - barPadding),
+                    Math.Max(e.CellBounds.Top + barVerticalPadding, e.CellBounds.Bottom - barVerticalPadding));
+                PaintQueueEstimateSavingsBar(
+                    e.Graphics!,
+                    barBounds,
+                    presentation,
+                    selected ? unfilledBackground : null);
+                barFillWidth = Math.Clamp(
+                    (int)Math.Round(barBounds.Width * Math.Clamp(presentation.SavingsFraction, 0d, 1d)),
+                    0,
+                    Math.Max(0, barBounds.Width));
             }
 
             var font = e.CellStyle?.Font ?? this.Font;
             int verticalPadding = Math.Max(1, ScaleUi(2));
-            textBounds = Rectangle.FromLTRB(
+            Rectangle textBounds = Rectangle.FromLTRB(
                 e.CellBounds.Left + horizontalPadding,
                 e.CellBounds.Top + verticalPadding,
                 Math.Max(e.CellBounds.Left + horizontalPadding, e.CellBounds.Right - horizontalPadding),
                 Math.Max(e.CellBounds.Top + verticalPadding, e.CellBounds.Bottom - verticalPadding));
             int availableWidth = Math.Max(0, textBounds.Width);
             string text = SelectQueueEstimateCellText(presentation, e.Graphics!, font, availableWidth);
-            bool selected = (e.State & DataGridViewElementStates.Selected) != 0;
-            Color foreColor = drawBar
-                ? SystemColors.ControlText
-                : selected
-                    ? e.CellStyle?.SelectionForeColor ?? SystemColors.HighlightText
-                    : e.CellStyle?.ForeColor ?? this.ForeColor;
-            TextRenderer.DrawText(
+            Color foreColor = selected
+                ? e.CellStyle?.SelectionForeColor ?? SystemColors.HighlightText
+                : e.CellStyle?.ForeColor ?? this.ForeColor;
+            if (foreColor.IsEmpty)
+                foreColor = selected ? SystemColors.HighlightText : this.ForeColor;
+            Color unfilledForeColor = GetQueueEstimateUnfilledTextColor(unfilledBackground, foreColor);
+            int fillLeft = barBounds.Left;
+            int fillRight = fillLeft + barFillWidth;
+            DrawQueueEstimateCellText(
                 e.Graphics!,
                 text,
                 font,
                 textBounds,
-                foreColor,
-                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+                e.CellBounds,
+                e.ClipBounds,
+                drawBar && barFillWidth > 0,
+                fillLeft,
+                fillRight,
+                Color.White,
+                unfilledForeColor);
 
             e.Paint(e.CellBounds, DataGridViewPaintParts.Focus);
+        }
+
+        internal static Color GetQueueEstimateUnfilledTextColor(Color background, Color preferredTextColor)
+        {
+            if (GetContrastRatio(background, preferredTextColor) >= 4.5d)
+                return preferredTextColor;
+
+            Color black = Color.FromArgb(0, 0, 0);
+            Color white = Color.FromArgb(255, 255, 255);
+            return GetContrastRatio(background, black) >= GetContrastRatio(background, white) ? black : white;
+        }
+
+        private static double GetContrastRatio(Color background, Color foreground)
+        {
+            static double Linearize(byte channel)
+            {
+                double value = channel / 255d;
+                return value <= 0.04045d ? value / 12.92d : Math.Pow((value + 0.055d) / 1.055d, 2.4d);
+            }
+
+            double backgroundLuminance = 0.2126d * Linearize(background.R) +
+                0.7152d * Linearize(background.G) + 0.0722d * Linearize(background.B);
+            double foregroundLuminance = 0.2126d * Linearize(foreground.R) +
+                0.7152d * Linearize(foreground.G) + 0.0722d * Linearize(foreground.B);
+            double lighter = Math.Max(backgroundLuminance, foregroundLuminance);
+            double darker = Math.Min(backgroundLuminance, foregroundLuminance);
+            return (lighter + 0.05d) / (darker + 0.05d);
+        }
+
+        internal static void DrawQueueEstimateCellText(
+            Graphics graphics,
+            string text,
+            Font font,
+            Rectangle textBounds,
+            Rectangle cellBounds,
+            Rectangle clipBounds,
+            bool hasColoredFill,
+            int fillLeft,
+            int fillRight,
+            Color filledTextColor,
+            Color unfilledTextColor)
+        {
+            if (string.IsNullOrEmpty(text) || textBounds.Width <= 0 || textBounds.Height <= 0)
+                return;
+
+            Rectangle safeTextBounds = Rectangle.Intersect(textBounds, cellBounds);
+            safeTextBounds = Rectangle.Intersect(safeTextBounds, clipBounds);
+            if (safeTextBounds.Width <= 0 || safeTextBounds.Height <= 0)
+                return;
+
+            const TextFormatFlags textFlags = TextFormatFlags.VerticalCenter | TextFormatFlags.Left |
+                TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis |
+                TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.PreserveGraphicsTranslateTransform;
+            int safeFillLeft = Math.Clamp(fillLeft, safeTextBounds.Left, safeTextBounds.Right);
+            int safeFillRight = Math.Clamp(fillRight, safeFillLeft, safeTextBounds.Right);
+
+            if (!hasColoredFill)
+            {
+                DrawClippedText(graphics, text, font, textBounds, safeTextBounds, unfilledTextColor, textFlags);
+                return;
+            }
+
+            if (safeFillRight > safeFillLeft)
+            {
+                DrawClippedText(
+                    graphics,
+                    text,
+                    font,
+                    textBounds,
+                    Rectangle.FromLTRB(safeFillLeft, safeTextBounds.Top, safeFillRight, safeTextBounds.Bottom),
+                    filledTextColor,
+                    textFlags);
+            }
+
+            if (safeTextBounds.Left < safeFillLeft)
+            {
+                DrawClippedText(
+                    graphics,
+                    text,
+                    font,
+                    textBounds,
+                    Rectangle.FromLTRB(safeTextBounds.Left, safeTextBounds.Top, safeFillLeft, safeTextBounds.Bottom),
+                    unfilledTextColor,
+                    textFlags);
+            }
+
+            if (!hasColoredFill || safeFillRight < safeTextBounds.Right)
+            {
+                int unfilledLeft = hasColoredFill ? safeFillRight : safeTextBounds.Left;
+                if (unfilledLeft < safeTextBounds.Right)
+                {
+                    DrawClippedText(
+                        graphics,
+                        text,
+                        font,
+                        textBounds,
+                        Rectangle.FromLTRB(unfilledLeft, safeTextBounds.Top, safeTextBounds.Right, safeTextBounds.Bottom),
+                        unfilledTextColor,
+                        textFlags);
+                }
+            }
+        }
+
+        private static void DrawClippedText(
+            Graphics graphics,
+            string text,
+            Font font,
+            Rectangle textBounds,
+            Rectangle passClip,
+            Color color,
+            TextFormatFlags textFlags)
+        {
+            if (passClip.Width <= 0 || passClip.Height <= 0)
+                return;
+
+            System.Drawing.Drawing2D.GraphicsState graphicsState = graphics.Save();
+            try
+            {
+                graphics.SetClip(passClip, System.Drawing.Drawing2D.CombineMode.Intersect);
+                TextRenderer.DrawText(graphics, text, font, textBounds, color, textFlags);
+            }
+            finally
+            {
+                graphics.Restore(graphicsState);
+            }
         }
 
         private static string SelectQueueEstimateCellText(
@@ -4758,14 +4886,23 @@ namespace MediaFlux
             int availableWidth)
         {
             const TextFormatFlags measureFlags = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
-            foreach (string candidate in new[]
-                     { presentation.FullText, presentation.MediumText, presentation.NarrowText })
+            if (TextRenderer.MeasureText(graphics, presentation.FullText, font, Size.Empty, measureFlags).Width <= availableWidth)
+                return presentation.FullText;
+            if (TextRenderer.MeasureText(graphics, presentation.MediumText, font, Size.Empty, measureFlags).Width <= availableWidth)
+                return presentation.MediumText;
+            if (TextRenderer.MeasureText(graphics, presentation.NarrowText, font, Size.Empty, measureFlags).Width <= availableWidth)
+                return presentation.NarrowText;
+            if (presentation.HasSavingsPercentage)
             {
-                if (TextRenderer.MeasureText(graphics, candidate, font, Size.Empty, measureFlags).Width <= availableWidth)
-                    return candidate;
+                int percentageStart = presentation.MinimumText.LastIndexOf(' ');
+                if (percentageStart >= 0 && percentageStart < presentation.MinimumText.Length - 1)
+                {
+                    string percentageOnly = presentation.MinimumText[(percentageStart + 1)..];
+                    if (TextRenderer.MeasureText(graphics, percentageOnly, font, Size.Empty, measureFlags).Width <= availableWidth)
+                        return percentageOnly;
+                }
             }
-
-            return presentation.NarrowText;
+            return presentation.MinimumText;
         }
 
 
@@ -5788,7 +5925,11 @@ namespace MediaFlux
             _estimateService = new EstimateBackgroundService(
                 _mediaInfoService,
                 _encodingStatisticsService,
-                IsEstimateSourceOwnedByActiveEncode);
+                IsEstimateSourceOwnedByActiveEncode,
+                _encodingService,
+                new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath),
+                _encodeExecutionSnapshotBuilder,
+                $"{_config.FfmpegPath}|{_config.FfprobePath}");
             var v2Metadata = new V2SourceMetadataProvider(
                 new FfprobeService(AppPaths.InstallDirectory, _config.FfprobePath));
             _v2EstimateCoordinator = new V2EstimateRefreshCoordinator(

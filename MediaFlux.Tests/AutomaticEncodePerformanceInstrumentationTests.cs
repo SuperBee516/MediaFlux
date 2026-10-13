@@ -166,7 +166,7 @@ public sealed class AutomaticEncodePerformanceInstrumentationTests
         Assert.Equal("operation-123", performance.GetProperty("operationId").GetString());
         Assert.True(performance.GetProperty("totalWallSeconds").GetDouble() >= 0);
         Assert.True(performance.GetProperty("stages").GetArrayLength() > 0);
-        Assert.Contains("Automatic Source Adaptive Performance", item.GetProperty("performanceSummary").GetString());
+        Assert.Contains("Automatic Encode Performance", item.GetProperty("performanceSummary").GetString());
     }
 
     [Fact]

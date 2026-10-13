@@ -95,7 +95,7 @@ public sealed class UpperControlLayoutUiTests
                 Assert.Contains(activeProfile, Descendants(encodingCard));
                 Assert.True(autoTarget.Checked);
                 Assert.False(targetSize.Enabled);
-                Assert.Equal("Automatic • Source Adaptive", mode.Text);
+                Assert.Equal("Automatic", mode.Text);
                 Assert.True(automaticQuality.Visible);
                 Assert.False(manualQuality.Visible);
                 Assert.False(estimateProfile.Visible);
@@ -188,7 +188,7 @@ public sealed class UpperControlLayoutUiTests
                 int modeChangedHandlers = EventHandlerCount(mode, "SelectedIndexChanged");
                 for (int index = 0; index < 3; index++)
                 {
-                    mode.SelectedItem = "Manual • Legacy Numeric";
+                    mode.SelectedItem = "Manual";
                     Application.DoEvents();
                     Assert.False(automaticQuality.Visible);
                     Assert.True(manualQuality.Visible);
@@ -200,7 +200,7 @@ public sealed class UpperControlLayoutUiTests
                     Assert.Contains("Manual quality 27", activeProfile.Text);
                     Assert.Equal(activeProfile.Text, activeProfileToolTip.GetToolTip(activeProfile));
 
-                    mode.SelectedItem = "Automatic • Source Adaptive";
+                    mode.SelectedItem = "Automatic";
                     Application.DoEvents();
                     Assert.True(automaticQuality.Visible);
                     Assert.False(manualQuality.Visible);
@@ -387,7 +387,7 @@ public sealed class UpperControlLayoutUiTests
                             $"minimum side-by-side width={minimumSideBySideWidth}px at {main.DeviceDpi} DPI.");
                     }
 
-                    mode.SelectedItem = "Manual • Legacy Numeric";
+                    mode.SelectedItem = "Manual";
                     Application.DoEvents();
                     main.PerformLayout();
                     upper.PerformLayout();
@@ -411,7 +411,7 @@ public sealed class UpperControlLayoutUiTests
                     }
                     WriteLayoutSnapshot(main, "Manual", size, upper, queueCard, encodingCard, queueSplit, queueGrid);
 
-                    mode.SelectedItem = "Automatic • Source Adaptive";
+                    mode.SelectedItem = "Automatic";
                     Application.DoEvents();
                     main.PerformLayout();
                     upper.PerformLayout();

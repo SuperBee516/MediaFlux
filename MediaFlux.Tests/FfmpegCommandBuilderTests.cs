@@ -49,6 +49,34 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void AutomaticTargetPlanMapsDirectlyToNvencVbrWithoutAConflictingCqValue()
+    {
+        var target = new AutomaticTargetPlan
+        {
+            Disposition = AutomaticTargetDisposition.Ready,
+            QualityTarget = QualityTarget.Balanced,
+            TargetVideoBitrateKbps = 2500,
+            MaximumVideoBitrateKbps = 2700,
+            VideoBufferSizeKbps = 3500,
+            PlannedAudioBitrateKbps = 384,
+            PlannedMappedAncillaryBitrateKbps = 12,
+            ContainerOverheadBitrateKbps = 30,
+            TargetOutputBudgetKbps = 4000,
+            TargetTotalBitrateKbps = 2926,
+            ProjectedOutputBytes = 36_575_000
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, preset: "p6", qualityValue: 24,
+            audioChannels: 6, automaticTargetPlan: target));
+
+        Assert.Contains("-b:v 2500k -maxrate 2700k -bufsize 3500k -rc vbr -preset p6", arguments);
+        Assert.DoesNotContain("-cq", arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-crf", arguments, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-c:a aac -b:a 384k -ac 6", arguments);
+    }
+
+    [Fact]
     public void VideoDecodeRecoveryRelaxesOnlyStrictDecodeFailureHandling()
     {
         string arguments = CreateBuilder().Build(CreateRequest(
@@ -97,6 +125,26 @@ public sealed class FfmpegCommandBuilderTests
         Assert.Contains("-profile:v main10", arguments);
         Assert.DoesNotContain("-pix_fmt p010le", arguments);
         Assert.Contains("-f mp4", arguments);
+    }
+
+    [Fact]
+    public void KnownCudaFilterFallbackBuildsHostP010UploadWhileKeepingAutomaticNvencQuality()
+    {
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "hevc_nvenc", useGpu: true, tenBit: true, preset: "p5", qualityValue: 27,
+            sourcePixelFormat: "yuv420p", nvencHighBitDepthOutputSupported: true,
+            nvencCudaFormatConversionSupported: true, useNvencHostFrames: true,
+            disableHardwareDecode: true));
+
+        Assert.DoesNotContain("-hwaccel cuda", arguments);
+        Assert.DoesNotContain("scale_cuda", arguments);
+        Assert.Contains("-vf format=p010le ", arguments);
+        Assert.Contains("-pix_fmt p010le", arguments);
+        Assert.DoesNotContain("hwupload_cuda", arguments);
+        Assert.Contains("-c:v hevc_nvenc", arguments);
+        Assert.Contains("-cq 27", arguments);
+        Assert.Contains("-preset p5", arguments);
+        Assert.Contains("-profile:v main10", arguments);
     }
 
     [Fact]
@@ -1040,7 +1088,8 @@ public sealed class FfmpegCommandBuilderTests
         bool useNvencHostFrames = false,
         string? recoveryFrameRateRational = null,
         string? timestampReconstructionFilter = null,
-        string inputPath = "C:\\Media\\source.mkv")
+        string inputPath = "C:\\Media\\source.mkv",
+        AutomaticTargetPlan? automaticTargetPlan = null)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -1075,7 +1124,8 @@ public sealed class FfmpegCommandBuilderTests
             useNvencHostFrames,
             recoveryFrameRateRational,
              timestampReconstructionFilter,
-             inputPath);
+             inputPath,
+             automaticTargetPlan);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -1109,7 +1159,8 @@ public sealed class FfmpegCommandBuilderTests
         bool useNvencHostFrames = false,
         string? recoveryFrameRateRational = null,
         string? timestampReconstructionFilter = null,
-        string inputPath = "C:\\Media\\source.mkv")
+        string inputPath = "C:\\Media\\source.mkv",
+        AutomaticTargetPlan? automaticTargetPlan = null)
     {
 
         return new FfmpegCommandRequest
@@ -1129,6 +1180,7 @@ public sealed class FfmpegCommandBuilderTests
             Encoder = selection,
             UseGpu = useGpu,
             TargetMb = targetMb,
+            AutomaticTargetPlan = automaticTargetPlan,
             ScaleMode = scaleMode,
             Restoration = restoration ?? new VideoRestorationSettings(),
             EncoderPreset = preset,

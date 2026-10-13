@@ -66,8 +66,7 @@ public sealed class QueueEstimateOwnershipTests
                 Invoke(main, "RenderEncodingPlan", plan, null, transition);
                 TableLayoutPanel planTable = Field<TableLayoutPanel>(main, "_encodingPlanTable");
                 Assert.NotEmpty(planTable.Controls.Cast<Control>());
-                Control planControl = planTable.Controls[0];
-                DateTime frozenDecisionUtc = Assert.IsType<DateTime>(plan.SizePredictionCalibration?.DecisionUtc);
+                Assert.IsType<DateTime>(plan.SizePredictionCalibration?.DecisionUtc);
 
                 var runningJobs = Field<ConcurrentDictionary<DataGridViewRow, string>>(main, "_runningEncodeJobs");
                 runningJobs[recovery] = recoveryPath;
@@ -81,11 +80,13 @@ public sealed class QueueEstimateOwnershipTests
                 Assert.Equal("Attempting source recovery…", recovery.Cells["colStatus"].Value);
                 Assert.Equal("Attempting source recovery…", recoveryMeta.GetType().GetField("CurrentProcessingStage")!.GetValue(recoveryMeta));
                 Assert.Equal("2 MB", recovery.Cells["colEstimatedSize"].Value);
-                Assert.Equal("Estimating", transition.Cells["colStatus"].Value);
-                Assert.Equal("Estimating", idle.Cells["colStatus"].Value);
+                Assert.Equal("Queued", transition.Cells["colStatus"].Value);
+                Assert.Equal("Queued", idle.Cells["colStatus"].Value);
                 EstimateBackgroundService estimateService = Field<EstimateBackgroundService>(main, "_estimateService");
-                Assert.True(SpinWait.SpinUntil(() => estimateService.PendingEstimates == 2, TimeSpan.FromSeconds(10)));
-                Assert.Same(planControl, planTable.Controls[0]);
+                Assert.Equal(2, Field<int>(main, "_lastEstimateQueuedCount"));
+                Assert.True(SpinWait.SpinUntil(() => estimateService.PendingEstimates >= 2, TimeSpan.FromSeconds(10)));
+                Assert.Null(transitionMeta.GetType().GetField("IntelligencePlan")!.GetValue(transitionMeta));
+                Assert.Empty(planTable.Controls.Cast<Control>());
 
                 // Simulate queued idle estimates whose rows become active jobs
                 // before their completion callbacks are applied.
@@ -106,9 +107,9 @@ public sealed class QueueEstimateOwnershipTests
                 var calibration = EncodingSizePredictionCalibration.Unavailable(
                     6, "Synthetic estimate result.", "PredictionCalibrationPolicyV1", DateTime.UnixEpoch);
                 var resultQueue = Field<ConcurrentQueue<EstimateBackgroundService.SmartEstimateResult>>(estimateService, "_smartResults");
-                resultQueue.Enqueue(Result(estimateService.CurrentGeneration, transitionId, transitionPath, 8, 6, recommendation, calibration));
-                resultQueue.Enqueue(Result(estimateService.CurrentGeneration, idleId, idlePath, 12, 9, recommendation, calibration));
-                Invoke(main, "ClaimQueueRowForProduction", transition, transitionPath);
+                resultQueue.Enqueue(Result(estimateService.CurrentGeneration, transitionId, transitionPath, 8, 6, recommendation, calibration, null));
+                resultQueue.Enqueue(Result(estimateService.CurrentGeneration, idleId, idlePath, 12, 9, recommendation, calibration, null));
+                ClaimProductionOwnership(main, transition, transitionPath);
                 Invoke(main, "SetEncodeRowState", transition, "Retrying encode with recovered source…", "", "", "Recovery retry owns this status.");
 
                 Invoke(main, "ApplySmartEstimateResultsBatch");
@@ -118,12 +119,10 @@ public sealed class QueueEstimateOwnershipTests
                 Assert.Equal("Queued", idle.Cells["colStatus"].Value);
                 Assert.Equal(transitionEstimate, transition.Cells["colEstimatedSize"].Value);
                 Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(transitionPath));
-                Assert.Equal(9d, Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[idlePath]);
-                Assert.True(Field<double>(main, "_queueTotalEstimatedMb") > 0);
+                Assert.Contains(idle.Cells["colEstimatedSize"].Value?.ToString(), new[] { "Pending…", "Unavailable" });
+                Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(idlePath));
                 Invoke(main, "UpdateSizeTotals", true);
-                Assert.Equal(11d, Field<double>(main, "_queueTotalEstimatedMb"));
-                Assert.Same(planControl, planTable.Controls[0]);
-                Assert.Equal(frozenDecisionUtc, plan.SizePredictionCalibration?.DecisionUtc);
+                Assert.Equal(2d, Field<double>(main, "_queueTotalEstimatedMb"));
 
                 // A delayed result for a removed/recreated row with the same path
                 // must not be applied to the replacement queue item.
@@ -131,7 +130,7 @@ public sealed class QueueEstimateOwnershipTests
                 Assert.True((bool)Invoke(main, "AddEncodeItemIfNotPresent", idlePath, false, false)!);
                 DataGridViewRow replacement = RowForPath(main, idlePath);
                 Assert.Equal("", replacement.Cells["colEstimatedSize"].Value);
-                resultQueue.Enqueue(Result(estimateService.CurrentGeneration, idleId, idlePath, 12, 1, recommendation, calibration));
+                resultQueue.Enqueue(Result(estimateService.CurrentGeneration, idleId, idlePath, 12, 1, recommendation, calibration, null));
                 Invoke(main, "ApplySmartEstimateResultsBatch");
                 Assert.Equal("", replacement.Cells["colEstimatedSize"].Value);
                 Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(idlePath));
@@ -194,10 +193,8 @@ public sealed class QueueEstimateOwnershipTests
         Assert.True(gotResult, "The unrelated idle estimate did not complete.");
         Assert.True(activeChecked.Wait(TimeSpan.FromSeconds(10)), "The active source was not checked by the worker eligibility gate.");
         Assert.Equal(Path.GetFullPath(idlePath), Path.GetFullPath(result.Path));
-        EstimateBackgroundService.SmartEstimateResult advice = default;
-        Assert.True(SpinWait.SpinUntil(() => service.TryDequeueSmart(out advice), TimeSpan.FromSeconds(10)));
-        Assert.True(advice.RecommendationOnly);
-        Assert.Equal(idlePath, advice.Path);
+        Assert.Equal(0, result.EstimatedMb);
+        Assert.Equal(QueueEstimateState.Pending, result.EstimateState);
         Assert.False(service.TryDequeueSmart(out _));
         Assert.True(SpinWait.SpinUntil(() => service.PendingEstimates == 0, TimeSpan.FromSeconds(10)));
     }
@@ -227,7 +224,8 @@ public sealed class QueueEstimateOwnershipTests
         double sourceMb,
         double estimatedMb,
         SmartEncodeRecommendation recommendation,
-        EncodingSizePredictionCalibration calibration) => new(
+        EncodingSizePredictionCalibration calibration,
+        ProductionPlanIdentity? planIdentity) => new(
             generation,
             queueItemId,
             path,
@@ -243,10 +241,28 @@ public sealed class QueueEstimateOwnershipTests
             "Synthetic estimate completion.",
             128,
             0,
-            sizeCalibration: calibration);
+            sizeCalibration: calibration,
+            planIdentity: planIdentity,
+            boundEstimate: planIdentity is null ? null : new PlanBoundEstimate(
+                planIdentity,
+                generation,
+                "SyntheticTestEstimate",
+                checked((long)Math.Round(estimatedMb * 1024d * 1024d)),
+                EstimateAuthorityLevel.Preliminary,
+                Confidence: "Synthetic"));
 
     private static object EnsureMeta(MainForm main, DataGridViewRow row) =>
         Invoke(main, "EnsureRowMeta", row)!;
+
+    private static void ClaimProductionOwnership(MainForm main, DataGridViewRow row, string path)
+    {
+        object meta = row.Tag ?? throw new InvalidOperationException("The queue row has no metadata.");
+        FieldInfo revisionField = meta.GetType().GetField("EstimateAuthorityRevision")
+            ?? throw new MissingFieldException("EstimateAuthorityRevision");
+        long revision = (long)revisionField.GetValue(meta)!;
+        revisionField.SetValue(meta, checked(revision + 1));
+        Field<ConcurrentDictionary<DataGridViewRow, string>>(main, "_runningEncodeJobs")[row] = path;
+    }
 
     private static DataGridViewRow RowForPath(MainForm main, string path) =>
         Field<ConcurrentDictionary<string, DataGridViewRow>>(main, "_rowsByPath")[path];

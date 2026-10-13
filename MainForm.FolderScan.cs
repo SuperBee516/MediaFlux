@@ -244,12 +244,6 @@ namespace MediaFlux
                             SetEncodeRowState(addedRow,
                                 requestedCodecFilter ? "Checking codec" : "Preparing",
                                 "", "", "Queue admission checks are running; this row is not yet eligible to encode.");
-                            _ = TryQueueV2Estimate(
-                                addedRow,
-                                addedMeta,
-                                file.Path,
-                                qualityChangeStartedUtc: null,
-                                comboCompressionProfile.SelectedItem?.ToString() ?? "Medium Quality (Default)");
                             _lastImportAddedCount = added;
                         }
                         else if (_rowsByPath.TryGetValue(file.Path, out DataGridViewRow? existingRow) &&
@@ -385,13 +379,8 @@ namespace MediaFlux
 
                 // Estimate independently eligible idle rows during parallel encoding;
                 // active sources are excluded by queue-job ownership in the estimator.
-                if (added > 0 && (!largeQueue || _config.AutoAnalyzeLargeQueues))
+                if (added > 0)
                     RunEstimatePass();
-                else if (added > 0 && largeQueue)
-                {
-                    _estimatesDeferredForLargeQueue = true;
-                    UpdateSizeTotals(force: true);
-                }
                 else
                     UpdateSizeTotals(force: true);
 
@@ -407,9 +396,7 @@ namespace MediaFlux
                     ? $"Queue ready — {Math.Max(0, added - excluded):N0} eligible, {excluded:N0} exact duplicate(s) excluded" +
                       (reviewGroups > 0 ? $", {reviewGroups:N0} visual group(s) available for review" : "") +
                       (removedByCodecFilter > 0 ? $", {removedByCodecFilter:N0} codec mismatch(es) filtered" : "") +
-                      (largeQueue && !_config.AutoAnalyzeLargeQueues
-                          ? ". V2 fast estimates continue; remaining estimates are deferred until Analyze Queue."
-                          : ". Estimates continue in the background.")
+                      ". Preliminary estimates and selective measured refinements continue in the background."
                     : "Queue ready — no new supported video files were found.";
                 toolStripStatusLabel1.Text = completion;
                 UpdateRelocatedEncodeStatus(toolStripStatusLabel1.Text);

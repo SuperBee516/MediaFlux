@@ -100,9 +100,10 @@ public sealed class V2GuiRequestMapperTests : IDisposable
     }
 
     [Fact]
-    public void SourceAdaptiveTargetSizeCustomAndUnsupportedEncoderStayOnV1AsWholeJobs()
+    public void AutomaticTargetSizeCustomAndUnsupportedEncoderStayOnV1AsWholeJobs()
     {
-        Assert.Contains("Source Adaptive", Decline(Settings() with { AutomaticQuality = true }));
+        Assert.Contains("Automatic target-bitrate", Decline(Settings() with { AutomaticQuality = true }));
+        Assert.Contains("prepared-plan production path", Decline(Settings() with { AutomaticQuality = true }));
         Assert.Contains("Target-size", Decline(Settings() with { AutoTargetSize = true }));
         Assert.Contains("custom", Decline(Settings(), hasCustomSettings: true), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("supports only", Decline(Settings() with { EncoderId = VideoEncoderIds.Qsv }), StringComparison.OrdinalIgnoreCase);
@@ -136,7 +137,7 @@ public sealed class V2GuiRequestMapperTests : IDisposable
             .ExecuteAsync(adaptiveIntent, null, null, CancellationToken.None);
 
         Assert.Null(adaptiveRoute.Prepared);
-        Assert.Contains("Source Adaptive", adaptiveRoute.FallbackReason);
+        Assert.Contains("Automatic target-bitrate", adaptiveRoute.FallbackReason);
         Assert.Equal(0, adaptiveAdapter.PrepareCount);
         Assert.Equal(0, adaptiveAdapter.RunCount);
     }

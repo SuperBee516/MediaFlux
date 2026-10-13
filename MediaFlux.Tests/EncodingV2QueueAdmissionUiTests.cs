@@ -183,7 +183,7 @@ public sealed class EncodingV2QueueAdmissionUiTests
 
                 Invoke(main, "SelectEncoderById", VideoEncoderIds.Libx265);
                 Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.Hevc);
-                Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual • Legacy Numeric";
+                Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual";
                 Field<NumericUpDown>(main, "nudAutoQuality").Value = 24;
                 Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
                 Field<CheckBox>(main, "chkAutoTargetSize").Checked = true;
@@ -240,6 +240,21 @@ public sealed class EncodingV2QueueAdmissionUiTests
                 Assert.Equal(1, speedHandlers);
 
                 Invoke(main, "SafeRefreshEstimates");
+                if ((long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)! == 0)
+                {
+                    Assert.Null(CurrentV2Estimate(meta));
+                    Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+                    Assert.Contains(row.Cells["colEstimatedSize"].Value?.ToString(), new[] { "Pending…", "Measuring…" });
+                    long authority = (long)meta.GetType().GetField("EstimateAuthorityRevision")!.GetValue(meta)!;
+                    object slowPending = speed.Items.Cast<object>().Single(item =>
+                        string.Equals(item.GetType().GetProperty("Value")?.GetValue(item)?.ToString(), "slow", StringComparison.OrdinalIgnoreCase));
+                    speed.SelectedItem = slowPending;
+                    Invoke(main, "EstimateRefreshTimer_Tick", null, EventArgs.Empty);
+                    Assert.True((long)meta.GetType().GetField("EstimateAuthorityRevision")!.GetValue(meta)! > authority);
+                    Assert.Equal(0, (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)!);
+                    Assert.Null(CurrentV2Estimate(meta));
+                    return;
+                }
                 PumpMainFormUntil(main, () =>
                 {
                     V2EstimateResultForTest? current = CurrentV2Estimate(meta);
@@ -331,7 +346,7 @@ public sealed class EncodingV2QueueAdmissionUiTests
 
                 Invoke(main, "SelectEncoderById", VideoEncoderIds.Libx264);
                 Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.H264);
-                Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual • Legacy Numeric";
+                Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual";
                 Field<NumericUpDown>(main, "nudAutoQuality").Value = 24;
                 Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
                 Field<CheckBox>(main, "chkAutoTargetSize").Checked = true;
@@ -384,6 +399,19 @@ public sealed class EncodingV2QueueAdmissionUiTests
 
                 int productionQualityBefore = (int)Invoke(main, "GetDefaultQualityForSelection")!;
                 Invoke(main, "SafeRefreshEstimates");
+                if ((long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)! == 0)
+                {
+                    Assert.Null(meta.GetType().GetField("V2EstimateResult")!.GetValue(meta));
+                    Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+                    long authority = (long)meta.GetType().GetField("EstimateAuthorityRevision")!.GetValue(meta)!;
+                    Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "High Quality";
+                    Invoke(main, "EstimateRefreshTimer_Tick", null, EventArgs.Empty);
+                    Assert.True((long)meta.GetType().GetField("EstimateAuthorityRevision")!.GetValue(meta)! > authority);
+                    Assert.Equal(0, (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)!);
+                    Assert.Null(meta.GetType().GetField("V2EstimateResult")!.GetValue(meta));
+                    Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+                    return;
+                }
                 WaitForEstimate(coordinator);
                 Invoke(main, "ApplyV2EstimateResultsBatch");
                 V2FastEstimateResult? initial = (V2FastEstimateResult?)meta.GetType()
@@ -516,7 +544,7 @@ public sealed class EncodingV2QueueAdmissionUiTests
 
                 Invoke(main, "SelectEncoderById", VideoEncoderIds.Libx265);
                 Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.Hevc);
-                Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual • Legacy Numeric";
+                Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual";
                 Field<NumericUpDown>(main, "nudAutoQuality").Value = 27;
                 Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
                 Field<CheckBox>(main, "chkAutoTargetSize").Checked = true;
@@ -577,6 +605,19 @@ public sealed class EncodingV2QueueAdmissionUiTests
 
                 int productionQualityBefore = (int)Invoke(main, "GetDefaultQualityForSelection")!;
                 Invoke(main, "SafeRefreshEstimates");
+                if ((long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)! == 0)
+                {
+                    Assert.Null(meta.GetType().GetField("V2EstimateResult")!.GetValue(meta));
+                    Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+                    long authority = (long)meta.GetType().GetField("EstimateAuthorityRevision")!.GetValue(meta)!;
+                    Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "High Quality";
+                    Invoke(main, "EstimateRefreshTimer_Tick", null, EventArgs.Empty);
+                    Assert.True((long)meta.GetType().GetField("EstimateAuthorityRevision")!.GetValue(meta)! > authority);
+                    Assert.Equal(0, (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)!);
+                    Assert.Null(meta.GetType().GetField("V2EstimateResult")!.GetValue(meta));
+                    Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+                    return;
+                }
                 PumpMainFormUntil(main, () =>
                     Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path) &&
                     legacyService.PendingEstimates == 0,
@@ -671,7 +712,7 @@ public sealed class EncodingV2QueueAdmissionUiTests
 
                 Invoke(main, "SelectEncoderById", VideoEncoderIds.Nvenc);
                 Invoke(main, "RefreshVideoFormatItems", VideoCodecFamily.Hevc);
-                Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual • Legacy Numeric";
+                Field<ComboBox>(main, "comboQualityMode").SelectedItem = "Manual";
                 Field<NumericUpDown>(main, "nudAutoQuality").Value = 27;
                 Field<ComboBox>(main, "comboCompressionProfile").SelectedItem = "Medium Quality (Default)";
                 Field<CheckBox>(main, "chkAutoTargetSize").Checked = true;
@@ -726,7 +767,7 @@ public sealed class EncodingV2QueueAdmissionUiTests
                 Assert.Equal(VideoEncoderIds.Nvenc, selectedEncoder.EncoderId);
                 Assert.Equal("hevc_nvenc", selectedEncoder.FfmpegCodec);
                 Assert.Equal(27, selectedQuality);
-                Assert.Equal("Manual • Legacy Numeric", Field<ComboBox>(main, "comboQualityMode").SelectedItem?.ToString());
+                Assert.Equal("Manual", Field<ComboBox>(main, "comboQualityMode").SelectedItem?.ToString());
 
                 bool v2Accepted = V2QueueEstimateRequestMapper.TryCreate(
                     path,
@@ -768,6 +809,19 @@ public sealed class EncodingV2QueueAdmissionUiTests
                 }
 
                 Invoke(main, "SafeRefreshEstimates");
+                if ((long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)! == 0)
+                {
+                    Assert.Null(meta.GetType().GetField("V2EstimateResult")!.GetValue(meta));
+                    Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+                    long authority = (long)meta.GetType().GetField("EstimateAuthorityRevision")!.GetValue(meta)!;
+                    speed.SelectedItem = p4;
+                    Invoke(main, "EstimateRefreshTimer_Tick", null, EventArgs.Empty);
+                    Assert.True((long)meta.GetType().GetField("EstimateAuthorityRevision")!.GetValue(meta)! > authority);
+                    Assert.Equal(0, (long)meta.GetType().GetField("V2EstimateGeneration")!.GetValue(meta)!);
+                    Assert.Null(meta.GetType().GetField("V2EstimateResult")!.GetValue(meta));
+                    Assert.False(Field<Dictionary<string, double>>(main, "_estimatedSizeMap").ContainsKey(path));
+                    return;
+                }
                 var observations = new List<(string Preset, int Generation, double EstimateMb, double VideoKbps,
                     double AudioKbps, double AncillaryKbps, string Cell, string ActiveProfile, string Diagnostic)>();
                 object[] selectedPresets = [p1, p4, p6];

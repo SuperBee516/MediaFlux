@@ -97,7 +97,8 @@ namespace MediaFlux.Services
             cancellationToken.ThrowIfCancellationRequested();
             StorageSavingsEvaluation savings = StorageSavingsContractService.Evaluate(
                 request.StorageSavingsContract, staged.Evidence.OutputSizeBytes);
-            if (savings.Acceptance == StorageSavingsAcceptance.Rejected)
+            if (savings.Acceptance == StorageSavingsAcceptance.Rejected &&
+                request.StorageSavingsContract.EnforceAcceptance)
             {
                 return Failed(EncodeFinalizationFailureKind.StoragePolicyRejected,
                     savings.Reason, request, request.OutputPath, stagedValidation: staged,
@@ -175,7 +176,10 @@ namespace MediaFlux.Services
                 FinalOutputPath = request.FinalOutputPath,
                 StagingPath = request.OutputPath,
                 ValidationSummary =
-                    $"{staged.Summary} {promoted.Summary}".Trim(),
+                    $"{staged.Summary} {promoted.Summary}".Trim() +
+                    (savings.Acceptance == StorageSavingsAcceptance.Rejected
+                        ? $" Storage Savings is advisory for this manual job; valid output was preserved. {savings.Reason}"
+                        : string.Empty),
                 FinalOutputSizeBytes = promoted.Evidence.OutputSizeBytes,
                 FinalOutputLastWriteUtcTicks =
                     promoted.Evidence.OutputLastWriteUtcTicks,

@@ -546,6 +546,36 @@ public sealed class EncodeFinalizationSafetyTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task ManualAdvisoryContractPreservesValidOutputWithoutAuthorizingSourceDeletion()
+    {
+        string source = CreateFile("manual-advisory-source.mkv", 1000);
+        string final = Path.Combine(_root, "manual-advisory-final.mp4");
+        string stage = OutputPathService.CreateEncodeStagingPath(final);
+        File.WriteAllBytes(stage, new byte[950]);
+        StorageSavingsContract contract = StorageSavingsContractService.Capture(
+            true, EncodingInputSource.FromFile(source)) with { EnforceAcceptance = false };
+        var service = new EncodeOutputFinalizationService(new FakeValidationService());
+
+        EncodeFinalizationResult result = await service.FinalizeAsync(Request(source, stage, final, contract));
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.True(File.Exists(final));
+        Assert.False(File.Exists(stage));
+        Assert.Equal(StorageSavingsAcceptance.Rejected, result.StorageSavings!.Acceptance);
+        Assert.Contains("advisory", result.ValidationSummary, StringComparison.OrdinalIgnoreCase);
+        Assert.False(StorageSavingsContractService.HasAcceptedEvidence(contract, result.StorageSavings, result.FinalOutputSizeBytes));
+        Assert.True(StorageSavingsContractService.HasValidCompletionEvidence(contract, result.StorageSavings, result.FinalOutputSizeBytes));
+        var output = new EncodingService.EncodeResult(true, final, finalizationSucceeded: true,
+            finalOutputSizeBytes: result.FinalOutputSizeBytes, storageSavingsContract: contract,
+            storageSavings: result.StorageSavings,
+            finalOutputLastWriteUtcTicks: result.FinalOutputLastWriteUtcTicks);
+        SourceDeletionResult deletion = SourceDeletionService.DeleteAfterFinalization(
+            source, EncodingInputSource.FromFile(source), deleteRequested: true, output);
+        Assert.False(deletion.Deleted);
+        Assert.True(File.Exists(source));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

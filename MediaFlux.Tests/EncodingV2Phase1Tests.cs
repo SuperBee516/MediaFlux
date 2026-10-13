@@ -49,6 +49,32 @@ public sealed class EncodingV2Phase1Tests : IDisposable
     }
 
     [Fact]
+    public async Task V2EstimateAndFrozenProductionPlanShareTheCanonicalFingerprint()
+    {
+        V2MediaFacts mediaFacts = await Metadata().ProbeAsync(_source);
+        FrozenEncodePlan plan = new V2EncodePlanner().CreatePlan(Request(), mediaFacts, _ffmpeg);
+        V2FastEstimateSourceFacts estimateFacts = V2FastEstimateSourceFacts.FromMediaFacts(mediaFacts);
+        V2FastEstimateResult estimate = V2FastEstimateService.Estimate(new V2FastEstimateRequest
+        {
+            SourceFacts = estimateFacts,
+            Encoder = plan.Encoder,
+            Codec = plan.Codec,
+            Container = plan.Container,
+            QualityMode = plan.QualityMode,
+            QualityValue = plan.QualityValue,
+            Preset = plan.Preset,
+            GeometryMode = plan.GeometryMode,
+            AudioMode = plan.AudioMode,
+            AudioBitrateKbps = plan.AudioBitrateKbps,
+            SubtitleMode = plan.SubtitleMode
+        });
+
+        Assert.NotNull(estimate.ProductionPlan);
+        Assert.Equal(plan.ProductionPlan.SourceIdentity, estimate.ProductionPlan.SourceIdentity);
+        Assert.Equal(plan.ProductionPlan.PlanFingerprint, estimate.ProductionPlan.PlanFingerprint);
+    }
+
+    [Fact]
     public async Task InvalidPlanNeverReachesProductionExecutor()
     {
         var executor = new FakeExecutor();

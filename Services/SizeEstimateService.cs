@@ -334,8 +334,6 @@ namespace MediaFlux.Services
 
             bool usesStorageQualityTarget = storageSavingsApplies &&
                 savings.UsesQualityTarget && !useResolvedQualityTarget;
-            bool usesStorageBitrateTarget = storageSavingsApplies &&
-                !savings.UsesQualityTarget && !useResolvedQualityTarget;
             int effectiveQuality = usesStorageQualityTarget
                 ? savings.QualityValue
                 : Math.Clamp(quality, 0, 51);
@@ -343,15 +341,11 @@ namespace MediaFlux.Services
             string mode;
             bool usesSourceVideoBitrateFloor = false;
             bool usesSourceVideoBitrateCeiling = false;
-            if (usesStorageBitrateTarget)
             {
-                targetVideoKbps =
-                    sourceVideoKbps * savings.SourceVideoBitratePercent / 100d;
-                mode =
-                    $"storage bitrate target {savings.SourceVideoBitratePercent:0.#}% of source video";
-            }
-            else
-            {
+                // Storage Savings is an acceptance objective. Its bitrate
+                // percentage must not be projected as though it were a measured
+                // output-size estimate. A configured CQ target can still affect
+                // this estimate because it resolves to the actual quality plan.
                 double profileScale =
                     storageSavingsApplies &&
                     (savings.UsesQualityTarget || useResolvedQualityTarget)

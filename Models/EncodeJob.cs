@@ -61,6 +61,8 @@ public sealed class EncodeJobSettings
     public int QualityValue { get; set; }
     public string QualityMode { get; set; } = "Manual";
     public string QualityTarget { get; set; } = nameof(MediaFlux.Models.QualityTarget.Balanced);
+    /// <summary>Absent on legacy jobs; "target-bitrate" opts into the restored Automatic planner.</summary>
+    public string? AutomaticRateControlMode { get; set; }
     public bool TenBit { get; set; }
     public string AudioChannels { get; set; } = "";
     public string VideoFormat { get; set; } = "";

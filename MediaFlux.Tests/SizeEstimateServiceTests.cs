@@ -476,14 +476,14 @@ public sealed class SizeEstimateServiceTests
     }
 
     [Fact]
-    public void StorageBitrateModeTargetsConfiguredShareOfSourceVideo()
+    public void StorageBitratePolicyDoesNotManufactureOutputEstimate()
     {
         var storage = new MediaFlux.Models.StorageSavingsOptions
         {
             Enabled = true,
             TargetMode =
                 MediaFlux.Models.StorageSavingsOptions.SourceBitrateTarget,
-            SourceVideoBitratePercent = 45
+            SourceVideoBitratePercent = 50
         };
 
         SizeEstimateBreakdown estimate =
@@ -503,8 +503,25 @@ public sealed class SizeEstimateServiceTests
                 sourceAudioStreamCount: 1,
                 storageSavings: storage);
 
-        Assert.Equal(2_250, estimate.TargetVideoBitrateKbps, precision: 0);
-        Assert.Contains("storage bitrate target 45%", estimate.Diagnostic);
+        SizeEstimateBreakdown withoutPolicy =
+            SizeEstimateService.EstimateAutoTargetMbSmartDetailed(
+                srcMb: 2_300,
+                durationSec: 3_600,
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                sourceVideoBitrateKbps: 5_000,
+                sourceCodec: "h264",
+                compressionProfile: "Medium Quality (Default)",
+                targetCodec: "hevc_nvenc",
+                quality: 22,
+                targetHeight: null,
+                sourceAudioBitrateKbps: 192,
+                sourceAudioStreamCount: 1);
+
+        Assert.Equal(withoutPolicy.EstimatedOutputMb, estimate.EstimatedOutputMb);
+        Assert.NotEqual(1_150d, estimate.EstimatedOutputMb, precision: 0);
+        Assert.DoesNotContain("storage bitrate target", estimate.Diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

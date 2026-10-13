@@ -158,7 +158,7 @@ namespace MediaFlux
             if (recommendation == null)
             {
                 ShowStatusInfo(IsQueueRecommendationPending(row.Tag as RowMeta)
-                    ? "The recommendation is pending until Source Adaptive selects its final quality setting."
+                    ? "The recommendation is pending until the production plan has a measured estimate."
                     : "A recommendation is not available for the selected file.");
                 return;
             }

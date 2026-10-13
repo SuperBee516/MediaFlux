@@ -199,7 +199,22 @@ namespace MediaFlux.Services
                 builder.Append("-fps_mode passthrough ");
             }
 
-            if (request.TargetMb is > 0)
+            if (request.AutomaticTargetPlan is { } automaticTarget)
+            {
+                if (!automaticTarget.IsAvailable)
+                    throw new InvalidOperationException("The Automatic target-bitrate plan is incomplete; refusing to fall back to constant-quality encoding.");
+                provider.AppendTargetSizeArguments(
+                    builder,
+                    context,
+                    automaticTarget.TargetVideoBitrateKbps!.Value,
+                    automaticTarget.MaximumVideoBitrateKbps!.Value,
+                    automaticTarget.VideoBufferSizeKbps!.Value);
+                _log?.Invoke(
+                    $"[EncodingService] Automatic target-bitrate plan: mode=VBR; target={automaticTarget.TargetVideoBitrateKbps:0} kbps; " +
+                    $"maxrate={automaticTarget.MaximumVideoBitrateKbps:0} kbps; bufsize={automaticTarget.VideoBufferSizeKbps:0} kbps; " +
+                    $"projected={automaticTarget.ProjectedOutputBytes:N0} bytes.");
+            }
+            else if (request.TargetMb is > 0)
             {
                 AppendTargetSizeArguments(
                     builder,
@@ -319,7 +334,10 @@ namespace MediaFlux.Services
         {
             if (request.AudioChannels is > 0)
             {
-                builder.Append("-c:a aac -b:a 192k ");
+                int bitrateKbps = request.AutomaticTargetPlan is not null && request.AudioChannels.Value >= 6
+                    ? 384
+                    : 192;
+                builder.Append($"-c:a aac -b:a {bitrateKbps}k ");
                 builder.Append($"-ac {request.AudioChannels.Value} ");
             }
             else if (request.ForceMp4CompatibleAudio ||

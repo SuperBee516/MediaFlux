@@ -109,6 +109,7 @@ public partial class MainForm
         OutputContainer = _config.LastOutputContainer, QualityValue = _config.LastQualityValue,
         QualityMode = IsAutomaticQualitySelected() ? "Automatic" : "Manual",
         QualityTarget = GetSelectedQualityTarget().ToString(),
+        AutomaticRateControlMode = IsAutomaticQualitySelected() ? "target-bitrate" : null,
         TenBit = chkTenBit?.Checked == true, AudioChannels = comboAudioChannels?.Text ?? "", VideoFormat = comboVideoFormat.Text,
         AutoTargetSize = chkAutoTargetSize.Checked, TargetSize = txtTargetSize.Text, Resolution = comboResolution?.Text ?? "",
         DeleteSourceAfterCompression = chkDeleteSource.Checked, EnableOutputSuffix = _config.EnableOutputSuffix,

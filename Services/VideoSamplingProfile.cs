@@ -7,12 +7,17 @@ internal sealed record VideoSamplingProfile(VideoSamplePurpose Purpose, int Regi
     internal static VideoSamplingProfile Production { get; } = new(VideoSamplePurpose.ProductionAcceptance, 25);
     internal static VideoSamplingProfile Preview { get; } = new(VideoSamplePurpose.PreviewEstimation, 5);
 
-    internal IReadOnlyList<RepresentativeSample> Positions(TimeSpan duration)
+    internal IReadOnlyList<RepresentativeSample> Positions(TimeSpan duration) => Positions(duration, null);
+
+    internal IReadOnlyList<RepresentativeSample> Positions(TimeSpan duration, int? sampleCountOverride)
     {
         if (duration <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(duration));
         if (duration <= TimeSpan.FromSeconds(RegionSeconds))
             return Array.AsReadOnly(new[] { new RepresentativeSample("Full short video", TimeSpan.Zero, duration) });
-        int count = duration > TimeSpan.FromSeconds(RegionSeconds * 3) ? 9 : 3;
+        int count = sampleCountOverride ?? (Purpose == VideoSamplePurpose.PreviewEstimation
+            ? 3
+            : duration > TimeSpan.FromSeconds(RegionSeconds * 3) ? 9 : 3);
+        if (count <= 0) throw new ArgumentOutOfRangeException(nameof(sampleCountOverride));
         long clipTicks = Math.Min(TimeSpan.FromSeconds(RegionSeconds).Ticks, duration.Ticks / count);
         var positions = new List<RepresentativeSample>();
         for (int i = 0; i < count; i++)

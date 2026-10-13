@@ -18,6 +18,11 @@ public sealed record EncodeExecutionSnapshotSettings
     public required string EncoderPreset { get; init; }
     public int? NumericQualityValue { get; init; }
     public required bool AutomaticQuality { get; init; }
+    /// <summary>
+    /// New live Automatic jobs use metadata-derived VBR. Older saved jobs omit the
+    /// persisted marker and retain their original constant-quality compatibility path.
+    /// </summary>
+    public bool UseAutomaticTargetBitrate { get; init; } = true;
     public required QualityTarget QualityTarget { get; init; }
     public required bool TenBit { get; init; }
     public required string? AudioChannelSelection { get; init; }
@@ -86,6 +91,8 @@ public sealed record EncodeExecutionSnapshotSettings
             EncoderPreset = job.EncoderPreset,
             NumericQualityValue = job.QualityValue,
             AutomaticQuality = string.Equals(job.QualityMode, "Automatic", StringComparison.OrdinalIgnoreCase),
+            UseAutomaticTargetBitrate = string.Equals(
+                job.AutomaticRateControlMode, "target-bitrate", StringComparison.OrdinalIgnoreCase),
             QualityTarget = qualityTarget,
             TenBit = job.TenBit,
             AudioChannelSelection = job.AudioChannels,
@@ -126,6 +133,7 @@ public sealed record EncodeExecutionSourceMeasurements
     public double? SubtitleBitrateKbps { get; init; }
     public int SubtitleStreamCount { get; init; }
     public double? EstimatedPlannedAudioBitrateKbps { get; init; }
+    public int? Width { get; init; }
     public int? Height { get; init; }
 }
 
@@ -142,6 +150,8 @@ public sealed record EncodeExecutionSnapshotItem
     public double? EstimatedTargetMb { get; init; }
     public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
     public PredictionShadowExperimentAssignmentBinding? PredictionShadowExperimentAssignment { get; init; }
+    public PlanBoundEstimate? BoundEstimate { get; init; }
+    public PreparedAdaptiveProductionPlan? PreparedAdaptiveProductionPlan { get; init; }
     public long? SourceSizeBytes { get; init; }
     public double? MediaDurationSeconds { get; init; }
     public LibraryPolicyQueueItem? LibraryPolicyIntent { get; init; }
@@ -167,6 +177,136 @@ public sealed record EncodeExecutionSnapshotBuildResult(
     bool StorageSavingsApplies,
     bool UsesStorageQualityTarget,
     StorageSavingsOptions StorageSavings);
+
+/// <summary>One frozen queue plan and its exact-plan measured estimate, when sampling is supported.</summary>
+public sealed record PreparedProductionPlan(
+    EncodeExecutionSnapshotBuildResult BuildResult,
+    EncodingPlan Plan,
+    PlanBoundEstimate? Estimate,
+    long EstimateAuthorityRevision)
+{
+    public Guid? QueueItemId { get; init; }
+    public int? QueueGeneration { get; init; }
+    public EncodeExecutionSnapshot Snapshot => BuildResult.Snapshot;
+    public ProductionPlanIdentity Identity => Plan.ProductionPlan ??
+        throw new InvalidOperationException("A prepared production plan must have a fingerprint.");
+}
+
+public sealed record PreparedProductionPlanValidationDiagnostic(
+    Guid QueueItemId,
+    Guid? PreparedQueueItemId,
+    Guid PreparedPlanId,
+    bool SourceIdentityMatches,
+    string ExpectedSourceIdentity,
+    string ActualSourceIdentity,
+    string ExpectedProductionFingerprint,
+    string SnapshotProductionFingerprint,
+    string ActualProductionFingerprint,
+    string? EstimateFingerprint,
+    long ExpectedQueueAuthorityRevision,
+    long ActualQueueAuthorityRevision,
+    int? ExpectedQueueGeneration,
+    int ActualQueueGeneration,
+    string FailedPredicate,
+    bool InvalidationAttempted,
+    bool RepreparationAttempted,
+    bool FfmpegLaunched)
+{
+    public string ToLogLine() =>
+        $"QueueItemId={QueueItemId:N}; PreparedQueueItemId={PreparedQueueItemId?.ToString("N") ?? "unbound"}; " +
+        $"PreparedPlanId={PreparedPlanId:N}; SourceIdentityMatch={SourceIdentityMatches}; " +
+        $"ExpectedSourceIdentity={ExpectedSourceIdentity}; ActualSourceIdentity={ActualSourceIdentity}; " +
+        $"ExpectedProductionFingerprint={ExpectedProductionFingerprint}; " +
+        $"SnapshotProductionFingerprint={SnapshotProductionFingerprint}; " +
+        $"ActualProductionFingerprint={ActualProductionFingerprint}; EstimateFingerprint={EstimateFingerprint ?? "none"}; " +
+        $"ExpectedQueueAuthorityRevision={ExpectedQueueAuthorityRevision}; ActualQueueAuthorityRevision={ActualQueueAuthorityRevision}; " +
+        $"ExpectedQueueGeneration={ExpectedQueueGeneration?.ToString() ?? "unavailable"}; " +
+        $"ActualQueueGeneration={ActualQueueGeneration}; FailedPredicate={FailedPredicate}; " +
+        $"InvalidationAttempted={InvalidationAttempted}; RepreparationAttempted={RepreparationAttempted}; " +
+        $"FfmpegLaunched={FfmpegLaunched}";
+}
+
+public sealed class PreparedProductionPlanValidationException : InvalidOperationException
+{
+    public PreparedProductionPlanValidationException(PreparedProductionPlanValidationDiagnostic diagnostic)
+        : base("The queued production settings changed before encoding could start.") =>
+        Diagnostic = diagnostic ?? throw new ArgumentNullException(nameof(diagnostic));
+
+    public PreparedProductionPlanValidationDiagnostic Diagnostic { get; }
+}
+
+public static class PreparedProductionPlanValidator
+{
+    public static PreparedProductionPlanValidationDiagnostic ValidateQueueHandoff(
+        PreparedProductionPlan preparedPlan,
+        Guid queueItemId,
+        long actualQueueAuthorityRevision,
+        IEnumerable<string> actualSourcePaths,
+        int actualQueueGeneration,
+        bool invalidationAttempted,
+        bool repreparationAttempted)
+    {
+        ArgumentNullException.ThrowIfNull(preparedPlan);
+        ArgumentNullException.ThrowIfNull(actualSourcePaths);
+
+        string expectedSource = preparedPlan.Plan.ProductionPlan?.SourceIdentity ?? "";
+        string actualSource = ProductionPlanFingerprintService.CaptureSourceIdentity(actualSourcePaths);
+        string expectedFingerprint = preparedPlan.Plan.ProductionPlan?.PlanFingerprint ?? "";
+        string snapshotFingerprint = preparedPlan.Snapshot.ProductionPlan?.PlanFingerprint ?? "";
+        string actualFingerprint;
+        string fingerprintError = "";
+        try
+        {
+            actualFingerprint = ProductionPlanFingerprintService.Create(preparedPlan.Snapshot).PlanFingerprint;
+        }
+        catch (Exception exception)
+        {
+            actualFingerprint = "unavailable";
+            fingerprintError = exception.GetType().Name;
+        }
+
+        long expectedRevision = checked(preparedPlan.EstimateAuthorityRevision + 1);
+        string? estimateFingerprint = preparedPlan.Estimate?.Plan.PlanFingerprint;
+        var failed = new List<string>();
+        if (preparedPlan.QueueItemId != queueItemId)
+            failed.Add("queue-item-identity");
+        if (!string.Equals(expectedSource, actualSource, StringComparison.Ordinal))
+            failed.Add("source-identity");
+        if (actualQueueAuthorityRevision != expectedRevision)
+            failed.Add("queue-authority-revision");
+        if (!string.Equals(expectedFingerprint, snapshotFingerprint, StringComparison.Ordinal))
+            failed.Add("prepared-snapshot-fingerprint");
+        if (!string.Equals(expectedFingerprint, actualFingerprint, StringComparison.Ordinal))
+            failed.Add(string.IsNullOrEmpty(fingerprintError)
+                ? "execution-fingerprint"
+                : "execution-fingerprint-unavailable:" + fingerprintError);
+        if (preparedPlan.Estimate is { } estimate && !estimate.Matches(preparedPlan.Plan.ProductionPlan))
+            failed.Add("estimate-fingerprint");
+        if (preparedPlan.Snapshot.BoundEstimate is { } snapshotEstimate &&
+            !snapshotEstimate.Matches(preparedPlan.Plan.ProductionPlan))
+            failed.Add("snapshot-estimate-fingerprint");
+
+        return new PreparedProductionPlanValidationDiagnostic(
+            queueItemId,
+            preparedPlan.QueueItemId,
+            preparedPlan.Plan.PlanId,
+            string.Equals(expectedSource, actualSource, StringComparison.Ordinal),
+            expectedSource,
+            actualSource,
+            expectedFingerprint,
+            snapshotFingerprint,
+            actualFingerprint,
+            estimateFingerprint,
+            expectedRevision,
+            actualQueueAuthorityRevision,
+            preparedPlan.QueueGeneration,
+            actualQueueGeneration,
+            failed.Count == 0 ? "none" : string.Join(",", failed),
+            invalidationAttempted,
+            repreparationAttempted,
+            FfmpegLaunched: false);
+    }
+}
 
 /// <summary>
 /// The one shared production policy boundary for converting effective settings and
@@ -243,19 +383,13 @@ public sealed class EncodeExecutionSnapshotBuilder
             !hasCustomProfile &&
             !hasManualTarget &&
             !profile.Equals("No Compression", StringComparison.OrdinalIgnoreCase);
-        bool useStorageQualityTarget = storageSavingsApplies &&
-            storageSavings.UsesQualityTarget &&
-            !settings.AutomaticQuality;
+        // Storage Savings is an acceptance policy. It does not choose a quality
+        // value or target bitrate for the production plan.
+        bool useStorageQualityTarget = false;
 
         int estimateQuality = validated.QualityValue;
         if (useStorageQualityTarget)
             estimateQuality = storageSavings.QualityValue;
-
-        EncodingQualityIntent? qualityIntent = isPolicyItem
-            ? null
-            : settings.AutomaticQuality
-                ? EncodingQualityIntent.Automatic(settings.QualityTarget)
-                : null;
 
         EncodingService.ScaleMode scaleMode = isPolicyItem
             ? PolicyScaleMode(item.LibraryPolicyIntent!)
@@ -286,10 +420,22 @@ public sealed class EncodeExecutionSnapshotBuilder
             targetHeight,
             audioChannels);
 
+        EncodingQualityIntent? qualityIntent = isPolicyItem
+            ? null
+            : settings.AutomaticQuality
+                ? settings.UseAutomaticTargetBitrate && targetMb is not > 0
+                    ? EncodingQualityIntent.AutomaticTarget(settings.QualityTarget)
+                    : EncodingQualityIntent.Automatic(settings.QualityTarget)
+                : null;
+
         string encoderText = settings.EncoderDisplayTextOverride ??
             validated.Resolved.Provider.Capabilities.DisplayName;
+        int? sourceWidth = item.Dvd?.VideoWidth ?? item.SourceMeasurements?.Width;
         int? sourceHeight = item.Dvd?.VideoHeight ?? item.SourceMeasurements?.Height;
-        int? outputHeight = RuntimeOutputHeight(sourceHeight, scaleMode);
+        VideoOutputGeometryPlan? outputGeometry = RuntimeOutputGeometry(
+            sourceWidth, sourceHeight, settings.Restoration, scaleMode, validated.Resolved.Selection, validated.TenBit);
+        int? outputWidth = outputGeometry?.Width;
+        int? outputHeight = outputGeometry?.Height ?? RuntimeOutputHeight(sourceHeight, scaleMode);
         string suffix = BuildOutputSuffix(
             isPolicyItem ? formatText : settings.VideoFormatText,
             settings.EnableOutputSuffix,
@@ -306,24 +452,26 @@ public sealed class EncodeExecutionSnapshotBuilder
             SourceFilePath = item.SourceFilePath,
             LogicalSourcePath = item.LogicalSourcePath,
             Input = input,
-            StorageSavingsContract = StorageSavingsContractService.Capture(storageSavingsApplies, input),
+            StorageSavingsPolicy = storageSavings.CloneNormalized(),
+            StorageSavingsContract = StorageSavingsContractService.Capture(storageSavingsApplies, input) with
+            {
+                EnforceAcceptance = storageSavingsApplies &&
+                    (automaticQuality || isPolicyItem || storageSavings.StrictEnforcementForManual),
+                AllowRiskyBorderlineProduction = storageSavings.AllowRiskyBorderlineProduction
+            },
             AdaptivePreAttemptResearchCapture = settings.AdaptivePreAttemptResearchCapture,
             ResearchRoot = settings.ResearchRoot,
             SavedJobId = identity.SavedJobId,
             QueueRowId = identity.QueueRowId,
-            AdaptiveStorageSavingsEnabled = !isPolicyItem && item.PredictionShadowExperimentAssignment is null &&
-                AdaptiveStorageSavingsPolicy.IsPotentiallyApplicable(storageSavingsApplies, input,
-                    validated.Resolved.Selection, qualityIntent, targetMb, settings.Restoration),
-            ExperimentalPolicyCRetryEnabled = storageSavings.ExperimentalPolicyCRetryEnabled &&
-                !isPolicyItem && item.PredictionShadowExperimentAssignment is null &&
-                AdaptiveStorageSavingsPolicy.IsPotentiallyApplicable(storageSavingsApplies, input,
-                    validated.Resolved.Selection, qualityIntent, targetMb, settings.Restoration),
+            AdaptiveStorageSavingsEnabled = false,
+            ExperimentalPolicyCRetryEnabled = false,
             OutputFolder = outputFolder,
             Suffix = suffix,
             Encoder = validated.Resolved.Selection,
             UseGpu = validated.UseGpu,
             TargetMb = targetMb,
-            SizePredictionCalibration = item.SizePredictionCalibration,
+            // Historical arithmetic calibration is not production-plan authority.
+            SizePredictionCalibration = null,
             ScaleMode = scaleMode,
             Restoration = settings.Restoration?.Clone() ?? new VideoRestorationSettings(),
             EncoderPreset = validated.Preset,
@@ -338,7 +486,9 @@ public sealed class EncodeExecutionSnapshotBuilder
             PredictionShadowExperimentAssignment = item.PredictionShadowExperimentAssignment,
             SourceSizeBytes = item.SourceSizeBytes,
             MediaDurationSeconds = item.MediaDurationSeconds is > 0 ? item.MediaDurationSeconds : null,
+            SourceWidth = sourceWidth,
             SourceHeight = sourceHeight,
+            OutputWidth = outputWidth,
             OutputHeight = outputHeight,
             EncoderText = encoderText,
             Codec = codec,
@@ -346,6 +496,17 @@ public sealed class EncodeExecutionSnapshotBuilder
             StatisticsPath = identity.StatisticsPath,
             DeleteSourceAfterCompression = settings.DeleteSourceAfterCompression
         };
+        snapshot = snapshot with
+        {
+            ProductionPlan = ProductionPlanFingerprintService.Create(snapshot)
+        };
+        if (item.BoundEstimate is { } bound && snapshot.ProductionPlan is { } current)
+        {
+            if (bound.Matches(current))
+                snapshot = snapshot with { BoundEstimate = bound };
+        }
+        // A production snapshot may reuse an exact-plan measurement, but it may
+        // never import a multi-quality adaptive selection as an execution authority.
         return new EncodeExecutionSnapshotBuildResult(
             snapshot,
             storageSavingsApplies,
@@ -422,6 +583,10 @@ public sealed class EncodeExecutionSnapshotBuilder
         if (item.LibraryPolicyIntent is { } policy)
             return item.PolicyEncodingPreset?.QualityValue ?? policy.QualityValue;
 
+        if (settings.AutomaticQuality)
+            return EncodingQualityPolicyService.ResolveAutomaticQuality(
+                resolved.Selection, settings.QualityTarget);
+
         if (settings.CompressionProfile.Equals("No Compression", StringComparison.OrdinalIgnoreCase))
             return resolved.Provider.Capabilities.IsHardware ? 19 : 22;
         if (settings.NumericQualityValue.HasValue)
@@ -497,49 +662,9 @@ public sealed class EncodeExecutionSnapshotBuilder
             return configuredManualTargetMb;
         if (useStorageQualityTarget)
             return null;
-        // A numeric CQ/CRF request has no target-size budget. Queue estimates
-        // (including empirical previews) are advisory and must never change RC.
-        if (string.IsNullOrWhiteSpace(item.CustomCompressionProfile) && !storageSavingsApplies && item.Dvd is null)
-            return null;
-        if (item.EstimatedTargetMb is > 0)
-            return item.EstimatedTargetMb;
-
-        double fallbackEstimate;
-        if (item.Dvd is { } dvdFacts)
-        {
-            double sourceMb = dvdFacts.CombinedSizeBytes / MegabytesPerMiB;
-            fallbackEstimate = SizeEstimateService.EstimateAutoTargetMbSmart(
-                sourceMb,
-                dvdFacts.CombinedDurationSeconds,
-                dvdFacts.VideoWidth ?? 0,
-                dvdFacts.VideoHeight ?? 0,
-                dvdFacts.FrameRate ?? 0,
-                sourceVideoBitrateKbps: 0,
-                dvdFacts.VideoCodec,
-                profile,
-                validated.Resolved.Selection,
-                estimateQuality,
-                targetHeight);
-        }
-        else
-        {
-            if (_sizeEstimateService is null)
-                throw new InvalidOperationException(
-                    "A SizeEstimateService is required when no queued estimate is available.");
-            StorageSavingsOptions? appliedSavings = storageSavingsApplies
-                ? storageSavings
-                : null;
-            fallbackEstimate = _sizeEstimateService.EstimateAutoTargetMbSmart(
-                item.SourceFilePath,
-                profile,
-                validated.Resolved.Selection,
-                estimateQuality,
-                targetHeight,
-                audioChannels,
-                appliedSavings);
-        }
-
-        return fallbackEstimate > 0 ? fallbackEstimate : null;
+        // Estimates and previews are advisory. Only an explicit target-size
+        // input can select target-size rate control for a manual job.
+        return null;
     }
 
     public static int? ResolveAudioChannels(string? selection)
@@ -575,6 +700,21 @@ public sealed class EncodeExecutionSnapshotBuilder
         EncodingService.ScaleMode.To4K => 2160,
         _ => null
     };
+
+    private static VideoOutputGeometryPlan? RuntimeOutputGeometry(
+        int? sourceWidth,
+        int? sourceHeight,
+        VideoRestorationSettings restoration,
+        EncodingService.ScaleMode scaleMode,
+        VideoEncoderSelection encoder,
+        bool tenBit)
+    {
+        if (sourceWidth is not > 0 || sourceHeight is not > 0) return null;
+        VideoOutputResolutionPlan resolution = VideoRestorationPipeline.ResolveFinalOutputResolution(
+            sourceWidth.Value, sourceHeight.Value, restoration, scaleMode);
+        return VideoOutputGeometryPlanner.Resolve(sourceWidth.Value, sourceHeight.Value,
+            resolution, encoder, tenBit);
+    }
 
     private static int? RuntimeOutputHeight(int? sourceHeight, EncodingService.ScaleMode scaleMode)
     {

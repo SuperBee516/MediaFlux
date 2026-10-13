@@ -41,6 +41,19 @@ public static class EncodeFailureAnalysisService
             EmptyFallback(context.OutputContainer, "Unknown container"),
             EmptyFallback(context.Restoration, "Off"));
 
+        if (context.Exception is PreparedProductionPlanValidationException planValidation)
+        {
+            return Create(
+                EncodeFailureCategory.ApplicationLifecycle,
+                "Prepared production plan validation",
+                "The queued job's prepared settings changed before encoding could start.",
+                "The prepared plan no longer matched the queue item, source, or frozen execution settings.",
+                "Refresh the queue estimate and retry the item.",
+                planValidation.Diagnostic.ToLogLine(),
+                EncodeFailureConfidence.High,
+                plan);
+        }
+
         if (IsSourceException(context.Exception) ||
             MatchesSource(diagnostic, context.SourcePath))
         {

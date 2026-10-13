@@ -166,6 +166,11 @@ public sealed record HeadlessSavedJobReport(
 /// <summary>One-item command flow. It has no queue loop and can call the pipeline once at most.</summary>
 public static class HeadlessSavedJobItemRunner
 {
+    private static readonly JsonSerializerOptions DiagnosticsJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+    };
+
     public static async Task<HeadlessSavedJobReport> RunAsync(
         HeadlessSavedJobCommand command,
         IEnumerable<EncodeJob> jobs,
@@ -215,6 +220,7 @@ public static class HeadlessSavedJobItemRunner
             }
 
             string terminal = await pipeline.ExecuteOneAsync(snapshot, cancellationToken).ConfigureAwait(false);
+            WriteProductionDiagnostics(pipeline.LastStructuredResult, writeLine);
             writeLine("Terminal encode result: " + terminal);
             return new(HeadlessSavedJobExitCode.Success, terminal, executionJob.Name, executionItem.SourcePath, snapshot);
         }
@@ -225,6 +231,7 @@ public static class HeadlessSavedJobItemRunner
         }
         catch (Exception ex)
         {
+            WriteProductionDiagnostics(pipeline.LastStructuredResult, writeLine);
             HeadlessSavedJobExitCode code = ex is AdaptiveStorageSavingsSkippedException or HeadlessSavedJobPolicySkipException { StorageContractRejected: false }
                 ? HeadlessSavedJobExitCode.AdaptiveStorageSavingsSkipped
                 : ex is HeadlessSavedJobPolicySkipException { StorageContractRejected: true } or EncodeFinalizationException { Result.FailureKind: EncodeFinalizationFailureKind.StoragePolicyRejected }
@@ -237,28 +244,89 @@ public static class HeadlessSavedJobItemRunner
         }
     }
 
-    private static void WriteSnapshot(Action<string> write, EncodeJob job, EncodeJobFile item, EncodeExecutionSnapshot snapshot)
+    internal static void WriteSnapshot(Action<string> write, EncodeJob job, EncodeJobFile item, EncodeExecutionSnapshot snapshot)
     {
         PredictionShadowExperimentAssignment? assignment = snapshot.PredictionShadowExperimentAssignment?.Assignment;
+        ProductionPlanIdentity? plan = snapshot.ProductionPlan;
+        PlanBoundEstimate? estimate = snapshot.BoundEstimate;
+        AutomaticTargetPlan? automaticTarget = snapshot.PreparedPlan?.AutomaticTarget;
         string quality = snapshot.QualityIntent is { } intent
-            ? $"Automatic / {intent.Target} (CQ resolved by EncodingService)"
+            ? automaticTarget is { IsAvailable: true }
+                ? $"Automatic / {intent.Target} (target-bitrate VBR)"
+                : $"Automatic / {intent.Target} (target-bitrate plan pending)"
             : $"Manual {snapshot.QualityValue?.ToString(CultureInfo.InvariantCulture) ?? "unset"}";
         string targetSize = snapshot.TargetMb is > 0
             ? $"fixed {snapshot.TargetMb.Value.ToString("0.###", CultureInfo.InvariantCulture)} MiB"
-            : snapshot.QualityIntent is not null ? "automatic best target size" : "quality-based / no fixed target";
+            : automaticTarget?.ProjectedOutputBytes is > 0
+                ? $"automatic bitrate projection {automaticTarget.ProjectedOutputBytes.Value.ToString("N0", CultureInfo.InvariantCulture)} bytes"
+                : snapshot.QualityIntent is not null ? "automatic bitrate projection pending" : "quality-based / no fixed target";
         write($"Job: {job.Name} ({job.Id}) [{(job.Enabled ? "enabled" : "disabled")}, {job.ScheduleType}]");
         write($"Selected item: {item.SourcePath}");
         write($"Source: {snapshot.LogicalSourcePath}; bytes={snapshot.SourceSizeBytes?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}; duration={snapshot.MediaDurationSeconds?.ToString("0.###", CultureInfo.InvariantCulture) ?? "unknown"} s");
         write($"Output: folder={snapshot.OutputFolder}; suffix='{snapshot.Suffix}' (collision-safe filename/container resolved during execution)");
         write($"Encoder: {snapshot.EncoderText}; codec={snapshot.Codec}; preset={snapshot.EncoderPreset ?? "default"}; depth={(snapshot.TenBit ? 10 : 8)}-bit");
         write($"Quality: {quality}; Target Size: {targetSize}");
+        if (snapshot.QualityIntent is { } automaticIntent)
+        {
+            if (automaticTarget is { IsAvailable: true } target)
+            {
+                write(FormattableString.Invariant(
+                    $"Automatic target plan: RateControl=target-bitrate VBR; target={target.TargetVideoBitrateKbps.GetValueOrDefault():0} kbps; maxrate={target.MaximumVideoBitrateKbps.GetValueOrDefault():0} kbps; bufsize={target.VideoBufferSizeKbps.GetValueOrDefault():0} kbps; selected-profile={automaticIntent.Target}; encoder-preset={snapshot.EncoderPreset ?? "default"}; PreparedPlanId={snapshot.PreparedPlan!.PlanId:N}; PreparedPlanFingerprint={plan?.PlanFingerprint ?? "unavailable"}; projected-output={target.ProjectedOutputBytes.GetValueOrDefault():N0} bytes ({target.Disposition})."));
+            }
+            else
+            {
+                write($"Automatic target plan: RateControl=target-bitrate VBR; selected-profile={automaticIntent.Target}; " +
+                    "bitrate controls, prepared-plan identity, and projection are unavailable until plan preparation completes.");
+            }
+        }
         if (assignment is not null)
             write($"Experiment: {assignment.ExperimentId}; slot={assignment.Slot}; attempt={assignment.Attempt}; role={assignment.Role}");
+
+        var diagnostics = new HeadlessProductionDiagnostics(
+            SourceIdentity: plan?.SourceIdentity,
+            PlanFingerprint: plan?.PlanFingerprint,
+            EstimatePlanFingerprint: estimate?.Plan.PlanFingerprint,
+            EstimatedOutputBytes: estimate?.ProjectedBytes,
+            EstimateMethod: estimate?.Method,
+            EstimateAuthority: estimate?.Authority.ToString(),
+            EstimateSampleCount: estimate?.SampleCount,
+            EstimateConfidence: estimate?.Confidence,
+            EstimatedLowerBytes: estimate?.LowerBytes,
+            EstimatedUpperBytes: estimate?.UpperBytes,
+            ActualOutputBytes: null,
+            SelectedMode: snapshot.QualityIntent is null ? "Manual" : "Automatic",
+            SelectedQuality: plan?.Inputs.QualityValue,
+            StorageSavingsClassification: null,
+            Error: null,
+            FinalizationReason: "Not run; snapshot preflight only.",
+            ProductionAttemptCount: 0,
+            PlanInputs: plan?.Inputs,
+            EstimateSampleEvidence: estimate?.SampleEvidence,
+            EstimateRangeMethod: estimate?.RangeMethod)
+        {
+            EstimatePlanEngine = estimate is null ? null : "V1",
+            ExecutionPlanEngine = plan is null ? null : "V1",
+            SelectedProfile = snapshot.QualityIntent is { } selected
+                ? $"Automatic {selected.Target}"
+                : $"Manual {snapshot.QualityValue?.ToString(CultureInfo.InvariantCulture) ?? "unset"}",
+            PreparedPlanId = snapshot.PreparedPlan?.PlanId.ToString("N")
+        };
+        write("PRODUCTION_PLAN_DIAGNOSTICS_JSON:" + JsonSerializer.Serialize(diagnostics, DiagnosticsJsonOptions));
+    }
+
+    private static void WriteProductionDiagnostics(
+        HeadlessEncodeJobResult? result,
+        Action<string> write)
+    {
+        if (result?.ProductionDiagnostics is not { } diagnostics)
+            return;
+        write("PRODUCTION_DIAGNOSTICS_JSON:" + JsonSerializer.Serialize(diagnostics, DiagnosticsJsonOptions));
     }
 }
 
 public interface IHeadlessSavedJobItemPipeline
 {
+    HeadlessEncodeJobResult? LastStructuredResult => null;
     Task<EncodeExecutionSnapshot> BuildSnapshotAsync(EncodeJob job, EncodeJobFile item, CancellationToken cancellationToken);
     void ValidateForPreflight(EncodeExecutionSnapshot snapshot);
     Task<string> ExecuteOneAsync(EncodeExecutionSnapshot snapshot, CancellationToken cancellationToken);
@@ -291,9 +359,12 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
     private readonly EncodeExecutionOrchestrator _orchestrator;
     private readonly FfprobeService _ffprobe;
     private readonly EncodingStatisticsService _statistics;
+    private readonly EncodingService _encodingService;
     private readonly EncodeExecutionLifecycleService _lifecycle;
     private readonly HeadlessSavedJobV2Router _v2Router;
     private readonly ConcurrentDictionary<string, V2GuiEncodeIntent> _savedJobRouteIntents = new(StringComparer.Ordinal);
+
+    public HeadlessEncodeJobResult? LastStructuredResult { get; private set; }
 
     public HeadlessSavedJobItemPipeline(
         Config config,
@@ -312,9 +383,9 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             new PredictionShadowObservationJournal(Path.Combine(_userDataDirectory, "data", "prediction-shadow-observations.jsonl")),
             new PredictionShadowComplexitySamplingService(appDirectory, config.FfmpegPath),
             message => Console.Error.WriteLine(message));
-        var encoding = new EncodingService(appDirectory, _ => { }, Console.Error.WriteLine, config.FfmpegPath, config.FfprobePath);
+        _encodingService = new EncodingService(appDirectory, _ => { }, Console.Error.WriteLine, config.FfmpegPath, config.FfprobePath);
         _orchestrator = new EncodeExecutionOrchestrator(
-            encoding,
+            _encodingService,
             shadow,
             _statistics,
             experimentFreezeStore: new PredictionShadowExperimentFreezeStore(_userDataDirectory));
@@ -378,6 +449,7 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
                 AudioStreamCount = info.AudioStreamCount,
                 SubtitleBitrateKbps = info.SubtitleBitrateKbps,
                 SubtitleStreamCount = info.SubtitleStreamCount,
+                Width = info.Width,
                 Height = info.Height
             },
             CustomCompressionProfile = item.CustomCompressionProfile,
@@ -386,18 +458,19 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             MediaDurationSeconds = info.DurationSeconds,
             PredictionShadowExperimentAssignment = item.PredictionShadowExperimentAssignment
         };
-        EncodeExecutionSnapshot preliminary;
+        QueueProductionPlanEstimate estimate;
         try
         {
-            preliminary = _builder.Build(identity, settings, snapshotItem);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        { throw new HeadlessSavedJobValidationException("Could not construct the production execution snapshot: " + ex.Message, ex); }
-
-        EstimateBackgroundService.SmartEstimateResult estimate;
-        try
-        {
-            estimate = await EstimateSavedJobItemAsync(item, settings, preliminary, cancellationToken).ConfigureAwait(false);
+            using var estimateService = new EstimateBackgroundService(
+                _mediaInfo,
+                _statistics,
+                previewEncodingService: _encodingService,
+                previewProbeService: _ffprobe,
+                snapshots: _builder,
+                previewToolSignature: $"{_config.FfmpegPath}|{_config.FfprobePath}");
+            estimate = await estimateService.PrepareProductionPlanAsync(
+                settings, snapshotItem, estimateAuthorityRevision: 0, cancellationToken,
+                productionPriority: true).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -406,25 +479,28 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
         }
         cancellationToken.ThrowIfCancellationRequested();
 
-        EncodeExecutionSnapshotBuildResult built;
-        try
+        PreparedProductionPlan prepared = estimate.PreparedPlan;
+        if (!string.Equals(prepared.Identity.SourceIdentity,
+                ProductionPlanFingerprintService.CaptureSourceIdentity([item.SourcePath]), StringComparison.Ordinal))
+            throw new HeadlessSavedJobValidationException("The prepared production plan source identity changed during preparation.");
+        if (prepared.Estimate is { } boundEstimate && !boundEstimate.Matches(prepared.Identity))
+            throw new HeadlessSavedJobValidationException("The measured estimate is not bound to the prepared production plan.");
+
+        EncodeExecutionSnapshot preparedSnapshot = prepared.Snapshot with
         {
-            built = _builder.BuildWithDetails(
-                identity,
-                settings,
-                snapshotItem with
-                {
-                    SourceMeasurements = snapshotItem.SourceMeasurements! with
-                    {
-                        EstimatedPlannedAudioBitrateKbps = estimate.PlannedAudioBitrateKbps
-                    },
-                    EstimatedTargetMb = estimate.EstimatedMb > 0 ? estimate.EstimatedMb : null,
-                    SizePredictionCalibration = estimate.SizeCalibration
-                });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        { throw new HeadlessSavedJobValidationException("Could not construct the production execution snapshot: " + ex.Message, ex); }
-        EncodeExecutionSnapshot snapshot = built.Snapshot;
+            OperationId = identity.OperationId,
+            SavedJobId = identity.SavedJobId,
+            QueueRowId = identity.QueueRowId,
+            StatisticsStartUtc = identity.StatisticsStartUtc,
+            MediaFluxVersion = identity.MediaFluxVersion,
+            StatisticsPath = identity.StatisticsPath,
+            ContainerCompatibilityConfirmed = identity.ContainerCompatibilityConfirmed,
+            ProductionPlan = prepared.Identity,
+            PreparedPlan = prepared.Plan,
+            BoundEstimate = prepared.Estimate,
+            PreparedAdaptiveProductionPlan = null
+        };
+        EncodeExecutionSnapshot snapshot = preparedSnapshot;
         if (captureSavedJobRouteIntent)
         {
             _savedJobRouteIntents[snapshot.OperationId] = new V2GuiEncodeIntent
@@ -538,6 +614,9 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             QualityValue = config.LastQualityValue,
             QualityMode = qualityMode,
             QualityTarget = config.LastQualityTarget,
+            AutomaticRateControlMode = qualityMode.Equals("Automatic", StringComparison.OrdinalIgnoreCase)
+                ? "target-bitrate"
+                : null,
             TenBit = false,
             AudioChannels = "Keep source layout",
             VideoFormat = format,
@@ -623,74 +702,6 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             .Any(component => component.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0);
     }
 
-    private async Task<EstimateBackgroundService.SmartEstimateResult> EstimateSavedJobItemAsync(
-        EncodeJobFile item,
-        EncodeExecutionSnapshotSettings settings,
-        EncodeExecutionSnapshot preliminary,
-        CancellationToken cancellationToken)
-    {
-        bool isCustom = item.CustomTargetMb.HasValue || !string.IsNullOrWhiteSpace(item.CustomCompressionProfile);
-        double manualTargetMb = item.CustomTargetMb.GetValueOrDefault();
-        if (manualTargetMb <= 0 && !settings.AutoTargetSize)
-            _ = double.TryParse(settings.TargetSizeText, NumberStyles.Float, CultureInfo.CurrentCulture, out manualTargetMb);
-        EncodingQualityIntent? qualityIntent = isCustom ? null : preliminary.QualityIntent;
-        bool rowAuto = item.CustomTargetMb.HasValue
-            ? false
-            : !string.IsNullOrWhiteSpace(item.CustomCompressionProfile) ||
-              SizeEstimateService.ShouldUseProfileEstimate(settings.AutoTargetSize, manualTargetMb);
-        string profile = !string.IsNullOrWhiteSpace(item.CustomCompressionProfile)
-            ? item.CustomCompressionProfile!
-            : qualityIntent is not null ? "Medium Quality (Default)" : settings.CompressionProfile;
-        StorageSavingsOptions storage = settings.StorageSavings.CloneNormalized();
-        if (isCustom) storage.Enabled = false;
-        VideoRestorationPipelinePlan restorationPlan = VideoRestorationPipeline.BuildPlan(
-            preliminary.Restoration, preliminary.ScaleMode);
-        bool sourceAdaptiveEligible = qualityIntent is not null && !restorationPlan.UsesAi &&
-            string.IsNullOrWhiteSpace(restorationPlan.ConventionalFilterChain) &&
-            string.IsNullOrWhiteSpace(restorationPlan.PreAiFilterChain) &&
-            string.IsNullOrWhiteSpace(restorationPlan.PostAiFilterChain);
-        var queueItemId = Guid.NewGuid();
-        using var estimateService = new EstimateBackgroundService(_mediaInfo, _statistics);
-        estimateService.QueueSmartEstimate(
-            item.SourcePath,
-            rowAuto,
-            profile,
-            manualTargetMb,
-            preliminary.Encoder,
-            preliminary.QualityValue ?? 0,
-            RequestedTargetHeight(preliminary.ScaleMode),
-            preliminary.AudioChannels,
-            isCustom,
-            _config.SmartRecommendationsEnabled,
-            _config.MinimumExpectedSavingsPercent,
-            storage,
-            qualityIntent,
-            sourceAdaptiveEligible,
-            _config.UseHistoricalSizePredictionCalibration,
-            queueItemId,
-            preliminary.EncoderPreset ?? "",
-            preliminary.TenBit ? 10 : 8,
-            preliminary.ConcurrentEncoderSessions);
-        while (true)
-        {
-            while (estimateService.TryDequeueSmart(out EstimateBackgroundService.SmartEstimateResult result))
-                if (result.QueueItemId == queueItemId)
-                    return result;
-            if (estimateService.PendingEstimates == 0)
-                throw new InvalidOperationException("The estimate worker ended without publishing a result for the selected saved-job item.");
-            await Task.Delay(10, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private static int? RequestedTargetHeight(EncodingService.ScaleMode mode) => mode switch
-    {
-        EncodingService.ScaleMode.To720p => 720,
-        EncodingService.ScaleMode.To1080p => 1080,
-        EncodingService.ScaleMode.To1440p => 1440,
-        EncodingService.ScaleMode.To4K => 2160,
-        _ => null
-    };
-
     public void ValidateForPreflight(EncodeExecutionSnapshot snapshot)
     {
         try
@@ -708,12 +719,14 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
 
     public async Task<string> ExecuteOneAsync(EncodeExecutionSnapshot snapshot, CancellationToken cancellationToken)
     {
+        LastStructuredResult = null;
         HeadlessEncodeJobResult outcome = await ExecuteSnapshotAndCompleteAsync(
             snapshot,
             DateTime.UtcNow,
             cancellationToken,
             progress: Console.WriteLine,
             batchIndex: 1).ConfigureAwait(false);
+        LastStructuredResult = outcome;
         return outcome.Status switch
         {
             HeadlessEncodeJobStatus.Success or HeadlessEncodeJobStatus.RecoveredSuccess =>
@@ -1232,6 +1245,36 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             SourceHeight: prepared.SourceFacts.SourceHeight,
             SourceFrameRate: prepared.SourceFacts.Probe.Streams.FirstOrDefault(stream =>
                 stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase))?.AverageFrameRate);
+        result = result with
+        {
+            ProductionDiagnostics = new HeadlessProductionDiagnostics(
+                SourceIdentity: prepared.PreflightPlan.ProductionPlan.SourceIdentity,
+                PlanFingerprint: prepared.PreflightPlan.ProductionPlan.PlanFingerprint,
+                EstimatePlanFingerprint: snapshot.BoundEstimate?.Plan.PlanFingerprint,
+                EstimatedOutputBytes: snapshot.BoundEstimate?.ProjectedBytes,
+                EstimateMethod: snapshot.BoundEstimate?.Method,
+                EstimateAuthority: snapshot.BoundEstimate?.Authority.ToString(),
+                EstimateSampleCount: snapshot.BoundEstimate?.SampleCount,
+                EstimateConfidence: snapshot.BoundEstimate?.Confidence,
+                EstimatedLowerBytes: snapshot.BoundEstimate?.LowerBytes,
+                EstimatedUpperBytes: snapshot.BoundEstimate?.UpperBytes,
+                ActualOutputBytes: execution.OutputSizeBytes,
+                SelectedMode: GetSelectedMode(snapshot),
+                SelectedQuality: prepared.PreflightPlan.ProductionPlan.Inputs.QualityValue,
+                StorageSavingsClassification: null,
+                Error: result.Error,
+                FinalizationReason: execution.Failure?.Message ?? (execution.OutputPromoted ? "Validated output was promoted." : "V2 output was not promoted."),
+                ProductionAttemptCount: execution.ProductionAttemptCount,
+                PlanInputs: prepared.PreflightPlan.ProductionPlan.Inputs,
+                ExecutionArguments: string.Join(" ", prepared.PreflightPlan.Arguments))
+            {
+                EstimatePlanEngine = snapshot.BoundEstimate is null ? null : "V1",
+                ExecutionPlanEngine = "V2",
+                SelectedProfile = snapshot.QualityIntent is { } intent
+                    ? $"Automatic {intent.Target}"
+                    : $"Manual {prepared.PreflightPlan.ProductionPlan.Inputs.QualityValue?.ToString(CultureInfo.InvariantCulture) ?? "unset"}"
+            }
+        };
         return Task.FromResult(AttachPerformance(result, performance, write));
     }
 
@@ -1305,7 +1348,8 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             MetadataValidated: validation is not null
                 ? validation.Success
                 : CombineValidationStatuses(executionValidation?.Streams, executionValidation?.Container),
-            OutputBytes: output?.FinalOutputSizeBytes ?? finalization?.FinalOutputSizeBytes,
+            OutputBytes: output?.FinalOutputSizeBytes ?? finalization?.FinalOutputSizeBytes ??
+                finalization?.StagedValidationResult?.Evidence?.OutputSizeBytes,
             StorageContractAccepted: storageSavings?.Acceptance switch
             {
                 StorageSavingsAcceptance.Accepted => true,
@@ -1326,8 +1370,93 @@ public sealed class HeadlessSavedJobItemPipeline : IHeadlessSavedJobItemPipeline
             SourceWidth: attempt.Plan?.Source?.Width,
             SourceHeight: attempt.Plan?.Source?.Height,
             SourceFrameRate: attempt.Plan?.Source?.FrameRate,
-            FatalBatchFailure: fatalBatchFailure);
+            FatalBatchFailure: fatalBatchFailure,
+            ProductionDiagnostics: BuildProductionDiagnostics(snapshot, attempt, error, ffmpegExitCode));
     }
+
+    private static HeadlessProductionDiagnostics BuildProductionDiagnostics(
+        EncodeExecutionSnapshot snapshot,
+        EncodeExecutionAttempt attempt,
+        string? error,
+        int? ffmpegExitCode)
+    {
+        EncodingPlan? plan = attempt.Plan;
+        EncodingService.EncodeResult? output = attempt.EncodeResult;
+        EncodeFinalizationResult? finalization = attempt.FinalizationResult;
+        ProductionPlanIdentity? productionPlan = plan?.ProductionPlan ?? snapshot.ProductionPlan;
+        string? finalizationReason = finalization is not null
+            ? finalization.Success
+                ? finalization.ValidationSummary
+                : $"{finalization.FailureKind}: {finalization.ErrorMessage}"
+            : output?.ValidationSummary;
+        string? errorText = error ?? finalization?.ErrorMessage;
+        if (errorText is null && ffmpegExitCode is int exitCode && exitCode != 0)
+            errorText = $"FFmpeg exited with code {exitCode}.";
+        PlanBoundEstimate? estimate = snapshot.BoundEstimate;
+        if (productionPlan is not null && attempt.AdaptiveSelection is
+            { SelectedQuality: int selectedQuality, Disposition: AdaptiveSelectionDisposition.Selected or AdaptiveSelectionDisposition.NotSuitable } adaptive &&
+            adaptive.Candidates.FirstOrDefault(candidate => candidate.Quality == selectedQuality) is
+            { ProjectedTypicalBytes: double typical, Samples: { } samples } &&
+            double.IsFinite(typical) && typical > 0)
+        {
+            estimate = new PlanBoundEstimate(productionPlan, estimate?.Generation ?? 0,
+                "ProductionAcceptanceSamples", checked((long)Math.Round(typical, MidpointRounding.AwayFromZero)),
+                EstimateAuthorityLevel.Measured, samples.Count,
+                FiniteBytes(adaptive.Candidates.First(candidate => candidate.Quality == selectedQuality).ProjectedLowerBytes),
+                FiniteBytes(adaptive.Candidates.First(candidate => candidate.Quality == selectedQuality).ProjectedUpperBytes),
+                "Measured production samples")
+            {
+                RangeMethod = "observed minimum and maximum of selected production samples",
+                SampleEvidence = Array.AsReadOnly(samples.Select(sample => new EmpiricalPreviewSampleEvidence(
+                    selectedQuality,
+                    sample.Sample.Label,
+                    sample.Sample.Start.TotalSeconds,
+                    sample.Sample.Duration.TotalSeconds,
+                    sample.MeasuredSeconds,
+                    sample.VideoBytes,
+                    sample.VideoBytes / sample.MeasuredSeconds)).ToArray())
+            };
+        }
+        long? actualBytes = output?.FinalOutputSizeBytes ?? finalization?.FinalOutputSizeBytes ??
+            finalization?.StagedValidationResult?.Evidence?.OutputSizeBytes;
+        StorageSavingsEvaluation? storageSavings = finalization?.StorageSavings ??
+            output?.StorageSavings ?? attempt.ExecutionOutcome?.StorageSavings;
+        return new HeadlessProductionDiagnostics(
+            SourceIdentity: productionPlan?.SourceIdentity,
+            PlanFingerprint: productionPlan?.PlanFingerprint,
+            EstimatePlanFingerprint: estimate?.Plan.PlanFingerprint,
+            EstimatedOutputBytes: estimate?.ProjectedBytes,
+            EstimateMethod: estimate?.Method,
+            EstimateAuthority: estimate?.Authority.ToString(),
+            EstimateSampleCount: estimate?.SampleCount,
+            EstimateConfidence: estimate?.Confidence,
+            EstimatedLowerBytes: estimate?.LowerBytes,
+            EstimatedUpperBytes: estimate?.UpperBytes,
+            ActualOutputBytes: actualBytes,
+            SelectedMode: GetSelectedMode(snapshot),
+            SelectedQuality: productionPlan?.Inputs.QualityValue,
+            StorageSavingsClassification: storageSavings?.Acceptance.ToString(),
+            Error: errorText,
+            FinalizationReason: finalizationReason,
+            ProductionAttemptCount: attempt.ExecutionOutcome?.ProductionEncodeCount ?? 0,
+            PlanInputs: productionPlan?.Inputs,
+            ExecutionArguments: output?.DiagnosticArguments,
+            EstimateSampleEvidence: estimate?.SampleEvidence,
+            EstimateRangeMethod: estimate?.RangeMethod)
+        {
+            EstimatePlanEngine = estimate is null ? null : "V1",
+            ExecutionPlanEngine = productionPlan is null ? null : "V1",
+            SelectedProfile = snapshot.QualityIntent is { } intent
+                ? $"Automatic {intent.Target}"
+                : $"Manual {snapshot.QualityValue?.ToString(CultureInfo.InvariantCulture) ?? "unset"}",
+            PreparedPlanId = snapshot.PreparedPlan?.PlanId.ToString("N")
+        };
+    }
+
+    private static long? FiniteBytes(double value) =>
+        double.IsFinite(value) && value >= 0 && value <= long.MaxValue
+            ? checked((long)Math.Round(value, MidpointRounding.AwayFromZero))
+            : null;
 
     private static HeadlessEncodeJobResult AttachPerformance(
         HeadlessEncodeJobResult result,

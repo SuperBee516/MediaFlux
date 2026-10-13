@@ -509,7 +509,7 @@ internal sealed class AutomaticEncodePerformanceInstrumentation
         ArgumentNullException.ThrowIfNull(diagnostics);
         var text = new StringBuilder()
             .AppendLine(IsAutomaticMode(diagnostics.Mode)
-                ? "Automatic Source Adaptive Performance"
+                ? "Automatic Encode Performance"
                 : "Manual Encode Performance")
             .AppendLine("-------------------------------------");
         AppendStage(text, diagnostics, "snapshotPreparation", "Snapshot/preflight");

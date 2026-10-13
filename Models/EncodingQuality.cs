@@ -13,7 +13,8 @@ public enum QualityTarget
 public enum EncodingQualityIntentKind
 {
     LegacyNumeric,
-    QualityTarget
+    QualityTarget,
+    AutomaticTargetBitrate
 }
 
 /// <summary>
@@ -30,6 +31,9 @@ public sealed record EncodingQualityIntent(
 
     public static EncodingQualityIntent Automatic(QualityTarget target) =>
         new(EncodingQualityIntentKind.QualityTarget, Target: target);
+
+    public static EncodingQualityIntent AutomaticTarget(QualityTarget target) =>
+        new(EncodingQualityIntentKind.AutomaticTargetBitrate, Target: target);
 }
 
 public enum EncoderQualityMechanism { Crf, Cq, Icq, Unknown }
@@ -54,7 +58,8 @@ public enum EncodingQualityReasonCode
     Downscale,
     ProviderNormalized,
     AdaptiveStorageSavingsSelection,
-    AdaptiveStorageSavingsRetry
+    AdaptiveStorageSavingsRetry,
+    AutomaticTargetBitrate
 }
 
 public sealed record EncodingQualityReason(

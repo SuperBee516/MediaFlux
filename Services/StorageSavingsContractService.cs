@@ -78,6 +78,19 @@ public static class StorageSavingsContractService
             evidence.Contract == contract && finalBytes == evidence.CandidateOutputBytes &&
             Evaluate(contract, evidence.CandidateOutputBytes).Acceptance == StorageSavingsAcceptance.Accepted);
 
+    /// <summary>Valid output may complete a manual job when savings are advisory, but never authorizes source deletion.</summary>
+    public static bool HasValidCompletionEvidence(StorageSavingsContract contract, StorageSavingsEvaluation? evidence, long? finalBytes)
+    {
+        ArgumentNullException.ThrowIfNull(contract);
+        if (contract.EnforceAcceptance)
+            return HasAcceptedEvidence(contract, evidence, finalBytes);
+        if (!contract.Applies)
+            return evidence?.Acceptance != StorageSavingsAcceptance.Rejected &&
+                (evidence is null || finalBytes == evidence.CandidateOutputBytes);
+        return evidence is not null && evidence.Contract == contract && finalBytes == evidence.CandidateOutputBytes &&
+            Evaluate(contract, evidence.CandidateOutputBytes) == evidence;
+    }
+
     public static string Describe(StorageSavingsEvaluation evaluation) =>
         $"Storage acceptance: {evaluation.Acceptance}; source={evaluation.Contract.SourceSizeBytes} bytes; " +
         $"candidate={evaluation.CandidateOutputBytes} bytes; savings={evaluation.ActualSavingsBytes} bytes " +

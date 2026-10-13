@@ -408,7 +408,10 @@ namespace MediaFlux.Services
                 request.AdaptiveStorageSavingsEnabled,
                 request.AdaptiveSelectionCallback,
                 request.ExperimentalPolicyCRetryEnabled,
-                request.AdaptivePreAttemptCaptureCallback).ConfigureAwait(false);
+                request.AdaptivePreAttemptCaptureCallback,
+                request.PreparedAdaptiveProductionPlan,
+                request.StorageSavingsPolicy,
+                request.PreparedPlan).ConfigureAwait(false);
         }
 
         public Task<bool> EncodeAsync(EncodingRequest request)
@@ -681,7 +684,10 @@ namespace MediaFlux.Services
             bool adaptiveStorageSavingsEnabled = false,
             Action<AdaptiveQualitySelectionEvidence>? adaptiveSelectionCallback = null,
             bool experimentalPolicyCRetryEnabled = false,
-            Func<AdaptivePreAttemptObservation, CancellationToken, Task>? adaptivePreAttemptCaptureCallback = null)
+            Func<AdaptivePreAttemptObservation, CancellationToken, Task>? adaptivePreAttemptCaptureCallback = null,
+            PreparedAdaptiveProductionPlan? preparedAdaptiveProductionPlan = null,
+            StorageSavingsOptions? storageSavingsPolicy = null,
+            EncodingPlan? preparedPlan = null)
         {
             restoration = VideoRestorationModeResolver.Resolve(restoration);
             using var previewExclusion = await PreviewSamplingCoordinator.Shared.EnterProductionAsync(cancellationToken).ConfigureAwait(false);
@@ -877,8 +883,23 @@ namespace MediaFlux.Services
                         "Preflight timestamp defect was repaired and revalidated.",
                         timelineRecovery.Reason)
                     : null,
-                sizePredictionCalibration);
+                sizePredictionCalibration)
+            {
+                ConcurrentEncoderSessions = concurrentEncoderSessions,
+                StorageSavingsContract = storageSavingsContract ?? StorageSavingsContract.Disabled,
+                StorageSavingsPolicy = storageSavingsPolicy?.CloneNormalized() ?? new StorageSavingsOptions()
+            };
             EncodingPlan shadowPlan = EncodingPlanService.Create(planContext);
+            if (preparedPlan is not null)
+            {
+                if (preparedPlan.ProductionPlan is not { } preparedIdentity ||
+                    shadowPlan.ProductionPlan is not { } resolvedIdentity ||
+                    !string.Equals(preparedIdentity.SourceIdentity, resolvedIdentity.SourceIdentity, StringComparison.Ordinal) ||
+                    !string.Equals(preparedIdentity.PlanFingerprint, resolvedIdentity.PlanFingerprint, StringComparison.Ordinal))
+                    throw new InvalidDataException(
+                        "The prepared production plan no longer matches the current source and execution inputs. Reprepare the estimate before encoding.");
+                shadowPlan = preparedPlan;
+            }
             // Corrective timeline preparation changes production video settings.
             // Initial adaptive samples only reproduce the ordinary strict path.
             bool ordinaryAdaptiveInput = sourceTimelineRepairPath is null && !requireRegeneratedOutputTimeline &&
@@ -889,7 +910,9 @@ namespace MediaFlux.Services
             try
             {
                 adaptiveSelectionAvailable = AdaptiveStorageSavingsPolicy.TryCreateRequest(
-                    adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput, concurrentEncoderSessions,
+                    adaptiveStorageSavingsEnabled && ordinaryAdaptiveInput &&
+                        qualityIntent?.Kind != EncodingQualityIntentKind.AutomaticTargetBitrate,
+                    concurrentEncoderSessions,
                     storageSavingsContract ?? StorageSavingsContract.Disabled, planContext, shadowPlan,
                     out selectionRequest, out adaptiveReason);
             }
@@ -903,7 +926,7 @@ namespace MediaFlux.Services
             if (adaptiveSelectionAvailable)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                callback("Analyzing compression…");
+                callback(preparedAdaptiveProductionPlan is null ? "Preparing production plan…" : "Using prepared production plan…");
                 var selectionRunner = _adaptiveSampleRunnerOverride ?? new AdaptiveVideoSampleRunner(
                     _ffmpegPath, _ffprobePath, _ffprobeService, (sampleRequest, candidate, segment, sampleOutput) =>
                     {
@@ -924,27 +947,37 @@ namespace MediaFlux.Services
                     });
                 var samplingWatch = Stopwatch.StartNew();
                 AdaptiveQualitySelectionEvidence selection;
-                try
+                if (preparedAdaptiveProductionPlan is { } prepared)
                 {
-                    selection = await new StorageSavingsSampleSelector(selectionRunner)
-                        .SelectAsync(selectionRequest!, callback, cancellationToken).ConfigureAwait(false);
+                    ValidatePreparedAdaptivePlan(shadowPlan, selectionRequest!, prepared);
+                    selection = prepared.Selection;
+                    _log?.Invoke($"[AdaptiveStorageSavings] Reusing prepared production selection; fingerprint={prepared.Identity.PlanFingerprint}; samplesExecuted={selection.SamplesExecuted}; selectedQuality={selection.SelectedQuality?.ToString() ?? "none"}.");
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                else
                 {
-                    throw;
+                    try
+                    {
+                        selection = await new StorageSavingsSampleSelector(selectionRunner)
+                            .SelectAsync(selectionRequest!, callback, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        selection = StorageSavingsSampleSelector.PreservePreferredQuality(selectionRequest!, ex.Message);
+                        _log?.Invoke($"[AdaptiveStorageSavings] Sampling failed; configured quality will be used. {ex.Message}");
+                    }
                 }
-                catch (Exception ex)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    selection = StorageSavingsSampleSelector.PreservePreferredQuality(selectionRequest!, ex.Message);
-                    _log?.Invoke($"[AdaptiveStorageSavings] Sampling failed; configured quality will be used. {ex.Message}");
-                }
-                selection = selection with { SamplingSeconds = samplingWatch.Elapsed.TotalSeconds };
+                if (preparedAdaptiveProductionPlan is null)
+                    selection = selection with { SamplingSeconds = samplingWatch.Elapsed.TotalSeconds };
                 cancellationToken.ThrowIfCancellationRequested();
                 _log?.Invoke($"[AdaptiveStorageSavings] samplesExecuted={selection.SamplesExecuted}; sevenFirstEarlyPositive={selection.SevenFirstEarlyPositive}; selectedQuality={selection.SelectedQuality?.ToString() ?? "none"}; disposition={selection.Disposition}.");
                 bool adaptiveSelectionSkipped = selection.Disposition == AdaptiveSelectionDisposition.Skipped;
                 bool reliableStorageObjectiveMiss = adaptiveSelectionSkipped &&
-                    StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(selection, selectionRequest!);
+                    StorageSavingsSampleSelector.HasReliableAllCandidateStorageRisk(selection, selectionRequest!);
                 if (adaptiveSelectionSkipped && !reliableStorageObjectiveMiss)
                     selection = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(selection);
                 if (reliableStorageObjectiveMiss)
@@ -1073,6 +1106,7 @@ namespace MediaFlux.Services
             }
             EncodingPlanService.EncodingPlanExecutionValues planExecution =
                 EncodingPlanService.GetExecutionValues(shadowPlan);
+            AutomaticTargetPlan? automaticTargetPlan = planExecution.AutomaticTargetPlan;
             // Phase 2/3 authority boundary: downstream FFmpeg/finalization
             // requests consume frozen plan values, never caller/UI values.
             VideoEncoderSelection requestedEncoder = planExecution.Encoder;
@@ -1364,6 +1398,7 @@ namespace MediaFlux.Services
                 disableHardwareDecode: preplannedTimelineReconstructionRate is not null,
                 restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain,
                 plannedVideoGeometry: plannedOutputGeometry,
+                automaticTargetPlan: automaticTargetPlan,
                 sourceDecodeMode: preplannedTimelineReconstructionRate is null
                     ? sourceDecodeMode
                     : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
@@ -1450,6 +1485,8 @@ namespace MediaFlux.Services
             string tolerantSalvageDetail = "";
             bool cudaRecoveryAttempted = false;
             bool cudaRecoveryStarted = false;
+            bool gpuFramePipelineRecoveryAttempted = false;
+            bool gpuFramePipelineRecoveryStarted = false;
             FfmpegSourceDecodeCorruption initialSourceCorruption =
                 FfmpegSourceDecodeCorruptionClassifier.Classify(runResult.StandardError);
             FfmpegDiagnosticSummary initialDiagnosticSummary = runResult.DiagnosticSummary;
@@ -1493,6 +1530,7 @@ namespace MediaFlux.Services
                 callback("[MediaFlux] Source corruption detected; attempting one container remux for verification.");
                 if (TryDeleteFailedStagingOutput(output))
                 {
+                    gpuFramePipelineRecoveryStarted = true;
                     SourceContainerRecoveryResult repair = await new SourceContainerRecoveryService(
                         _ffmpegPath, _ffprobePath, log: _log, operationId: shadowPlan.PlanId.ToString("N"))
                         .TryRemuxAndValidateAsync(
@@ -1537,6 +1575,7 @@ namespace MediaFlux.Services
                             restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                             restorationFilterOverride: aiPlan?.PostAiFilterChain,
                             plannedVideoGeometry: plannedOutputGeometry,
+                            automaticTargetPlan: automaticTargetPlan,
                             sourceDecodeMode: preplannedTimelineReconstructionRate is null
                                 ? sourceDecodeMode : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
                         using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FinalEncode))
@@ -1594,6 +1633,7 @@ namespace MediaFlux.Services
                                         splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                                         restorationFilterOverride: aiPlan?.PostAiFilterChain,
                                         plannedVideoGeometry: plannedOutputGeometry,
+                                        automaticTargetPlan: automaticTargetPlan,
                                         sourceDecodeMode: FfmpegSourceDecodeMode.TolerantDecodeReencode);
                                     using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                                     {
@@ -1698,7 +1738,8 @@ namespace MediaFlux.Services
                             sourcePixelFormat, disableHardwareDecode: true, restoration: restoration,
                             splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                             restorationFilterOverride: aiPlan?.PostAiFilterChain,
-                            plannedVideoGeometry: plannedOutputGeometry);
+                            plannedVideoGeometry: plannedOutputGeometry,
+                            automaticTargetPlan: automaticTargetPlan);
                         scope.Complete();
                     }
                     pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
@@ -1724,46 +1765,65 @@ namespace MediaFlux.Services
                 }
             }
 
-            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && !disableAutomaticFfmpegRecovery && runResult.ExitCode != 0 &&
-                !cudaRecoveryAttempted &&
-                ShouldRetryWithSoftwareFrames(ffArgs, runResult.StandardError))
+            if (!sourceUnrecoverable && !sourceContainerRecoveryAttempted && runResult.ExitCode != 0 &&
+                FfmpegCudaNvdecFailureClassifier.ShouldRetryFilterGraphOnce(
+                    requestedEncoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase),
+                    ffArgs.Contains("-hwaccel_output_format cuda", StringComparison.Ordinal),
+                    cancellationToken.IsCancellationRequested,
+                    cudaRecoveryAttempted || gpuFramePipelineRecoveryAttempted,
+                    ffArgs,
+                    runResult.StandardError))
             {
                 string failedPipeline = pipelineDiagnostic;
+                gpuFramePipelineRecoveryAttempted = true;
+                recoveryDiagnostics += "Original CUDA filter-graph negotiation failure: scale_cuda could not negotiate with auto_scale." + Environment.NewLine;
                 _log?.Invoke(
-                    "[EncodingService] GPU-resident NVENC pipeline could not negotiate " +
-                    "CUDA frames with the selected FFmpeg build; retrying once with " +
-                    "CUDA decode and explicit software-frame conversion. Failure: " +
+                    "[EncodingService] Exact CUDA scale filter-graph negotiation failure; retrying once with " +
+                    "software decode and host-frame conversion while retaining NVENC, CQ, and preset. Failure: " +
                     SummarizeFfmpegFailure(runResult.StandardError));
-                callback("[MediaFlux] GPU frame pipeline was incompatible; retrying with software-frame conversion.");
+                callback("[MediaFlux] CUDA filter negotiation failed; retrying once with software decode and NVENC.");
 
-                using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                if (TryDeleteFailedStagingOutput(output))
                 {
-                ffArgs = BuildFfmpegArgs(
-                    inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
-                    encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
-                    mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
-                    containerDecision, forceMp4CompatibleAudio, totalDuration,
-                    qualityValue, encoderSelection, sampleStart, sampleDuration,
-                    sourcePixelFormat, preferNvencGpuResidentFrames: false, restoration: restoration, splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource), restorationFilterOverride: aiPlan?.PostAiFilterChain,
-                    plannedVideoGeometry: plannedOutputGeometry);
-                scope.Complete();
+                    using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.FfmpegInitialization))
+                    {
+                        ffArgs = BuildFfmpegArgs(
+                            inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
+                            encoderPreset, tenBit, audioChannels, concurrentEncoderSessions,
+                            mapMode, allowSubtitleCopy, allowDataCopy, allowAttachmentCopy,
+                            containerDecision, forceMp4CompatibleAudio, totalDuration,
+                            qualityValue, encoderSelection, sampleStart, sampleDuration,
+                            sourcePixelFormat, preferNvencGpuResidentFrames: false,
+                            disableHardwareDecode: true, restoration: restoration,
+                            splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
+                            restorationFilterOverride: aiPlan?.PostAiFilterChain,
+                            plannedVideoGeometry: plannedOutputGeometry,
+                            automaticTargetPlan: automaticTargetPlan);
+                        scope.Complete();
+                    }
+                    pipelineDiagnostic = DescribeVideoPipeline(inputSource, videoCodec, useGpu, tenBit, ffArgs);
+                    _log?.Invoke(
+                        $"[EncodingService] Pipeline fallback: {failedPipeline} -> " +
+                        $"{pipelineDiagnostic}. NVENC, CQ/CRF, and preset are retained; ffmpeg arguments: {ffArgs}");
+                    using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                    {
+                        runResult = await RunFfmpegAsync(
+                            ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
+                        RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "CUDA filter-graph software-decode NVENC fallback", ffArgs, runResult);
+                        retryScope.Complete();
+                    }
+                    RecordRecovery(EncodingRecoveryKind.GpuFramePipeline, EncodingRecoveryFailureClass.GpuFramePipelineFailure,
+                        EncodingRecoveryMode.SoftwareFrames, 1,
+                        runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
+                        "Exact scale_cuda to auto_scale negotiation failure; software decode and host frames retained NVENC and quality settings.");
                 }
-                pipelineDiagnostic = DescribeVideoPipeline(
-                    inputSource, videoCodec, useGpu, tenBit, ffArgs);
-                _log?.Invoke(
-                    $"[EncodingService] Pipeline fallback: {failedPipeline} -> " +
-                    $"{pipelineDiagnostic}. ffmpeg arguments: {ffArgs}");
-                using (PerformanceTimingService.PerformanceScope retryScope = performance.Measure(PerformanceTimingStage.FinalEncode))
+                else
                 {
-                    runResult = await RunFfmpegAsync(
-                        ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
-                    RecordFfmpegAttempt(ffmpegAttempts, ffmpegAttempt, "GPU-frame pipeline software-frame fallback", ffArgs, runResult);
-                    retryScope.Complete();
+                    recoveryDiagnostics += "The CUDA filter-graph recovery was not started because the failed staged output could not be removed safely." + Environment.NewLine;
+                    RecordRecovery(EncodingRecoveryKind.GpuFramePipeline, EncodingRecoveryFailureClass.GpuFramePipelineFailure,
+                        EncodingRecoveryMode.SoftwareFrames, 1, EncodingRecoveryResult.NotStarted,
+                        "Failed staged output could not be removed safely.");
                 }
-                RecordRecovery(EncodingRecoveryKind.GpuFramePipeline, EncodingRecoveryFailureClass.GpuFramePipelineFailure,
-                    EncodingRecoveryMode.SoftwareFrames, 1,
-                    runResult.ExitCode == 0 ? EncodingRecoveryResult.Succeeded : EncodingRecoveryResult.Failed,
-                    "Existing GPU-resident frame negotiation fallback.");
             }
 
             bool audioRecoveryAttempted = false;
@@ -1801,6 +1861,7 @@ namespace MediaFlux.Services
                                     splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                                     restorationFilterOverride: aiPlan?.PostAiFilterChain,
                                     plannedVideoGeometry: plannedOutputGeometry,
+                                    automaticTargetPlan: automaticTargetPlan,
                                     sourceDecodeMode: FfmpegSourceDecodeMode.RecoverAudio);
                                 scope.Complete();
                             }
@@ -1859,6 +1920,7 @@ namespace MediaFlux.Services
                                 splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                                 restorationFilterOverride: aiPlan?.PostAiFilterChain,
                                 plannedVideoGeometry: plannedOutputGeometry,
+                                automaticTargetPlan: automaticTargetPlan,
                                 sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideo);
                             scope.Complete();
                         }
@@ -1894,6 +1956,9 @@ namespace MediaFlux.Services
                     FfmpegStorageFailureClassifier.Classify(runResult.StandardError, output);
                 FailureDiagnosticReportArtifact? diagnosticArtifacts = null;
                 string diagnosticArtifactNote = "";
+                FfmpegDiagnosticSummary failureDiagnostics = SelectMostInformativeFailureDiagnostics(
+                    sourceContainerRecoveryAttempted ? initialDiagnosticSummary : runResult.DiagnosticSummary,
+                    ffmpegAttempts);
                 try
                 {
                     terminalResult = sourceUnrecoverable
@@ -1913,23 +1978,26 @@ namespace MediaFlux.Services
                     FfmpegAttemptDiagnostic[] reportAttempts = ffmpegAttempts
                         .Select((attempt, index) => attempt with { IsTerminal = index == ffmpegAttempts.Count - 1 })
                         .ToArray();
-                    FfmpegDiagnosticSummary reportDiagnostics = sourceContainerRecoveryAttempted
-                        ? initialDiagnosticSummary
-                        : runResult.DiagnosticSummary;
                     string reportStandardError = BuildAttemptRawEvidence(reportAttempts);
                     EncodingExecutionOutcome failureOutcome = new(
                         shadowPlan.PlanId, preflightOutcomes.ToArray(), recoveryOutcomes.ToArray(),
                         validationOutcome, finalizationOutcome, terminalResult);
                     string report = new FailureDiagnosticReportBuilder().Build(new FailureDiagnosticReportContext(
                         "Encode", inputSource.SourcePath, output, runResult.ExitCode,
-                        audioTimestampFailure is null ? "FFmpeg process failure" : "Audio timestamp incompatibility",
-                        reportDiagnostics, reportStandardError, shadowPlan, failureOutcome,
+                        audioTimestampFailure is null
+                            ? failureDiagnostics.Classification.PrimaryCategory == FfmpegDiagnosticCategory.Unknown
+                                ? "FFmpeg process failure"
+                                : $"FFmpeg process failure — {failureDiagnostics.Classification.PrimaryCategory}"
+                            : "Audio timestamp incompatibility",
+                        failureDiagnostics, reportStandardError, shadowPlan, failureOutcome,
                         SourceContainer: sourceProbe.FormatName,
                         SourceSizeBytes: inputSource.Kind == EncodingInputKind.File && File.Exists(inputSource.SourcePath)
                             ? new FileInfo(inputSource.SourcePath).Length : null,
                         Attempts: reportAttempts,
                         SpecificDiagnosis: audioTimestampFailure is null
-                            ? null
+                            ? failureDiagnostics.Classification.PrimaryCategory == FfmpegDiagnosticCategory.Unknown
+                                ? null
+                                : failureDiagnostics.Classification.ProbableCause
                             : audioTimestampFailure.DescribeDiagnosis() + " No valid final output was promoted."));
                     diagnosticArtifacts = ErrorLogService.TryWriteFailureDiagnosticArtifacts(
                         _appPath, report, reportStandardError);
@@ -1976,9 +2044,13 @@ namespace MediaFlux.Services
                         "to prevent creation of an incomplete or corrupted output file. The original source was preserved. " +
                         $"See central log: {logPath}");
                 }
-                string recoverySuffix = !cudaRecoveryAttempted
+                string recoverySuffix = !cudaRecoveryAttempted && !gpuFramePipelineRecoveryAttempted
                     ? ""
-                    : cudaRecoveryStarted
+                    : gpuFramePipelineRecoveryAttempted
+                        ? gpuFramePipelineRecoveryStarted
+                            ? " The one-time CUDA filter-graph fallback also failed; both attempt diagnostics were recorded."
+                            : " The one-time CUDA filter-graph fallback was not started because the failed output could not be removed safely."
+                        : cudaRecoveryStarted
                         ? " The software-decode NVENC recovery attempt also failed; both attempt diagnostics were recorded."
                         : " The NVDEC/CUDA recovery retry was not started; diagnostics were recorded.";
                 if (storageFailure.IsReliable)
@@ -2011,7 +2083,10 @@ namespace MediaFlux.Services
                 string videoSuffix = videoRecoveryAttempted
                     ? " The one-time Intelligent video decode recovery attempt also failed; the original source was retained."
                     : "";
-                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{recoverySuffix}{audioSuffix}{videoSuffix} See central log: {logPath}");
+                string diagnosisSuffix = failureDiagnostics.Classification.PrimaryCategory == FfmpegDiagnosticCategory.Unknown
+                    ? ""
+                    : $" Diagnosis: {failureDiagnostics.Classification.ProbableCause}";
+                throw new InvalidOperationException($"ffmpeg exited with code {runResult.ExitCode}.{diagnosisSuffix}{recoverySuffix}{audioSuffix}{videoSuffix} See central log: {logPath}");
             }
             _log?.Invoke(
                 "[EncodingService] ffmpeg completed successfully; validating staged output.");
@@ -2417,6 +2492,7 @@ namespace MediaFlux.Services
                                         splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                                         restorationFilterOverride: aiPlan?.PostAiFilterChain,
                                         plannedVideoGeometry: plannedOutputGeometry,
+                                        automaticTargetPlan: automaticTargetPlan,
                                         sourceDecodeMode: preplannedTimelineReconstructionRate is null
                                             ? sourceDecodeMode
                                             : FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
@@ -2733,6 +2809,7 @@ namespace MediaFlux.Services
                                 splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                                 restorationFilterOverride: aiPlan?.PostAiFilterChain,
                                 plannedVideoGeometry: plannedOutputGeometry,
+                                automaticTargetPlan: automaticTargetPlan,
                                 sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideo);
                             scope.Complete();
                         }
@@ -2904,6 +2981,7 @@ namespace MediaFlux.Services
                                     splitSource: aiIntermediate is null ? null : new SplitSourceInput(aiIntermediate.Path, inputSource),
                                     restorationFilterOverride: aiPlan?.PostAiFilterChain,
                                     plannedVideoGeometry: plannedOutputGeometry,
+                                    automaticTargetPlan: automaticTargetPlan,
                                     sourceDecodeMode: FfmpegSourceDecodeMode.RecoverVideoWithTimestampReconstruction);
                                 scope.Complete();
                             }
@@ -3289,17 +3367,64 @@ namespace MediaFlux.Services
             return new FfmpegProcessResult(proc.ExitCode, stderrBuilder.ToString(), diagnostics.Complete());
         }
 
-        private static bool ShouldRetryWithSoftwareFrames(
-            string arguments,
-            string standardError)
+        internal static FfmpegDiagnosticSummary SelectMostInformativeFailureDiagnostics(
+            FfmpegDiagnosticSummary terminal,
+            IReadOnlyList<FfmpegAttemptDiagnostic> attempts)
         {
-            if (!arguments.Contains("-hwaccel_output_format cuda ", StringComparison.Ordinal))
-                return false;
+            static int Confidence(FfmpegDiagnosticSummary summary) => summary.Classification.Confidence switch
+            {
+                FfmpegDiagnosticConfidence.High => 3,
+                FfmpegDiagnosticConfidence.Moderate => 2,
+                FfmpegDiagnosticConfidence.Low => 1,
+                _ => 0
+            };
 
-            return standardError.Contains(
-                "Impossible to convert between the formats supported by the filter",
-                StringComparison.OrdinalIgnoreCase) ||
-                standardError.Contains("Error reinitializing filters!", StringComparison.OrdinalIgnoreCase);
+            return attempts
+                .Where(attempt => attempt.Diagnostics is not null)
+                .Select(attempt => (Summary: attempt.Diagnostics!, IsTerminal: attempt.IsTerminal))
+                .Append((Summary: terminal, IsTerminal: true))
+                .OrderByDescending(candidate => Confidence(candidate.Summary))
+                .ThenByDescending(candidate => candidate.IsTerminal)
+                .ThenByDescending(candidate => candidate.Summary.Families.Count)
+                .First().Summary;
+        }
+
+        internal static void ValidatePreparedAdaptivePlan(
+            EncodingPlan currentPlan,
+            AdaptiveQualitySelectionRequest currentRequest,
+            PreparedAdaptiveProductionPlan prepared)
+        {
+            ArgumentNullException.ThrowIfNull(currentPlan);
+            ArgumentNullException.ThrowIfNull(currentRequest);
+            ArgumentNullException.ThrowIfNull(prepared);
+            if (currentPlan.ProductionPlan is not { } currentIdentity)
+                throw new InvalidDataException("The current production plan has no stable identity.");
+
+            AdaptiveQualitySelectionEvidence selection = prepared.Selection;
+            if (!selection.EncoderId.Equals(currentRequest.Envelope.Encoder.EncoderId, StringComparison.OrdinalIgnoreCase) ||
+                !selection.Codec.Equals(currentRequest.Envelope.Encoder.FfmpegCodec, StringComparison.OrdinalIgnoreCase) ||
+                selection.Target != currentRequest.Envelope.Target || selection.Mechanism != currentRequest.Envelope.Mechanism ||
+                selection.PreferredQuality != currentRequest.Envelope.PreferredQuality)
+                throw new InvalidDataException("The prepared adaptive selection no longer matches the current encoder or quality intent.");
+
+            if (selection.Candidates.SelectMany(candidate => candidate.Samples)
+                .Any(sample => sample.Purpose != VideoSamplePurpose.ProductionAcceptance))
+                throw new InvalidDataException("Preview evidence cannot be reused for production adaptive selection.");
+
+            int selectedQuality = selection.SelectedQuality ?? selection.PreferredQuality;
+            ProductionPlanIdentity expected = ProductionPlanFingerprintService.AllowsQualityRebinding(currentIdentity)
+                ? ProductionPlanFingerprintService.WithQuality(currentIdentity, selectedQuality)
+                : currentIdentity;
+            if (!string.Equals(expected.PlanFingerprint, prepared.Identity.PlanFingerprint, StringComparison.Ordinal) ||
+                !string.Equals(expected.SourceIdentity, prepared.Identity.SourceIdentity, StringComparison.Ordinal) ||
+                !string.Equals(prepared.Identity.SourceIdentity,
+                    ProductionPlanFingerprintService.CaptureSourceIdentity([currentRequest.Input.SourcePath]), StringComparison.Ordinal))
+                throw new InvalidDataException("The prepared production fingerprint no longer matches current source or settings.");
+            if (prepared.BoundEstimate is { } estimate && !estimate.Matches(prepared.Identity))
+                throw new InvalidDataException("The prepared output estimate is bound to a different production plan.");
+            if (selection.Disposition == AdaptiveSelectionDisposition.Selected &&
+                !selection.Candidates.Any(candidate => candidate.Quality == selectedQuality && candidate.Samples.Count > 0))
+                throw new InvalidDataException("The selected production quality has no reusable production-purpose samples.");
         }
 
         private static string SummarizeFfmpegFailure(string standardError)
@@ -3579,6 +3704,11 @@ namespace MediaFlux.Services
                 (request, quality, sample, output) => BuildPreviewSampleArguments(context, plan, concurrentEncoderSessions,
                     request, quality, sample, output), purpose: VideoSamplePurpose.PreviewEstimation);
 
+        internal IAdaptiveVideoSampleRunner CreateProductionSelectionSampleRunner(EncodingDecisionContext context, EncodingPlan plan,
+            bool concurrentEncoderSessions) => new AdaptiveVideoSampleRunner(_ffmpegPath, _ffprobePath, _ffprobeService,
+                (request, quality, sample, output) => BuildPreviewSampleArguments(context, plan, concurrentEncoderSessions,
+                    request, quality, sample, output), purpose: VideoSamplePurpose.ProductionAcceptance);
+
         internal string BuildPreviewSampleArguments(EncodingDecisionContext context, EncodingPlan plan,
             bool concurrentEncoderSessions, AdaptiveQualitySelectionRequest request, int quality,
             RepresentativeSample sample, string output)
@@ -3643,7 +3773,8 @@ namespace MediaFlux.Services
             SplitSourceInput? splitSource = null,
             string? restorationFilterOverride = null,
             VideoOutputGeometryPlan? plannedVideoGeometry = null,
-            bool videoOnly = false)
+            bool videoOnly = false,
+            AutomaticTargetPlan? automaticTargetPlan = null)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -3698,6 +3829,7 @@ namespace MediaFlux.Services
                 Encoder = encoderSelection ?? resolved.Selection,
                 UseGpu = useGpu,
                 TargetMb = targetMb,
+                AutomaticTargetPlan = automaticTargetPlan,
                 ScaleMode = scaleMode,
                 Restoration = restoration?.Clone() ?? new VideoRestorationSettings(),
                 EncoderPreset = encoderPreset,

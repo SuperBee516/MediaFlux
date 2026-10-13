@@ -278,7 +278,7 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
     [InlineData(HeadlessSavedJobMode.Preflight, "accepted", 0, HeadlessSavedJobExitCode.Success)]
     [InlineData(HeadlessSavedJobMode.Run, "accepted", 1, HeadlessSavedJobExitCode.Success)]
     [InlineData(HeadlessSavedJobMode.Run, "rejected", 1, HeadlessSavedJobExitCode.StoragePolicyRejected)]
-    [InlineData(HeadlessSavedJobMode.Run, "projection-miss", 0, HeadlessSavedJobExitCode.AdaptiveStorageSavingsSkipped)]
+    [InlineData(HeadlessSavedJobMode.Run, "projection-miss", 1, HeadlessSavedJobExitCode.Success)]
     public async Task BothModesUseTheSameIsolatedSnapshotAndSharedGuardrails(
         HeadlessSavedJobMode mode, string outcome, int fullEncodeCount, HeadlessSavedJobExitCode expected)
     {
@@ -292,7 +292,7 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
             var report = await HeadlessSavedJobItemRunner.RunAsync(command, environment.Jobs, pipeline, _ => { }, CancellationToken.None);
             Assert.Equal(expected, report.ExitCode);
             var snapshot = pipeline.LastSnapshot!;
-            Assert.True(snapshot.AdaptiveStorageSavingsEnabled);
+            Assert.False(snapshot.AdaptiveStorageSavingsEnabled);
             Assert.True(snapshot.StorageSavingsContract.Applies);
             Assert.Equal(EncodingQualityIntent.Automatic(QualityTarget.Balanced), snapshot.QualityIntent);
             Assert.False(snapshot.DeleteSourceAfterCompression);
@@ -304,31 +304,19 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
             else
             {
                 var record = Assert.Single(stats);
-                Assert.NotNull(record.AdaptiveSelection);
-                Assert.Equal(outcome == "projection-miss" ? 0 : 1, record.ProductionEncodeCount);
+                Assert.Null(record.AdaptiveSelection);
+                Assert.Equal(1, record.ProductionEncodeCount);
                 Assert.Equal(outcome switch
                 {
                     "accepted" => EncodingStatisticsOutcome.Success,
                     "rejected" => EncodingStatisticsOutcome.StoragePolicyRejected,
-                    "projection-miss" => EncodingStatisticsOutcome.AdaptiveStorageSavingsSkipped,
+                    "projection-miss" => EncodingStatisticsOutcome.Success,
                     _ => EncodingStatisticsOutcome.Success
                 }, record.Outcome);
-                if (outcome == "projection-miss")
-                {
-                    Assert.Equal(AdaptiveSelectionDisposition.Skipped, record.AdaptiveSelection!.Disposition);
-                    Assert.Equal(36, record.AdaptiveSelection.SamplesExecuted);
-                    Assert.False(record.AdaptiveSelection.SevenFirstEarlyPositive);
-                    Assert.Equal(EncodingTerminalResult.AdaptiveStorageSavingsSkipped.ToString(), record.TerminalResult);
+                if (outcome == "rejected")
                     Assert.Null(record.OutputSizeBytes);
-                    Assert.Equal(0, record.ProcessingSeconds);
-                    Assert.False(File.Exists(Path.Combine(snapshot.OutputFolder!, "fixture-output.mp4")));
-                }
                 else
-                {
-                    Assert.Equal(7, record.AdaptiveSelection!.SamplesExecuted);
-                    Assert.True(record.AdaptiveSelection.SevenFirstEarlyPositive);
-                    Assert.NotNull(record.AdaptiveSelection.SelectedQuality);
-                }
+                    Assert.NotNull(record.OutputSizeBytes);
             }
             Assert.False(File.Exists(AppPaths.PredictionShadowObservationsFile));
             Assert.Equal(1_000_000, new FileInfo(snapshot.SourceFilePath).Length);
@@ -514,33 +502,32 @@ public sealed class HeadlessSavedJobEnvironmentTests : IDisposable
     {
         public int Calls { get; private set; }
         public int FullEncodeCount { get; private set; }
-        public async Task<EncodingService.EncodeResult> EncodeWithResultAsync(EncodingRequest request)
+        public Task<EncodingService.EncodeResult> EncodeWithResultAsync(EncodingRequest request)
         {
             Calls++;
-            Assert.True(request.AdaptiveStorageSavingsEnabled);
+            Assert.False(request.AdaptiveStorageSavingsEnabled);
             var context = AdaptiveStorageSavingsTests.Context() with { Input = request.Input };
             var plan = EncodingPlanService.Create(context);
-            Assert.True(AdaptiveStorageSavingsPolicy.TryCreateRequest(true, false, request.StorageSavingsContract, context, plan, out var sampling, out _));
-            var selection = await new StorageSavingsSampleSelector(new AdaptiveStorageSavingsTests.FakeSamples((_, _) => outcome == "projection-miss" ? 10_000 : 4_000))
-                .SelectAsync(sampling!, null, request.CancellationToken);
-            bool reliableStorageMiss = selection.Disposition == AdaptiveSelectionDisposition.Skipped &&
-                StorageSavingsSampleSelector.HasReliableAllCandidateStorageMiss(selection, sampling!);
-            if (selection.Disposition == AdaptiveSelectionDisposition.Skipped && !reliableStorageMiss)
-                selection = StorageSavingsSampleSelector.PreserveConfiguredQualityAfterSkip(selection);
-            plan = selection.Disposition == AdaptiveSelectionDisposition.NotSuitable
-                ? EncodingPlanService.PreserveConfiguredQualityAfterAdaptiveAbstention(plan, selection)
-                : EncodingPlanService.FreezeAdaptiveSelection(plan, selection);
-            request.EncodingPlanSnapshotCallback?.Invoke(new(plan.PlanId, plan));
-            request.AdaptiveSelectionCallback?.Invoke(selection);
-            if (selection.Disposition == AdaptiveSelectionDisposition.Skipped)
-                throw new AdaptiveStorageSavingsSkippedException(selection);
+            Assert.Null(plan.SourceAdaptiveShadow);
+            Assert.NotNull(plan.Quality);
+            Assert.Equal(request.QualityIntent, plan.Quality!.Intent);
             FullEncodeCount++;
-            long bytes = outcome == "rejected" ? request.StorageSavingsContract.MaximumAcceptedOutputBytes!.Value + 1 : 800_000;
+            long bytes = outcome == "rejected"
+                ? request.StorageSavingsContract.MaximumAcceptedOutputBytes!.Value + 1
+                : 800_000;
             var actual = StorageSavingsContractService.Evaluate(request.StorageSavingsContract, bytes);
             if (actual.Acceptance == StorageSavingsAcceptance.Rejected)
-                throw new EncodeFinalizationException(new() { FailureKind = EncodeFinalizationFailureKind.StoragePolicyRejected, StorageSavings = actual });
-            return new(true, Path.Combine(request.OutputFolder!, "fixture-output.mp4"), finalizationSucceeded: true,
-                finalOutputSizeBytes: bytes, storageSavingsContract: request.StorageSavingsContract, storageSavings: actual);
+                throw new EncodeFinalizationException(new()
+                {
+                    FailureKind = EncodeFinalizationFailureKind.StoragePolicyRejected,
+                    StorageSavings = actual,
+                    FinalOutputPath = Path.Combine(request.OutputFolder!, "fixture-output.mp4"),
+                    FinalOutputSizeBytes = bytes,
+                    ValidationSummary = "Fixture output passed media validation before storage policy rejection."
+                });
+            return Task.FromResult(new EncodingService.EncodeResult(true,
+                Path.Combine(request.OutputFolder!, "fixture-output.mp4"), finalizationSucceeded: true,
+                finalOutputSizeBytes: bytes, storageSavingsContract: request.StorageSavingsContract, storageSavings: actual));
         }
     }
 

@@ -4,7 +4,7 @@ namespace MediaFlux.Models;
 
 // These values are deliberately broad. The code is the stable diagnostic and
 // test contract; descriptions are presentation only.
-public enum EncodingDecisionReasonCode { UserRequestedVideoReencode, ContainerAutoResolved, ContainerCompatibility, CompatibleAudioPassthrough, AudioConversionRequired, SubtitleConversionRequired, GeometryNormalized, StrictPolicyRejected, IntelligentRecoveryAvailable, HardwareEncoderSelected, TargetSizeBudget }
+public enum EncodingDecisionReasonCode { UserRequestedVideoReencode, ContainerAutoResolved, ContainerCompatibility, CompatibleAudioPassthrough, AudioConversionRequired, SubtitleConversionRequired, GeometryNormalized, StrictPolicyRejected, IntelligentRecoveryAvailable, HardwareEncoderSelected, TargetSizeBudget, TargetBitrateBudget }
 public enum EncodingRiskSeverity { Information, Warning }
 public enum EncodingRiskCategory { SourceDecode, ContainerCompatibility, AudioCompatibility, SubtitleCompatibility, Geometry, Hardware, Sampling, OutputValidation, Storage }
 public enum EncodingPreflightCheckKind { SourceProbe, SourceTiming, SubtitleConversion, CopiedAudioDecode, SampleComparison }
@@ -39,7 +39,12 @@ public sealed record EncodingDecisionContext(
     EncodeOutputValidationProfile ValidationProfile = EncodeOutputValidationProfile.Production,
     EncodingQualityIntent? QualityIntent = null,
     EncodingSourceFailureClassification? SourceHealth = null,
-    EncodingSizePredictionCalibration? SizePredictionCalibration = null);
+    EncodingSizePredictionCalibration? SizePredictionCalibration = null)
+{
+    public bool ConcurrentEncoderSessions { get; init; }
+    public StorageSavingsContract StorageSavingsContract { get; init; } = StorageSavingsContract.Disabled;
+    public StorageSavingsOptions StorageSavingsPolicy { get; init; } = new();
+}
 
 public sealed record EncodingPlanSource(string Codec, int? Width, int? Height, double? FrameRate, double? DurationSeconds)
 {
@@ -104,7 +109,10 @@ public sealed record EncodingSizePredictionCalibration(
             baseMb, EncodingCalibrationDecision.NotEligible, PolicyId: policyId, DecisionUtc: decisionUtc,
             AppliedCorrectionPercent: 0);
 }
-public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio, EncodingHistoricalPrediction? HistoricalPrediction = null, double? ProductionPredictedOutputSizeMb = null);
+public sealed record EncodingPlanEstimates(double? TargetTotalBitrateKbps, double? EstimatedOutputSizeMb, double? EstimatedCompressionRatio, EncodingHistoricalPrediction? HistoricalPrediction = null, double? ProductionPredictedOutputSizeMb = null)
+{
+    public double? TargetVideoBitrateKbps { get; init; }
+}
 
 public sealed record EncodingPlanItem(string Label, string Value, string? Reason = null);
 public sealed record EncodingPlanSection(string Title, IReadOnlyList<EncodingPlanItem> Items);
@@ -129,9 +137,12 @@ public sealed class EncodingPlan
     public EncodingFinalizationIntent? FinalizationIntent { get; init; }
     public EncodingPlanValidation? Validation { get; init; }
     public EncodingQualityResolution? Quality { get; init; }
+    public AutomaticTargetPlan? AutomaticTarget { get; init; }
     public AdaptiveQualitySelectionEvidence? AdaptiveSelection { get; init; }
     public SourceAdaptiveShadowCalibration? SourceAdaptiveShadow { get; init; }
     public EncodingPlanEstimates Estimates { get; init; } = new(null, null, null);
+    public ProductionPlanIdentity? ProductionPlan { get; init; }
+    public string? ProductionPlanFingerprint => ProductionPlan?.PlanFingerprint;
     public EncodingSizePredictionCalibration? SizePredictionCalibration { get; init; }
     public EncodingRecommendation? Recommendation { get; internal set; }
     public IReadOnlyList<EncodingRisk> Risks { get; init; } = Array.Empty<EncodingRisk>();

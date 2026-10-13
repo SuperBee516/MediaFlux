@@ -105,7 +105,7 @@ public sealed class QueueAnalysisPresentation
             null,
             null,
             quality,
-            ["The final Source Adaptive quality decision has not been selected yet, so this advisory recommendation is pending."]);
+            ["The deterministic production plan has not been measured yet, so this advisory recommendation is pending."]);
     }
 
     public static QueueAnalysisPresentation Create(EncodingRecommendation? recommendation)

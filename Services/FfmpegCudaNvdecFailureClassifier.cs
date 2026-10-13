@@ -39,4 +39,27 @@ internal static class FfmpegCudaNvdecFailureClassifier
         FfmpegCudaNvdecFailure failure) =>
         nvencActive && hardwareDecodeWasUsed && !cancellationRequested &&
         !recoveryAlreadyAttempted && failure.IsCudaNvdecDeviceFailure;
+
+    public static bool ShouldRetryFilterGraphOnce(
+        bool nvencActive,
+        bool cudaFramesWereUsed,
+        bool cancellationRequested,
+        bool recoveryAlreadyAttempted,
+        string? arguments,
+        string? standardError)
+    {
+        if (!nvencActive || !cudaFramesWereUsed || cancellationRequested || recoveryAlreadyAttempted ||
+            string.IsNullOrWhiteSpace(arguments) || string.IsNullOrWhiteSpace(standardError))
+            return false;
+
+        // Restrict this recovery to the observed scale_cuda -> auto_scale
+        // negotiation failure. Generic filter errors and generic reinitializing
+        // messages do not justify another production attempt.
+        return arguments.Contains("-hwaccel_output_format cuda", StringComparison.OrdinalIgnoreCase) &&
+            arguments.Contains("scale_cuda", StringComparison.OrdinalIgnoreCase) &&
+            standardError.Contains("Impossible to convert between the formats supported by", StringComparison.OrdinalIgnoreCase) &&
+            standardError.Contains("scale_cuda", StringComparison.OrdinalIgnoreCase) &&
+            standardError.Contains("auto_scale", StringComparison.OrdinalIgnoreCase) &&
+            standardError.Contains("Error reinitializing filters!", StringComparison.OrdinalIgnoreCase);
+    }
 }

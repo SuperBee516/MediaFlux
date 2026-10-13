@@ -322,11 +322,11 @@ public sealed class QueueWorkspaceUiTests
 
         MainForm.QueueEstimateCellPresentation hundredsMb = MainForm.FormatQueueEstimateCellPresentation(
             1024, 607.25, "607.3 MB", "estimate details");
-        Assert.Equal("607.3 MB • 41% saved", hundredsMb.FullText);
-        Assert.Equal("607.3 MB • 41%", hundredsMb.MediumText);
-        Assert.Equal("41%", hundredsMb.NarrowText);
+        Assert.Equal("607.3 MB • 40.6% saved", hundredsMb.FullText);
+        Assert.Equal("607.3 MB • 40.6%", hundredsMb.MediumText);
+        Assert.Equal("607.3MB 40.6%", hundredsMb.NarrowText);
         Assert.InRange(hundredsMb.SavingsFraction, 0.4069, 0.4071);
-        Assert.Contains("Source: 1 GB. Output: 607.3 MB. 41% saved.", hundredsMb.ToolTipText);
+        Assert.Contains("Source: 1 GB. Output: 607.3 MB. 40.6% saved.", hundredsMb.ToolTipText);
 
         MainForm.QueueEstimateCellPresentation oneGb = MainForm.FormatQueueEstimateCellPresentation(
             2 * 1024, 1.02 * 1024, "1.02 GB", "estimate details");
@@ -350,15 +350,16 @@ public sealed class QueueWorkspaceUiTests
 
         MainForm.QueueEstimateCellPresentation noSavings = MainForm.FormatQueueEstimateCellPresentation(
             842, 842, "842 MB", "");
-        Assert.Equal("842 MB • No savings", noSavings.FullText);
+        Assert.Equal("842 MB • 0% savings", noSavings.FullText);
         Assert.Equal(0, noSavings.SavingsFraction);
 
         MainForm.QueueEstimateCellPresentation largerOutput = MainForm.FormatQueueEstimateCellPresentation(
             1000, 1080, "1.05 GB", "");
-        Assert.Equal("1.05 GB • 8% larger", largerOutput.FullText);
-        Assert.Equal("1.05 GB • +8%", largerOutput.MediumText);
-        Assert.Equal("+8%", largerOutput.NarrowText);
+        Assert.Equal("1.05 GB • -8% projected file growth", largerOutput.FullText);
+        Assert.Equal("1.05 GB • -8%", largerOutput.MediumText);
+        Assert.Equal("1.05GB -8%", largerOutput.NarrowText);
         Assert.Equal(0, largerOutput.SavingsFraction);
+        Assert.Equal(MainForm.QueueSavingsColorCategory.ProjectedGrowth, largerOutput.SavingsColorCategory);
 
         MainForm.QueueEstimateCellPresentation pending = MainForm.FormatQueueEstimateCellPresentation(
             0, 0, "Estimating…", "");
@@ -374,6 +375,333 @@ public sealed class QueueWorkspaceUiTests
             0, 6, "6 MB", "");
         Assert.Equal("6 MB", noSource.FullText);
         Assert.Contains("Source size is unavailable", noSource.ToolTipText);
+        Assert.False(noSource.HasSavingsPercentage);
+    }
+
+    [Theory]
+    [InlineData(-0.01, "ProjectedGrowth")]
+    [InlineData(0, "MinimalSavings")]
+    [InlineData(9.999, "MinimalSavings")]
+    [InlineData(10, "ModestSavings")]
+    [InlineData(24.999, "ModestSavings")]
+    [InlineData(25, "GoodSavings")]
+    [InlineData(49.999, "GoodSavings")]
+    [InlineData(50, "ExcellentSavings")]
+    [InlineData(50.01, "ExcellentSavings")]
+    [InlineData(100, "ExcellentSavings")]
+    [InlineData(125, "ExcellentSavings")]
+    [InlineData(-125, "ProjectedGrowth")]
+    public void SavingsColorUsesUnroundedPercentageBoundaries(
+        double percentage,
+        string expected)
+    {
+        Assert.Equal(expected, MainForm.GetQueueSavingsColorCategory(percentage).ToString());
+    }
+
+    [Fact]
+    public void SavingsColorPaletteUsesDistinctReadableThemeColors()
+    {
+        Assert.Equal(Color.FromArgb(180, 35, 24), MainForm.GetQueueSavingsColor(-1));
+        Assert.Equal(Color.FromArgb(181, 71, 8), MainForm.GetQueueSavingsColor(0));
+        Assert.Equal(Color.FromArgb(148, 98, 0), MainForm.GetQueueSavingsColor(10));
+        Assert.Equal(Color.FromArgb(31, 106, 50), MainForm.GetQueueSavingsColor(25));
+        Assert.Equal(Color.FromArgb(20, 83, 45), MainForm.GetQueueSavingsColor(50));
+        Assert.Equal(SystemColors.ControlText, MainForm.GetQueueSavingsColor(double.NaN));
+    }
+
+    [Theory]
+    [InlineData(QueueEstimateState.Pending, "Pending…")]
+    [InlineData(QueueEstimateState.Inspecting, "Inspecting…")]
+    [InlineData(QueueEstimateState.Measuring, "Measuring…")]
+    [InlineData(QueueEstimateState.Unavailable, "Unavailable")]
+    [InlineData(QueueEstimateState.Failed, "Error")]
+    public void IncompleteQueueStatesNeverPaintNumericSavings(
+        QueueEstimateState state,
+        string expectedStatus)
+    {
+        MainForm.QueueEstimateCellPresentation presentation = MainForm.FormatQueueEstimateCellPresentation(
+            100, 50, "50 MB", "probe status", state);
+
+        Assert.Equal(expectedStatus, presentation.FullText);
+        Assert.False(presentation.HasNumericOutput);
+        Assert.False(presentation.HasSavingsPercentage);
+    }
+
+    [Theory]
+    [InlineData(QueueEstimateState.Ready)]
+    [InlineData(QueueEstimateState.Preliminary)]
+    [InlineData(QueueEstimateState.Review)]
+    [InlineData(QueueEstimateState.Skip)]
+    [InlineData(QueueEstimateState.Measured)]
+    public void ValidProjectionRemainsVisibleForAvailableAndAdvisoryStates(QueueEstimateState state)
+    {
+        MainForm.QueueEstimateCellPresentation presentation = MainForm.FormatQueueEstimateCellPresentation(
+            100, 60, "~60 MB", "Target plan details", state);
+
+        Assert.True(presentation.HasNumericOutput);
+        Assert.True(presentation.HasSavingsPercentage);
+        Assert.Contains("60MB", presentation.NarrowText);
+        Assert.Contains("40%", presentation.NarrowText);
+        Assert.DoesNotContain("~", presentation.FullText);
+        if (state is QueueEstimateState.Review or QueueEstimateState.Skip)
+        {
+            Assert.Contains(state.ToString(), presentation.FullText);
+            Assert.Contains($"Estimate status: {state}", presentation.ToolTipText);
+        }
+    }
+
+    [Theory]
+    [InlineData(QueueEstimateState.Review, "Review")]
+    [InlineData(QueueEstimateState.Skip, "Skip")]
+    public void AdvisoryStateWithoutProjectionRemainsDistinctFromUnavailable(QueueEstimateState state, string status)
+    {
+        MainForm.QueueEstimateCellPresentation presentation = MainForm.FormatQueueEstimateCellPresentation(
+            100, 0, status, "advisory explanation", state);
+
+        Assert.Equal(status, presentation.FullText);
+        Assert.False(presentation.HasNumericOutput);
+        Assert.False(presentation.HasSavingsPercentage);
+        Assert.Contains($"Estimate status: {state}", presentation.ToolTipText);
+        Assert.Contains("no projected output is available", presentation.ToolTipText);
+    }
+
+    [Fact]
+    public void NarrowColumnTextRetainsBothOutputSizeAndSavingsPercentage()
+    {
+        MainForm.QueueEstimateCellPresentation presentation = MainForm.FormatQueueEstimateCellPresentation(
+            1_024, 607.25, "~607.3 MB", "target projection");
+        using var bitmap = new Bitmap(120, 32);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        using var font = new Font("Segoe UI", 9f);
+        MethodInfo selector = typeof(MainForm).GetMethod(
+            "SelectQueueEstimateCellText", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(typeof(MainForm).FullName, "SelectQueueEstimateCellText");
+
+        string text = (string)selector.Invoke(null, [presentation, graphics, font, 84])!;
+
+        Assert.Contains("MB", text);
+        Assert.Contains("40.6%", text);
+        Assert.True(TextRenderer.MeasureText(
+            graphics, text, font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width <= 84);
+
+        int percentageWidth = TextRenderer.MeasureText(
+            graphics, "40.6%", font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width;
+        string percentageOnly = (string)selector.Invoke(null, [presentation, graphics, font, percentageWidth])!;
+        Assert.Equal("40.6%", percentageOnly);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    [InlineData(18)]
+    [InlineData(25)]
+    [InlineData(38)]
+    [InlineData(49)]
+    [InlineData(50)]
+    [InlineData(75)]
+    [InlineData(100)]
+    public void DualPassSavingsTextRemainsReadableAcrossFillBoundary(int savingsPercent)
+    {
+        const int barLeft = 4;
+        const int barWidth = 600;
+        Color trackColor = Color.FromArgb(224, 224, 224);
+        using var bitmap = new Bitmap(640, 44);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        using var font = new Font("Segoe UI", 12f);
+        graphics.Clear(trackColor);
+
+        int fillWidth = (int)Math.Round(barWidth * savingsPercent / 100d);
+        int fillRight = barLeft + fillWidth;
+        if (fillWidth > 0)
+        {
+            using var fillBrush = new SolidBrush(MainForm.GetQueueSavingsColor(savingsPercent));
+            graphics.FillRectangle(fillBrush, barLeft, 4, fillWidth, 36);
+        }
+
+        Rectangle textBounds = new(8, 4, 592, 36);
+        MainForm.DrawQueueEstimateCellText(
+            graphics,
+            new string('M', 100),
+            font,
+            textBounds,
+            new Rectangle(0, 0, bitmap.Width, bitmap.Height),
+            new Rectangle(0, 0, bitmap.Width, bitmap.Height),
+            fillWidth > 0,
+            barLeft,
+            fillRight,
+            Color.White,
+            MainForm.GetQueueEstimateUnfilledTextColor(trackColor, Color.White));
+
+        int filledTextPixels = 0;
+        int unfilledTextPixels = 0;
+        for (int y = textBounds.Top; y < textBounds.Bottom; y++)
+        {
+            for (int x = textBounds.Left; x < textBounds.Right; x++)
+            {
+                Color pixel = bitmap.GetPixel(x, y);
+                if (savingsPercent > 0 && x < fillRight && pixel.R > 245 && pixel.G > 245 && pixel.B > 245)
+                    filledTextPixels++;
+                if (savingsPercent < 100 && x >= fillRight && pixel.R < 90 && pixel.G < 90 && pixel.B < 90)
+                    unfilledTextPixels++;
+            }
+        }
+
+        if (savingsPercent > 0)
+            Assert.True(filledTextPixels > 0, $"No light label pixels were rendered in the {savingsPercent}% fill.");
+        if (savingsPercent < 100)
+            Assert.True(unfilledTextPixels > 0, $"No dark label pixels were rendered after the {savingsPercent}% fill.");
+    }
+
+    [Theory]
+    [InlineData(240, 240, 240, 255, 255, 255, 0, 0, 0)]
+    [InlineData(30, 35, 45, 0, 0, 0, 255, 255, 255)]
+    public void UnfilledTextColorMaintainsContrastForLightAndDarkThemes(
+        int backgroundRed,
+        int backgroundGreen,
+        int backgroundBlue,
+        int preferredRed,
+        int preferredGreen,
+        int preferredBlue,
+        int expectedRed,
+        int expectedGreen,
+        int expectedBlue)
+    {
+        Color actual = MainForm.GetQueueEstimateUnfilledTextColor(
+            Color.FromArgb(backgroundRed, backgroundGreen, backgroundBlue),
+            Color.FromArgb(preferredRed, preferredGreen, preferredBlue));
+
+        Assert.Equal(Color.FromArgb(expectedRed, expectedGreen, expectedBlue).ToArgb(), actual.ToArgb());
+    }
+
+    [Fact]
+    public void DualPassTextIntersectsAndRestoresTheExistingGraphicsClip()
+    {
+        Color trackColor = Color.FromArgb(224, 224, 224);
+        using var bitmap = new Bitmap(320, 40);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        using var font = new Font("Segoe UI", 10f);
+        graphics.Clear(trackColor);
+        graphics.SetClip(new Rectangle(0, 0, 150, 40));
+        Rectangle previousClip = Rectangle.Round(graphics.ClipBounds);
+
+        MainForm.DrawQueueEstimateCellText(
+            graphics,
+            new string('M', 80),
+            font,
+            new Rectangle(4, 2, 312, 36),
+            new Rectangle(0, 0, 320, 40),
+            new Rectangle(0, 0, 320, 40),
+            true,
+            2,
+            92,
+            Color.White,
+            Color.Black);
+
+        Assert.Equal(previousClip, Rectangle.Round(graphics.ClipBounds));
+        Assert.Equal(trackColor.ToArgb(), bitmap.GetPixel(250, 20).ToArgb());
+        Assert.NotEqual(trackColor.ToArgb(), bitmap.GetPixel(50, 20).ToArgb());
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void DualPassTextClippingRemainsAlignedWithScaledCellGeometry(int scale)
+    {
+        int width = 320 * scale;
+        int height = 40 * scale;
+        using var bitmap = new Bitmap(width, height);
+        bitmap.SetResolution(96f * scale, 96f * scale);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        using var font = new Font("Segoe UI", 9f);
+        Color trackColor = Color.FromArgb(224, 224, 224);
+        graphics.Clear(trackColor);
+
+        int barLeft = 2 * scale;
+        int barWidth = 300 * scale;
+        int fillWidth = (int)Math.Round(barWidth * 0.38d);
+        int fillRight = barLeft + fillWidth;
+        using (var fillBrush = new SolidBrush(MainForm.GetQueueSavingsColor(38)))
+            graphics.FillRectangle(fillBrush, barLeft, 2 * scale, fillWidth, 36 * scale);
+
+        Rectangle textBounds = new(4 * scale, 2 * scale, 312 * scale, 36 * scale);
+        MainForm.DrawQueueEstimateCellText(
+            graphics,
+            new string('M', 80),
+            font,
+            textBounds,
+            new Rectangle(0, 0, width, height),
+            new Rectangle(0, 0, width, height),
+            true,
+            barLeft,
+            fillRight,
+            Color.White,
+            MainForm.GetQueueEstimateUnfilledTextColor(trackColor, Color.White));
+
+        Assert.True(CountBrightPixels(bitmap, textBounds, fillRight) > 0);
+        Assert.True(CountDarkPixels(bitmap, textBounds, fillRight) > 0);
+    }
+
+    private static int CountBrightPixels(Bitmap bitmap, Rectangle bounds, int rightExclusive)
+    {
+        int count = 0;
+        int right = Math.Min(bounds.Right, rightExclusive);
+        for (int y = bounds.Top; y < bounds.Bottom; y++)
+        {
+            for (int x = bounds.Left; x < right; x++)
+            {
+                Color pixel = bitmap.GetPixel(x, y);
+                if (pixel.R > 245 && pixel.G > 245 && pixel.B > 245)
+                    count++;
+            }
+        }
+        return count;
+    }
+
+    private static int CountDarkPixels(Bitmap bitmap, Rectangle bounds, int leftInclusive)
+    {
+        int count = 0;
+        int left = Math.Max(bounds.Left, leftInclusive);
+        for (int y = bounds.Top; y < bounds.Bottom; y++)
+        {
+            for (int x = left; x < bounds.Right; x++)
+            {
+                Color pixel = bitmap.GetPixel(x, y);
+                if (pixel.R < 90 && pixel.G < 90 && pixel.B < 90)
+                    count++;
+            }
+        }
+        return count;
+    }
+
+    [Fact]
+    public void SavingsBarUsesCategoryColorAndLeavesNegativeGrowthUnfilled()
+    {
+        MainForm.QueueEstimateCellPresentation positive = MainForm.FormatQueueEstimateCellPresentation(
+            100, 40, "40 MB", "");
+        MainForm.QueueEstimateCellPresentation growth = MainForm.FormatQueueEstimateCellPresentation(
+            100, 120, "120 MB", "");
+        using var bitmap = new Bitmap(120, 16);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        graphics.Clear(Color.White);
+
+        MainForm.PaintQueueEstimateSavingsBar(graphics, new Rectangle(2, 2, 100, 8), positive);
+        Assert.Equal(MainForm.GetQueueSavingsColor(60), bitmap.GetPixel(10, 5));
+
+        graphics.Clear(Color.White);
+        MainForm.PaintQueueEstimateSavingsBar(graphics, new Rectangle(2, 2, 100, 8), growth);
+        Assert.Equal(Color.FromArgb(SystemColors.ControlLight.ToArgb()), bitmap.GetPixel(10, 5));
+        Assert.Equal(MainForm.GetQueueSavingsColor(-20), bitmap.GetPixel(2, 2));
+    }
+
+    [Fact]
+    public void PainterPrefersBoundProjectionWhenVisibleValueHasApproximationPrefix()
+    {
+        (double sourceMb, double estimateMb) = MainForm.ResolveQueueEstimateCellValues(
+            new Tuple<double, double>(100, 60), "100 MB", "~60 MB");
+
+        Assert.Equal(100, sourceMb);
+        Assert.Equal(60, estimateMb);
+        Assert.Equal((100d, 0d), MainForm.ResolveQueueEstimateCellValues(null, "100 MB", "~60 MB"));
     }
 
     [Fact]
@@ -384,12 +712,12 @@ public sealed class QueueWorkspaceUiTests
 
         (long SourceBytes, long EstimateBytes, string ExpectedRelation)[] cases =
         [
-            (541_100_000, 464_100_000, "14% saved"),
-            (586_800_000, 224_000_000, "62% saved"),
-            (200_000_000, 15_000_000, "93% saved"),
+            (541_100_000, 464_100_000, "14.2% saved"),
+            (586_800_000, 224_000_000, "61.8% saved"),
+            (200_000_000, 15_000_000, "92.5% saved"),
             (1_000_000_000, 500_000_000, "50% saved"),
-            (100_000_000, 100_000_000, "No savings"),
-            (100_000_000, 120_000_000, "20% larger")
+            (100_000_000, 100_000_000, "0% savings"),
+            (100_000_000, 120_000_000, "-20% projected file growth")
         ];
         MethodInfo formatSize = typeof(MainForm).GetMethod(
             "FormatSize", BindingFlags.Static | BindingFlags.NonPublic, null, [typeof(double)], null)
@@ -446,7 +774,7 @@ public sealed class QueueWorkspaceUiTests
         Assert.InRange(precisePercent, 50.49d, 50.5d);
         Assert.Equal(50, Math.Round(precisePercent, MidpointRounding.AwayFromZero));
         Assert.Equal(51, Math.Round(displayTextPercent, MidpointRounding.AwayFromZero));
-        Assert.Contains("50% saved", precisePresentation.FullText, StringComparison.Ordinal);
+        Assert.Contains("50.4% saved", precisePresentation.FullText, StringComparison.Ordinal);
     }
 
     private static void SetRow(DataGridViewRow row, string path, string status)

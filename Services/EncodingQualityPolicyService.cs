@@ -4,9 +4,10 @@ using MediaFlux.Services.Encoders;
 namespace MediaFlux.Services;
 
 /// <summary>
-/// The sole source-adaptive constant-quality policy. It resolves user intent
-/// from immutable probe and planned-geometry facts; FFmpeg providers remain the
-/// final authority for legal backend-specific normalization and syntax.
+/// Resolves Automatic quality targets to one deterministic provider-normalized
+/// constant-quality value. Source measurements and output geometry do not alter
+/// the selected target; FFmpeg providers remain the authority for legal ranges
+/// and command syntax.
 /// </summary>
 public sealed class EncodingQualityPolicyService
 {
@@ -44,58 +45,38 @@ public sealed class EncodingQualityPolicyService
                 EncodingQualityAssessment.Unknown, false, reasons);
         }
 
+        if (request.Intent.Kind == EncodingQualityIntentKind.AutomaticTargetBitrate)
+        {
+            if (request.Intent.Target is not { } bitrateTarget)
+                throw new InvalidOperationException("Automatic target-bitrate intent requires a selected quality target.");
+            reasons.Add(new(EncodingQualityReasonCode.AutomaticTargetBitrate,
+                $"The {bitrateTarget} segment controls a metadata-derived VBR target; constant-quality parameters are not used."));
+            return new(request.Intent, null, EncoderQualityMechanism.Unknown,
+                EncodingQualityAssessment.Unknown, true, reasons);
+        }
+
         if (request.Intent.Target is not { } target)
             throw new InvalidOperationException("Quality-target intent requires a selected target.");
 
-        int baseline = provider.NormalizeQuality(request.Encoder.CodecFamily, null);
-        int requested = baseline + TargetOffset(target);
-        bool balancedNvencHevc = target == QualityTarget.Balanced &&
-            request.Encoder.EncoderId.Equals(VideoEncoderIds.Nvenc, StringComparison.OrdinalIgnoreCase) &&
-            request.Encoder.CodecFamily == VideoCodecFamily.Hevc;
+        int requested = ResolveAutomaticQuality(request.Encoder, target);
         reasons.Add(new(EncodingQualityReasonCode.QualityTargetSelected,
             $"Quality target {target} was selected."));
         reasons.Add(new(EncodingQualityReasonCode.ProviderDefaultBaseline,
-            "The selected encoder's existing default quality is the adaptive policy baseline."));
-
-        MediaProbeStreamInfo? sourceVideo = request.Source.Streams.FirstOrDefault(stream =>
-            stream.CodecType.Equals("video", StringComparison.OrdinalIgnoreCase));
-        EncodingQualityAssessment assessment = Assess(sourceVideo);
-        switch (assessment)
-        {
-            case EncodingQualityAssessment.CompressedSource:
-                requested += 1;
-                reasons.Add(new(EncodingQualityReasonCode.CompressedSource,
-                    "Low measured bits-per-pixel indicates an already compressed source."));
-                break;
-            case EncodingQualityAssessment.HighQualitySource:
-                requested += balancedNvencHevc ? 1 : -2;
-                reasons.Add(new(EncodingQualityReasonCode.HighQualitySource,
-                    balancedNvencHevc
-                        ? "High measured bits-per-pixel identifies a high-quality source; Balanced NVENC HEVC uses CQ25."
-                        : "High measured bits-per-pixel indicates a source worth preserving more closely."));
-                break;
-        }
-
-        if (sourceVideo?.Height is >= 2160)
-        {
-            requested--;
-            reasons.Add(new(EncodingQualityReasonCode.HighResolutionSource,
-                "4K-or-higher source resolution receives a conservative preservation adjustment."));
-        }
-
-        if (sourceVideo?.Height is > 0 && request.OutputGeometry?.Height is > 0 &&
-            request.OutputGeometry.Height < sourceVideo.Height)
-        {
-            requested += 2;
-            reasons.Add(new(EncodingQualityReasonCode.Downscale,
-                "Downscaling reduces the required constant-quality preservation setting."));
-        }
+            "The selected encoder's existing default quality is the target-mapping baseline."));
 
         int effective = provider.NormalizeQuality(request.Encoder.CodecFamily, requested);
         if (effective != requested)
             reasons.Add(new(EncodingQualityReasonCode.ProviderNormalized,
-                "The encoder provider normalized the adaptive result to its supported range."));
-        return new(request.Intent, effective, mechanism, assessment, false, reasons);
+                "The encoder provider normalized the selected target to its supported range."));
+        return new(request.Intent, effective, mechanism, EncodingQualityAssessment.Unknown, false, reasons);
+    }
+
+    public static int ResolveAutomaticQuality(VideoEncoderSelection encoder, QualityTarget target)
+    {
+        ArgumentNullException.ThrowIfNull(encoder);
+        ResolvedVideoEncoder resolved = EncoderRegistry.Default.Resolve(encoder.EncoderId, encoder.CodecFamily);
+        int baseline = resolved.Provider.NormalizeQuality(encoder.CodecFamily, null);
+        return resolved.Provider.NormalizeQuality(encoder.CodecFamily, baseline + TargetOffset(target));
     }
 
     private static int TargetOffset(QualityTarget target) => target switch
@@ -107,24 +88,6 @@ public sealed class EncodingQualityPolicyService
         QualityTarget.MaximumQuality => -5,
         _ => throw new ArgumentOutOfRangeException(nameof(target))
     };
-
-    private static EncodingQualityAssessment Assess(MediaProbeStreamInfo? source)
-    {
-        if (source?.Width is not > 0 || source.Height is not > 0 ||
-            source.FrameRate is not > 0 || source.BitRate is not > 0)
-        {
-            return EncodingQualityAssessment.Unknown;
-        }
-
-        double bitsPerPixel = source.BitRate.Value /
-            ((double)source.Width.Value * source.Height.Value * source.FrameRate.Value);
-        return bitsPerPixel switch
-        {
-            < 0.035 => EncodingQualityAssessment.CompressedSource,
-            >= 0.12 => EncodingQualityAssessment.HighQualitySource,
-            _ => EncodingQualityAssessment.TypicalSource
-        };
-    }
 
     private static EncoderQualityMechanism GetMechanism(EncoderCapabilities capabilities)
     {

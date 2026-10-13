@@ -41,39 +41,156 @@ namespace MediaFlux
             int Running,
             int Attention);
 
+        internal enum QueueSavingsColorCategory
+        {
+            Unavailable,
+            ProjectedGrowth,
+            MinimalSavings,
+            ModestSavings,
+            GoodSavings,
+            ExcellentSavings
+        }
+
         internal readonly record struct QueueEstimateCellPresentation(
             string FullText,
             string MediumText,
             string NarrowText,
+            string MinimumText,
             string ToolTipText,
             double SavingsFraction,
-            bool HasNumericOutput);
+            double SavingsPercentage,
+            Color SavingsColor,
+            QueueSavingsColorCategory SavingsColorCategory,
+            bool HasNumericOutput,
+            bool HasSavingsPercentage);
+
+        private static readonly SolidBrush QueueSavingsGrowthBrush = new(Color.FromArgb(180, 35, 24));
+        private static readonly SolidBrush QueueSavingsMinimalBrush = new(Color.FromArgb(181, 71, 8));
+        private static readonly SolidBrush QueueSavingsModestBrush = new(Color.FromArgb(148, 98, 0));
+        private static readonly SolidBrush QueueSavingsGoodBrush = new(Color.FromArgb(31, 106, 50));
+        private static readonly SolidBrush QueueSavingsExcellentBrush = new(Color.FromArgb(20, 83, 45));
+        private static readonly Pen QueueSavingsGrowthPen = new(Color.FromArgb(180, 35, 24));
+        private static readonly Pen QueueSavingsMinimalPen = new(Color.FromArgb(181, 71, 8));
+        private static readonly Pen QueueSavingsModestPen = new(Color.FromArgb(148, 98, 0));
+        private static readonly Pen QueueSavingsGoodPen = new(Color.FromArgb(31, 106, 50));
+        private static readonly Pen QueueSavingsExcellentPen = new(Color.FromArgb(20, 83, 45));
+
+        internal static QueueSavingsColorCategory GetQueueSavingsColorCategory(double savingsPercentage)
+        {
+            if (double.IsNaN(savingsPercentage))
+                return QueueSavingsColorCategory.Unavailable;
+            if (savingsPercentage < 0)
+                return QueueSavingsColorCategory.ProjectedGrowth;
+            if (savingsPercentage < 10)
+                return QueueSavingsColorCategory.MinimalSavings;
+            if (savingsPercentage < 25)
+                return QueueSavingsColorCategory.ModestSavings;
+            if (savingsPercentage < 50)
+                return QueueSavingsColorCategory.GoodSavings;
+            return QueueSavingsColorCategory.ExcellentSavings;
+        }
+
+        internal static Color GetQueueSavingsColor(double savingsPercentage) =>
+            GetQueueSavingsColorCategory(savingsPercentage) switch
+            {
+                QueueSavingsColorCategory.ProjectedGrowth => Color.FromArgb(180, 35, 24),
+                QueueSavingsColorCategory.MinimalSavings => Color.FromArgb(181, 71, 8),
+                QueueSavingsColorCategory.ModestSavings => Color.FromArgb(148, 98, 0),
+                QueueSavingsColorCategory.GoodSavings => Color.FromArgb(31, 106, 50),
+                QueueSavingsColorCategory.ExcellentSavings => Color.FromArgb(20, 83, 45),
+                _ => SystemColors.ControlText
+            };
+
+        private static Brush GetQueueSavingsBrush(QueueSavingsColorCategory category) => category switch
+        {
+            QueueSavingsColorCategory.ProjectedGrowth => QueueSavingsGrowthBrush,
+            QueueSavingsColorCategory.MinimalSavings => QueueSavingsMinimalBrush,
+            QueueSavingsColorCategory.ModestSavings => QueueSavingsModestBrush,
+            QueueSavingsColorCategory.GoodSavings => QueueSavingsGoodBrush,
+            QueueSavingsColorCategory.ExcellentSavings => QueueSavingsExcellentBrush,
+            _ => SystemBrushes.ControlText
+        };
+
+        private static Pen GetQueueSavingsPen(QueueSavingsColorCategory category) => category switch
+        {
+            QueueSavingsColorCategory.ProjectedGrowth => QueueSavingsGrowthPen,
+            QueueSavingsColorCategory.MinimalSavings => QueueSavingsMinimalPen,
+            QueueSavingsColorCategory.ModestSavings => QueueSavingsModestPen,
+            QueueSavingsColorCategory.GoodSavings => QueueSavingsGoodPen,
+            QueueSavingsColorCategory.ExcellentSavings => QueueSavingsExcellentPen,
+            _ => SystemPens.ControlDark
+        };
+
+        internal static void PaintQueueEstimateSavingsBar(
+            Graphics graphics,
+            Rectangle bounds,
+            QueueEstimateCellPresentation presentation,
+            Color? trackColor = null)
+        {
+            if (!presentation.HasSavingsPercentage || bounds.Width <= 0 || bounds.Height <= 0)
+                return;
+
+            if (trackColor is { } color)
+            {
+                using var trackBrush = new SolidBrush(color);
+                graphics.FillRectangle(trackBrush, bounds);
+            }
+            else
+            {
+                graphics.FillRectangle(SystemBrushes.ControlLight, bounds);
+            }
+            double fillFraction = Math.Clamp(presentation.SavingsFraction, 0d, 1d);
+            int fillWidth = Math.Clamp((int)Math.Round(bounds.Width * fillFraction), 0, bounds.Width);
+            if (fillWidth > 0)
+            {
+                graphics.FillRectangle(
+                    GetQueueSavingsBrush(presentation.SavingsColorCategory),
+                    new Rectangle(bounds.Left, bounds.Top, fillWidth, bounds.Height));
+            }
+
+            if (fillWidth == 0 && presentation.SavingsColorCategory != QueueSavingsColorCategory.Unavailable)
+            {
+                graphics.DrawRectangle(
+                    GetQueueSavingsPen(presentation.SavingsColorCategory),
+                    bounds.Left, bounds.Top, bounds.Width - 1, bounds.Height - 1);
+            }
+            else
+            {
+                graphics.DrawRectangle(SystemPens.ControlDark, bounds.Left, bounds.Top, bounds.Width - 1, bounds.Height - 1);
+            }
+        }
 
         internal static QueueEstimateCellPresentation FormatQueueEstimateCellPresentation(
             double sourceMb,
             double estimatedOutputMb,
             string? fallbackText,
-            string? existingToolTip)
+            string? existingToolTip,
+            QueueEstimateState? estimateState = null)
         {
             sourceMb = double.IsFinite(sourceMb) && sourceMb > 0 ? sourceMb : 0;
             estimatedOutputMb = double.IsFinite(estimatedOutputMb) && estimatedOutputMb > 0
                 ? estimatedOutputMb
                 : 0;
 
+            if (estimateState is QueueEstimateState.Pending or QueueEstimateState.Inspecting or
+                QueueEstimateState.Measuring or QueueEstimateState.Unavailable or QueueEstimateState.Failed)
+            {
+                string gatedStatus = EstimateStateDisplayText(estimateState.Value, fallbackText);
+                string gatedTooltip = string.IsNullOrWhiteSpace(existingToolTip)
+                    ? gatedStatus == "Unavailable" ? "Estimated output is not available yet." : gatedStatus
+                    : existingToolTip;
+                return NoEstimatePresentation(gatedStatus, gatedTooltip);
+            }
+
             if (estimatedOutputMb <= 0)
             {
-                string status = string.IsNullOrWhiteSpace(fallbackText)
-                    ? "—"
-                    : string.Equals(fallbackText, AdaptiveStorageSavingsPolicy.PendingEstimate, StringComparison.Ordinal)
-                        ? "Pending…"
-                        : fallbackText.Contains("unavailable", StringComparison.OrdinalIgnoreCase) ||
-                          fallbackText.Contains("metadata unavailable", StringComparison.OrdinalIgnoreCase)
-                            ? "Unavailable"
-                            : fallbackText.Trim();
+                string status = EstimateStateDisplayText(estimateState, fallbackText);
                 string tooltip = string.IsNullOrWhiteSpace(existingToolTip)
                     ? status == "Unavailable" ? "Estimated output is not available yet." : status
                     : existingToolTip;
-                return new QueueEstimateCellPresentation(status, status, status, tooltip, 0, false);
+                if (estimateState is QueueEstimateState.Review or QueueEstimateState.Skip)
+                    tooltip = AppendQueueEstimateTooltipDetail(tooltip, EstimateStateTooltip(estimateState.Value, projectionAvailable: false));
+                return NoEstimatePresentation(status, tooltip);
             }
 
             string size = FormatSize(estimatedOutputMb);
@@ -82,68 +199,168 @@ namespace MediaFlux
                 string tooltip = AppendQueueEstimateTooltipDetail(
                     existingToolTip,
                     $"Output: {size}. Source size is unavailable, so savings cannot be determined.");
-                return new QueueEstimateCellPresentation(size, size, size, tooltip, 0, true);
+                if (estimateState is QueueEstimateState.Review or QueueEstimateState.Skip)
+                    tooltip = AppendQueueEstimateTooltipDetail(tooltip, EstimateStateTooltip(estimateState.Value, projectionAvailable: true));
+                string compactSizeWithoutSource = CompactQueueEstimateSize(estimatedOutputMb);
+                return new QueueEstimateCellPresentation(
+                    size, size, compactSizeWithoutSource, compactSizeWithoutSource,
+                    tooltip, 0, 0, SystemColors.ControlText, QueueSavingsColorCategory.Unavailable, true, false);
             }
 
-            double relativeDifference = (sourceMb - estimatedOutputMb) / sourceMb;
-            bool noMeaningfulDifference = Math.Abs(relativeDifference) < 0.000001;
-            string percentage;
-            string relation;
-            string compactRelation;
-            string narrowRelation;
-            double savingsFraction;
-            if (noMeaningfulDifference)
-            {
-                percentage = "0%";
-                relation = "No savings";
-                compactRelation = relation;
-                narrowRelation = relation;
-                savingsFraction = 0;
-            }
-            else if (relativeDifference > 0)
-            {
-                percentage = FormatQueueEstimatePercent(relativeDifference * 100d);
-                relation = $"{percentage} saved";
-                compactRelation = percentage;
-                narrowRelation = percentage;
-                savingsFraction = Math.Clamp(relativeDifference, 0d, 1d);
-            }
-            else
-            {
-                percentage = FormatQueueEstimatePercent(Math.Abs(relativeDifference) * 100d);
-                relation = $"{percentage} larger";
-                compactRelation = $"+{percentage}";
-                narrowRelation = compactRelation;
-                savingsFraction = 0;
-            }
+            double savingsPercentage = ((sourceMb - estimatedOutputMb) / sourceMb) * 100d;
+            QueueSavingsColorCategory colorCategory = GetQueueSavingsColorCategory(savingsPercentage);
+            Color savingsColor = GetQueueSavingsColor(savingsPercentage);
+            string signedPercentage = FormatSignedQueueEstimatePercent(savingsPercentage);
+            string relation = savingsPercentage < 0
+                ? $"{signedPercentage} projected file growth"
+                : savingsPercentage == 0
+                    ? "0% savings"
+                    : $"{signedPercentage} saved";
+            double savingsFraction = savingsPercentage > 0 && double.IsFinite(savingsPercentage)
+                ? Math.Clamp(savingsPercentage / 100d, 0d, 1d)
+                : 0;
 
             string source = FormatSize(sourceMb);
             string detail = $"Source: {source}. Output: {size}. {relation}.";
             string fullTooltip = AppendQueueEstimateTooltipDetail(existingToolTip, detail);
+            if (estimateState is QueueEstimateState.Review or QueueEstimateState.Skip)
+                fullTooltip = AppendQueueEstimateTooltipDetail(fullTooltip, EstimateStateTooltip(estimateState.Value, projectionAvailable: true));
+
+            string compactSize = CompactQueueEstimateSize(estimatedOutputMb);
+            string minimumSize = MinimumQueueEstimateSize(estimatedOutputMb);
+            string statePrefix = estimateState switch
+            {
+                QueueEstimateState.Review => "Review • ",
+                QueueEstimateState.Skip => "Skip • ",
+                _ => string.Empty
+            };
             return new QueueEstimateCellPresentation(
-                $"{size} • {relation}",
-                $"{size} • {compactRelation}",
-                narrowRelation,
+                $"{statePrefix}{size} • {relation}",
+                $"{size} • {signedPercentage}",
+                $"{compactSize} {signedPercentage}",
+                $"{minimumSize} {signedPercentage}",
                 fullTooltip,
                 savingsFraction,
+                savingsPercentage,
+                savingsColor,
+                colorCategory,
+                true,
                 true);
         }
 
-        private static string FormatQueueEstimatePercent(double percent)
+        private static QueueEstimateCellPresentation NoEstimatePresentation(string status, string tooltip) =>
+            new(status, status, status, status, tooltip, 0, 0, SystemColors.ControlText,
+                QueueSavingsColorCategory.Unavailable, false, false);
+
+        private static string EstimateStateDisplayText(QueueEstimateState? estimateState, string? fallbackText)
         {
-            if (percent < 0.5)
-                return "<1%";
-            return $"{Math.Round(percent, MidpointRounding.AwayFromZero).ToString("0", CultureInfo.InvariantCulture)}%";
+            string? stateText = estimateState switch
+            {
+                QueueEstimateState.Pending => "Pending…",
+                QueueEstimateState.Inspecting => "Inspecting…",
+                QueueEstimateState.Measuring => "Measuring…",
+                QueueEstimateState.Preliminary => "Pending…",
+                QueueEstimateState.Ready => "Ready",
+                QueueEstimateState.Review => "Review",
+                QueueEstimateState.Skip => "Skip",
+                QueueEstimateState.Unavailable => "Unavailable",
+                QueueEstimateState.Failed => "Error",
+                _ => null
+            };
+            if (stateText is not null)
+                return stateText;
+
+            if (string.IsNullOrWhiteSpace(fallbackText))
+                return "—";
+            if (fallbackText.Contains("unavailable", StringComparison.OrdinalIgnoreCase) ||
+                fallbackText.Contains("metadata unavailable", StringComparison.OrdinalIgnoreCase))
+                return "Unavailable";
+            return fallbackText.Trim();
         }
 
-        private static string AppendQueueEstimateTooltipDetail(string? existingToolTip, string detail) =>
-            string.IsNullOrWhiteSpace(existingToolTip)
-                ? $"Output comparison: {detail}"
-                : string.Join(
-                    Environment.NewLine,
-                    existingToolTip.Split(new[] { Environment.NewLine }, StringSplitOptions.None)
-                        .Where(line => !line.StartsWith("Output comparison:", StringComparison.Ordinal))
-                        .Append($"Output comparison: {detail}"));
+        private static string EstimateStateTooltip(QueueEstimateState estimateState, bool projectionAvailable) => estimateState switch
+        {
+            QueueEstimateState.Review when projectionAvailable => "Estimate status: Review. The projection remains available; Review is advisory.",
+            QueueEstimateState.Review => "Estimate status: Review. Review is advisory; no projected output is available.",
+            QueueEstimateState.Skip when projectionAvailable => "Estimate status: Skip. The projection remains available; Skip is advisory.",
+            QueueEstimateState.Skip => "Estimate status: Skip. Skip is advisory; no projected output is available.",
+            _ => $"Estimate status: {estimateState}."
+        };
+
+        private static string FormatSignedQueueEstimatePercent(double savingsPercentage)
+        {
+            if (double.IsNaN(savingsPercentage))
+                return "—";
+            double magnitude = Math.Abs(savingsPercentage);
+            string number = magnitude < 0.5
+                ? "<1"
+                : (Math.Truncate(magnitude * 10d) / 10d).ToString("0.#", CultureInfo.InvariantCulture);
+            return savingsPercentage < 0 ? $"-{number}%" : $"{number}%";
+        }
+
+        private static string CompactQueueEstimateSize(double megabytes)
+        {
+            string formatted = FormatSize(megabytes);
+            int unitStart = formatted.LastIndexOf(' ');
+            return unitStart > 0 ? string.Concat(formatted.AsSpan(0, unitStart), formatted.AsSpan(unitStart + 1)) : formatted;
+        }
+
+        private static string MinimumQueueEstimateSize(double megabytes)
+        {
+            string formatted = FormatSize(megabytes);
+            int unitStart = formatted.LastIndexOf(' ');
+            if (unitStart <= 0)
+                return formatted;
+            string unit = formatted[(unitStart + 1)..];
+            double value = megabytes >= 1024 ? megabytes / 1024d : megabytes;
+            string number = megabytes < 1024 && megabytes < 1
+                ? value.ToString("0.##", CultureInfo.CurrentCulture)
+                : Math.Round(value, MidpointRounding.AwayFromZero).ToString("0", CultureInfo.CurrentCulture);
+            return $"{number}{unit}";
+        }
+
+        internal static (double SourceMb, double EstimatedOutputMb) ResolveQueueEstimateCellValues(
+            object? estimateTag,
+            string? sourceSizeText,
+            string? estimateText)
+        {
+            Tuple<double, double>? values = estimateTag as Tuple<double, double>;
+            double sourceMb = values is { Item1: > 0 } && double.IsFinite(values.Item1)
+                ? values.Item1
+                : ParseQueueSizeText(sourceSizeText);
+            double estimateMb = values is { Item2: > 0 } && double.IsFinite(values.Item2)
+                ? values.Item2
+                : ParseQueueSizeText(estimateText);
+            return (sourceMb, estimateMb);
+        }
+
+        private static double ParseQueueSizeText(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return 0;
+            string normalized = value.Trim();
+            if (normalized.StartsWith('~') || normalized.StartsWith('≈'))
+                return 0;
+            double parsed = TryParseSizeToMb(normalized);
+            return double.IsFinite(parsed) && parsed > 0 ? parsed : 0;
+        }
+
+        private static string AppendQueueEstimateTooltipDetail(string? existingToolTip, string detail)
+        {
+            string prefix = detail.StartsWith("Estimate status:", StringComparison.Ordinal)
+                ? "Estimate status:"
+                : "Output comparison:";
+            string detailLine = detail.StartsWith(prefix, StringComparison.Ordinal)
+                ? detail
+                : $"{prefix} {detail}";
+            if (string.IsNullOrWhiteSpace(existingToolTip))
+                return detailLine;
+            return string.Join(
+                Environment.NewLine,
+                existingToolTip.Split(new[] { Environment.NewLine }, StringSplitOptions.None)
+                    .Where(line => !line.StartsWith(prefix, StringComparison.Ordinal))
+                    .Append(detailLine));
+        }
 
         internal static QueueWorkspaceCounts CountQueueWorkspaceItems(
             IEnumerable<(string Status, bool IsRunning, bool RequiresAttention)> items)
@@ -1184,42 +1401,29 @@ namespace MediaFlux
 
         private (string Text, string ToolTip) GetQueueWorkspacePlannedOutput(DataGridViewRow row, RowMeta? meta)
         {
-            EncodingPlan? plan = meta?.IntelligencePlan;
+            PreparedProductionPlan? preparedPlan = meta?.PreparedProductionPlan;
+            EncodingPlan? plan = preparedPlan?.Plan ?? meta?.IntelligencePlan;
             if (plan is { IsAvailable: true, Video: not null })
             {
                 string dimensions = plan.Video.EffectiveWidth is > 0 && plan.Video.EffectiveHeight is > 0
                     ? $"{plan.Video.EffectiveWidth}×{plan.Video.EffectiveHeight}"
                     : "source size";
                 string container = plan.Container?.Effective.ToString() ?? "container pending";
-                string text = $"{plan.Video.Codec} · {dimensions} · {container}";
-                return (text, $"Frozen plan {plan.PlanId:N}, published by the existing encode preflight. {text}");
+                ProductionPlanFingerprintInput? fingerprint = preparedPlan?.Identity.Inputs;
+                string encoder = fingerprint?.EncoderId ?? "encoder unresolved";
+                string quality = plan.AutomaticTarget is { IsAvailable: true } target
+                    ? $"target-bitrate VBR {target.TargetVideoBitrateKbps:0} kbps ({target.QualityTarget}; projected ~{target.ProjectedOutputBytes / (1024d * 1024d):0.##} MiB)"
+                    : fingerprint?.QualityValue is double value
+                    ? $"{fingerprint.RateControlMode} {value:0.###}"
+                    : "quality unresolved";
+                string text = $"{plan.Video.Codec} ({encoder}) · {dimensions} · {container}";
+                string identity = preparedPlan?.Identity.PlanFingerprint ?? plan.ProductionPlan?.PlanFingerprint ?? "unavailable";
+                return (text, $"Prepared production plan · {quality}; preset={fingerprint?.Preset ?? "unavailable"}; bit depth={fingerprint?.BitDepth.ToString() ?? "unavailable"}; fingerprint={identity}");
             }
 
-            if (meta?.IsDvdEncode == true)
-            {
-                return ("Configured · DVD title", "Configured DVD output preview only. The existing encode preflight publishes the authoritative plan.");
-            }
-
-            string? codecText = comboVideoFormat?.Text;
-            if (string.IsNullOrWhiteSpace(codecText))
-                codecText = comboEncoderMode?.Text;
-            if (string.IsNullOrWhiteSpace(codecText))
-                codecText = "current codec";
-
-            string resolutionText = comboResolution == null || comboResolution.SelectedIndex <= 0
-                ? "source resolution"
-                : comboResolution.Text;
-            string containerText = comboOutputContainer?.Text ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(containerText))
-                containerText = _configuredOutputContainer.ToString();
-
-            string scope = meta?.HasCustomSettings == true ? "Per-item configured" : "Configured";
-            string display = $"{scope} · {codecText} · {resolutionText} · {containerText}";
-            string detail = meta?.HasCustomSettings == true
-                ? "A per-item setting or library policy may override the global profile."
-                : "Uses current configured settings.";
-            return (display,
-                $"Configured preview only — not a frozen plan. {detail} The existing encode preflight publishes the authoritative plan; this display does not trigger plan generation.");
+            return ("Preparing…", meta?.EstimateState == QueueEstimateState.Measuring
+                ? "Resolving the exact production plan and measuring that plan before encoding."
+                : "The production plan has not been resolved yet.");
         }
 
         private void RefreshQueueWorkspaceConfiguredOutput()
