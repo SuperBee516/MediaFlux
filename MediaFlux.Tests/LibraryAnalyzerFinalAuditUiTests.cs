@@ -29,7 +29,16 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                 catalog.Initialize();
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 using var form = new LibraryAnalyzerForm(runtime);
-                Assert.Equal(new Size(1100, 700), form.MinimumSize);
+                Size configuredMinimumSize = new(1100, 700);
+                Rectangle constrainedMinimumBounds = form.Bounds;
+                constrainedMinimumBounds.Size = configuredMinimumSize;
+                Rectangle minimumSizeWorkingArea = Screen.FromRectangle(constrainedMinimumBounds).WorkingArea;
+                Assert.True(minimumSizeWorkingArea.Height >= configuredMinimumSize.Height,
+                    $"The hosted working area must fit the analyzer's configured minimum height; working area={minimumSizeWorkingArea}, configured minimum={configuredMinimumSize}.");
+                Size expectedEffectiveMinimumSize = new(
+                    Math.Min(configuredMinimumSize.Width, minimumSizeWorkingArea.Width),
+                    configuredMinimumSize.Height);
+                Assert.Equal(expectedEffectiveMinimumSize, form.MinimumSize);
                 form.ClientSize = new Size(1800, 1100);
                 form.Show();
                 Application.DoEvents();
