@@ -30,14 +30,15 @@ public sealed class LibraryAnalyzerFinalAuditUiTests : IDisposable
                 using var runtime = new LibraryAnalyzerRuntime(catalog, new[] { ".mkv" }, new EmptyProbe(), new EmptyVisual());
                 using var form = new LibraryAnalyzerForm(runtime);
                 Size configuredMinimumSize = new(1100, 700);
-                Rectangle constrainedMinimumBounds = form.Bounds;
-                constrainedMinimumBounds.Size = configuredMinimumSize;
-                Rectangle minimumSizeWorkingArea = Screen.FromRectangle(constrainedMinimumBounds).WorkingArea;
-                Assert.True(minimumSizeWorkingArea.Height >= configuredMinimumSize.Height,
-                    $"The hosted working area must fit the analyzer's configured minimum height; working area={minimumSizeWorkingArea}, configured minimum={configuredMinimumSize}.");
-                Size expectedEffectiveMinimumSize = new(
-                    Math.Min(configuredMinimumSize.Width, minimumSizeWorkingArea.Width),
-                    configuredMinimumSize.Height);
+                Rectangle requestedMinimumBounds = form.Bounds;
+                requestedMinimumBounds.Size = configuredMinimumSize;
+                Rectangle minimumSizeWorkingArea = Screen.GetWorkingArea(requestedMinimumBounds);
+                // WinForms .NET 8 caps each dimension to working-area size minus two when the bounds do not fit.
+                Size expectedEffectiveMinimumSize = minimumSizeWorkingArea.Contains(requestedMinimumBounds)
+                    ? configuredMinimumSize
+                    : new Size(
+                        Math.Min(configuredMinimumSize.Width, minimumSizeWorkingArea.Width - 2),
+                        Math.Min(configuredMinimumSize.Height, minimumSizeWorkingArea.Height - 2));
                 Assert.Equal(expectedEffectiveMinimumSize, form.MinimumSize);
                 form.ClientSize = new Size(1800, 1100);
                 form.Show();
