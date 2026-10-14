@@ -12,8 +12,9 @@ The selector remains `path=<absolute-source-path>` or
 `experiment=<id>,slot=<positive-number>[,attempt=<positive-number>]`. Both the job ID
 and the item must match exactly one persisted record. The optional `--user-data`
 pair must follow the selector. Unknown, malformed, repeated or incomplete options
-are rejected. `--user-data` is supported only with these headless commands; using it
-with GUI/Explorer arguments fails before GUI or updater startup.
+are rejected for these headless commands. The GUI also accepts `--user-data` as
+documented below; headless-specific options remain rejected by the respective
+command parsers.
 
 Use the executable from an installed distribution or a current Release build with
 its normal runtime dependencies and configured media tools. An installation is not
@@ -65,6 +66,23 @@ and runtime-temp location. It explicitly identifies isolated mode and ignored st
 pointers. These are automation diagnostics; retain them privately when paths are
 sensitive. Existing snapshot/source/output diagnostics still use their established
 path conventions.
+
+## Isolated GUI profile
+
+Normal WinForms startup also accepts an explicit process-scoped profile:
+
+```text
+MediaFlux.exe --user-data "C:\Temp\MediaFlux-TestProfile"
+```
+
+The path must be absolute and must not overlap the resolved normal UserData root.
+GUI startup creates the selected profile's root, `data`, and `temp` directories;
+settings, saved jobs, logs, and other `AppPaths`-managed state then resolve under
+that profile. It does not follow storage pointers from either profile, migrate
+legacy installation data, or run normal-profile cleanup/backups. If the selected
+path cannot be prepared, startup stops with an error and does not fall back. The
+normal launch path is unchanged when `--user-data` is absent. Headless command
+parsing and its prepared-directory requirements remain unchanged.
 
 ## Persistence and runtime boundary
 

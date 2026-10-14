@@ -16,38 +16,73 @@ namespace MediaFlux
 {
     static class Program
     {
+        internal enum StartupCommandKind { Gui, EncodingV2Headless, QueueEstimateBenchmark, HeadlessEncodeBatch, SavedJobHeadless }
+
         [STAThread]
         static int Main(string[] args)
         {
-            if (EncodingV2HeadlessCommand.IsRequested(args))
+            StartupCommandKind startupCommand = ClassifyStartupCommand(args);
+            if (startupCommand == StartupCommandKind.EncodingV2Headless)
             {
                 HeadlessConsole.AttachToParent();
                 return EncodingV2HeadlessCommand.Run(args);
             }
 
-            if (QueueEstimateBenchmarkCommand.IsRequested(args))
+            if (startupCommand == StartupCommandKind.QueueEstimateBenchmark)
             {
                 HeadlessConsole.AttachToParent();
                 return QueueEstimateBenchmarkCommand.Run(args);
             }
 
-            if (HeadlessEncodeBatchCommand.IsRequested(args))
+            if (startupCommand == StartupCommandKind.HeadlessEncodeBatch)
             {
                 HeadlessConsole.AttachToParent();
                 return RunHeadlessEncodeBatchCommand(args);
             }
 
-            if (IsHeadlessSavedJobCommand(args))
+            if (startupCommand == StartupCommandKind.SavedJobHeadless)
             {
                 HeadlessConsole.AttachToParent();
                 return RunHeadlessSavedJobCommand(args);
             }
 
-            VelopackApp.Build().Run();
+            IDisposable? isolatedGuiStorage = null;
+            if (GuiUserDataCommand.IsRequested(args))
+            {
+                if (!GuiUserDataCommand.TryResolve(args, AppPaths.StoragePaths, out var guiStorage, out string pathError))
+                {
+                    MessageBox.Show(pathError, "MediaFlux startup failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return 1;
+                }
+                isolatedGuiStorage = AppPaths.UseIsolatedGuiStorage(guiStorage!);
+            }
+            using (isolatedGuiStorage)
+            {
+                return RunGui(args, isolatedGuiStorage is not null);
+            }
+        }
 
+        internal static StartupCommandKind ClassifyStartupCommand(string[] args)
+        {
+            if (EncodingV2HeadlessCommand.IsRequested(args))
+                return StartupCommandKind.EncodingV2Headless;
+            if (QueueEstimateBenchmarkCommand.IsRequested(args))
+                return StartupCommandKind.QueueEstimateBenchmark;
+            if (HeadlessEncodeBatchCommand.IsRequested(args))
+                return StartupCommandKind.HeadlessEncodeBatch;
+            if (HeadlessSavedJobCommand.IsRequested(args))
+                return StartupCommandKind.SavedJobHeadless;
+            return StartupCommandKind.Gui;
+        }
+
+        private static int RunGui(string[] args, bool isolatedProfile)
+        {
+            // Prepare explicit isolation before updater startup so invalid or inaccessible
+            // profiles fail before any GUI process lifecycle work begins.
             try
             {
-                AppPaths.Initialize();
+                if (isolatedProfile)
+                    AppPaths.Initialize();
             }
             catch (Exception ex)
             {
@@ -57,6 +92,25 @@ namespace MediaFlux
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
                 return 1;
+            }
+
+            VelopackApp.Build().Run();
+
+            if (!isolatedProfile)
+            {
+                try
+                {
+                    AppPaths.Initialize();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(
+                        "MediaFlux could not prepare its application-data folder and cannot start safely.\r\n\r\n" + ex.Message,
+                        "MediaFlux startup failed",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    return 1;
+                }
             }
 
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -96,9 +150,6 @@ namespace MediaFlux
             Application.Run(mainForm);
             return 0;
         }
-
-        private static bool IsHeadlessSavedJobCommand(string[] args) =>
-            HeadlessSavedJobCommand.IsRequested(args);
 
         private static bool PathsOverlap(string first, string second) =>
             MediaFluxStoragePathService.Same(first, second) ||

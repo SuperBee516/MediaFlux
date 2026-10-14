@@ -60,15 +60,17 @@ public sealed class HeadlessSavedJobItemCommandTests
         }
     }
 
-    [Theory]
-    [InlineData("--user-data")]
-    [InlineData("--user-data=C:\\isolated")]
-    [InlineData("--USER-DATA")]
-    public void IsolationCannotFallThroughToGuiDispatch(string option)
+    [Fact]
+    public void UserDataAloneIsGuiInputWhileSavedJobModeStillSelectsHeadlessParser()
     {
-        string[] args = ["--enqueue-file", "C:\\media\\clip.mp4", option, "C:\\isolated"];
-        Assert.True(HeadlessSavedJobCommand.IsRequested(args));
-        Assert.False(HeadlessSavedJobCommand.TryParse(args, out _, out _));
+        string[] guiArgs = ["--user-data", "C:\\isolated"];
+        Assert.False(HeadlessSavedJobCommand.IsRequested(guiArgs));
+        Assert.Equal(Program.StartupCommandKind.Gui, Program.ClassifyStartupCommand(guiArgs));
+
+        string[] headlessArgs = ["--run-saved-job-item", JobId.ToString(), "--item", "path=C:\\media\\clip.mp4", "--user-data", "C:\\isolated"];
+        Assert.True(HeadlessSavedJobCommand.IsRequested(headlessArgs));
+        Assert.Equal(Program.StartupCommandKind.SavedJobHeadless, Program.ClassifyStartupCommand(headlessArgs));
+        Assert.True(HeadlessSavedJobCommand.TryParse(headlessArgs, out _, out _));
         Assert.False(HeadlessSavedJobCommand.IsRequested([]));
         Assert.False(HeadlessSavedJobCommand.IsRequested(["--enqueue-file", "C:\\media\\clip.mp4"]));
     }

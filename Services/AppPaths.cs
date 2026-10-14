@@ -9,8 +9,9 @@ namespace MediaFlux.Services
         private static readonly MediaFluxStoragePathService NormalStorage = new();
         private static MediaFluxStoragePathService? _testStorage;
         private static MediaFluxStoragePathService? _headlessStorage;
+        private static MediaFluxStoragePathService? _guiStorage;
         private static MediaFluxStoragePathService Storage =>
-            Volatile.Read(ref _headlessStorage) ?? Volatile.Read(ref _testStorage) ?? NormalStorage;
+            Volatile.Read(ref _headlessStorage) ?? Volatile.Read(ref _guiStorage) ?? Volatile.Read(ref _testStorage) ?? NormalStorage;
 
         /// <summary>
         /// Installs a process-scoped UserData root for the automated test process. This is
@@ -45,6 +46,20 @@ namespace MediaFlux.Services
         private sealed class HeadlessStorageScope(MediaFluxStoragePathService storage) : IDisposable
         {
             public void Dispose() => Interlocked.CompareExchange(ref _headlessStorage, null, storage);
+        }
+
+        internal static IDisposable UseIsolatedGuiStorage(MediaFluxStoragePathService storage)
+        {
+            if (!storage.IsProcessScoped)
+                throw new ArgumentException("An isolated GUI UserData root is required.", nameof(storage));
+            if (Interlocked.CompareExchange(ref _guiStorage, storage, null) is not null)
+                throw new InvalidOperationException("An isolated GUI UserData root is already active.");
+            return new GuiStorageScope(storage);
+        }
+
+        private sealed class GuiStorageScope(MediaFluxStoragePathService storage) : IDisposable
+        {
+            public void Dispose() => Interlocked.CompareExchange(ref _guiStorage, null, storage);
         }
 
         internal static string RuntimeTemporaryDirectory(string category) => Storage.IsProcessScoped
@@ -121,7 +136,12 @@ namespace MediaFlux.Services
         public static void Initialize()
         {
             if (Storage.IsProcessScoped)
-                throw new InvalidOperationException("Isolated headless execution cannot run GUI initialization or migrate normal user data.");
+            {
+                if (Volatile.Read(ref _headlessStorage) is not null)
+                    throw new InvalidOperationException("Isolated headless execution cannot run GUI initialization or migrate normal user data.");
+                Storage.InitializeDirectories();
+                return;
+            }
             Storage.InitializeDirectories();
             string marker = Path.Combine(UserDataDirectory, MigrationMarkerName);
             InitializeBackupLocations(
