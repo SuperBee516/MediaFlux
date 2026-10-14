@@ -1431,10 +1431,12 @@ public sealed class QueueEstimateSummaryUiTests
             Label commandSummary = Field<Label>(main, "_queueCommandSummaryLabel");
             Label outputSummary = Field<Label>(main, "_summaryNewSizeValue");
             Label workspaceOutput = Field<Label>(main, "_queueWorkspaceEstimateOutputValue");
+            Label workspaceSource = Field<Label>(main, "_queueWorkspaceSourceSizeValue");
 
             Invoke(main, "UpdateSizeTotals", true);
             Assert.Equal("--", outputSummary.Text);
             Assert.Equal("Est. output: --", workspaceOutput.Text);
+            Assert.Equal("Source: --", workspaceSource.Text);
             Assert.Contains("Estimated output: --", commandSummary.Text);
 
             string prefix = Path.Combine(Path.GetTempPath(), $"MediaFlux.excluded-estimates.{Guid.NewGuid():N}");
@@ -1484,6 +1486,64 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.Equal("Waiting for estimates", outputSummary.Text);
             Assert.Equal("Est. output: waiting for estimates", workspaceOutput.Text);
             Assert.Contains("Estimated output: Waiting for estimates", commandSummary.Text);
+        });
+    }
+
+    [Fact]
+    public void QueueSourceSummaryTracksMembershipRestorationAndMissingMetadata()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        RunOnUiThread(main =>
+        {
+            DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+            Label sourceSummary = Field<Label>(main, "_queueWorkspaceSourceSizeValue");
+            MethodInfo formatSize = typeof(MainForm).GetMethod("FormatSize", BindingFlags.Static | BindingFlags.NonPublic,
+                null, [typeof(double)], null)!;
+            Assert.Equal("1 TB", formatSize.Invoke(null, [1024d * 1024d]));
+            string prefix = Path.Combine(Path.GetTempPath(), $"MediaFlux.QueueSourceSummary.{Guid.NewGuid():N}");
+            Directory.CreateDirectory(prefix);
+            try
+            {
+                string restoredPath = Path.Combine(prefix, "restored.mkv");
+                File.WriteAllBytes(restoredPath, new byte[3 * 1024 * 1024]);
+
+                Assert.True((bool)Invoke(main, "AddEncodeItemIfNotPresent", restoredPath, false, false)!);
+                Assert.Equal("Source: 3 MB", sourceSummary.Text);
+
+                string additionalPath = Path.Combine(prefix, "additional.mkv");
+                DataGridViewRow additional = queue.Rows[queue.Rows.Add()];
+                additional.Tag = additionalPath;
+                additional.Cells["colName"].Value = "additional.mkv";
+                object additionalMeta = Invoke(main, "EnsureRowMeta", additional)!;
+                SetField(additionalMeta, "Path", additionalPath);
+                SetField(additionalMeta, "SourceSizeBytes", 2L * 1024 * 1024 * 1024);
+                Invoke(main, "UpdateSizeTotals", true);
+                Assert.Equal("Source: 2 GB", sourceSummary.Text);
+
+                queue.Rows.Remove(additional);
+                Invoke(main, "UpdateSizeTotals", true);
+                Assert.Equal("Source: 3 MB", sourceSummary.Text);
+
+                string missingMetadataPath = Path.Combine(prefix, "missing-metadata.mkv");
+                File.WriteAllBytes(missingMetadataPath, new byte[1024]);
+                DataGridViewRow missingMetadata = queue.Rows[queue.Rows.Add()];
+                missingMetadata.Tag = missingMetadataPath;
+                missingMetadata.Cells["colName"].Value = "missing-metadata.mkv";
+                missingMetadata.Cells["colSize"].Value = "99 GB";
+                object missingMeta = Invoke(main, "EnsureRowMeta", missingMetadata)!;
+                SetField(missingMeta, "Path", missingMetadataPath);
+                Invoke(main, "UpdateSizeTotals", true);
+                Assert.Equal("Source: 3 MB", sourceSummary.Text);
+
+                queue.Rows.Clear();
+                Invoke(main, "UpdateSizeTotals", true);
+                Assert.Equal("Source: --", sourceSummary.Text);
+            }
+            finally
+            {
+                Directory.Delete(prefix, recursive: true);
+            }
         });
     }
 

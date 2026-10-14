@@ -6514,6 +6514,7 @@ namespace MediaFlux
             _queueTotalSourceMb += sourceMb;
             _queueFileCount++;
             _queueTotalsDirty = false;
+            UpdateQueueWorkspaceAggregateSourceSize();
             RefreshQueueWorkspaceRow(r);
             UpdateAnalyzeQueueButtonState();
 
