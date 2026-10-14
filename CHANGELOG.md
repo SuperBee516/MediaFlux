@@ -5,6 +5,18 @@ All notable changes to MediaFlux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-10-13
+
+### Added
+
+- Added support for isolated GUI UserData profiles, with profile data kept separate from normal application data.
+- Documented isolated GUI profile usage and added regression coverage for profile isolation and startup command routing.
+
+### Improved
+
+- Improved GUI and headless startup command classification so GUI `--user-data` arguments coexist with saved-job headless commands.
+- Added explicit validation for GUI `--user-data` arguments, preventing malformed profile selections from silently falling back to the normal profile.
+
 ## [1.9.0] - 2026-10-10
 
 ### Added

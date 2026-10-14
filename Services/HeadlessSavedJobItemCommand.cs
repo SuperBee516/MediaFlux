@@ -31,9 +31,9 @@ public sealed record HeadlessSavedJobCommand(
     string? UserDataRoot = null)
 {
     internal static bool IsRequested(string[] args) =>
-        (args.Length > 0 && (args[0].StartsWith("--run-saved-job", StringComparison.Ordinal) ||
-                            args[0].StartsWith("--preflight-saved-job", StringComparison.Ordinal))) ||
-        args.Any(arg => arg.StartsWith("--user-data", StringComparison.OrdinalIgnoreCase));
+        args.Length > 0 &&
+        (args[0].StartsWith("--run-saved-job", StringComparison.Ordinal) ||
+         args[0].StartsWith("--preflight-saved-job", StringComparison.Ordinal));
 
     public static bool TryParse(string[] args, out HeadlessSavedJobCommand? command, out string error)
     {

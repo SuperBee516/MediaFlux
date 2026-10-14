@@ -36,6 +36,25 @@ public sealed class MediaFluxStoragePathService
         return new MediaFluxStoragePathService(normalized);
     }
 
+    /// <summary>A process-scoped GUI profile. GUI startup may create it, but never follows storage pointers.</summary>
+    internal static MediaFluxStoragePathService ForIsolatedGuiRoot(string root, string normalRoot)
+    {
+        string normalized = NormalizeIsolatedRoot(root);
+        if (PathsOverlap(normalized, normalRoot))
+            throw new ArgumentException("The isolated GUI UserData directory must not overlap normal UserData.", nameof(root));
+        if (File.Exists(normalized))
+            throw new ArgumentException("The isolated GUI UserData path is an existing file, not a directory.", nameof(root));
+        for (string? current = normalized; !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current))
+        {
+            if (Directory.Exists(current) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                throw new ArgumentException("The isolated GUI UserData path cannot pass through a link or reparse point.", nameof(root));
+            string? parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.OrdinalIgnoreCase))
+                break;
+        }
+        return new MediaFluxStoragePathService(normalized);
+    }
+
     internal static string NormalizeIsolatedRoot(string root)
     {
         if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root))
