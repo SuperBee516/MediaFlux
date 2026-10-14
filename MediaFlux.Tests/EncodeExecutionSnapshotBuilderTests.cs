@@ -561,6 +561,89 @@ public sealed class EncodeExecutionSnapshotBuilderTests
     }
 
     [Fact]
+    public void PreV190ManualSavedJobBuildsTheSameNumericProductionPlan()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "MediaFlux-PreV190SavedJob", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string jobsPath = Path.Combine(root, "encode-jobs.json");
+            File.WriteAllText(jobsPath,
+                """
+                [
+                  {
+                    "Id": "9b8524a2-34d4-4f02-8a5d-97a0bd337b32",
+                    "Name": "Pre-v1.9.0 Manual HEVC",
+                    "Files": [
+                      { "SourcePath": "C:\\Media\\historic.mkv" }
+                    ],
+                    "Settings": {
+                      "OutputFolder": "C:\\Out",
+                      "CompressionProfile": "Medium Quality (Default)",
+                      "EncoderId": "libx265",
+                      "VideoCodec": "Hevc",
+                      "EncoderPreset": "slow",
+                      "OutputContainer": "Matroska",
+                      "QualityValue": 27,
+                      "QualityMode": "Manual",
+                      "QualityTarget": "Balanced",
+                      "TenBit": true,
+                      "AudioChannels": "Keep source layout",
+                      "VideoFormat": "H.265 / HEVC (x265)",
+                      "AutoTargetSize": false,
+                      "TargetSize": "",
+                      "Resolution": "Original",
+                      "DeleteSourceAfterCompression": false,
+                      "EnableOutputSuffix": false,
+                      "EnableCodecSuffix": false,
+                      "OutputSuffix": ""
+                    }
+                  }
+                ]
+                """);
+
+            EncodeJob storedJob = Assert.Single(new EncodeJobService(jobsPath).LoadStrict());
+            EncodeJob executionJob = EncodeJobService.CreateExecutionSnapshot(storedJob);
+            EncodeJobSettings restored = executionJob.Settings;
+            Assert.Equal("Manual", restored.QualityMode);
+            Assert.Equal(27, restored.QualityValue);
+            Assert.Equal(VideoEncoderIds.Libx265, restored.EncoderId);
+            Assert.Equal(nameof(VideoCodecFamily.Hevc), restored.VideoCodec);
+            Assert.Equal("slow", restored.EncoderPreset);
+            Assert.True(restored.TenBit);
+            Assert.Null(restored.AutomaticRateControlMode);
+
+            EncodeExecutionSnapshotSettings settings =
+                EncodeExecutionSnapshotSettings.FromSavedJob(restored, new Config());
+            Assert.False(settings.AutomaticQuality);
+            Assert.Equal(27, settings.NumericQualityValue);
+            Assert.Equal("slow", settings.EncoderPreset);
+            Assert.True(settings.TenBit);
+
+            const string source = "C:\\Media\\historic.mkv";
+            EncodeExecutionSnapshot snapshot = Build(settings, Item() with
+            {
+                SourceFilePath = source,
+                LogicalSourcePath = source
+            });
+            ProductionPlanIdentity plan = Assert.IsType<ProductionPlanIdentity>(snapshot.ProductionPlan);
+
+            Assert.Equal(VideoEncoderIds.Libx265, snapshot.Encoder.EncoderId);
+            Assert.Equal(VideoCodecFamily.Hevc, snapshot.Encoder.CodecFamily);
+            Assert.Equal("slow", snapshot.EncoderPreset);
+            Assert.Equal(27, snapshot.QualityValue);
+            Assert.True(snapshot.TenBit);
+            Assert.Equal("manual-numeric", plan.Inputs.QualityIntent);
+            Assert.Equal(27, plan.Inputs.QualityValue);
+            Assert.False(string.IsNullOrWhiteSpace(plan.PlanFingerprint));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void OutputSuffixAndAudioSelectionUseSharedPlainValuePolicies()
     {
         Assert.Equal(" [HEVC] [Research]", EncodeExecutionSnapshotBuilder.BuildOutputSuffix(

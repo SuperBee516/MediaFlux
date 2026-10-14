@@ -73,8 +73,34 @@ public sealed class EncoderConfigPersistenceTests : IDisposable
         Assert.Equal("Manual", loaded.LastQualityMode);
     }
 
+    [Theory]
+    [InlineData("Manual")]
+    [InlineData("Automatic")]
+    public void HistoricalConfigWriterPreservesCanonicalModeAndNumericEncoderSettings(string qualityMode)
+    {
+        string path = Path.Combine(_root, "historical-encoder-config.json");
+        new Config
+        {
+            LastEncoderId = VideoEncoderIds.Libx265,
+            LastVideoCodec = nameof(VideoCodecFamily.Hevc),
+            LastEncoderPreset = "slower",
+            LastQualityValue = 27,
+            LastQualityMode = qualityMode,
+            LastQualityTarget = nameof(QualityTarget.HighQuality)
+        }.Save(path);
+
+        Config loaded = Config.Load(path);
+
+        Assert.Equal(qualityMode, loaded.LastQualityMode);
+        Assert.Equal(27, loaded.LastQualityValue);
+        Assert.Equal(VideoEncoderIds.Libx265, loaded.LastEncoderId);
+        Assert.Equal(nameof(VideoCodecFamily.Hevc), loaded.LastVideoCodec);
+        Assert.Equal("slower", loaded.LastEncoderPreset);
+        Assert.Equal(nameof(QualityTarget.HighQuality), loaded.LastQualityTarget);
+    }
+
     [Fact]
-    public void AutomaticQualityTargetRoundTripsSeparatelyFromLegacyNumericValue()
+    public void AutomaticQualityTargetRoundTripsSeparatelyFromManualNumericValue()
     {
         string path = Path.Combine(_root, "automatic-quality-config.json");
         var config = new Config

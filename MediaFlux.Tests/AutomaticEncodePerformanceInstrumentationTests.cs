@@ -124,7 +124,7 @@ public sealed class AutomaticEncodePerformanceInstrumentationTests
         using (manual.Activate())
         {
             manual.RecordQualityResolution(new(
-                EncodingQualityIntent.LegacyNumeric(23), 23, EncoderQualityMechanism.Cq,
+                EncodingQualityIntent.ManualNumeric(23), 23, EncoderQualityMechanism.Cq,
                 EncodingQualityAssessment.Unknown, false, []));
             manual.RecordPreviewDrain(active: false, cancellationRequested: false, Stopwatch.GetTimestamp(), completed: true);
         }

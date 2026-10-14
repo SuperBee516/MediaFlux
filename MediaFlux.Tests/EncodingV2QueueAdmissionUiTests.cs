@@ -516,7 +516,7 @@ public sealed class EncodingV2QueueAdmissionUiTests
     }
 
     [Fact]
-    public void LiveManualPresetRefreshUsesProfileWhenTenBitFallsBackToLegacyEstimate()
+    public void LiveManualPresetRefreshUsesProfileWhenTenBitFallsBackToManualNumericEstimate()
     {
         if (!OperatingSystem.IsWindows())
             return;
@@ -874,7 +874,7 @@ public sealed class EncodingV2QueueAdmissionUiTests
                     observations.Add((PresetValue(preset), generation, estimateMb, videoKbps, audioKbps,
                         ancillaryKbps, cell, activeProfile, diagnostic));
                     trace.Add($"preset={PresetValue(preset)} gen={generation} encoder={selectedEncoder.EncoderId}/{selectedEncoder.FfmpegCodec} " +
-                        $"bitDepth=10 qualityMode=ManualLegacyNumeric CQ=27 estimateProfile=MediumQualityDefault " +
+                        $"bitDepth=10 qualityMode=ManualNumeric CQ=27 estimateProfile=MediumQualityDefault " +
                         $"targetControl={(Field<CheckBox>(main, "chkAutoTargetSize").Checked ? "AutoOn" : "AutoOff")} blankTarget=true " +
                         $"intent=<none> rowProfileEstimate=true configuredStorageSavings=on/estimateClone=off " +
                         $"persistedPreset={Config.Load(configPath).LastEncoderPreset} v2=reject[{v2RejectionReason}] legacy=EstimateBackgroundService " +
@@ -890,7 +890,7 @@ public sealed class EncodingV2QueueAdmissionUiTests
 
                 Assert.True(observations[0].EstimateMb > observations[1].EstimateMb &&
                             observations[1].EstimateMb > observations[2].EstimateMb,
-                    "Manual Legacy Numeric NVENC estimates must reflect the existing NVENC preset-rate model (p1 > p4 > p6). " +
+                    "Manual Numeric NVENC estimates must reflect the existing NVENC preset-rate model (p1 > p4 > p6). " +
                     string.Join(Environment.NewLine, observations.Select(item =>
                         $"{item.Preset}: {item.EstimateMb:0.#####} MiB, video={item.VideoKbps:0.###} kbps, {item.Diagnostic}")));
 

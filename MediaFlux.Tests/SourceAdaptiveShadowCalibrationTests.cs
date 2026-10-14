@@ -34,7 +34,7 @@ public sealed class SourceAdaptiveShadowCalibrationTests
     [InlineData(VideoCodecFamily.H264, "h264", VideoEncoderIds.Nvenc, EncodingQualityIntentKind.QualityTarget, null, SourceAdaptiveShadowStatus.NotApplicable)]
     [InlineData(VideoCodecFamily.Hevc, "hevc", VideoEncoderIds.Nvenc, EncodingQualityIntentKind.QualityTarget, null, SourceAdaptiveShadowStatus.NotApplicable)]
     [InlineData(VideoCodecFamily.Hevc, "h264", VideoEncoderIds.Libx265, EncodingQualityIntentKind.QualityTarget, null, SourceAdaptiveShadowStatus.NotApplicable)]
-    [InlineData(VideoCodecFamily.Hevc, "h264", VideoEncoderIds.Nvenc, EncodingQualityIntentKind.LegacyNumeric, null, SourceAdaptiveShadowStatus.ExplicitUserPolicy)]
+    [InlineData(VideoCodecFamily.Hevc, "h264", VideoEncoderIds.Nvenc, EncodingQualityIntentKind.ManualNumeric, null, SourceAdaptiveShadowStatus.ExplicitUserPolicy)]
     [InlineData(VideoCodecFamily.Hevc, "h264", VideoEncoderIds.Nvenc, EncodingQualityIntentKind.QualityTarget, 750d, SourceAdaptiveShadowStatus.ExplicitUserPolicy)]
     public void OutOfScopeAndExplicitPoliciesAreObservational(
         VideoCodecFamily targetCodec,
@@ -47,7 +47,7 @@ public sealed class SourceAdaptiveShadowCalibrationTests
         var (baseContext, baseQuality, geometry) = Create();
         EncodingQualityIntent intent = intentKind == EncodingQualityIntentKind.QualityTarget
             ? EncodingQualityIntent.Automatic(QualityTarget.Balanced)
-            : EncodingQualityIntent.LegacyNumeric(19);
+            : EncodingQualityIntent.ManualNumeric(19);
         var encoder = new VideoEncoderSelection(encoderId, targetCodec,
             targetCodec == VideoCodecFamily.Hevc ? "hevc_nvenc" : "h264_nvenc");
         var context = baseContext with

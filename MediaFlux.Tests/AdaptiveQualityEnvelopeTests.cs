@@ -114,7 +114,7 @@ public sealed class AdaptiveQualityEnvelopeTests
     public void ManualQualityAndTargetSizeCannotCreateAdaptiveEnvelope()
     {
         Assert.Throws<InvalidOperationException>(() => AdaptiveQualityEnvelopeService.Create(
-            Resolve(Nvenc, EncodingQualityIntent.LegacyNumeric(24)), Nvenc, 26));
+            Resolve(Nvenc, EncodingQualityIntent.ManualNumeric(24)), Nvenc, 26));
         Assert.Throws<InvalidOperationException>(() => AdaptiveQualityEnvelopeService.Create(
             Resolve(Nvenc, EncodingQualityIntent.Automatic(QualityTarget.Balanced), 100), Nvenc, 26));
     }

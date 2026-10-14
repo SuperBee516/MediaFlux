@@ -32,13 +32,13 @@ public sealed class EncodingQualityPolicyService
                 true, reasons);
         }
 
-        if (request.Intent.Kind == EncodingQualityIntentKind.LegacyNumeric)
+        if (request.Intent.Kind == EncodingQualityIntentKind.ManualNumeric)
         {
             int normalized = provider.NormalizeQuality(
-                request.Encoder.CodecFamily, request.Intent.LegacyQualityValue);
-            reasons.Add(new(EncodingQualityReasonCode.LegacyNumericIntent,
+                request.Encoder.CodecFamily, request.Intent.ManualQualityValue);
+            reasons.Add(new(EncodingQualityReasonCode.ManualNumericIntent,
                 "Existing numeric quality intent is preserved without source-adaptive adjustment."));
-            if (request.Intent.LegacyQualityValue != normalized)
+            if (request.Intent.ManualQualityValue != normalized)
                 reasons.Add(new(EncodingQualityReasonCode.ProviderNormalized,
                     "The encoder provider normalized the requested quality to its supported range."));
             return new(request.Intent, normalized, mechanism,

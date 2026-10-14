@@ -331,7 +331,7 @@ public sealed class QueueEstimateSummaryUiTests
                     $"estimateFingerprint={prepared.Estimate?.Plan.PlanFingerprint} preparedFingerprint={prepared.Identity.PlanFingerprint} " +
                     $"dispatchedFingerprint={dispatchedFingerprint} failedPredicate=none");
                 AutomaticTargetPlan? automaticTarget = prepared.Plan.AutomaticTarget;
-                _output.WriteLine($"DISPATCH_REQUEST_CAPTURE mode={(automatic ? "Automatic target-bitrate VBR" : "Manual/Legacy Numeric CQ")} " +
+                _output.WriteLine($"DISPATCH_REQUEST_CAPTURE mode={(automatic ? "Automatic target-bitrate VBR" : "Manual Numeric CQ")} " +
                     $"encoder={dispatchedRequest.Encoder.FfmpegCodec} preset={dispatchedRequest.EncoderPreset} " +
                     $"targetKbps={automaticTarget?.TargetVideoBitrateKbps} maxrateKbps={automaticTarget?.MaximumVideoBitrateKbps} " +
                     $"bufferKbps={automaticTarget?.VideoBufferSizeKbps} mapMode={dispatchedRequest.MapMode} " +
@@ -1192,7 +1192,7 @@ public sealed class QueueEstimateSummaryUiTests
             var context = AdaptiveStorageSavingsTests.Context() with
             {
                 Encoder = new(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
-                QualityIntent = automatic ? EncodingQualityIntent.Automatic(QualityTarget.Balanced) : EncodingQualityIntent.LegacyNumeric(24)
+                QualityIntent = automatic ? EncodingQualityIntent.Automatic(QualityTarget.Balanced) : EncodingQualityIntent.ManualNumeric(24)
             };
             var result = new EstimateBackgroundService.SmartEstimateResult(service.CurrentGeneration,
                 Field<Guid>(meta, "QueueItemId"), path, 12, 6, 100, "1920x1080", sourceCodec, 24,

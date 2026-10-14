@@ -147,7 +147,7 @@ public static class EncodingPlanService
         ];
 
         EncodingQualityIntent qualityIntent = context.QualityIntent ??
-            EncodingQualityIntent.LegacyNumeric(context.QualityValue);
+            EncodingQualityIntent.ManualNumeric(context.QualityValue);
         EncodingQualityResolution quality = new EncodingQualityPolicyService().Resolve(
             new EncodingQualityPolicyRequest(
                 qualityIntent, context.Source, context.Encoder, geometry,

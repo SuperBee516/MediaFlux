@@ -875,7 +875,7 @@ namespace MediaFlux.Services
                 restoration?.Clone() ?? new VideoRestorationSettings(), encoderPreset ?? "", qualityValue, tenBit, audioChannels,
                 mapMode, copySubtitles, copyDataStreams, copyAttachments, outputContainer,
                 compatibilityPolicy, planKnownDuration, validationProfile,
-                qualityIntent ?? EncodingQualityIntent.LegacyNumeric(qualityValue),
+                qualityIntent ?? EncodingQualityIntent.ManualNumeric(qualityValue),
                 timelineRecovery is { Success: true }
                     ? new EncodingSourceFailureClassification(
                         EncodingSourceFailureType.TimelineCorruption,

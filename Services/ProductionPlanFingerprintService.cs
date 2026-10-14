@@ -358,7 +358,7 @@ public static class ProductionPlanFingerprintService
     }
 
     private static string QualityIntentText(EncodingQualityIntent? intent) =>
-        intent is null or { Kind: EncodingQualityIntentKind.LegacyNumeric }
+        intent is null or { Kind: EncodingQualityIntentKind.ManualNumeric }
             ? "manual-numeric"
             : $"{intent.Kind}:{intent.Target}";
 

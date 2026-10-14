@@ -1,3 +1,4 @@
+using System.Text.Json;
 using MediaFlux.Models;
 using MediaFlux.Services;
 using Xunit;
@@ -6,6 +7,27 @@ namespace MediaFlux.Tests;
 
 public sealed class EncodingPlanServiceTests
 {
+    [Fact]
+    public void SerializedManualNumericPlanKeepsLegacyQualityValueJsonField()
+    {
+        EncodingDecisionContext context = Context(
+            OutputContainerSelection.Matroska,
+            ContainerCompatibilityPolicy.Intelligent,
+            new MediaProbeStreamInfo { Index = 0, CodecType = "video", CodecName = "h264", Width = 1920, Height = 1080 }) with
+        {
+            TargetMb = null,
+            QualityIntent = EncodingQualityIntent.ManualNumeric(24)
+        };
+        EncodingPlan plan = EncodingPlanService.Create(context);
+
+        string json = JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using JsonDocument document = JsonDocument.Parse(json);
+        JsonElement intent = document.RootElement.GetProperty("quality").GetProperty("intent");
+
+        Assert.Equal(24, intent.GetProperty("legacyQualityValue").GetInt32());
+        Assert.False(intent.TryGetProperty("manualQualityValue", out _));
+    }
+
     [Fact]
     public void DeterministicPlanHasNoHistoricalPredictionDependency()
     {
