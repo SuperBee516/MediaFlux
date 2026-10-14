@@ -5,6 +5,15 @@ All notable changes to MediaFlux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2] - 2026-10-14
+
+### Maintenance and Compatibility
+
+- Consolidated obsolete Legacy Numeric internal terminology under Manual Numeric.
+- Preserved the Automatic and Manual quality modes, Manual CQ/CRF encoding behavior, and Automatic target-bitrate encoding behavior.
+- Maintained historical application settings and saved-job compatibility, production-plan fingerprints, and headless JSON compatibility.
+- Added regression coverage for historical configuration restoration and numeric-quality handling.
+
 ## [1.9.1] - 2026-10-13
 
 ### Added
