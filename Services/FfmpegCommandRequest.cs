@@ -57,6 +57,7 @@ namespace MediaFlux.Services
         // acceleration for a single device-recovery retry.
         public bool DisableHardwareDecode { get; init; }
         public FfmpegSourceDecodeMode SourceDecodeMode { get; init; } = FfmpegSourceDecodeMode.Strict;
+        public IReadOnlyDictionary<int, string> AudioFilterOverrides { get; init; } = new Dictionary<int, string>();
         public string SourcePixelFormat { get; init; } = "";
         public string? RecoveryFrameRateRational { get; init; }
         public string? TimestampReconstructionFilter { get; init; }
