@@ -258,6 +258,15 @@ public sealed class UiConfigPersistenceTests : IDisposable
                 mode = Field<ComboBox>(form, "comboQualityMode");
                 Assert.Equal("Manual", mode.Text);
 
+                MethodInfo restoreQualityMode = typeof(MainForm).GetMethod(
+                    "SelectQualityMode", BindingFlags.Static | BindingFlags.NonPublic)!;
+                restoreQualityMode.Invoke(null, new object[] { mode, "Manual • Legacy Numeric" });
+                Assert.Equal("Manual", mode.Text);
+                restoreQualityMode.Invoke(null, new object[] { mode, "Automatic • Source Adaptive" });
+                Assert.Equal("Automatic", mode.Text);
+                restoreQualityMode.Invoke(null, new object[] { mode, "Manual • Legacy Numeric" });
+                Assert.Equal("Manual", mode.Text);
+
                 mode.SelectedIndex = 0;
                 Application.DoEvents();
                 Assert.Equal("Automatic", Config.Load(path).LastQualityMode);
@@ -296,6 +305,67 @@ public sealed class UiConfigPersistenceTests : IDisposable
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Quality mode persistence UI test timed out.");
+        if (failure != null)
+            throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
+    public void HistoricalConfigRestoresManualEncoderPreferencesAndRememberedTenBitChoice()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        string path = Path.Combine(_root, "historical-manual-encoder-config.json");
+        new Config
+        {
+            LastQualityMode = "Manual",
+            LastQualityValue = 29,
+            LastEncoderId = VideoEncoderIds.Libx265,
+            LastVideoCodec = nameof(VideoCodecFamily.Hevc),
+            LastEncoderPreset = "slower"
+        }.Save(path);
+
+        Exception? failure = null;
+        MainForm? form = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                CheckBox tenBit = Field<CheckBox>(form, "chkTenBit");
+                string key = Assert.IsType<string>(typeof(MainForm).GetMethod(
+                    "GetCheckboxPersistenceKey", BindingFlags.Static | BindingFlags.NonPublic)!
+                    .Invoke(null, new object[] { tenBit }));
+                WinFormsTestLifecycle.CloseAndDispose(form);
+                form = null;
+
+                Config saved = Config.Load(path);
+                saved.CheckboxStates[key] = false;
+                saved.Save(path);
+
+                form = new MainForm(path);
+                form.CreateControl();
+                form.Show();
+                Application.DoEvents();
+
+                Assert.Equal("Manual", Field<ComboBox>(form, "comboQualityMode").Text);
+                Assert.Equal(29m, Field<NumericUpDown>(form, "nudAutoQuality").Value);
+                Assert.False(Field<CheckBox>(form, "chkTenBit").Checked);
+                Config restored = Config.Load(path);
+                Assert.Equal(VideoEncoderIds.Libx265, restored.LastEncoderId);
+                Assert.Equal(nameof(VideoCodecFamily.Hevc), restored.LastVideoCodec);
+                Assert.Equal("slower", restored.LastEncoderPreset);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally { WinFormsTestLifecycle.CloseAndDispose(form); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "Historical encoder preference UI test timed out.");
         if (failure != null)
             throw new Xunit.Sdk.XunitException(failure.ToString());
     }

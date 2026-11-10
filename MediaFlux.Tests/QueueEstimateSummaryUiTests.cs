@@ -331,7 +331,7 @@ public sealed class QueueEstimateSummaryUiTests
                     $"estimateFingerprint={prepared.Estimate?.Plan.PlanFingerprint} preparedFingerprint={prepared.Identity.PlanFingerprint} " +
                     $"dispatchedFingerprint={dispatchedFingerprint} failedPredicate=none");
                 AutomaticTargetPlan? automaticTarget = prepared.Plan.AutomaticTarget;
-                _output.WriteLine($"DISPATCH_REQUEST_CAPTURE mode={(automatic ? "Automatic target-bitrate VBR" : "Manual/Legacy Numeric CQ")} " +
+                _output.WriteLine($"DISPATCH_REQUEST_CAPTURE mode={(automatic ? "Automatic target-bitrate VBR" : "Manual Numeric CQ")} " +
                     $"encoder={dispatchedRequest.Encoder.FfmpegCodec} preset={dispatchedRequest.EncoderPreset} " +
                     $"targetKbps={automaticTarget?.TargetVideoBitrateKbps} maxrateKbps={automaticTarget?.MaximumVideoBitrateKbps} " +
                     $"bufferKbps={automaticTarget?.VideoBufferSizeKbps} mapMode={dispatchedRequest.MapMode} " +
@@ -576,18 +576,42 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.False(config.StorageSavings.Enabled);
             Assert.True(Field<double>(meta, "DurationSec") > 0, "MainForm production preparation must acquire source duration metadata.");
 
-            string inspectorLog = (string)meta.GetType().GetMethod("GetInspectorLogTail")!.Invoke(meta, null)!;
-            string validationLine = Assert.Single(inspectorLog.Split(Environment.NewLine), line =>
+            // The inspector intentionally keeps only a bounded tail, so the early
+            // handoff-validation event may be evicted during a long recovery encode.
+            // Read the persisted per-job history, which retains the complete run log.
+            JobHistoryRecord completedHistory = Assert.Single(
+                Field<HistoryService>(main, "_historyService").LoadAll(), record =>
+                    record.Type == JobType.Encode &&
+                    string.Equals(record.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase) &&
+                    record.StartUtc >= startedUtc);
+            Assert.Equal(JobStatus.Success, completedHistory.Status);
+            Assert.Equal("ValidatedAndFinalized", completedHistory.FinalizationOutcome);
+            string[] completeJobLogLines = completedHistory.Log.Split(
+                Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            string validationLine = Assert.Single(completeJobLogLines, line =>
                 line.StartsWith("[PreparedPlanValidation] ", StringComparison.Ordinal));
             Assert.Contains("FailedPredicate=none", validationLine);
             Assert.Contains("FfmpegLaunched=False", validationLine);
-            string productionPlanLine = Assert.Single(inspectorLog.Split(Environment.NewLine), line =>
+            string productionPlanLine = Assert.Single(completeJobLogLines, line =>
                 line.StartsWith("[ProductionPlan] ", StringComparison.Ordinal));
             string dispatchedFingerprint = productionPlanLine.Split("Fingerprint=", 2)[1].Split(';', 2)[0];
             Assert.Equal(prepared.Identity.PlanFingerprint, dispatchedFingerprint);
             Assert.Equal(dispatchedFingerprint, Field<EncodingPlan?>(meta, "IntelligencePlan")?.ProductionPlan?.PlanFingerprint);
-            Assert.Equal(EncodingTerminalResult.Completed, Field<EncodingExecutionOutcome?>(meta, "IntelligenceOutcome")?.TerminalResult);
-            string ffmpegArgumentsLine = Assert.Single(inspectorLog.Split(Environment.NewLine), line =>
+            EncodingTerminalResult terminalResult = Field<EncodingExecutionOutcome?>(meta, "IntelligenceOutcome")?.TerminalResult
+                ?? throw new Xunit.Sdk.XunitException("The completed queue job has no terminal result.");
+            Assert.Contains(terminalResult, new[]
+            {
+                EncodingTerminalResult.Completed,
+                EncodingTerminalResult.CompletedAfterDegradedSalvage
+            });
+            Assert.Equal(terminalResult, completedHistory.TerminalResult);
+            Assert.Contains("[MediaFlux] Validated and finalized: ", completedHistory.Log, StringComparison.Ordinal);
+            if (terminalResult == EncodingTerminalResult.CompletedAfterDegradedSalvage)
+            {
+                Assert.Contains("TolerantDecodeReencode", completedHistory.Log, StringComparison.Ordinal);
+                Assert.Contains(TolerantAudioRecoveryFilterPolicy.StereoPassThroughFilter, completedHistory.Log, StringComparison.Ordinal);
+            }
+            string ffmpegArgumentsLine = Assert.Single(completeJobLogLines, line =>
                 line.StartsWith("[MediaFlux] FFmpeg arguments: ", StringComparison.Ordinal));
             string ffmpegArguments = ffmpegArgumentsLine["[MediaFlux] FFmpeg arguments: ".Length..];
             Assert.Contains($"-c:v {prepared.Snapshot.Encoder.FfmpegCodec}", ffmpegArguments, StringComparison.OrdinalIgnoreCase);
@@ -1192,7 +1216,7 @@ public sealed class QueueEstimateSummaryUiTests
             var context = AdaptiveStorageSavingsTests.Context() with
             {
                 Encoder = new(VideoEncoderIds.Libx265, VideoCodecFamily.Hevc, "libx265"),
-                QualityIntent = automatic ? EncodingQualityIntent.Automatic(QualityTarget.Balanced) : EncodingQualityIntent.LegacyNumeric(24)
+                QualityIntent = automatic ? EncodingQualityIntent.Automatic(QualityTarget.Balanced) : EncodingQualityIntent.ManualNumeric(24)
             };
             var result = new EstimateBackgroundService.SmartEstimateResult(service.CurrentGeneration,
                 Field<Guid>(meta, "QueueItemId"), path, 12, 6, 100, "1920x1080", sourceCodec, 24,
@@ -1431,10 +1455,12 @@ public sealed class QueueEstimateSummaryUiTests
             Label commandSummary = Field<Label>(main, "_queueCommandSummaryLabel");
             Label outputSummary = Field<Label>(main, "_summaryNewSizeValue");
             Label workspaceOutput = Field<Label>(main, "_queueWorkspaceEstimateOutputValue");
+            Label workspaceSource = Field<Label>(main, "_queueWorkspaceSourceSizeValue");
 
             Invoke(main, "UpdateSizeTotals", true);
             Assert.Equal("--", outputSummary.Text);
             Assert.Equal("Est. output: --", workspaceOutput.Text);
+            Assert.Equal("Source: --", workspaceSource.Text);
             Assert.Contains("Estimated output: --", commandSummary.Text);
 
             string prefix = Path.Combine(Path.GetTempPath(), $"MediaFlux.excluded-estimates.{Guid.NewGuid():N}");
@@ -1484,6 +1510,64 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.Equal("Waiting for estimates", outputSummary.Text);
             Assert.Equal("Est. output: waiting for estimates", workspaceOutput.Text);
             Assert.Contains("Estimated output: Waiting for estimates", commandSummary.Text);
+        });
+    }
+
+    [Fact]
+    public void QueueSourceSummaryTracksMembershipRestorationAndMissingMetadata()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        RunOnUiThread(main =>
+        {
+            DataGridView queue = Field<DataGridView>(main, "dgvEncodeQueue");
+            Label sourceSummary = Field<Label>(main, "_queueWorkspaceSourceSizeValue");
+            MethodInfo formatSize = typeof(MainForm).GetMethod("FormatSize", BindingFlags.Static | BindingFlags.NonPublic,
+                null, [typeof(double)], null)!;
+            Assert.Equal("1 TB", formatSize.Invoke(null, [1024d * 1024d]));
+            string prefix = Path.Combine(Path.GetTempPath(), $"MediaFlux.QueueSourceSummary.{Guid.NewGuid():N}");
+            Directory.CreateDirectory(prefix);
+            try
+            {
+                string restoredPath = Path.Combine(prefix, "restored.mkv");
+                File.WriteAllBytes(restoredPath, new byte[3 * 1024 * 1024]);
+
+                Assert.True((bool)Invoke(main, "AddEncodeItemIfNotPresent", restoredPath, false, false)!);
+                Assert.Equal("Source: 3 MB", sourceSummary.Text);
+
+                string additionalPath = Path.Combine(prefix, "additional.mkv");
+                DataGridViewRow additional = queue.Rows[queue.Rows.Add()];
+                additional.Tag = additionalPath;
+                additional.Cells["colName"].Value = "additional.mkv";
+                object additionalMeta = Invoke(main, "EnsureRowMeta", additional)!;
+                SetField(additionalMeta, "Path", additionalPath);
+                SetField(additionalMeta, "SourceSizeBytes", 2L * 1024 * 1024 * 1024);
+                Invoke(main, "UpdateSizeTotals", true);
+                Assert.Equal("Source: 2 GB", sourceSummary.Text);
+
+                queue.Rows.Remove(additional);
+                Invoke(main, "UpdateSizeTotals", true);
+                Assert.Equal("Source: 3 MB", sourceSummary.Text);
+
+                string missingMetadataPath = Path.Combine(prefix, "missing-metadata.mkv");
+                File.WriteAllBytes(missingMetadataPath, new byte[1024]);
+                DataGridViewRow missingMetadata = queue.Rows[queue.Rows.Add()];
+                missingMetadata.Tag = missingMetadataPath;
+                missingMetadata.Cells["colName"].Value = "missing-metadata.mkv";
+                missingMetadata.Cells["colSize"].Value = "99 GB";
+                object missingMeta = Invoke(main, "EnsureRowMeta", missingMetadata)!;
+                SetField(missingMeta, "Path", missingMetadataPath);
+                Invoke(main, "UpdateSizeTotals", true);
+                Assert.Equal("Source: 3 MB", sourceSummary.Text);
+
+                queue.Rows.Clear();
+                Invoke(main, "UpdateSizeTotals", true);
+                Assert.Equal("Source: --", sourceSummary.Text);
+            }
+            finally
+            {
+                Directory.Delete(prefix, recursive: true);
+            }
         });
     }
 

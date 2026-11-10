@@ -31,7 +31,7 @@ public sealed class AdaptiveStorageSavingsTests
         {
             "hevc" => context with { Source = Source("hevc") },
             "other-source" => context with { Source = Source("mpeg2video") },
-            "manual" => context with { QualityIntent = EncodingQualityIntent.LegacyNumeric(24) },
+            "manual" => context with { QualityIntent = EncodingQualityIntent.ManualNumeric(24) },
             "target" => context with { TargetMb = 1 },
             "qsv" => context with { Encoder = new(VideoEncoderIds.Qsv, VideoCodecFamily.Hevc, "hevc_qsv") },
             "other-output" => context with { Encoder = new(VideoEncoderIds.Nvenc, VideoCodecFamily.H264, "h264_nvenc") },

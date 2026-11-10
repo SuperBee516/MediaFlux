@@ -1392,11 +1392,6 @@ namespace MediaFlux
                 {
                     sourceMb = meta.SrcMb;
                 }
-                else if (!string.IsNullOrWhiteSpace(path))
-                {
-                    sourceMb = GetMbOnDisk(path);
-                }
-
                 double estimatedMb = estimateEligible && !string.IsNullOrWhiteSpace(path) &&
                     _estimatedSizeMap.TryGetValue(path, out double mappedEstimateMb) &&
                     mappedEstimateMb > 0
@@ -1477,6 +1472,7 @@ namespace MediaFlux
         private static string FormatSize(double mb)
         {
             if (mb <= 0) return "";
+            if (mb >= 1024d * 1024d) return $"{mb / (1024d * 1024d):0.##} TB";
             if (mb >= 1024) return $"{mb / 1024.0:0.##} GB";
             return $"{mb:0.#} MB";
         }

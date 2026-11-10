@@ -66,19 +66,19 @@ public sealed class EncodingQualityPolicyServiceTests
     }
 
     [Fact]
-    public void LegacyNumericIntentRetainsExistingProviderNormalization()
+    public void ManualNumericIntentRetainsExistingProviderNormalization()
     {
         VideoEncoderSelection encoder = new(VideoEncoderIds.Libx265,
             VideoCodecFamily.Hevc, "libx265");
 
         EncodingQualityResolution resolution = _service.Resolve(new(
-            EncodingQualityIntent.LegacyNumeric(80), Source(1920, 1080, 30, 4_000_000),
+            EncodingQualityIntent.ManualNumeric(80), Source(1920, 1080, 30, 4_000_000),
             encoder, null, EncodingService.ScaleMode.None, null));
 
         Assert.Equal(51, resolution.EffectiveQuality);
-        Assert.Equal(EncodingQualityIntentKind.LegacyNumeric, resolution.Intent.Kind);
+        Assert.Equal(EncodingQualityIntentKind.ManualNumeric, resolution.Intent.Kind);
         Assert.Contains(resolution.Reasons, reason =>
-            reason.Code == EncodingQualityReasonCode.LegacyNumericIntent);
+            reason.Code == EncodingQualityReasonCode.ManualNumericIntent);
     }
 
     [Fact]

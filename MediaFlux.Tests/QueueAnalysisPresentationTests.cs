@@ -248,7 +248,8 @@ public sealed class QueueAnalysisPresentationTests
 
         Assert.Contains("Target Size / Bitrate", targetSize.BuildTooltip());
         Assert.Contains("Effective quality: Not used", targetSize.BuildTooltip());
-        Assert.Contains("Mode: Manual / Legacy Numeric", legacy.BuildTooltip());
+        Assert.Contains("Mode: Manual", legacy.BuildTooltip());
+        Assert.Contains("Quality preference: Manual Numeric", legacy.BuildTooltip());
         Assert.DoesNotContain("Automatic / Source Adaptive", legacy.BuildTooltip());
     }
 
@@ -268,7 +269,7 @@ public sealed class QueueAnalysisPresentationTests
 
     private static EncodingQualityResolution Quality(
         QualityTarget? target, EncoderQualityMechanism mechanism, int value, bool legacy = false) =>
-        new(legacy ? EncodingQualityIntent.LegacyNumeric(value) : EncodingQualityIntent.Automatic(target!.Value),
+        new(legacy ? EncodingQualityIntent.ManualNumeric(value) : EncodingQualityIntent.Automatic(target!.Value),
             value, mechanism, legacy ? EncodingQualityAssessment.Unknown : EncodingQualityAssessment.HighQualitySource,
-            false, [new(legacy ? EncodingQualityReasonCode.LegacyNumericIntent : EncodingQualityReasonCode.QualityTargetSelected, "test")]);
+            false, [new(legacy ? EncodingQualityReasonCode.ManualNumericIntent : EncodingQualityReasonCode.QualityTargetSelected, "test")]);
 }

@@ -1,5 +1,7 @@
 namespace MediaFlux.Models;
 
+using System.Text.Json.Serialization;
+
 /// <summary>Persistent user intent for source-adaptive constant-quality encoding.</summary>
 public enum QualityTarget
 {
@@ -12,22 +14,22 @@ public enum QualityTarget
 
 public enum EncodingQualityIntentKind
 {
-    LegacyNumeric,
+    ManualNumeric,
     QualityTarget,
     AutomaticTargetBitrate
 }
 
 /// <summary>
 /// Describes user intent without treating a derived encoder quality value as a
-/// persistent preference. Existing numeric settings remain explicit legacy intent.
+/// persistent preference. Existing numeric settings remain explicit manual intent.
 /// </summary>
 public sealed record EncodingQualityIntent(
     EncodingQualityIntentKind Kind,
-    int? LegacyQualityValue = null,
+    [property: JsonPropertyName("legacyQualityValue")] int? ManualQualityValue = null,
     QualityTarget? Target = null)
 {
-    public static EncodingQualityIntent LegacyNumeric(int? value) =>
-        new(EncodingQualityIntentKind.LegacyNumeric, value);
+    public static EncodingQualityIntent ManualNumeric(int? value) =>
+        new(EncodingQualityIntentKind.ManualNumeric, value);
 
     public static EncodingQualityIntent Automatic(QualityTarget target) =>
         new(EncodingQualityIntentKind.QualityTarget, Target: target);
@@ -48,7 +50,7 @@ public enum EncodingQualityAssessment
 
 public enum EncodingQualityReasonCode
 {
-    LegacyNumericIntent,
+    ManualNumericIntent,
     QualityTargetSelected,
     TargetSizeSupersedesQuality,
     ProviderDefaultBaseline,

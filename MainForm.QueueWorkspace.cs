@@ -21,6 +21,7 @@ namespace MediaFlux
         private ComboBox? _queueWorkspaceViewSelector;
         private Label? _queueWorkspaceShowingValue;
         private Label? _queueWorkspaceEstimateOutputValue;
+        private Label? _queueWorkspaceSourceSizeValue;
         private Label? _queueWorkspaceEstimateSavingsValue;
         private Label? _queueWorkspaceEstimateEtaValue;
         private Button? _btnStartSelectedQueue;
@@ -684,7 +685,7 @@ namespace MediaFlux
             {
                 Name = "queueWorkspaceEstimateStrip",
                 Dock = DockStyle.Top,
-                ColumnCount = 3,
+                ColumnCount = 4,
                 RowCount = 1,
                 Height = ScaleUi(30),
                 Margin = new Padding(0, 0, 0, ScaleUi(4)),
@@ -693,12 +694,14 @@ namespace MediaFlux
                 AccessibleName = "Aggregate queue estimates"
             };
 
-            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34F));
-            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33F));
-            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33F));
-            _queueWorkspaceEstimateOutputValue = AddQueueWorkspaceEstimateLabel(strip, "Est. output: --", 0);
-            _queueWorkspaceEstimateSavingsValue = AddQueueWorkspaceEstimateLabel(strip, "Est. savings: --", 1);
-            _queueWorkspaceEstimateEtaValue = AddQueueWorkspaceEstimateLabel(strip, "Queue ETA: --", 2);
+            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+            _queueWorkspaceSourceSizeValue = AddQueueWorkspaceEstimateLabel(strip, "Source: --", 0);
+            _queueWorkspaceEstimateOutputValue = AddQueueWorkspaceEstimateLabel(strip, "Est. output: --", 1);
+            _queueWorkspaceEstimateSavingsValue = AddQueueWorkspaceEstimateLabel(strip, "Est. savings: --", 2);
+            _queueWorkspaceEstimateEtaValue = AddQueueWorkspaceEstimateLabel(strip, "Queue ETA: --", 3);
             return strip;
         }
 
@@ -1443,6 +1446,8 @@ namespace MediaFlux
             if (_queueWorkspaceEstimateOutputValue == null || _queueWorkspaceEstimateSavingsValue == null)
                 return;
 
+            UpdateQueueWorkspaceAggregateSourceSize();
+
             if (_queueFileCount <= 0)
             {
                 SetQueueWorkspaceLabel(_queueWorkspaceEstimateOutputValue, "Est. output: --");
@@ -1483,6 +1488,13 @@ namespace MediaFlux
             SetQueueWorkspaceLabel(
                 _queueWorkspaceEstimateSavingsValue,
                 $"Est. savings: {FormatSize(savingsMb)} ({savingsPercent:0}% saved)");
+        }
+
+        private void UpdateQueueWorkspaceAggregateSourceSize()
+        {
+            SetQueueWorkspaceLabel(
+                _queueWorkspaceSourceSizeValue,
+                $"Source: {(_queueTotalSourceMb > 0 ? FormatSize(_queueTotalSourceMb) : "--")}");
         }
 
         private void UpdateQueueWorkspaceAggregateEta()

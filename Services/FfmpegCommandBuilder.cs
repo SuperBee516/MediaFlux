@@ -232,6 +232,7 @@ namespace MediaFlux.Services
             {
                 AppendAudioArguments(builder, request);
                 AppendPlannedAudioCodecs(builder, request.ContainerDecision, request.AudioChannels);
+                AppendAudioFilterOverrides(builder, request.AudioFilterOverrides);
                 AppendPlannedAudioMetadataAndDispositions(builder, request.ContainerDecision);
                 AppendPlannedSubtitleMetadataAndDispositions(builder, request.ContainerDecision);
             }
@@ -366,6 +367,21 @@ namespace MediaFlux.Services
                 outputIndex++;
             }
         }
+
+        private static void AppendAudioFilterOverrides(
+            StringBuilder builder,
+            IReadOnlyDictionary<int, string> overrides)
+        {
+            foreach ((int outputIndex, string filter) in overrides.OrderBy(item => item.Key))
+            {
+                if (outputIndex < 0 || string.IsNullOrWhiteSpace(filter) ||
+                    filter.Contains('"') || filter.Contains('\r') || filter.Contains('\n'))
+                    throw new InvalidOperationException("An audio recovery filter override is invalid.");
+
+                builder.Append($"-filter:a:{outputIndex} {filter} ");
+            }
+        }
+
         private static void AppendPlannedAudioMetadataAndDispositions(
             StringBuilder builder,
             OutputContainerDecision decision)

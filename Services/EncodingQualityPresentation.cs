@@ -27,7 +27,7 @@ public static class EncodingQualityPresentation
         bool automatic = resolution.Intent.Kind == EncodingQualityIntentKind.QualityTarget;
         string target = automatic
             ? QualityTargetDisplayName(resolution.Intent.Target!.Value)
-            : "Legacy numeric";
+            : "Manual Numeric";
         string mechanism = Mechanism(resolution.Mechanism);
         string effective = resolution.EffectiveQuality is { } value
             ? $"{mechanism} {value}"
@@ -35,7 +35,7 @@ public static class EncodingQualityPresentation
         var items = new List<EncodingPlanItem>
         {
             new("Quality preference", target),
-            new("Mode", automatic ? "Automatic" : "Manual / Legacy Numeric"),
+            new("Mode", automatic ? "Automatic" : "Manual"),
             new("Effective quality", effective),
             new("Mechanism", mechanism)
         };
@@ -55,7 +55,7 @@ public static class EncodingQualityPresentation
             return "Target Size / Bitrate (quality superseded)";
         string target = resolution.Intent.Target is { } qualityTarget
             ? QualityTargetDisplayName(qualityTarget)
-            : "Legacy numeric";
+            : "Manual Numeric";
         string value = resolution.EffectiveQuality is { } quality
             ? $"{Mechanism(resolution.Mechanism)} {quality}"
             : "Not used";
@@ -97,7 +97,7 @@ public static class EncodingQualityPresentation
         EncodingQualityReasonCode.HighResolutionSource => "High-resolution source favors additional preservation.",
         EncodingQualityReasonCode.Downscale => "Planned downscale reduces the required preservation setting.",
         EncodingQualityReasonCode.TargetSizeSupersedesQuality => "Target-size bitrate mode supersedes constant quality.",
-        EncodingQualityReasonCode.LegacyNumericIntent => "Existing numeric quality intent is retained.",
+        EncodingQualityReasonCode.ManualNumericIntent => "Manual numeric quality is retained.",
         EncodingQualityReasonCode.ProviderNormalized => "The encoder provider normalized the result to its legal range.",
         _ => reason.Description
     };

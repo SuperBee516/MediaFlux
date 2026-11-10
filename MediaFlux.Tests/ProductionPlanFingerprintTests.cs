@@ -1,3 +1,4 @@
+using MediaFlux.Models;
 using MediaFlux.Services;
 using Xunit;
 
@@ -97,6 +98,44 @@ public sealed class ProductionPlanFingerprintTests : IDisposable
         Assert.Equal(identity.SourceIdentity, resolved.SourceIdentity);
         Assert.NotEqual(identity.PlanFingerprint, resolved.PlanFingerprint);
         Assert.Equal(26, resolved.Inputs.QualityValue);
+    }
+
+    [Fact]
+    public void ManualNumericIntentKeepsCanonicalFingerprintIntentText()
+    {
+        var context = new EncodingDecisionContext(
+            new MediaProbeResult
+            {
+                Success = true,
+                Streams = [new MediaProbeStreamInfo
+                {
+                    Index = 0, CodecType = "video", CodecName = "hevc",
+                    Width = 1920, Height = 1080, FrameRate = 30, BitRate = 8_000_000
+                }]
+            },
+            EncodingInputSource.FromFile(_source),
+            new VideoEncoderSelection(VideoEncoderIds.Nvenc, VideoCodecFamily.Hevc, "hevc_nvenc"),
+            UseGpu: true,
+            TargetMb: null,
+            ScaleMode: EncodingService.ScaleMode.None,
+            Restoration: new VideoRestorationSettings(),
+            EncoderPreset: "p5",
+            QualityValue: 24,
+            TenBit: false,
+            AudioChannels: null,
+            MapMode: EncodingService.StreamMapMode.KeepAll,
+            CopySubtitles: true,
+            CopyDataStreams: true,
+            CopyAttachments: true,
+            ContainerConfigured: OutputContainerSelection.Matroska,
+            CompatibilityPolicy: ContainerCompatibilityPolicy.Intelligent,
+            KnownDuration: TimeSpan.FromSeconds(10),
+            QualityIntent: EncodingQualityIntent.ManualNumeric(24));
+        EncodingPlan plan = EncodingPlanService.Create(context);
+        ProductionPlanIdentity identity = ProductionPlanFingerprintService.Create(
+            context, EncodingPlanService.GetExecutionValues(plan));
+
+        Assert.Equal("manual-numeric", identity.Inputs.QualityIntent);
     }
 
     private static ProductionPlanFingerprintInput Input() => new(
