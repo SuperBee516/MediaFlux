@@ -30,6 +30,32 @@ public sealed class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void AudioRecoveryFilterTargetsOnlyTheDamagedOutputStream()
+    {
+        var decision = new OutputContainerDecision
+        {
+            Requested = OutputContainerSelection.Mp4,
+            Resolved = OutputContainer.Mp4,
+            Reason = "test",
+            StreamPlans = new[]
+            {
+                new StreamCompatibilityPlan(1, "audio", "aac", StreamCompatibilityAction.Copy, "copy"),
+                new StreamCompatibilityPlan(3, "audio", "aac", StreamCompatibilityAction.Transcode, "recovery", "aac")
+            }
+        };
+
+        string arguments = CreateBuilder().Build(CreateRequest(
+            "libx265", useGpu: false, containerDecision: decision,
+            audioFilterOverrides: new Dictionary<int, string>
+            {
+                [1] = TolerantAudioRecoveryFilterPolicy.StereoPassThroughFilter
+            }));
+
+        Assert.Contains("-filter:a:1 pan=stereo|c0=c0|c1=c1", arguments);
+        Assert.DoesNotContain("-filter:a:0", arguments);
+    }
+
+    [Fact]
     public void NvencHevcQualityCommandMatchesExistingBehavior()
     {
         FfmpegCommandRequest request = CreateRequest(
@@ -1089,7 +1115,8 @@ public sealed class FfmpegCommandBuilderTests
         string? recoveryFrameRateRational = null,
         string? timestampReconstructionFilter = null,
         string inputPath = "C:\\Media\\source.mkv",
-        AutomaticTargetPlan? automaticTargetPlan = null)
+        AutomaticTargetPlan? automaticTargetPlan = null,
+        IReadOnlyDictionary<int, string>? audioFilterOverrides = null)
     {
         ResolvedVideoEncoder encoder =
             EncoderRegistry.Default.ResolveLegacyCodec(ffmpegCodec);
@@ -1125,7 +1152,8 @@ public sealed class FfmpegCommandBuilderTests
             recoveryFrameRateRational,
              timestampReconstructionFilter,
              inputPath,
-             automaticTargetPlan);
+             automaticTargetPlan,
+             audioFilterOverrides);
     }
 
     private static FfmpegCommandRequest CreateRequest(
@@ -1160,7 +1188,8 @@ public sealed class FfmpegCommandBuilderTests
         string? recoveryFrameRateRational = null,
         string? timestampReconstructionFilter = null,
         string inputPath = "C:\\Media\\source.mkv",
-        AutomaticTargetPlan? automaticTargetPlan = null)
+        AutomaticTargetPlan? automaticTargetPlan = null,
+        IReadOnlyDictionary<int, string>? audioFilterOverrides = null)
     {
 
         return new FfmpegCommandRequest
@@ -1217,7 +1246,8 @@ public sealed class FfmpegCommandBuilderTests
             SourcePixelFormat = sourcePixelFormat,
             PlannedVideoGeometry = plannedVideoGeometry,
             SplitSource = splitSource,
-            RestorationFilterOverride = restorationFilterOverride
+            RestorationFilterOverride = restorationFilterOverride,
+            AudioFilterOverrides = audioFilterOverrides ?? new Dictionary<int, string>()
         };
     }
 }

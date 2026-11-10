@@ -1482,6 +1482,8 @@ namespace MediaFlux.Services
             bool sourceUnrecoverable = false;
             bool tolerantSalvageAttempted = false;
             bool tolerantSalvageAudioReconstructed = false;
+            IReadOnlyDictionary<int, string> tolerantSalvageAudioFilterOverrides =
+                new Dictionary<int, string>();
             string tolerantSalvageDetail = "";
             bool cudaRecoveryAttempted = false;
             bool cudaRecoveryStarted = false;
@@ -1616,12 +1618,18 @@ namespace MediaFlux.Services
                                         containerDecision = OutputContainerPolicy.RecoverCopiedAudio(containerDecision, corruptAudioStream);
                                         containerDecisionCallback?.Invoke(containerDecision);
                                         tolerantSalvageAudioReconstructed = true;
+                                        tolerantSalvageAudioFilterOverrides = BuildTolerantAudioFilterOverrides(
+                                            sourceProbe, containerDecision, corruptAudioStream, audioChannels);
                                     }
 
                                     tolerantSalvageAttempted = true;
                                     recoveryStatusCallback?.Invoke(new(EncodingRecoveryStatusKind.AttemptingDegradedSourceSalvage));
                                     callback("[MediaFlux] Attempting degraded source salvage with tolerant software decode; damaged media may be discarded.");
-                                    tolerantSalvageDetail = $"Tier 1 rejected copied corruption; strategy=TolerantDecodeReencode; software-decode=yes; audio={(tolerantSalvageAudioReconstructed ? "reconstructed" : "validated-copy")}; damaged packets/frames may have been discarded.";
+                                    string audioFilterDetail = tolerantSalvageAudioFilterOverrides.Count == 0
+                                        ? "default"
+                                        : string.Join(",", tolerantSalvageAudioFilterOverrides.OrderBy(item => item.Key)
+                                            .Select(item => $"output-{item.Key}:{item.Value}"));
+                                    tolerantSalvageDetail = $"Tier 1 rejected copied corruption; strategy=TolerantDecodeReencode; software-decode=yes; audio={(tolerantSalvageAudioReconstructed ? "reconstructed" : "validated-copy")}; audio-filter={audioFilterDetail}; damaged packets/frames may have been discarded.";
                                     _log?.Invoke($"[EncodingRecovery] Operation={shadowPlan.PlanId:N}; Type=TolerantDecodeReencode; Failure=SourceContainerCorruption; InitialMode=Strict; RecoveryMode=TolerantDecodeReencode; Attempt=1/1; source={inputSource.SourcePath}; {tolerantSalvageDetail}");
                                     ffArgs = BuildFfmpegArgs(
                                         inputSource, output, videoCodec, useGpu, targetMb, scaleMode,
@@ -1634,7 +1642,8 @@ namespace MediaFlux.Services
                                         restorationFilterOverride: aiPlan?.PostAiFilterChain,
                                         plannedVideoGeometry: plannedOutputGeometry,
                                         automaticTargetPlan: automaticTargetPlan,
-                                        sourceDecodeMode: FfmpegSourceDecodeMode.TolerantDecodeReencode);
+                                        sourceDecodeMode: FfmpegSourceDecodeMode.TolerantDecodeReencode,
+                                        audioFilterOverrides: tolerantSalvageAudioFilterOverrides);
                                     using (PerformanceTimingService.PerformanceScope scope = performance.Measure(PerformanceTimingStage.VideoDecodeRecovery))
                                     {
                                         runResult = await RunFfmpegAsync(ffArgs, callback, totalDuration, cancellationToken, ffmpegDiagnosticCallback, progressTotalFrames, sourceVideo?.FrameRate, structuredProgressCallback, sourceTiming?.Classification, ++ffmpegAttempt, lifecycleDiagnostics, faststartStartedCallback, processStartedCallback: RecordProductionEncodeStarted).ConfigureAwait(false);
@@ -3485,6 +3494,17 @@ namespace MediaFlux.Services
             return evidence.ToString();
         }
 
+        private static IReadOnlyDictionary<int, string> BuildTolerantAudioFilterOverrides(
+            MediaProbeResult sourceProbe,
+            OutputContainerDecision recoveredContainerDecision,
+            int damagedAudioStreamIndex,
+            int? requestedAudioChannels) =>
+            TolerantAudioRecoveryFilterPolicy.BuildOverrides(
+                sourceProbe,
+                recoveredContainerDecision,
+                damagedAudioStreamIndex,
+                requestedAudioChannels);
+
         private sealed record FfmpegProcessResult(int ExitCode, string StandardError, FfmpegDiagnosticSummary DiagnosticSummary);
 
         private async Task EnsureProcessExitedAfterCancellationAsync(Process proc)
@@ -3774,7 +3794,8 @@ namespace MediaFlux.Services
             string? restorationFilterOverride = null,
             VideoOutputGeometryPlan? plannedVideoGeometry = null,
             bool videoOnly = false,
-            AutomaticTargetPlan? automaticTargetPlan = null)
+            AutomaticTargetPlan? automaticTargetPlan = null,
+            IReadOnlyDictionary<int, string>? audioFilterOverrides = null)
         {
             ResolvedVideoEncoder resolved =
                 encoderSelection == null
@@ -3871,6 +3892,7 @@ namespace MediaFlux.Services
                 ,SplitSource = splitSource
                 ,RestorationFilterOverride = restorationFilterOverride
                 ,PlannedVideoGeometry = plannedVideoGeometry
+                ,AudioFilterOverrides = audioFilterOverrides ?? new Dictionary<int, string>()
             };
 
             var builder = new FfmpegCommandBuilder(

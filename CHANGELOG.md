@@ -5,6 +5,13 @@ All notable changes to MediaFlux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.3] - 2026-11-09
+
+### Maintenance and Compatibility
+
+- Corrected eligible tolerant recovery of damaged stereo AAC sources with a targeted stereo pass-through filter, preventing the observed FFmpeg audio-filter negotiation and resampler failure.
+- Preserved normal healthy-source encoding behavior and source-retention policy.
+
 ## [1.9.2] - 2026-10-14
 
 ### Maintenance and Compatibility

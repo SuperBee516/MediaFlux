@@ -576,18 +576,42 @@ public sealed class QueueEstimateSummaryUiTests
             Assert.False(config.StorageSavings.Enabled);
             Assert.True(Field<double>(meta, "DurationSec") > 0, "MainForm production preparation must acquire source duration metadata.");
 
-            string inspectorLog = (string)meta.GetType().GetMethod("GetInspectorLogTail")!.Invoke(meta, null)!;
-            string validationLine = Assert.Single(inspectorLog.Split(Environment.NewLine), line =>
+            // The inspector intentionally keeps only a bounded tail, so the early
+            // handoff-validation event may be evicted during a long recovery encode.
+            // Read the persisted per-job history, which retains the complete run log.
+            JobHistoryRecord completedHistory = Assert.Single(
+                Field<HistoryService>(main, "_historyService").LoadAll(), record =>
+                    record.Type == JobType.Encode &&
+                    string.Equals(record.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase) &&
+                    record.StartUtc >= startedUtc);
+            Assert.Equal(JobStatus.Success, completedHistory.Status);
+            Assert.Equal("ValidatedAndFinalized", completedHistory.FinalizationOutcome);
+            string[] completeJobLogLines = completedHistory.Log.Split(
+                Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            string validationLine = Assert.Single(completeJobLogLines, line =>
                 line.StartsWith("[PreparedPlanValidation] ", StringComparison.Ordinal));
             Assert.Contains("FailedPredicate=none", validationLine);
             Assert.Contains("FfmpegLaunched=False", validationLine);
-            string productionPlanLine = Assert.Single(inspectorLog.Split(Environment.NewLine), line =>
+            string productionPlanLine = Assert.Single(completeJobLogLines, line =>
                 line.StartsWith("[ProductionPlan] ", StringComparison.Ordinal));
             string dispatchedFingerprint = productionPlanLine.Split("Fingerprint=", 2)[1].Split(';', 2)[0];
             Assert.Equal(prepared.Identity.PlanFingerprint, dispatchedFingerprint);
             Assert.Equal(dispatchedFingerprint, Field<EncodingPlan?>(meta, "IntelligencePlan")?.ProductionPlan?.PlanFingerprint);
-            Assert.Equal(EncodingTerminalResult.Completed, Field<EncodingExecutionOutcome?>(meta, "IntelligenceOutcome")?.TerminalResult);
-            string ffmpegArgumentsLine = Assert.Single(inspectorLog.Split(Environment.NewLine), line =>
+            EncodingTerminalResult terminalResult = Field<EncodingExecutionOutcome?>(meta, "IntelligenceOutcome")?.TerminalResult
+                ?? throw new Xunit.Sdk.XunitException("The completed queue job has no terminal result.");
+            Assert.Contains(terminalResult, new[]
+            {
+                EncodingTerminalResult.Completed,
+                EncodingTerminalResult.CompletedAfterDegradedSalvage
+            });
+            Assert.Equal(terminalResult, completedHistory.TerminalResult);
+            Assert.Contains("[MediaFlux] Validated and finalized: ", completedHistory.Log, StringComparison.Ordinal);
+            if (terminalResult == EncodingTerminalResult.CompletedAfterDegradedSalvage)
+            {
+                Assert.Contains("TolerantDecodeReencode", completedHistory.Log, StringComparison.Ordinal);
+                Assert.Contains(TolerantAudioRecoveryFilterPolicy.StereoPassThroughFilter, completedHistory.Log, StringComparison.Ordinal);
+            }
+            string ffmpegArgumentsLine = Assert.Single(completeJobLogLines, line =>
                 line.StartsWith("[MediaFlux] FFmpeg arguments: ", StringComparison.Ordinal));
             string ffmpegArguments = ffmpegArgumentsLine["[MediaFlux] FFmpeg arguments: ".Length..];
             Assert.Contains($"-c:v {prepared.Snapshot.Encoder.FfmpegCodec}", ffmpegArguments, StringComparison.OrdinalIgnoreCase);
