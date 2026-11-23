@@ -96,7 +96,7 @@ namespace MediaFlux.Services
         public static string TensorRtEnginesDirectory => Storage.TensorRtEngines;
         public static string ManagedProgramsDirectory => Path.Combine(InstallDirectory, "Programs");
         public static string ManagedRealEsrganDirectory => Path.Combine(ManagedProgramsDirectory, "RealESRGAN");
-        public static string ManagedFfmpegDirectory => Path.Combine(ManagedProgramsDirectory, "FFmpeg");
+        public static string ManagedFfmpegDirectory => FfmpegManagedPaths.PersistentRoot(InstallDirectory);
         public static string AiBenchmarkRerunsDirectory => Storage.AiBenchmarkReruns;
         public static string LogsDirectory => Storage.Logs;
         public static string SupportedVideoExtensionsFile => Path.Combine(DataDirectory, "supported_video_extensions.json");
@@ -143,6 +143,12 @@ namespace MediaFlux.Services
                 return;
             }
             Storage.InitializeDirectories();
+            try { FfmpegManagedPaths.PreserveLegacyInstallation(InstallDirectory); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                try { ErrorLogService.Append(UserDataDirectory, "FFmpeg storage migration", exception: ex); }
+                catch { /* Keep application startup available when a legacy install folder cannot be copied. */ }
+            }
             string marker = Path.Combine(UserDataDirectory, MigrationMarkerName);
             InitializeBackupLocations(
                 UserDataDirectory,
