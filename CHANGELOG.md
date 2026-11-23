@@ -5,7 +5,12 @@ All notable changes to MediaFlux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.9.3] - 2026-11-09
+## [1.9.3] - 2026-11-23
+
+### Added
+
+- Added File View and Folder View to the Encode queue, with folder search, multi-folder selection, and combined output estimates.
+- Added sorting for queue status, folder size, and estimated output totals.
 
 ### Maintenance and Compatibility
 

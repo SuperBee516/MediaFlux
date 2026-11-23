@@ -776,13 +776,14 @@ public partial class MainForm
             _queueInspectorCopyDiagnostic.Enabled = !string.IsNullOrWhiteSpace(text);
     }
 
-    private DataGridViewRow[] GetQueueInspectorSelectedRows() =>
-        dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>()
-            .Where(row => !row.IsNewRow)
-            .ToArray();
+    private DataGridViewRow[] GetQueueInspectorSelectedRows() => GetQueueWorkspaceSelectedFiles();
 
     private bool IsQueueInspectorItemSelected(DataGridViewRow row)
     {
+        // Folder selection is refreshed in batches with the folder projection.
+        if (_folderQueueView)
+            return false;
+
         RowMeta target = EnsureRowMeta(row);
         string targetPath = NormalizeInspectorPath(GetFullPathFromRow(row) ?? target.Path);
         return GetQueueInspectorSelectedRows().Any(selected =>

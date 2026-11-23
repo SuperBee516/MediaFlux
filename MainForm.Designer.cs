@@ -1179,6 +1179,7 @@ namespace MediaFlux
                 Name = "colStatus",
                 HeaderText = "Status",
                 Width = 86,
+                SortMode = DataGridViewColumnSortMode.Automatic,
                 Resizable = DataGridViewTriState.True
             });
             dgvEncodeQueue.Columns.Add(new DataGridViewTextBoxColumn

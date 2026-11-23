@@ -506,8 +506,9 @@ namespace MediaFlux
             surface.RowStyles.Add(new RowStyle(SizeType.Absolute, ScaleUi(QueueWorkspaceSummaryRowHeight)));
             surface.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             surface.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            surface.RowStyles.Add(new RowStyle(SizeType.Absolute, 0F));
             surface.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            surface.RowCount = 4;
+            surface.RowCount = 5;
 
             Control summary = CreateQueueWorkspaceSummaryCards();
             Control viewToolbar = CreateQueueWorkspaceViewToolbar();
@@ -518,7 +519,8 @@ namespace MediaFlux
             surface.Controls.Add(summary, 0, 0);
             surface.Controls.Add(viewToolbar, 0, 1);
             surface.Controls.Add(estimates, 0, 2);
-            surface.Controls.Add(dgvEncodeQueue, 0, 3);
+            surface.Controls.Add(CreateFolderQueueGrid(), 0, 3);
+            surface.Controls.Add(dgvEncodeQueue, 0, 4);
             panel.Controls.Add(surface);
             _queueWorkspaceHost = surface;
 
@@ -537,13 +539,14 @@ namespace MediaFlux
                 Name = "queueWorkspaceViewToolbar",
                 Dock = DockStyle.Top,
                 AutoSize = true,
-                ColumnCount = 4,
+                ColumnCount = 5,
                 RowCount = 1,
                 Margin = new Padding(0, 0, 0, ScaleUi(3)),
                 Padding = new Padding(ScaleUi(4), ScaleUi(2), ScaleUi(4), ScaleUi(2)),
                 AccessibleName = "Queue presentation filters"
             };
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -559,13 +562,16 @@ namespace MediaFlux
             };
             _queueWorkspaceSearchBox.TextChanged += (_, __) =>
             {
+                if (_switchingQueueGridMode)
+                    return;
+
                 ApplyEncodeQueueViewFilter();
                 RefreshQueueWorkspacePresentation();
             };
 
             var viewLabel = new Label
             {
-                Text = "View:",
+                Text = "Filter:",
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(0, 3, ScaleUi(4), 0),
@@ -606,9 +612,10 @@ namespace MediaFlux
             };
 
             toolbar.Controls.Add(_queueWorkspaceSearchBox, 0, 0);
-            toolbar.Controls.Add(viewLabel, 1, 0);
-            toolbar.Controls.Add(_queueWorkspaceViewSelector, 2, 0);
-            toolbar.Controls.Add(_queueWorkspaceShowingValue, 3, 0);
+            toolbar.Controls.Add(CreateQueueGridModeSelector(), 1, 0);
+            toolbar.Controls.Add(viewLabel, 2, 0);
+            toolbar.Controls.Add(_queueWorkspaceViewSelector, 3, 0);
+            toolbar.Controls.Add(_queueWorkspaceShowingValue, 4, 0);
             return toolbar;
         }
 
@@ -938,6 +945,8 @@ namespace MediaFlux
 
             if (columnName is "colStatus" or "colEncodeRecommendation")
                 ScheduleQueueWorkspaceRefresh();
+            if (_folderQueueView && columnName is ("colName" or "colSize" or "colEstimatedSize"))
+                ScheduleQueueWorkspaceRefresh();
             if (columnName == "colEncodeRecommendation")
                 RefreshQueueWorkspaceRow(row);
         }
@@ -1089,11 +1098,6 @@ namespace MediaFlux
             if (row == null || row.IsNewRow || row.DataGridView != dgvEncodeQueue)
                 return false;
 
-            RowMeta? meta = row.Tag as RowMeta;
-            bool onlyDuplicates = chkOnlyDuplicateCandidates?.Checked == true && _lastDuplicateScanResult != null;
-            if (onlyDuplicates && meta?.DuplicateGroupId == null)
-                return false;
-
             string search = _queueWorkspaceSearchBox?.Text.Trim() ?? string.Empty;
             if (search.Length > 0)
             {
@@ -1107,6 +1111,16 @@ namespace MediaFlux
                     return false;
                 }
             }
+
+            return MatchesQueueWorkspaceFilter(row);
+        }
+
+        private bool MatchesQueueWorkspaceFilter(DataGridViewRow row)
+        {
+            RowMeta? meta = row.Tag as RowMeta;
+            bool onlyDuplicates = chkOnlyDuplicateCandidates?.Checked == true && _lastDuplicateScanResult != null;
+            if (onlyDuplicates && meta?.DuplicateGroupId == null)
+                return false;
 
             string status = Convert.ToString(row.Cells["colStatus"].Value) ?? string.Empty;
             bool running = IsQueueRowActivelyEncoding(row);
@@ -1128,6 +1142,13 @@ namespace MediaFlux
 
         private void ApplyEncodeQueueViewFilter()
         {
+            if (_folderQueueView)
+            {
+                RefreshFolderQueueGrid();
+                UpdateQueueWorkspaceShowingCount();
+                return;
+            }
+
             if (_applyingQueueWorkspaceView || dgvEncodeQueue == null || IsQueueEncodingActive())
             {
                 UpdateQueueWorkspaceShowingCount();
@@ -1207,6 +1228,13 @@ namespace MediaFlux
         {
             if (_queueWorkspaceShowingValue == null || dgvEncodeQueue == null)
                 return;
+
+            if (_folderQueueView)
+            {
+                SetQueueWorkspaceLabel(_queueWorkspaceShowingValue,
+                    $"Showing {_folderQueueGrid!.Rows.Count:N0} of {_folderQueueTotal:N0} folders");
+                return;
+            }
 
             int total = dgvEncodeQueue.Rows.Cast<DataGridViewRow>().Count(row => !row.IsNewRow);
             int visible = dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
@@ -1334,8 +1362,10 @@ namespace MediaFlux
             bool busy = _encodingActive || !_runningEncodeJobs.IsEmpty || _mediaRemuxCts != null;
             bool anyEligible = dgvEncodeQueue.Rows.Cast<DataGridViewRow>()
                 .Any(row => !row.IsNewRow && row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true });
-            bool hasSelectedEligible = dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>()
-                .Any(row => !row.IsNewRow && row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true });
+            DataGridViewRow[] selectedRows = GetQueueWorkspaceSelectedFiles();
+            bool hasSelectedEligible = selectedRows.Any(row => _folderQueueView
+                ? IsEligibleEncodeRow(row)
+                : row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true });
 
             btnStartEncode.Enabled = !busy && anyEligible;
             if (_btnStartSelectedQueue != null)
@@ -1343,8 +1373,7 @@ namespace MediaFlux
             btnPauseQueue.Enabled = _encodingActive;
             btnStopEncode.Enabled = _encodingActive;
             if (_btnRemoveSelectedQueue != null)
-                _btnRemoveSelectedQueue.Enabled = !busy && CanRemoveQueueRows(
-                    dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>());
+                _btnRemoveSelectedQueue.Enabled = !busy && CanRemoveQueueRows(selectedRows);
             if (_analyzeQueueButton != null)
                 _analyzeQueueButton.Enabled = dgvEncodeQueue.Rows.Count > 0 && !busy;
 

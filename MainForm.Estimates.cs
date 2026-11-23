@@ -446,7 +446,11 @@ namespace MediaFlux
             {
                 dgvEncodeQueue.ResumeLayout();
                 if (applied > 0)
+                {
                     dgvEncodeQueue.Invalidate();
+                    if (_folderQueueView)
+                        ScheduleQueueWorkspaceRefresh();
+                }
                 UpdateSizeTotals();
                 UpdateEstimateProgressStatus();
             }
@@ -738,6 +742,8 @@ namespace MediaFlux
                 if (applied > 0)
                 {
                     dgvEncodeQueue.Invalidate();
+                    if (_folderQueueView)
+                        ScheduleQueueWorkspaceRefresh();
                     UpdateSizeTotals(force: true);
                 }
             }
