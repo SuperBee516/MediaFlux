@@ -57,10 +57,13 @@ namespace MediaFlux
                 return EncodeQueueStartOutcome.NotStarted;
             }
 
+            bool selectedFolderRun = _folderQueueView && processAllOverride == false;
             var eligibleRows = GetEligibleEncodeRowsInExecutionOrder().ToList();
             var scope = EncodingScopeResolver.Analyze(
                 eligibleRows,
-                GetSelectedEncodeRowsInExecutionOrder());
+                selectedFolderRun
+                    ? OrderRowsByQueueSequence(GetQueueWorkspaceSelectedFiles())
+                    : GetSelectedEncodeRowsInExecutionOrder());
 
             EncodingScopeChoice scopeChoice;
             if (processAllOverride == true)
@@ -98,7 +101,9 @@ namespace MediaFlux
 
             if (!requestedAll && requestedRows.Count == 0)
             {
-                ShowStatusInfo("Select one or more files to encode.");
+                ShowStatusInfo(selectedFolderRun
+                    ? "Select one or more folders with eligible files to encode."
+                    : "Select one or more files to encode.");
                 return EncodeQueueStartOutcome.NotStarted;
             }
 
@@ -188,12 +193,13 @@ namespace MediaFlux
             RecordSkippedEncodingRows(
                 initiallyRequestedRows.Where(row => !rowsToProcessSet.Contains(row)));
 
-            // Expose this list so the context menu can append rows while encoding
+            // A selected-folder run owns the snapshot taken at Start. Other runs
+            // retain their existing ability to accept files imported while encoding.
             lock (_activeEncodeQueueLock)
             {
                 _activeEncodeQueue = rowsToProcess;
                 _activeEncodeQueueDispatchedCount = 0;
-                _activeEncodeQueueAccepting = true;
+                _activeEncodeQueueAccepting = !selectedFolderRun;
             }
             _encodeProcessedCount = 0;
             UpdateQueueEstimatedCompletion();

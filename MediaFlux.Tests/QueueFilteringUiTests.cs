@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.ComponentModel;
 using System.Windows.Forms;
 using MediaFlux.Models;
 using MediaFlux.Services;
@@ -9,6 +10,148 @@ namespace MediaFlux.Tests;
 [Collection("LibraryAnalyzerUi")]
 public sealed class QueueFilteringUiTests
 {
+    [Fact]
+    public void FolderViewGroupsByPathAndExpandsSelectionToEligibleFiles()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        Exception? failure = null;
+        MainForm? main = null;
+        string? isolatedConfigPath = null;
+        string step = "initialization";
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                main = new MainForm();
+                isolatedConfigPath = QueueWorkspaceTestSupport.UseIsolatedConfig(main);
+                main.Show();
+                Application.DoEvents();
+
+                step = "adding test queue items";
+                DataGridView files = Field<DataGridView>(main, "dgvEncodeQueue");
+                SetField(main, "_suppressRowEvents", true);
+                DataGridViewRow first = AddRow(files, @"C:\Media\Series\episode-one.mkv", "Queued");
+                DataGridViewRow pending = AddRow(files, @"C:\Media\series\episode-two.mkv", "Estimating");
+                DataGridViewRow excluded = AddRow(files, @"C:\Media\Series\duplicate.mkv", "Excluded");
+                DataGridViewRow nested = AddRow(files, @"C:\Media\Series\Extras\bonus.mp4", "Queued");
+                DataGridViewRow sameName = AddRow(files, @"D:\Archive\Series\archived.mkv", "Queued");
+                SetField(main, "_suppressRowEvents", false);
+                first.Cells["colSize"].Value = "400 MB";
+                pending.Cells["colSize"].Value = "400 MB";
+                excluded.Cells["colSize"].Value = "400 MB";
+                nested.Cells["colSize"].Value = "100 MB";
+                sameName.Cells["colSize"].Value = "250 MB";
+                SetMetaField(main, first, "EstimateState", QueueEstimateState.Ready);
+                first.Cells["colEstimatedSize"].Value = "50 MB";
+                SetMetaField(main, sameName, "EstimateState", QueueEstimateState.Ready);
+                sameName.Cells["colEstimatedSize"].Value = "100 MB";
+                Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[
+                    (string)Invoke(main, "GetFullPathFromRow", sameName)!] = 100;
+                SetMetaField(main, pending, "QueueAdmissionPending", true);
+                SetMetaField(main, excluded, "ExcludedFromEncodeAsDuplicate", true);
+                SetMetaField(main, excluded, "EstimateState", QueueEstimateState.Ready);
+                excluded.Cells["colEstimatedSize"].Value = "90 MB";
+
+                var mode = (ComboBox)main.Controls.Find("cmbQueueGridMode", true).Single();
+                var folders = (DataGridView)main.Controls.Find("dgvFolderQueue", true).Single();
+                TextBox search = Field<TextBox>(main, "_queueWorkspaceSearchBox");
+                Label showing = Field<Label>(main, "_queueWorkspaceShowingValue");
+                Button startSelected = Field<Button>(main, "_btnStartSelectedQueue");
+                Assert.Equal("File View", mode.SelectedItem);
+                Assert.Equal(DataGridViewColumnSortMode.Automatic, files.Columns["colStatus"].SortMode);
+                search.Text = "episode-one";
+                Assert.Equal("Showing 1 of 5", showing.Text);
+                Assert.True(files.Visible);
+
+                step = "switching to Folder View";
+                mode.SelectedItem = "Folder View";
+                Assert.True(folders.Visible);
+                Assert.False(files.Visible);
+                Assert.Equal("Search folders...", search.PlaceholderText);
+                Assert.Empty(search.Text);
+                Assert.Equal("Showing 3 of 3 folders", showing.Text);
+                Assert.False(startSelected.Enabled);
+                Assert.All(new[] { "colFolderStatus", "colFolderSize", "colFolderEstimatedSize" }, column =>
+                    Assert.Equal(DataGridViewColumnSortMode.Automatic, folders.Columns[column].SortMode));
+                DataGridViewRow series = FolderRow(folders, @"C:\Media\Series");
+                Assert.Equal(3, series.Cells["colFolderFiles"].Value);
+                Assert.Equal("1.17 GB", series.Cells["colFolderSize"].Value);
+                Assert.Equal("50 MB", series.Cells["colFolderEstimatedSize"].Value);
+
+                step = "updating pending estimates";
+                SetMetaField(main, pending, "QueueAdmissionPending", false);
+                pending.Cells["colStatus"].Value = "Queued";
+                Application.DoEvents();
+                Assert.Equal("50 MB partial (1/2)", series.Cells["colFolderEstimatedSize"].Value);
+                SetMetaField(main, pending, "EstimateState", QueueEstimateState.Ready);
+                pending.Cells["colEstimatedSize"].Value = "25 MB";
+                Application.DoEvents();
+                Assert.Equal("75 MB", series.Cells["colFolderEstimatedSize"].Value);
+
+                folders.Sort(folders.Columns["colFolderSize"], ListSortDirection.Ascending);
+                Assert.Equal(new[] { @"C:\Media\Series\Extras", @"D:\Archive\Series", @"C:\Media\Series" },
+                    folders.Rows.Cast<DataGridViewRow>().Select(row => Convert.ToString(row.Cells["colFolderPath"].Value)));
+                folders.Sort(folders.Columns["colFolderEstimatedSize"], ListSortDirection.Ascending);
+                Assert.Equal(new[] { @"C:\Media\Series\Extras", @"C:\Media\Series", @"D:\Archive\Series" },
+                    folders.Rows.Cast<DataGridViewRow>().Select(row => Convert.ToString(row.Cells["colFolderPath"].Value)));
+                Field<Dictionary<string, double>>(main, "_estimatedSizeMap")[
+                    (string)Invoke(main, "GetFullPathFromRow", pending)!] = 150;
+                pending.Cells["colEstimatedSize"].Value = "150 MB";
+                Invoke(main, "RefreshFolderQueueGrid");
+                Assert.Equal("200 MB", FolderRow(folders, @"C:\Media\Series").Cells["colFolderEstimatedSize"].Value);
+                Assert.Equal(new[] { @"C:\Media\Series\Extras", @"D:\Archive\Series", @"C:\Media\Series" },
+                    folders.Rows.Cast<DataGridViewRow>().Select(row => Convert.ToString(row.Cells["colFolderPath"].Value)));
+                folders.Sort(folders.Columns["colFolderStatus"], ListSortDirection.Ascending);
+                Assert.Equal(3, folders.Rows.Count);
+
+                step = "filtering and selecting folders";
+                search.Text = "episode-one";
+                Assert.Empty(folders.Rows.Cast<DataGridViewRow>());
+                search.Text = @"c:\media\series";
+                Assert.Equal("Showing 2 of 3 folders", showing.Text);
+                FolderRow(folders, @"C:\Media\Series").Selected = true;
+                FolderRow(folders, @"C:\Media\Series\Extras").Selected = true;
+                Assert.True(startSelected.Enabled);
+                var selectedFiles = (DataGridViewRow[])Invoke(main, "GetQueueWorkspaceSelectedFiles")!;
+                var scope = EncodingScopeResolver.Analyze(InvokeRows(main, "GetEligibleEncodeRowsInExecutionOrder"), selectedFiles);
+                Assert.True(new HashSet<DataGridViewRow> { first, pending, nested }.SetEquals(scope.SelectedJobs));
+                Assert.DoesNotContain(sameName, scope.SelectedJobs);
+                Assert.DoesNotContain(excluded, scope.SelectedJobs);
+
+                search.Text = "Extras";
+                Assert.Same(nested, Assert.Single((DataGridViewRow[])Invoke(main, "GetQueueWorkspaceSelectedFiles")!));
+                search.Text = "Series";
+                Assert.Equal(3, folders.Rows.Count);
+                Assert.Single(folders.SelectedRows.Cast<DataGridViewRow>());
+                mode.SelectedItem = "File View";
+                Assert.True(files.Visible);
+                Assert.False(folders.Visible);
+                Assert.Equal("episode-one", search.Text);
+                Assert.Equal("Showing 1 of 5", showing.Text);
+                Assert.True(first.Visible);
+                Assert.False(sameName.Visible);
+                mode.SelectedItem = "Folder View";
+                Assert.Equal("Series", search.Text);
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                WinFormsTestLifecycle.CloseAndDispose(main);
+                QueueWorkspaceTestSupport.DeleteIsolatedConfig(isolatedConfigPath);
+            }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)), $"Folder queue UI test timed out during {step}. {failure}");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    private static DataGridViewRow FolderRow(DataGridView folders, string path) =>
+        folders.Rows.Cast<DataGridViewRow>().Single(row =>
+            string.Equals(path, (string?)row.Cells["colFolderPath"].Value, StringComparison.OrdinalIgnoreCase));
+
     [Fact]
     public void SearchAndOperationalViewsComposeWithoutChangingLogicalOrder()
     {

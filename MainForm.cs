@@ -1368,7 +1368,7 @@ namespace MediaFlux
             if (dgvEncodeQueue == null)
                 return;
 
-            var rows = dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().Where(row => !row.IsNewRow).ToList();
+            var rows = GetQueueWorkspaceSelectedFiles().ToList();
             string details;
             string streams;
             string restoration;
@@ -1477,12 +1477,15 @@ namespace MediaFlux
         {
             if (_collapsedQueueStatusLabel == null || dgvEncodeQueue == null)
                 return;
-            int selected = dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().Count(row => !row.IsNewRow);
+            int selected = _folderQueueView
+                ? _folderQueueGrid!.SelectedRows.Count
+                : dgvEncodeQueue.SelectedRows.Cast<DataGridViewRow>().Count(row => !row.IsNewRow);
+            string item = _folderQueueView ? "folder" : "file";
             _collapsedQueueStatusLabel.Text = selected switch
             {
                 0 => "Selected: None",
-                1 => "Selected: 1 file",
-                _ => $"Selected: {selected:N0} files"
+                1 => $"Selected: 1 {item}",
+                _ => $"Selected: {selected:N0} {item}s"
             };
         }
 
@@ -5515,10 +5518,13 @@ namespace MediaFlux
 
         private IEnumerable<DataGridViewRow> GetEligibleEncodeRowsInExecutionOrder()
         {
-            return GetEncodeRowsInExecutionOrder()
-                .Where(row => row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true } &&
-                              row.Tag is not RowMeta { QueueAdmissionPending: true });
+            return GetEncodeRowsInExecutionOrder().Where(IsEligibleEncodeRow);
         }
+
+        private static bool IsEligibleEncodeRow(DataGridViewRow row) =>
+            !row.IsNewRow &&
+            row.Tag is not RowMeta { ExcludedFromEncodeAsDuplicate: true } &&
+            row.Tag is not RowMeta { QueueAdmissionPending: true };
 
         private void UpdateSelectionSizeTotals()
         {
@@ -6118,10 +6124,7 @@ namespace MediaFlux
 
         private void RemoveSelectedRows_Click(object? sender, EventArgs e)
         {
-            DataGridViewRow[] selectedRows = dgvEncodeQueue.SelectedRows
-                .Cast<DataGridViewRow>()
-                .Where(row => !row.IsNewRow)
-                .ToArray();
+            DataGridViewRow[] selectedRows = GetQueueWorkspaceSelectedFiles();
             if (selectedRows.Length == 0)
                 return;
 
@@ -6287,7 +6290,7 @@ namespace MediaFlux
         // Delete key context menu handler
         private void dgvEncodeQueue_KeyDown(object? sender, KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.Delete && dgvEncodeQueue.SelectedRows.Count > 0)
+            if (e.KeyCode == Keys.Delete && (sender as DataGridView ?? dgvEncodeQueue).SelectedRows.Count > 0)
             {
                 RemoveSelectedRows_Click(null, EventArgs.Empty);
                 e.Handled = true;
