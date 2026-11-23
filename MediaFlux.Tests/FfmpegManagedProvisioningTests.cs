@@ -71,7 +71,7 @@ public sealed class FfmpegManagedProvisioningTests : IDisposable
     }
 
     [Fact]
-    public async Task EncodingServiceStartsAfterUpdateRemovesPreviouslyConfiguredToolPair()
+    public void ManagedToolsSurviveVelopackCurrentDirectoryReplacement()
     {
         string appDirectory = Path.Combine(_root, "current");
         string toolDirectory = Path.Combine(
@@ -95,17 +95,13 @@ public sealed class FfmpegManagedProvisioningTests : IDisposable
         }));
 
         Config beforeUpdate = Config.Load(configPath);
-        FfmpegToolPaths installedTools = FfmpegToolResolver.Resolve(
-            appDirectory,
-            beforeUpdate.FfmpegPath,
-            beforeUpdate.FfprobePath);
+        FfmpegToolPaths installedTools = FfmpegToolResolver.Resolve(appDirectory, beforeUpdate.FfmpegPath, beforeUpdate.FfprobePath);
         Assert.Equal(FfmpegToolSource.Configured, installedTools.Source);
-        _ = new EncodingService(
-            appDirectory,
-            _ => { },
-            null,
-            beforeUpdate.FfmpegPath,
-            beforeUpdate.FfprobePath);
+
+        FfmpegManagedPaths.PreserveLegacyInstallation(appDirectory);
+        string persistentBin = Path.Combine(_root, "Programs", "FFmpeg", FfmpegManagedComponents.Release.Version, "bin");
+        Assert.True(File.Exists(Path.Combine(persistentBin, "ffmpeg.exe")));
+        Assert.True(File.Exists(Path.Combine(persistentBin, "ffprobe.exe")));
 
         // Velopack replaces app content while the user-data configuration survives.
         Directory.Delete(appDirectory, recursive: true);
@@ -114,38 +110,31 @@ public sealed class FfmpegManagedProvisioningTests : IDisposable
         Config afterUpdate = Config.Load(configPath);
         Assert.Equal(ffmpeg, afterUpdate.FfmpegPath);
         Assert.Equal(ffprobe, afterUpdate.FfprobePath);
-        FfmpegToolPaths unavailableTools = FfmpegToolResolver.Resolve(
-            appDirectory,
-            afterUpdate.FfmpegPath,
-            afterUpdate.FfprobePath);
-        Assert.Equal(FfmpegToolSource.Unavailable, unavailableTools.Source);
-        Assert.Empty(unavailableTools.FfmpegPath);
-        Assert.Empty(unavailableTools.FfprobePath);
+        FfmpegToolPaths restoredConfiguredTools = FfmpegToolResolver.Resolve(appDirectory, afterUpdate.FfmpegPath, afterUpdate.FfprobePath);
+        Assert.Equal(FfmpegToolSource.Configured, restoredConfiguredTools.Source);
+        Assert.Equal(Path.Combine(persistentBin, "ffmpeg.exe"), restoredConfiguredTools.FfmpegPath);
+        Assert.Equal(Path.Combine(persistentBin, "ffprobe.exe"), restoredConfiguredTools.FfprobePath);
 
-        _ = new EncodingService(
-            appDirectory,
-            _ => { },
-            null,
-            afterUpdate.FfmpegPath,
-            afterUpdate.FfprobePath);
+        FfmpegToolPaths restoredManagedTools = FfmpegToolResolver.Resolve(appDirectory);
+        Assert.Equal(FfmpegToolSource.Managed, restoredManagedTools.Source);
+        Assert.Equal(restoredConfiguredTools.FfmpegPath, restoredManagedTools.FfmpegPath);
+    }
 
-        string mediaPath = Path.Combine(_root, "existing-media.mkv");
-        File.WriteAllText(mediaPath, "media fixture");
-        MediaProbeResult unavailableProbe = await new FfprobeService(
-            unavailableTools,
-            new MediaToolProcessRunner()).ProbeAsync(mediaPath);
-        Assert.False(unavailableProbe.Success);
-        Assert.Contains("FFprobe was not found", unavailableProbe.ErrorMessage);
-        var libraryProbe = new FfprobeLibraryMetadataProbe(
-            appDirectory,
-            afterUpdate.FfprobePath);
-        MediaProbeResult unavailableLibraryProbe = await libraryProbe.ProbeAsync(
-            mediaPath,
-            CancellationToken.None);
-        Assert.False(unavailableLibraryProbe.Success);
-        Assert.Throws<ArgumentException>(() => new FfprobeService(
-            unavailableTools.FfprobePath,
-            new MediaToolProcessRunner()));
+    [Fact]
+    public void ManagedProvisionerUsesPersistentSiblingOfVelopackCurrentDirectory()
+    {
+        string current = Path.Combine(_root, "current");
+        string expected = Path.Combine(_root, "Programs", "FFmpeg");
+        Assert.Equal(expected, FfmpegManagedPaths.PersistentRoot(current));
+        Assert.Equal(Path.Combine(current, "Programs", "FFmpeg"), FfmpegManagedPaths.LegacyRoot(current));
+    }
+
+    [Fact]
+    public void ManagedReleaseUsesGyanGitHubMirrorWithPinnedArchiveHash()
+    {
+        ManagedComponentDescriptor descriptor = FfmpegManagedComponents.Release;
+        Assert.Equal("https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip", descriptor.DownloadUri.AbsoluteUri);
+        Assert.Equal("db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec", descriptor.ExpectedSha256);
     }
 
     [Fact]

@@ -227,19 +227,22 @@ The managed FFmpeg foundation uses a shared security boundary: HTTPS download,
 pinned SHA-256 verification, safe ZIP extraction, structural validation, staged
 promotion, rollback, cancellation, and an explicit cache-invalidation callback.
 The pinned Windows x64 package is Gyan.dev `ffmpeg-8.1.2-essentials_build.zip`,
-version `8.1.2`, from
-`https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip`.
+version `8.1.2`, from the versioned Gyan GitHub mirror at
+`https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip`.
 Its provider-published and independently verified SHA-256 is
 `db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec`.
 
 The archive's `ffmpeg-8.1.2-essentials_build/bin` directory is normalized to
 `Programs/FFmpeg/8.1.2/bin`, preserving deterministic paired paths for
 `ffmpeg.exe` and `ffprobe.exe`. Resolution precedence is: valid configured pair,
-valid managed pair, configured individual tool plus the existing legacy/path
+valid managed pair in persistent storage, configured individual tool plus the existing legacy/path
 fallback for the other tool, then legacy application/`Programs` locations, then
 PATH. A valid configured executable is never silently replaced by the managed
 package. Managed FFmpeg is not downloaded automatically and has no startup UI
-in this phase.
+in this phase. Under a Velopack `current` installation, the managed FFmpeg folder
+lives beside `current` so application updates cannot replace it. Existing
+`current/Programs/FFmpeg` files are copied forward on application startup without
+overwriting any files already in persistent storage.
 
 The UI guards queue encoding, DVD encoding with current settings, and sample
 comparison before work starts. `EncodingService` independently checks the

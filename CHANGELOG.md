@@ -5,6 +5,13 @@ All notable changes to MediaFlux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.4] - 2026-11-23
+
+### Fixed
+
+- Kept managed FFmpeg binaries in persistent storage across Velopack updates and migrated existing install-local binaries when available.
+- Restored FFmpeg installation downloads by using Gyan's versioned GitHub release asset with the pinned SHA-256.
+
 ## [1.9.3] - 2026-11-23
 
 ### Added

@@ -53,16 +53,30 @@ namespace MediaFlux.Services
                         return new(Path.GetFullPath(ffmpeg), Path.GetFullPath(ffprobe), FfmpegToolSource.Configured, configuredDirectory);
                 }
 
+                // Older releases allowed the configured pair to live inside Velopack's
+                // replaceable `current` directory. If startup preserved that pair into the
+                // persistent sibling Programs folder, follow the pair there.
+                if (FfmpegManagedPaths.TryMapLegacyConfiguredPair(root, configuredFfmpegPath, configuredFfprobePath,
+                        out string persistentFfmpeg, out string persistentFfprobe))
+                    return new(persistentFfmpeg, persistentFfprobe, FfmpegToolSource.Configured,
+                        Path.GetDirectoryName(persistentFfmpeg));
+
                 // An explicit configuration must never be completed by a different
                 // installation or by PATH. Fail closed until a complete sibling pair
                 // is configured or located.
                 return new("", "", FfmpegToolSource.Unavailable);
             }
 
-            string managedDirectory = Path.Combine(root, "Programs", "FFmpeg", FfmpegManagedComponents.Release.Version, "bin");
-            string managedFfmpeg = Path.Combine(managedDirectory, "ffmpeg.exe"), managedFfprobe = Path.Combine(managedDirectory, "ffprobe.exe");
-            if (configuredFfmpeg is null && configuredFfprobe is null && File.Exists(managedFfmpeg) && File.Exists(managedFfprobe))
-                return new(managedFfmpeg, managedFfprobe, FfmpegToolSource.Managed, managedDirectory);
+            if (configuredFfmpeg is null && configuredFfprobe is null)
+            {
+                foreach (string managedRoot in FfmpegManagedPaths.CandidateRoots(root))
+                {
+                    string managedDirectory = Path.Combine(managedRoot, FfmpegManagedComponents.Release.Version, "bin");
+                    string managedFfmpeg = Path.Combine(managedDirectory, "ffmpeg.exe"), managedFfprobe = Path.Combine(managedDirectory, "ffprobe.exe");
+                    if (File.Exists(managedFfmpeg) && File.Exists(managedFfprobe))
+                        return new(managedFfmpeg, managedFfprobe, FfmpegToolSource.Managed, managedDirectory);
+                }
+            }
 
             foreach (string directory in new[] { root, Path.Combine(root, "programs"), Path.Combine(root, "Programs") })
             {

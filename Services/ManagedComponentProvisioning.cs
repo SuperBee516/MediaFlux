@@ -195,13 +195,88 @@ public sealed class FfmpegManagedStructureValidator : IManagedComponentValidator
     }
 }
 
+/// <summary>Resolves FFmpeg storage outside Velopack's replaceable `current` directory.</summary>
+public static class FfmpegManagedPaths
+{
+    public static string PersistentRoot(string applicationDirectory)
+    {
+        string applicationRoot = Path.GetFullPath(applicationDirectory);
+        string? name = Path.GetFileName(Path.TrimEndingDirectorySeparator(applicationRoot));
+        if (string.Equals(name, "current", StringComparison.OrdinalIgnoreCase))
+        {
+            string? installRoot = Directory.GetParent(applicationRoot)?.FullName;
+            if (!string.IsNullOrWhiteSpace(installRoot))
+                return Path.Combine(installRoot, "Programs", "FFmpeg");
+        }
+        return Path.Combine(applicationRoot, "Programs", "FFmpeg");
+    }
+
+    public static string LegacyRoot(string applicationDirectory) =>
+        Path.Combine(Path.GetFullPath(applicationDirectory), "Programs", "FFmpeg");
+
+    public static IReadOnlyList<string> CandidateRoots(string applicationDirectory)
+    {
+        string persistent = PersistentRoot(applicationDirectory);
+        string legacy = LegacyRoot(applicationDirectory);
+        return string.Equals(persistent, legacy, StringComparison.OrdinalIgnoreCase)
+            ? new[] { persistent }
+            : new[] { persistent, legacy };
+    }
+
+    /// <summary>Copies legacy install-local tools to their persistent location without deleting or overwriting user files.</summary>
+    public static void PreserveLegacyInstallation(string applicationDirectory)
+    {
+        string persistent = PersistentRoot(applicationDirectory);
+        string legacy = LegacyRoot(applicationDirectory);
+        if (string.Equals(persistent, legacy, StringComparison.OrdinalIgnoreCase) || !Directory.Exists(legacy)) return;
+
+        foreach (string source in Directory.EnumerateFiles(legacy, "*", SearchOption.AllDirectories))
+        {
+            string relative = Path.GetRelativePath(legacy, source);
+            string destination = Path.Combine(persistent, relative);
+            if (File.Exists(destination)) continue;
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            try { File.Copy(source, destination, overwrite: false); }
+            catch (IOException) when (File.Exists(destination)) { }
+        }
+    }
+
+    internal static bool TryMapLegacyConfiguredPair(string applicationDirectory, string? ffmpeg, string? ffprobe,
+        out string mappedFfmpeg, out string mappedFfprobe)
+    {
+        mappedFfmpeg = mappedFfprobe = string.Empty;
+        string legacy = LegacyRoot(applicationDirectory);
+        string persistent = PersistentRoot(applicationDirectory);
+        if (string.Equals(legacy, persistent, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(ffmpeg) || string.IsNullOrWhiteSpace(ffprobe)) return false;
+
+        try
+        {
+            string legacyFull = Path.GetFullPath(legacy).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string ffmpegFull = Path.GetFullPath(Environment.ExpandEnvironmentVariables(ffmpeg.Trim()));
+            string ffprobeFull = Path.GetFullPath(Environment.ExpandEnvironmentVariables(ffprobe.Trim()));
+            if (!ffmpegFull.StartsWith(legacyFull, StringComparison.OrdinalIgnoreCase) ||
+                !ffprobeFull.StartsWith(legacyFull, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetFileName(ffmpegFull), "ffmpeg.exe", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetFileName(ffprobeFull), "ffprobe.exe", StringComparison.OrdinalIgnoreCase)) return false;
+
+            string mappedRoot = PersistentRoot(applicationDirectory);
+            mappedFfmpeg = Path.Combine(mappedRoot, Path.GetRelativePath(legacy, ffmpegFull));
+            mappedFfprobe = Path.Combine(mappedRoot, Path.GetRelativePath(legacy, ffprobeFull));
+            return File.Exists(mappedFfmpeg) && File.Exists(mappedFfprobe);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        { return false; }
+    }
+}
+
 public static class FfmpegManagedComponents
 {
     // Gyan.dev is linked by FFmpeg's official download page. The checksum is published
     // in the adjacent .sha256 file and independently verified by MediaFlux before pinning.
     public static ManagedComponentDescriptor Release { get; } = new(
         "ffmpeg", "FFmpeg", "gyan.dev", "8.1.2", "ffmpeg-8.1.2-essentials_build.zip",
-        new Uri("https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip"),
+        new Uri("https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip"),
         "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec", "windows", "x64");
 }
 
@@ -213,7 +288,10 @@ public sealed class FfmpegManagedComponentStateService
     public FfmpegManagedComponentStateService(string applicationDirectory) => _applicationDirectory = Path.GetFullPath(applicationDirectory);
     public FfmpegManagedInstallationInspection Inspect()
     {
-        string root = Path.Combine(_applicationDirectory, "Programs", "FFmpeg", FfmpegManagedComponents.Release.Version);
+        string? root = FfmpegManagedPaths.CandidateRoots(_applicationDirectory)
+            .Select(path => Path.Combine(path, FfmpegManagedComponents.Release.Version))
+            .FirstOrDefault(path => Directory.Exists(path));
+        root ??= Path.Combine(FfmpegManagedPaths.PersistentRoot(_applicationDirectory), FfmpegManagedComponents.Release.Version);
         string ffmpeg = Path.Combine(root, "bin", "ffmpeg.exe"), ffprobe = Path.Combine(root, "bin", "ffprobe.exe");
         try
         {
@@ -231,7 +309,7 @@ public sealed class FfmpegManagedComponentInstaller
     private readonly ManagedComponentInstaller _installer;
     public FfmpegManagedComponentInstaller(string applicationDirectory, IManagedComponentPackageDownloader? downloader = null, Action? invalidateCache = null, Action<string>? log = null)
     {
-        _installer = new(FfmpegManagedComponents.Release, Path.Combine(applicationDirectory, "Programs", "FFmpeg"), new FfmpegManagedStructureValidator(), downloader, invalidateCache, log);
+        _installer = new(FfmpegManagedComponents.Release, FfmpegManagedPaths.PersistentRoot(applicationDirectory), new FfmpegManagedStructureValidator(), downloader, invalidateCache, log);
     }
     public Task<ManagedComponentProvisioningResult> InstallAsync(IProgress<ManagedComponentProvisioningProgress>? progress = null, CancellationToken cancellationToken = default) => _installer.InstallAsync(progress, cancellationToken);
 }
